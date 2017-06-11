@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2005-2012 The University of Melbourne.
+% Copyright (C) 2017 The Mercury Team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -20,7 +21,7 @@
 % procedure. At these points, all values residing in registers that will be
 % needed later in the procedure will need to be flushed to the stack, to be
 % restored later. In some cases, it may be beneficial to refer to some
-% arguments indirectly through a cell variable.  Flushing the (address of the)
+% arguments indirectly through a cell variable. Flushing the (address of the)
 % cell variable to the stack is enough to save all the field variables
 % of the cell. The downside is that accessing a field variable requires
 % going through a cell variable (the cost of which may be amortised if
@@ -84,6 +85,7 @@
 :- module transform_hlds.tupling.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 
 :- import_module io.
@@ -98,33 +100,41 @@
 
 :- import_module backend_libs.
 :- import_module backend_libs.interval.
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module check_hlds.type_util.
 :- import_module hlds.arg_info.
 :- import_module hlds.goal_path.
+:- import_module hlds.hlds_dependency_graph.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_llds.
 :- import_module hlds.hlds_out.
 :- import_module hlds.hlds_out.hlds_out_util.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_rtti.
+:- import_module hlds.make_goal.
 :- import_module hlds.quantification.
+:- import_module hlds.vartypes.
+:- import_module libs.
 :- import_module libs.compiler_util.
+:- import_module libs.dependency_graph.
 :- import_module libs.globals.
 :- import_module libs.options.
 :- import_module ll_backend.
 :- import_module ll_backend.call_gen.
 :- import_module ll_backend.live_vars.
 :- import_module ll_backend.liveness.
+:- import_module mdbcomp.
 :- import_module mdbcomp.goal_path.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module mdbcomp.trace_counts.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module parse_tree.prog_mode.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.prog_util.
 :- import_module parse_tree.set_of_var.
-:- import_module transform_hlds.dependency_graph.
 
 :- import_module array.
 :- import_module assoc_list.
@@ -157,10 +167,10 @@ tuple_arguments(!ModuleInfo, !IO) :-
     module_info_get_globals(!.ModuleInfo, Globals),
     globals.lookup_string_option(Globals, tuple_trace_counts_file,
         TraceCountsFile),
-    ( TraceCountsFile = "" ->
+    ( if TraceCountsFile = "" then
         report_warning(Globals, "Warning: --tuple requires " ++
             "--tuple-trace-counts-file to work.\n", !IO)
-    ;
+    else
         read_trace_counts_source(TraceCountsFile, Result, !IO),
         (
             Result = list_ok(_, TraceCounts),
@@ -196,7 +206,7 @@ tuple_arguments_with_trace_counts(!ModuleInfo, TraceCounts0) :-
         optimize_saved_vars_cell_fv_store_cost, FieldVarStoreCost),
     globals.lookup_int_option(Globals, tuple_costs_ratio, CostsRatio),
     globals.lookup_int_option(Globals, tuple_min_args, MinArgsToTuple),
-    % These are the costs for untupled variables.  We just assume it is
+    % These are the costs for untupled variables. We just assume it is
     % the lesser of the cell and field variable costs (usually the field
     % variable costs should be smaller).
     NormalVarStoreCost = min(CellVarStoreCost, FieldVarStoreCost),
@@ -210,10 +220,9 @@ tuple_arguments_with_trace_counts(!ModuleInfo, TraceCounts0) :-
     module_info_get_name(!.ModuleInfo, ModuleName),
     restrict_trace_counts_to_module(ModuleName, TraceCounts0, TraceCounts),
 
-    module_info_ensure_dependency_info(!ModuleInfo),
-    module_info_dependency_info(!.ModuleInfo, DepInfo),
-    hlds_dependency_info_get_dependency_graph(DepInfo, DepGraph),
-    hlds_dependency_info_get_dependency_ordering(DepInfo, SCCs),
+    module_info_ensure_dependency_info(!ModuleInfo, DepInfo),
+    DepGraph = dependency_info_get_graph(DepInfo),
+    SCCs = dependency_info_get_bottom_up_sccs(DepInfo),
 
     % Add transformed versions of procedures that we think would be
     % beneficial.
@@ -230,25 +239,26 @@ tuple_arguments_with_trace_counts(!ModuleInfo, TraceCounts0) :-
 
     % This predicate can be used in place of maybe_tuple_scc to evaluate
     % and transform each procedure of an SCC individually. This is to mimic
-    % the behaviour from an earlier version of this file. It's currently
-    % unused but might be useful for debugging.
+    % the behaviour from an earlier version of this file. It is currently
+    % unused, but might be useful for debugging.
     %
 :- pred maybe_tuple_scc_individual_procs(trace_counts::in, tuning_params::in,
-    dependency_graph::in, list(pred_proc_id)::in,
+    hlds_dependency_graph::in, list(pred_proc_id)::in,
     module_info::in, module_info::out, counter::in, counter::out,
     transform_map::in, transform_map::out) is det.
+:- pragma consider_used(maybe_tuple_scc_individual_procs/10).
 
 maybe_tuple_scc_individual_procs(_TraceCounts, _TuningParams, _DepGraph,
         [], !ModuleInfo, !Counter, !TransformMap).
 maybe_tuple_scc_individual_procs(TraceCounts, TuningParams, DepGraph,
         [Proc | Procs], !ModuleInfo, !Counter, !TransformMap) :-
     maybe_tuple_scc(TraceCounts, TuningParams, DepGraph,
-        [Proc], !ModuleInfo, !Counter, !TransformMap),
+        set.make_singleton_set(Proc), !ModuleInfo, !Counter, !TransformMap),
     maybe_tuple_scc_individual_procs(TraceCounts, TuningParams, DepGraph,
         Procs, !ModuleInfo, !Counter, !TransformMap).
 
 :- pred maybe_tuple_scc(trace_counts::in, tuning_params::in,
-    dependency_graph::in, list(pred_proc_id)::in(bound([ground | ground])),
+    hlds_dependency_graph::in, scc::in,
     module_info::in, module_info::out, counter::in, counter::out,
     transform_map::in, transform_map::out) is det.
 
@@ -260,22 +270,22 @@ maybe_tuple_scc(TraceCounts, TuningParams, DepGraph, SCC,
         VeryVerbose = yes,
         trace [io(!IO)] (
             io.write_string("% Considering tupling in ", !IO),
-            list.foldl(write_pred_proc_id(!.ModuleInfo), SCC, !IO),
+            set.foldl(write_pred_proc_id(!.ModuleInfo), SCC, !IO),
             io.write_string("...\n", !IO)
         )
     ;
         VeryVerbose = no
     ),
-    ( scc_has_local_callers(SCC, DepGraph) ->
-        ( SCC = [SingleProc] ->
+    ( if scc_has_local_callers(SCC, DepGraph) then
+        ( if set.is_singleton(SCC, SingleProc) then
             candidate_headvars_of_proc(!.ModuleInfo, SingleProc,
                 CandidateHeadVars)
-        ;
+        else
             common_candidate_headvars_of_procs(!.ModuleInfo, SCC,
                 CandidateHeadVars)
         ),
         MinArgsToTuple = TuningParams ^ tp_min_args_to_tuple,
-        ( list.length(CandidateHeadVars) < MinArgsToTuple ->
+        ( if list.length(CandidateHeadVars) < MinArgsToTuple then
             (
                 VeryVerbose = yes,
                 trace [io(!IO)] (
@@ -284,12 +294,12 @@ maybe_tuple_scc(TraceCounts, TuningParams, DepGraph, SCC,
             ;
                 VeryVerbose = no
             )
-        ;
+        else
             maybe_tuple_scc_2(TraceCounts, TuningParams,
                 SCC, CandidateHeadVars, !ModuleInfo,
                 !Counter, !TransformMap, VeryVerbose)
         )
-    ;
+    else
         % No need to work on this SCC if there are no callers to it
         % within this module.
         %
@@ -305,33 +315,33 @@ maybe_tuple_scc(TraceCounts, TuningParams, DepGraph, SCC,
         )
     ).
 
-:- pred scc_has_local_callers(list(pred_proc_id)::in, dependency_graph::in)
-    is semidet.
+:- pred scc_has_local_callers(set(pred_proc_id)::in,
+    hlds_dependency_graph::in) is semidet.
 
 scc_has_local_callers(CalleeProcs, DepGraph) :-
     some [CalleeProc] (
-        list.member(CalleeProc, CalleeProcs),
+        set.member(CalleeProc, CalleeProcs),
         proc_has_local_callers(CalleeProc, DepGraph)
     ).
 
-:- pred proc_has_local_callers(pred_proc_id::in, dependency_graph::in)
+:- pred proc_has_local_callers(pred_proc_id::in, hlds_dependency_graph::in)
     is semidet.
 
 proc_has_local_callers(CalleeProc, DepGraph) :-
     digraph.lookup_key(DepGraph, CalleeProc, CalleeKey),
     digraph.lookup_to(DepGraph, CalleeKey, CallingKeys),
-    not set.empty(CallingKeys).
+    set.is_non_empty(CallingKeys).
 
 %-----------------------------------------------------------------------------%
 
-:- pred maybe_tuple_scc_2(trace_counts::in, tuning_params::in,
-    list(pred_proc_id)::in, candidate_headvars::in,
+:- pred maybe_tuple_scc_2(trace_counts::in, tuning_params::in, scc::in,
+    candidate_headvars::in,
     module_info::in, module_info::out, counter::in, counter::out,
     transform_map::in, transform_map::out, bool::in) is det.
 
 maybe_tuple_scc_2(TraceCounts, TuningParams, PredProcIds, CandidateHeadVars,
         !ModuleInfo, !Counter, !TransformMap, VeryVerbose) :-
-    list.foldl2(prepare_proc_for_counting, PredProcIds,
+    set.foldl2(prepare_proc_for_counting, PredProcIds,
         map.init, ReverseGoalPathMapMap, !ModuleInfo),
     % Count the average number of loads/stores without any transformation.
     count_load_stores_for_scc(TraceCounts, TuningParams, !.ModuleInfo,
@@ -346,27 +356,26 @@ maybe_tuple_scc_2(TraceCounts, TuningParams, PredProcIds, CandidateHeadVars,
     ;
         VeryVerbose = no
     ),
-    ( CostsWithoutTupling = costs(0.0, 0.0) ->
+    ( if CostsWithoutTupling = costs(0.0, 0.0) then
         % Don't bother continuing.
         true
-    ;
+    else
         maybe_tuple_scc_3(TraceCounts, TuningParams, ReverseGoalPathMapMap,
             PredProcIds, CandidateHeadVars, CostsWithoutTupling,
             !ModuleInfo, !Counter, !TransformMap, VeryVerbose)
     ).
 
 :- pred maybe_tuple_scc_3(trace_counts::in, tuning_params::in,
-    map(pred_proc_id, goal_reverse_path_map)::in, list(pred_proc_id)::in,
+    map(pred_proc_id, goal_reverse_path_map)::in, scc::in,
     candidate_headvars::in, costs::in, module_info::in, module_info::out,
     counter::in, counter::out, transform_map::in, transform_map::out,
     bool::in) is det.
 
 maybe_tuple_scc_3(TraceCounts, TuningParams, ReverseGoalPathMapMap,
-        PredProcIds, CandidateHeadVars, CostsWithoutTupling,
+        SCC, CandidateHeadVars, CostsWithoutTupling,
         !ModuleInfo, !Counter, !TransformMap, VeryVerbose) :-
     find_best_tupling_scheme(TraceCounts, TuningParams, !.ModuleInfo,
-        ReverseGoalPathMapMap, PredProcIds, CandidateHeadVars,
-        MaybeBestScheme),
+        ReverseGoalPathMapMap, SCC, CandidateHeadVars, MaybeBestScheme),
     (
         MaybeBestScheme = no
     ;
@@ -381,10 +390,10 @@ maybe_tuple_scc_3(TraceCounts, TuningParams, ReverseGoalPathMapMap,
         ;
             VeryVerbose = no
         ),
-        (
+        ( if
             should_use_tupling_scheme(TuningParams,
                 CostsWithoutTupling, CostsWithTupling)
-        ->
+        then
             (
                 VeryVerbose = yes,
                 trace [io(!IO)] (
@@ -395,7 +404,7 @@ maybe_tuple_scc_3(TraceCounts, TuningParams, ReverseGoalPathMapMap,
             ),
             add_transformed_procs(TuplingScheme,
                 !ModuleInfo, !Counter, !TransformMap)
-        ;
+        else
             true
         )
     ).
@@ -404,14 +413,15 @@ maybe_tuple_scc_3(TraceCounts, TuningParams, ReverseGoalPathMapMap,
     is semidet.
 
 should_use_tupling_scheme(TuningParams,
-        costs(LoadsWithoutTupling, StoresWithoutTupling),
-        costs(LoadsWithTupling, StoresWithTupling)) :-
+        CostsWithoutTupling, CostsWithTupling) :-
+    CostsWithoutTupling = costs(LoadsWithoutTupling, StoresWithoutTupling),
+    CostsWithTupling = costs(LoadsWithTupling, StoresWithTupling),
     CostsRatio = float(TuningParams ^ tp_costs_ratio),
     TotalWithoutTupling = LoadsWithoutTupling + StoresWithoutTupling,
     TotalWithTupling = LoadsWithTupling + StoresWithTupling,
-    ( TotalWithTupling = 0.0 ->
+    ( if TotalWithTupling = 0.0 then
         TotalWithoutTupling > 0.0
-    ;
+    else
         (TotalWithoutTupling * 100.0 / TotalWithTupling) >= CostsRatio
     ).
 
@@ -433,7 +443,7 @@ should_use_tupling_scheme(TuningParams,
     %
     % For each candidate, the name is put in an association list along
     % with a mappping to the actual variable within each procedure (if
-    % that procedure has an input variable of the given name).  The order
+    % that procedure has an input variable of the given name). The order
     % of the elements in the association list is important later on,
     % since we only try tupling contiguous runs of the candidate variables.
     %
@@ -466,12 +476,11 @@ candidate_headvars_of_proc_2(PredProcId, VarSet, VarTypes, ModuleInfo,
     Origins = map.singleton(PredProcId, HeadVar).
 
 :- pred common_candidate_headvars_of_procs(module_info::in,
-    list(pred_proc_id)::in, candidate_headvars::out) is det.
+    scc::in, candidate_headvars::out) is det.
 
-common_candidate_headvars_of_procs(ModuleInfo, PredProcIds,
-        CandidateHeadVars) :-
+common_candidate_headvars_of_procs(ModuleInfo, SCC, CandidateHeadVars) :-
     list.map(candidate_headvars_of_proc(ModuleInfo),
-        PredProcIds, ListsOfCandidates),
+        set.to_sorted_list(SCC), ListsOfCandidates),
     list.condense(ListsOfCandidates, FlatListOfCandidates),
     multi_map.from_flat_assoc_list(FlatListOfCandidates, CandidatesMultiMap),
     map.foldl(common_candidate_headvars_of_procs_2, CandidatesMultiMap,
@@ -485,11 +494,15 @@ common_candidate_headvars_of_procs_2(HeadVarName, ListOfOrigins,
         CandidateHeadVars0, CandidateHeadVars) :-
     % Only include this variable in the list of candidates if there are two
     % or more procedures in the SCC with head variables having the same name.
-    ( ListOfOrigins = [_, _ | _] ->
+    (
+        ( ListOfOrigins = []                % XXX Can this happen?
+        ; ListOfOrigins = [_]
+        ),
+        CandidateHeadVars = CandidateHeadVars0
+    ;
+        ListOfOrigins = [_, _ | _],
         list.foldl(map.old_merge, ListOfOrigins, map.init, Origins),
         CandidateHeadVars = CandidateHeadVars0 ++ [HeadVarName - Origins]
-    ;
-        CandidateHeadVars = CandidateHeadVars0
     ).
 
 %-----------------------------------------------------------------------------%
@@ -509,7 +522,7 @@ common_candidate_headvars_of_procs_2(HeadVarName, ListOfOrigins,
 
 :- pred find_best_tupling_scheme(trace_counts::in, tuning_params::in,
     module_info::in, map(pred_proc_id, goal_reverse_path_map)::in,
-    list(pred_proc_id)::in, candidate_headvars::in,
+    scc::in, candidate_headvars::in,
     maybe(pair(costs, tupling_scheme))::out) is det.
 
 find_best_tupling_scheme(TraceCounts, TuningParams, ModuleInfo,
@@ -524,57 +537,58 @@ find_best_tupling_scheme(TraceCounts, TuningParams, ModuleInfo,
 
 :- pred find_best_tupling_scheme_2(trace_counts::in, tuning_params::in,
     module_info::in, map(pred_proc_id, goal_reverse_path_map)::in,
-    list(pred_proc_id)::in, candidate_headvars::in,
+    scc::in, candidate_headvars::in,
     maybe(pair(costs, tupling_scheme))::in,
     maybe(pair(costs, tupling_scheme))::out) is det.
 
 find_best_tupling_scheme_2(TraceCounts, TuningParams, ModuleInfo,
-        ReverseGoalPathMapMap, PredProcIds, CandidateHeadVars,
+        ReverseGoalPathMapMap, SCC, CandidateHeadVars,
         MaybeBestScheme0, MaybeBestScheme) :-
     MinArgsToTuple = TuningParams ^ tp_min_args_to_tuple,
-    list.map(
-        make_tupling_proposal(ModuleInfo, CandidateHeadVars, MinArgsToTuple),
-        PredProcIds, TuplingProposals),
-    map.from_corresponding_lists(PredProcIds, TuplingProposals,
-        TuplingScheme),
+    set.foldl(
+        add_tupling_proposal(ModuleInfo, CandidateHeadVars, MinArgsToTuple),
+        SCC, map.init, TuplingScheme),
     count_load_stores_for_scc(TraceCounts, TuningParams, ModuleInfo,
-        TuplingScheme, ReverseGoalPathMapMap, PredProcIds, Costs),
-    (
+        TuplingScheme, ReverseGoalPathMapMap, SCC, Costs),
+    ( if
         (
             MaybeBestScheme0 = no
         ;
             MaybeBestScheme0 = yes(PrevCosts - _),
             less_total_cost(Costs, PrevCosts)
         )
-    ->
+    then
         MaybeBestScheme = yes(Costs - TuplingScheme)
-    ;
+    else
         MaybeBestScheme = MaybeBestScheme0
     ).
 
-:- pred make_tupling_proposal(module_info::in, candidate_headvars::in,
-    int::in, pred_proc_id::in, tupling_proposal::out) is det.
+:- pred add_tupling_proposal(module_info::in, candidate_headvars::in,
+    int::in, pred_proc_id::in,
+    map(pred_proc_id, tupling_proposal)::in,
+    map(pred_proc_id, tupling_proposal)::out) is det.
 
-make_tupling_proposal(ModuleInfo, CandidateHeadVars, MinArgsToTuple,
-        PredProcId @ proc(PredId, ProcId), TuplingProposal) :-
+add_tupling_proposal(ModuleInfo, CandidateHeadVars, MinArgsToTuple,
+        PredProcId @ proc(PredId, ProcId), !TuplingScheme) :-
     module_info_pred_proc_info(ModuleInfo, PredId, ProcId, _, ProcInfo),
     proc_info_get_varset(ProcInfo, VarSet),
     proc_info_get_headvars(ProcInfo, HeadVars),
     FieldVarArgPos = list.filter_map(
-        (func(_ - Annotation) = (Var - Pos) is semidet :-
+        ( func(_ - Annotation) = (Var - Pos) is semidet :-
             map.search(Annotation, PredProcId, Var),
-            list.nth_member_search(HeadVars, Var, Pos)),
-        CandidateHeadVars),
-    ( list.length(FieldVarArgPos) < MinArgsToTuple ->
+            list.index1_of_first_occurrence(HeadVars, Var, Pos)
+        ), CandidateHeadVars),
+    ( if list.length(FieldVarArgPos) < MinArgsToTuple then
         TuplingProposal = no_tupling
-    ;
+    else
         % We need a new variable to act as the cell variable while
         % counting loads/stores for a proposed tupling, but we don't
         % add that variable to the varset permanently.
         varset.new_named_var("DummyCellVar", DummyCellVar, VarSet, _),
         FieldVars = assoc_list.keys(FieldVarArgPos),
         TuplingProposal = tupling(DummyCellVar, FieldVars, FieldVarArgPos)
-    ).
+    ),
+    map.det_insert(PredProcId, TuplingProposal, !TuplingScheme).
 
 :- pred less_total_cost(costs::in, costs::in) is semidet.
 
@@ -603,10 +617,10 @@ fold_over_list_runs(Pred, List @ [_ | Tail], MinLength, !Acc) :-
     list(L)::in, int::in, A::in, A::out) is det.
 
 fold_over_list_runs_2(Pred, List, Length, !Acc) :-
-    ( list.take(Length, List, Front) ->
+    ( if list.take(Length, List, Front) then
         Pred(Front, !Acc),
         fold_over_list_runs_2(Pred, List, Length+1, !Acc)
-    ;
+    else
         true
     ).
 
@@ -650,7 +664,8 @@ add_transformed_proc(PredProcId, tupling(_, FieldVars, _),
 
         % Get the argument positions of the parameters to be tupled.
         proc_info_get_headvars(!.ProcInfo, HeadVars),
-        list.map(nth_member_lookup(HeadVars), FieldVars, ArgsToTuple),
+        ArgsToTuple =
+            list.map(det_index1_of_first_occurrence(HeadVars), FieldVars),
 
         % Build an insertion map of where the deconstruction
         % unifications are needed.
@@ -699,8 +714,8 @@ make_transformed_proc(CellVar, FieldVarsList, InsertMap, !ProcInfo) :-
         MaybeGoalFeature),
 
     % In some cases some of the field variables need to be available at
-    % the very beginning of the procedure.  The required deconstructions
-    % for those variables won't show up in the insert map.  To handle this
+    % the very beginning of the procedure. The required deconstructions
+    % for those variables won't show up in the insert map. To handle this
     % we just to insert a deconstruction unification at the start of the
     % procedure and let a simplification pass remove it later if not required.
     %
@@ -712,8 +727,7 @@ make_transformed_proc(CellVar, FieldVarsList, InsertMap, !ProcInfo) :-
     ProcStartInsert = insert_spec(ProcStartDeconstruct,
         set_of_var.list_to_set(FieldVarsList)),
     insert_proc_start_deconstruction(Goal1, Goal2,
-        VarSet1, VarSet, VarTypes1, VarTypes,
-        RenameMapB, ProcStartInsert),
+        VarSet1, VarSet, VarTypes1, VarTypes, RenameMapB, ProcStartInsert),
     rename_some_vars_in_goal(RenameMapB, Goal2, Goal3),
 
     map.old_merge(RenameMapA, RenameMapB, RenameMap),
@@ -767,6 +781,7 @@ create_aux_pred(PredId, ProcId, PredInfo, ProcInfo, Counter,
     proc_info_get_inst_varset(ProcInfo, InstVarSet),
     pred_info_get_markers(PredInfo, Markers),
     pred_info_get_origin(PredInfo, OrigOrigin),
+    proc_info_get_has_parallel_conj(ProcInfo, HasParallelConj),
     pred_info_get_var_name_remap(PredInfo, VarNameRemap),
 
     PredModule = pred_info_module(PredInfo),
@@ -797,6 +812,7 @@ create_aux_pred(PredId, ProcId, PredInfo, ProcInfo, Counter,
         InstVarSet,             % in
         Markers,                % in
         address_is_not_taken,   % in
+        HasParallelConj,        % in
         VarNameRemap,           % in
         ModuleInfo0,
         ModuleInfo,
@@ -810,10 +826,13 @@ create_aux_pred(PredId, ProcId, PredInfo, ProcInfo, Counter,
 
 :- type count_info
     --->    count_info(
+                ci_module                   :: module_info,
                 ci_pred_proc_id             :: pred_proc_id,
                                             % Which procedure is being counted.
-                ci_proc                     :: proc_info,
-                ci_module                   :: module_info,
+                ci_pred_info                :: pred_info,
+                ci_proc_info                :: proc_info,
+                                            % The pred_ and proc_info of that
+                                            % procedure.
                 ci_proc_counts              :: proc_trace_counts,
                 ci_params                   :: tuning_params,
                 ci_tupling_scheme           :: tupling_scheme,
@@ -850,9 +869,9 @@ create_aux_pred(PredId, ProcId, PredInfo, ProcInfo, Counter,
     is det.
 
 get_tupling_proposal(CountInfo, PredProcId) = TuplingProposal :-
-    ( map.search(CountInfo ^ ci_tupling_scheme, PredProcId, Probe) ->
+    ( if map.search(CountInfo ^ ci_tupling_scheme, PredProcId, Probe) then
         TuplingProposal = Probe
-    ;
+    else
         TuplingProposal = no_tupling
     ).
 
@@ -881,7 +900,7 @@ prepare_proc_for_counting(PredProcId, !ReverseGoalPathMapMap, !ModuleInfo) :-
         generate_proc_arg_info(Markers, ArgTypes, !.ModuleInfo, !ProcInfo),
 
         detect_liveness_proc(!.ModuleInfo, PredProcId, !ProcInfo),
-        initial_liveness(!.ProcInfo, PredId, !.ModuleInfo, Liveness0),
+        initial_liveness(!.ModuleInfo, PredInfo, !.ProcInfo, Liveness0),
         module_info_get_globals(!.ModuleInfo, Globals),
         body_should_use_typeinfo_liveness(PredInfo, Globals, TypeInfoLiveness),
         globals.lookup_bool_option(Globals,
@@ -947,14 +966,14 @@ opt_at_recursive_call_for_loop_control(_NeedLC, _AllocData, !StackAlloc).
 :- pred count_load_stores_for_scc(trace_counts::in, tuning_params::in,
     module_info::in, tupling_scheme::in,
     map(pred_proc_id, goal_reverse_path_map)::in,
-    list(pred_proc_id)::in, costs::out) is det.
+    set(pred_proc_id)::in, costs::out) is det.
 
 count_load_stores_for_scc(TraceCounts, TuningParams, ModuleInfo,
-        TuplingScheme, ReverseGoalPathMapMap, PredProcIds, Costs) :-
-    list.foldl2(
+        TuplingScheme, ReverseGoalPathMapMap, SCC, Costs) :-
+    set.foldl2(
         count_load_stores_for_scc_2(TraceCounts, TuningParams, ModuleInfo,
             TuplingScheme, ReverseGoalPathMapMap),
-        PredProcIds, 0.0, Loads, 0.0, Stores),
+        SCC, 0.0, Loads, 0.0, Stores),
     Costs = costs(Loads, Stores).
 
 :- pred count_load_stores_for_scc_2(trace_counts::in, tuning_params::in,
@@ -978,22 +997,22 @@ count_load_stores_for_scc_2(TraceCounts, TuningParams, ModuleInfo,
     Context = context(FileName, _),
     ProcLabelInContext = proc_label_in_context(pred_info_module(PredInfo),
         FileName, ProcLabel),
-    ( get_proc_counts(TraceCounts, ProcLabelInContext, yes(ProcCounts)) ->
+    ( if get_proc_counts(TraceCounts, ProcLabelInContext, yes(ProcCounts)) then
         map.lookup(ReverseGoalPathMapMap, PredProcId, ReverseGoalPathMap),
-        CountInfo = count_info(PredProcId, ProcInfo, ModuleInfo, ProcCounts,
-            TuningParams, TuplingScheme, ReverseGoalPathMap),
+        CountInfo = count_info(ModuleInfo, PredProcId, PredInfo, ProcInfo,
+            ProcCounts, TuningParams, TuplingScheme, ReverseGoalPathMap),
         count_load_stores_in_proc(CountInfo, ProcLoads, ProcStores),
         % XXX: There is a problem somewhere causing CALL and EXIT
         % events not to show up for some procedures in trace count files.
         % The weighting of the procedure's costs is disabled.
-        % However, if working, it still wouldn't be ideal as we don't
-        % know how many of the calls to the procedure came from within
-        % or without the SCC.
+        % However, if working, it still wouldn't be ideal, as we don't know
+        % how many of the calls to the procedure came from within or without
+        % the SCC.
         % get_proc_calls(ProcCounts, Weight),
         Weight = 1,
         !:Loads = !.Loads + float(Weight) * ProcLoads,
         !:Stores = !.Stores + float(Weight) * ProcStores
-    ;
+    else
         true
     ).
 
@@ -1003,10 +1022,10 @@ count_load_stores_for_scc_2(TraceCounts, TuningParams, ModuleInfo,
     is det.
 
 count_load_stores_in_proc(CountInfo, Loads, Stores) :-
-    proc(PredId, _) = CountInfo ^ ci_pred_proc_id,
-    ProcInfo = CountInfo ^ ci_proc,
     ModuleInfo = CountInfo ^ ci_module,
-    initial_liveness(ProcInfo, PredId, ModuleInfo, InitialLiveness),
+    PredInfo = CountInfo ^ ci_pred_info,
+    ProcInfo = CountInfo ^ ci_proc_info,
+    initial_liveness(ModuleInfo, PredInfo, ProcInfo, InitialLiveness),
     CountState0 = count_state(InitialLiveness, set_of_var.init, 0.0, 0.0),
     proc_info_get_goal(ProcInfo, Goal),
     count_load_stores_in_goal(Goal, CountInfo, CountState0, CountState1),
@@ -1049,24 +1068,23 @@ count_load_stores_in_goal(Goal, CountInfo, !CountState) :-
         )
     ;
         GoalExpr = plain_call(PredId, ProcId, _, Builtin, _, _),
-        (
+        ( if
             Builtin = not_builtin,
             TuplingProposal = get_tupling_proposal(CountInfo,
                 proc(PredId, ProcId)),
             TuplingProposal = tupling(_, _, _)
-        ->
+        then
             count_load_stores_in_call_to_tupled(GoalExpr, GoalInfo,
                 CountInfo, TuplingProposal, !CountState)
-        ;
+        else
             count_load_stores_in_call_to_not_tupled(GoalExpr, GoalInfo,
                 CountInfo, !CountState)
         )
     ;
         GoalExpr = generic_call(GenericCall, ArgVars, ArgModes, MaybeArgRegs,
             _Detism),
-        ProcInfo = CountInfo ^ ci_proc,
         ModuleInfo = CountInfo ^ ci_module,
-        goal_info_get_maybe_need_across_call(GoalInfo, MaybeNeedAcrossCall),
+        ProcInfo = CountInfo ^ ci_proc_info,
         proc_info_get_vartypes(ProcInfo, VarTypes),
         lookup_var_types(VarTypes, ArgVars, ArgTypes),
         arg_info.generic_call_arg_reg_types(ModuleInfo, VarTypes,
@@ -1089,6 +1107,8 @@ count_load_stores_in_goal(Goal, CountInfo, !CountState) :-
             assoc_list.keys(GenericVarsArgInfos, GenericVars),
             list.append(GenericVars, InputArgs, Inputs),
             Outputs = set.list_to_set(OutputArgs),
+            goal_info_get_maybe_need_across_call(GoalInfo,
+                MaybeNeedAcrossCall),
             count_load_stores_for_call(CountInfo, Inputs, Outputs,
                 MaybeNeedAcrossCall, GoalInfo, !CountState)
         ;
@@ -1105,29 +1125,29 @@ count_load_stores_in_goal(Goal, CountInfo, !CountState) :-
             _PredInfo, ProcInfo),
         ArgVars = list.map(foreign_arg_var, Args),
         ExtraVars = list.map(foreign_arg_var, ExtraArgs),
-        CallingProcInfo = CountInfo ^ ci_proc,
+        CallingProcInfo = CountInfo ^ ci_proc_info,
         proc_info_get_vartypes(CallingProcInfo, VarTypes),
         arg_info.partition_proc_call_args(ProcInfo, VarTypes,
             ModuleInfo, ArgVars, InputArgVarSet, OutputArgVarSet, _),
         set.to_sorted_list(InputArgVarSet, InputArgVars),
         list.append(InputArgVars, ExtraVars, InputVars),
-        (
+        ( if
             goal_info_maybe_get_maybe_need_across_call(GoalInfo,
                 MaybeNeedAcrossCall),
             MaybeNeedAcrossCall = yes(_)
-        ->
+        then
             count_load_stores_for_call(CountInfo, InputVars, OutputArgVarSet,
                 MaybeNeedAcrossCall, GoalInfo, !CountState)
-        ;
+        else
             cls_require_in_regs(CountInfo, InputVars, !CountState),
             cls_clobber_regs(OutputArgVarSet, !CountState)
         )
     ;
         GoalExpr = scope(Reason, SubGoal),
-        ( Reason = from_ground_term(_, from_ground_term_construct) ->
+        ( if Reason = from_ground_term(_, from_ground_term_construct) then
             % There are no loads or stored in these scopes.
             true
-        ;
+        else
             count_load_stores_in_goal(SubGoal, CountInfo, !CountState)
         )
     ;
@@ -1204,11 +1224,11 @@ count_load_stores_in_call_to_tupled(GoalExpr, GoalInfo, CountInfo,
     ModuleInfo = CountInfo ^ ci_module,
     module_info_pred_proc_info(ModuleInfo, CalleePredId, CalleeProcId,
         _, CalleeProcInfo),
-    CallingProcInfo = CountInfo ^ ci_proc,
+    CallingProcInfo = CountInfo ^ ci_proc_info,
     proc_info_get_vartypes(CallingProcInfo, VarTypes),
     arg_info.partition_proc_call_args(CalleeProcInfo, VarTypes,
         ModuleInfo, ArgVars, InputArgs0, Outputs, _),
-    (
+    ( if
         % If the caller is a tupled procedure, and every field variable
         % of the tuple appears as an input argument to the callee AND
         % every such argument is in a position matching the field variable's
@@ -1220,17 +1240,19 @@ count_load_stores_in_call_to_tupled(GoalExpr, GoalInfo, CountInfo,
         get_own_tupling_proposal(CountInfo) = tupling(_, _, _),
         all [Var] (
             list.member(Var, FieldVars)
-        => (
-            set.member(Var, InputArgs0),
-            assoc_list.search(FieldVarArgPos, Var, Pos),
-            list.nth_member_search(ArgVars, Var, Pos)
-        ))
-    ->
+        =>
+            (
+                set.member(Var, InputArgs0),
+                assoc_list.search(FieldVarArgPos, Var, Pos),
+                list.index1_of_first_occurrence(ArgVars, Var, Pos)
+            )
+        )
+    then
         % In this case, the cell var is not being used to access field
         % variables, so it should not incur the cell var cost.
         cls_require_normal_var_in_reg(CountInfo, CellVar, !CountState),
         set.delete_list(FieldVars, InputArgs0, InputArgs)
-    ;
+    else
         % The cell var cannot be used for the callee, so we must add
         % the cost of constructing a new tuple.
         TuplingParams = CountInfo ^ ci_params,
@@ -1255,7 +1277,7 @@ count_load_stores_in_call_to_not_tupled(GoalExpr, GoalInfo, CountInfo,
     ModuleInfo = CountInfo ^ ci_module,
     module_info_pred_proc_info(ModuleInfo, PredId, ProcId,
         _PredInfo, CalleeProcInfo),
-    ProcInfo = CountInfo ^ ci_proc,
+    ProcInfo = CountInfo ^ ci_proc_info,
     proc_info_get_vartypes(ProcInfo, VarTypes),
     arg_info.partition_proc_call_args(CalleeProcInfo, VarTypes,
         ModuleInfo, ArgVars, InputArgs, OutputArgs, _),
@@ -1266,9 +1288,7 @@ count_load_stores_in_call_to_not_tupled(GoalExpr, GoalInfo, CountInfo,
         cls_require_in_regs(CountInfo, Inputs, !CountState),
         cls_put_in_regs(Outputs, !CountState)
     ;
-        ( Builtin = out_of_line_builtin
-        ; Builtin = not_builtin
-        ),
+        Builtin = not_builtin,
         goal_info_get_maybe_need_across_call(GoalInfo, MaybeNeedAcrossCall),
         count_load_stores_for_call(CountInfo, Inputs, OutputArgs,
             MaybeNeedAcrossCall, GoalInfo, !CountState)
@@ -1365,14 +1385,14 @@ cls_require_in_regs(CountInfo, Vars, !CountState) :-
     count_state::out) is det.
 
 cls_require_in_reg(CountInfo, Var, !CountState) :-
-    (
+    ( if
         TuplingProposal = get_own_tupling_proposal(CountInfo),
         TuplingProposal = tupling(_, FieldVars, _),
         list.member(Var, FieldVars)
-    ->
+    then
         cls_require_field_var_in_reg(CountInfo, TuplingProposal,
             Var, !CountState)
-    ;
+    else
         cls_require_normal_var_in_reg(CountInfo, Var, !CountState)
     ).
 
@@ -1391,17 +1411,17 @@ cls_require_normal_var_in_reg(CountInfo, Var, !CountState) :-
 cls_require_field_var_in_reg(CountInfo, TuplingProposal, FieldVar,
         CountState0, CountState) :-
     CountState0 = count_state(RegVars0, StackVars, Loads0, Stores),
-    ( set_of_var.member(RegVars0, FieldVar) ->
+    ( if set_of_var.member(RegVars0, FieldVar) then
         CountState = CountState0
-    ;
+    else
         TuplingProposal = tupling(CellVar, _, _),
         TuningParams = CountInfo ^ ci_params,
         CvLoadCost = float(TuningParams ^ tp_cell_var_load_cost),
         FvLoadCost = float(TuningParams ^ tp_field_var_load_cost),
-        ( set_of_var.member(RegVars0, CellVar) ->
+        ( if set_of_var.member(RegVars0, CellVar) then
             set_of_var.insert(FieldVar, RegVars0, RegVars),
             Loads = Loads0 + FvLoadCost
-        ;
+        else
             set_of_var.insert_list([CellVar, FieldVar], RegVars0, RegVars),
             Loads = Loads0 + CvLoadCost + FvLoadCost
         ),
@@ -1413,9 +1433,9 @@ cls_require_field_var_in_reg(CountInfo, TuplingProposal, FieldVar,
 
 cls_require_var_in_reg_with_cost(LoadCost, Var, CountState0, CountState) :-
     CountState0 = count_state(RegVars0, StackVars, Loads0, Stores),
-    ( set_of_var.member(RegVars0, Var) ->
+    ( if set_of_var.member(RegVars0, Var) then
         CountState = CountState0
-    ;
+    else
         set_of_var.insert(Var, RegVars0, RegVars),
         Loads = Loads0 + float(LoadCost),
         CountState = count_state(RegVars, StackVars, Loads, Stores)
@@ -1451,12 +1471,12 @@ cls_put_in_regs_via_deconstruct(CountInfo,
         VarsToLoad = set.difference(
             set.from_list(DeconstructFieldVars),
             set.from_list(TupleFieldVars)),
-        ( set.non_empty(VarsToLoad) ->
+        ( if set.is_non_empty(VarsToLoad) then
             cls_require_var_in_reg_with_cost(CvLoadCost, DeconstructCellVar,
                 !State),
             set.fold(cls_require_var_in_reg_with_cost(FvLoadCost), VarsToLoad,
                 !State)
-        ;
+        else
             % All the variables generated by this deconstruction can be
             % obtained from the proposed tupling, so the deconstruction
             % can be ignored. The costs of loading those variables from
@@ -1488,10 +1508,10 @@ cls_require_flushed_2(no_tupling, TuningParams, Var, !CountState) :-
 
 cls_require_flushed_2(tupling(CellVar, FieldVars, _), TuningParams, Var,
         !CountState) :-
-    ( list.member(Var, FieldVars) ->
+    ( if list.member(Var, FieldVars) then
         FvStoreCost = TuningParams ^ tp_field_var_store_cost,
         cls_require_flushed_with_cost(FvStoreCost, CellVar, !CountState)
-    ;
+    else
         StoreCost = TuningParams ^ tp_normal_var_store_cost,
         cls_require_flushed_with_cost(StoreCost, Var, !CountState)
     ).
@@ -1502,10 +1522,10 @@ cls_require_flushed_2(tupling(CellVar, FieldVars, _), TuningParams, Var,
 cls_require_flushed_with_cost(StoreCost, Var,
         count_state(RegVars, StackVars0, Loads, Stores0),
         count_state(RegVars, StackVars, Loads, Stores)) :-
-    ( set_of_var.member(StackVars0, Var) ->
+    ( if set_of_var.member(StackVars0, Var) then
         StackVars = StackVars0,
         Stores = Stores0
-    ;
+    else
         set_of_var.insert(Var, StackVars0, StackVars),
         Stores = Stores0 + float(StoreCost)
     ).
@@ -1600,9 +1620,9 @@ build_insert_map(CellVar, FieldVars, IntervalInfo, InsertMap) :-
 build_insert_map_2(CellVar, FieldVars, FieldVarsSet, Anchor,
         anchor_follow_info(FollowVars, _), !InsertMap) :-
     NeededFieldVars = FieldVarsSet `set_of_var.intersect` FollowVars,
-    ( set_of_var.is_empty(NeededFieldVars) ->
+    ( if set_of_var.is_empty(NeededFieldVars) then
         true
-    ;
+    else
         deconstruct_tuple(CellVar, FieldVars, Goal),
         InsertSpec = insert_spec(Goal, NeededFieldVars),
         add_insert_spec(Anchor, InsertSpec, !InsertMap)
@@ -1612,10 +1632,10 @@ build_insert_map_2(CellVar, FieldVars, FieldVarsSet, Anchor,
     insert_map::out) is det.
 
 add_insert_spec(Anchor, InsertSpec, !InsertMap) :-
-    ( map.search(!.InsertMap, Anchor, InsertSpecs0) ->
+    ( if map.search(!.InsertMap, Anchor, InsertSpecs0) then
         combine_inserts(InsertSpec, InsertSpecs0, InsertSpecs),
         map.det_update(Anchor, InsertSpecs, !InsertMap)
-    ;
+    else
         map.det_insert(Anchor, [InsertSpec], !InsertMap)
     ).
 
@@ -1624,13 +1644,13 @@ add_insert_spec(Anchor, InsertSpec, !InsertMap) :-
 
 combine_inserts(A, [], [A]).
 combine_inserts(A, [B | Bs], [C | Cs]) :-
-    (
+    ( if
         A = insert_spec(Goal, ASet),
         B = insert_spec(Goal, BSet)
-    ->
+    then
         C = insert_spec(Goal, ASet `set_of_var.union` BSet),
         Cs = Bs
-    ;
+    else
         C = B,
         combine_inserts(A, Bs, Cs)
     ).
@@ -1665,11 +1685,11 @@ combine_inserts(A, [B | Bs], [C | Cs]) :-
                 call_template           :: hlds_goal
             ).
 
-:- pred fix_calls_in_procs(transform_map::in, list(pred_proc_id)::in,
+:- pred fix_calls_in_procs(transform_map::in, scc::in,
     module_info::in, module_info::out) is det.
 
-fix_calls_in_procs(TransformMap, PredProcIds, !ModuleInfo) :-
-    list.foldl(fix_calls_in_proc(TransformMap), PredProcIds, !ModuleInfo).
+fix_calls_in_procs(TransformMap, SCC, !ModuleInfo) :-
+    set.foldl(fix_calls_in_proc(TransformMap), SCC, !ModuleInfo).
 
 :- pred fix_calls_in_transformed_procs(transform_map::in,
     module_info::in, module_info::out) is det.
@@ -1697,11 +1717,11 @@ fix_calls_in_proc(TransformMap, proc(PredId, ProcId), !ModuleInfo) :-
         % linking problems that occurred when such predicates in the
         % library were made to call tupled procedures.
         pred_info_get_origin(PredInfo, Origin),
-        (
+        ( if
             Origin = origin_transformed(transform_type_specialization(_), _, _)
-        ->
+        then
             true
-        ;
+        else
             proc_info_get_goal(!.ProcInfo, Goal0),
             proc_info_get_vartypes(!.ProcInfo, VarTypes0),
             proc_info_get_varset(!.ProcInfo, VarSet0),
@@ -1739,24 +1759,24 @@ fix_calls_in_goal(Goal0, Goal, !VarSet, !VarTypes, !RttiVarMaps,
     ;
         GoalExpr0 = plain_call(CalledPredId0, CalledProcId0, Args0, Builtin,
             _Context, _SymName),
-        (
+        ( if
             Builtin = not_builtin,
             map.search(TransformMap, proc(CalledPredId0, CalledProcId0),
                 TransformedProc),
             TransformedProc = transformed_proc(_, TupleConsType, ArgsToTuple,
                 hlds_goal(CallAux0, CallAuxInfo))
-        ->
+        then
             varset.new_named_var("TuplingCellVarForCall", CellVar, !VarSet),
             add_var_type(CellVar, TupleConsType, !VarTypes),
             extract_tupled_args_from_list(Args0, ArgsToTuple,
                 TupledArgs, UntupledArgs),
             construct_tuple(CellVar, TupledArgs, ConstructGoal),
-            (
+            ( if
                 NewArgs = UntupledArgs ++ [CellVar],
                 CallAux = CallAux0 ^ call_args := NewArgs
-            ->
+            then
                 CallGoal = hlds_goal(CallAux, CallAuxInfo)
-            ;
+            else
                 unexpected($module, $pred, "not a call template")
             ),
             conj_list_to_goal([ConstructGoal, CallGoal], GoalInfo0, Goal1),
@@ -1764,7 +1784,7 @@ fix_calls_in_goal(Goal0, Goal, !VarSet, !VarTypes, !RttiVarMaps,
             implicitly_quantify_goal_general(ordinary_nonlocals_no_lambda,
                 RequantifyVars, _, Goal1, Goal,
                 !VarSet, !VarTypes, !RttiVarMaps)
-        ;
+        else
             Goal = hlds_goal(GoalExpr0, GoalInfo0)
         )
     ;
@@ -1775,14 +1795,14 @@ fix_calls_in_goal(Goal0, Goal, !VarSet, !VarTypes, !RttiVarMaps,
         Goal = hlds_goal(GoalExpr, GoalInfo0)
     ;
         GoalExpr0 = scope(Reason, SubGoal0),
-        (
+        ( if
             Reason = from_ground_term(_, FGT),
             ( FGT = from_ground_term_construct
             ; FGT = from_ground_term_deconstruct
             )
-        ->
+        then
             Goal = Goal0
-        ;
+        else
             fix_calls_in_goal(SubGoal0, SubGoal, !VarSet, !VarTypes,
                 !RttiVarMaps, TransformMap),
             GoalExpr = scope(Reason, SubGoal),
@@ -1845,9 +1865,9 @@ fix_calls_in_conj([Goal0 | Goals0], Goals, !VarSet, !VarTypes,
         TransformMap),
     fix_calls_in_conj(Goals0, Goals1, !VarSet, !VarTypes, !RttiVarMaps,
         TransformMap),
-    ( Goal1 = hlds_goal(conj(plain_conj, ConjGoals), _) ->
+    ( if Goal1 = hlds_goal(conj(plain_conj, ConjGoals), _) then
         Goals = ConjGoals ++ Goals1
-    ;
+    else
         Goals = [Goal1 | Goals1]
     ).
 
@@ -1884,7 +1904,7 @@ fix_calls_in_cases([Case0 | Cases0], [Case | Cases], !VarSet, !VarTypes,
     %
     % Pick out the elements of ArgList by the indices given and put them
     % in the list Selected, in exactly the order that they are referenced
-    % in Indices.  The list NotSelected is to contain all the elements
+    % in Indices. The list NotSelected is to contain all the elements
     % of ArgList which did not end up in Selected, in the order that they
     % appeared in ArgList.
     %
@@ -1903,9 +1923,9 @@ extract_tupled_args_from_list(ArgList, Indices, Selected, NotSelected) :-
 
 extract_tupled_args_from_list_2([], _Num, _Indices, []).
 extract_tupled_args_from_list_2([H | T], Num, Indices, NotSelected) :-
-    ( list.member(Num, Indices) ->
+    ( if list.member(Num, Indices) then
         extract_tupled_args_from_list_2(T, Num+1, Indices, NotSelected)
-    ;
+    else
         extract_tupled_args_from_list_2(T, Num+1, Indices, NotSelectedTail),
         NotSelected = [H | NotSelectedTail]
     ).
@@ -1919,13 +1939,15 @@ extract_tupled_args_from_list_2([H | T], Num, Indices, NotSelected) :-
     maybe(proc_trace_counts)::out) is det.
 
 get_proc_counts(TraceCounts, ProcLabelInContext, MaybeProcCounts) :-
-    ( map.search(TraceCounts, ProcLabelInContext, ProcCounts) ->
+    ( if map.search(TraceCounts, ProcLabelInContext, ProcCounts) then
         MaybeProcCounts = yes(ProcCounts)
-    ;
+    else
         MaybeProcCounts = no
     ).
 
 :- pred get_proc_calls(proc_trace_counts::in, int::out) is det.
+:- pragma consider_used(get_proc_calls/2).
+% While the call above is commented out.
 
 get_proc_calls(ProcCounts, Count) :-
     map.lookup(ProcCounts, port_only(port_call), ContextCount),
@@ -1936,9 +1958,9 @@ get_proc_calls(ProcCounts, Count) :-
 
 get_path_only_count(ProcCounts, GoalPath, Count) :-
     PathPort = path_only(GoalPath),
-    ( map.search(ProcCounts, PathPort, ContextCount) ->
+    ( if map.search(ProcCounts, PathPort, ContextCount) then
         Count = ContextCount ^ exec_count
-    ;
+    else
         Count = 0
     ).
 
@@ -1953,10 +1975,10 @@ get_ite_relative_frequencies(ProcCounts, ReverseGoalPathMap,
     get_path_only_count(ProcCounts, ThenGoalPath, ThenCounts),
     get_path_only_count(ProcCounts, ElseGoalPath, ElseCounts),
     Total = ThenCounts + ElseCounts,
-    ( Total > 0 ->
+    ( if Total > 0 then
         ThenRelFreq = float(ThenCounts) / float(Total),
         ElseRelFreq = float(ElseCounts) / float(Total)
-    ;
+    else
         ThenRelFreq = 0.5,
         ElseRelFreq = 0.5
     ).
@@ -1967,19 +1989,19 @@ get_ite_relative_frequencies(ProcCounts, ReverseGoalPathMap,
 get_disjunct_relative_frequency(ProcCounts, ReverseGoalPathMap,
         GoalId, RelFreq) :-
     map.lookup(ReverseGoalPathMap, GoalId, RevGoalPath),
-    (
+    ( if
         RevGoalPath = rgp_cons(RevPrevGoalPath, LastStep),
         LastStep = step_disj(_)
-    ->
+    then
         RevFirstDisjGoalPath = rgp_cons(RevPrevGoalPath, step_disj(1)),
         get_path_only_count(ProcCounts, RevGoalPath, DisjCount),
         get_path_only_count(ProcCounts, RevFirstDisjGoalPath, FirstDisjCount),
-        ( FirstDisjCount = 0 ->
+        ( if FirstDisjCount = 0 then
             RelFreq = 0.0
-        ;
+        else
             RelFreq = float(DisjCount) / float(FirstDisjCount)
         )
-    ;
+    else
         unexpected($module, $pred, "did not see disj(N) at head of goal path")
     ).
 
@@ -1990,9 +2012,9 @@ get_case_relative_frequency(ProcCounts, ReverseGoalPathMap, GoalId, RelFreq) :-
     map.lookup(ReverseGoalPathMap, GoalId, GoalPath),
     get_path_only_count(ProcCounts, GoalPath, CaseTotal),
     get_switch_total_count(ProcCounts, GoalPath, SwitchTotal),
-    ( SwitchTotal = 0 ->
+    ( if SwitchTotal = 0 then
         RelFreq = 0.0
-    ;
+    else
         RelFreq = float(CaseTotal) / float(SwitchTotal)
     ).
 
@@ -2008,9 +2030,9 @@ get_switch_total_count(ProcCounts, GoalPath, Total) :-
 
 get_switch_total_count_2(SwitchGoalPath, PathPort, LineNoAndCount,
         !TotalAcc) :-
-    ( case_in_switch(SwitchGoalPath, PathPort) ->
+    ( if case_in_switch(SwitchGoalPath, PathPort) then
         !:TotalAcc = !.TotalAcc + LineNoAndCount ^ exec_count
-    ;
+    else
         true
     ).
 

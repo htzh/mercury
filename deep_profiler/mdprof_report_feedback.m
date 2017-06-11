@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: mdprof_report_feedback.m.
 % Author: pbone.
@@ -12,25 +12,24 @@
 % This module contains code for showing the contents of feedback files
 % in a human-readable form.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdprof_report_feedback.
 :- interface.
 
 :- import_module io.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred main(io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module mdbcomp.
 :- import_module mdbcomp.feedback.
-:- import_module mdbcomp.feedback.automatic_parallelism.
 :- import_module mdprof_fb.
 :- import_module mdprof_fb.automatic_parallelism.
 :- import_module mdprof_fb.automatic_parallelism.autopar_reports.
@@ -42,9 +41,10 @@
 :- import_module library.
 :- import_module list.
 :- import_module map.
+:- import_module maybe.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 main(!IO) :-
     io.progname_base("mdprof_report_feedback", ProgName, !IO),
@@ -57,23 +57,22 @@ main(!IO) :-
         post_process_options(ProgName, Options0, Options, !IO),
         lookup_bool_option(Options, help, Help),
         lookup_bool_option(Options, version, Version),
-        ( Version = yes ->
+        ( if Version = yes then
             write_version_message(ProgName, !IO)
-        ; Help = yes ->
+        else if Help = yes then
             write_help_message(ProgName, !IO)
-        ;
+        else
             (
                 Args = [FeedbackFileName],
-                feedback.read_feedback_file(FeedbackFileName,
-                    FeedbackReadResult, !IO),
+                feedback.read_feedback_file(FeedbackFileName, no,
+                    FeedbackResult, !IO),
                 (
-                    FeedbackReadResult = ok(Feedback),
-                    ProfileProgName = get_feedback_program_name(Feedback),
-                    print_feedback_report(ProfileProgName, Feedback, !IO)
+                    FeedbackResult = ok(Feedback),
+                    print_feedback_report(Feedback, !IO)
                 ;
-                    FeedbackReadResult = error(FeedbackReadError),
-                    feedback.read_error_message_string(FeedbackFileName,
-                        FeedbackReadError, Message),
+                    FeedbackResult = error(FeedbackError),
+                    feedback_read_error_message_string(FeedbackFileName,
+                        FeedbackError, Message),
                     io.format(Stderr, "%s: %s\n",
                         [s(ProgName), s(Message)], !IO),
                     io.set_exit_status(1, !IO)
@@ -97,7 +96,7 @@ main(!IO) :-
 :- func help_message(string) = string.
 
 help_message(ProgName) = HelpMessage :-
-    FormatStr = 
+    FormatStr =
 "Usage: %s [options] <feedbackfile>
     This command outputs a report that shows the contents of the named
     feedback file in a human-readable form.
@@ -123,14 +122,13 @@ write_help_message(ProgName, !IO) :-
 write_version_message(ProgName, !IO) :-
     library.version(Version, Fullarch),
     io.format("%s: Mercury deep profiler\n", [s(ProgName)], !IO),
-    io.format("version: %s, on %s.\n",
-        [s(Version), s(Fullarch)], !IO).
+    io.format("version: %s, on %s.\n", [s(Version), s(Fullarch)], !IO).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % This section describes and processes command line options. Individual
 % feedback information can be requested by the user, as well as options named
-% after optimizations that may imply one or more feedback inforemation types,
+% after optimizations that may imply one or more feedback information types,
 % which that optimization uses.
 %
 
@@ -170,17 +168,17 @@ defaults(version,   bool(no)).
 post_process_options(ProgName, !Options, !IO) :-
     lookup_int_option(!.Options, verbosity, VerbosityLevel),
     io.stderr_stream(Stderr, !IO),
-    ( VerbosityLevel < 0 ->
+    ( if VerbosityLevel < 0 then
         io.format(Stderr,
             "%s: warning: verbosity level should not be negative.\n",
             [s(ProgName)], !IO),
         set_option(verbosity, int(0), !Options)
-    ; VerbosityLevel > 4 ->
+    else if VerbosityLevel > 4 then
         io.format(Stderr,
             "%s: warning: verbosity level should not exceed 4.\n",
             [s(ProgName)], !IO),
         set_option(verbosity, int(4), !Options)
-    ;
+    else
         true
     ).
 
@@ -192,6 +190,6 @@ post_process_options(ProgName, !Options, !IO) :-
 set_option(Option, Value, !Options) :-
     map.set(Option, Value, !Options).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module mdprof_report_feedback.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

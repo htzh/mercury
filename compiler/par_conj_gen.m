@@ -21,35 +21,42 @@
 % rules for mode-correctness and determinism-correctness, and it has different
 % operational semantics.
 %
-%   [Operational semantics]
-%   - `,'/2 gives some operational guarantees that `&'/2 does not:
-%     if `--no-reorder-conj' is set, there is an implied ordering
-%     in the code:  conjunctions must not be reordered beyond the
-%     minimum necessary for mode correctness.
-%     This is justified for reasons performance modeling and ensuring
-%     predictable termination properties.
-%     Parallel conjunction does not of itself suggest any information
-%     about which order two goals should be executed, however if
-%     coroutining is being used, then the data dependencies between
-%     the two goals will constrain the order of execution at runtime.
+% Operational semantics:
 %
-%   [Mode correctness]
-%   - `,'/2 has a *sequential* behaviour `A, B' proves `A' *then*
-%     proves `B'. Mode analysis only allows unidirectional data-
-%     dependencies for conjunction. In independent and-parallelism,
-%     for the goal `A & B', mode analysis requires that `A' and `B'
-%     bind disjoint sets of free variables (or when mode analysis
-%     supports it properly, disjoint sets of type-nodes), and that
-%     `A' does not require any bindings made in `B' and vice versa.
-%     In dependant and-parallelism, mode analysis requires that each
-%     variable (or type-node) have a unique producer (as in independent
-%     and-parallelism), but an and-parallel goal may use bindings made
-%     in conjoined goals which may lead to coroutining.
+%   `,'/2 gives some operational guarantees that `&'/2 does not.
+%   If `--no-reorder-conj' is set, sequential conjunction provides
+%   an implied ordering to the code: the conjuncts must not be reordered
+%   beyond the minimum that is necessary for mode correctness.
+%   The reason for this is to allow programmers to model the performance
+%   of the code more simply, which also includes (in the extreme)
+%   simpler reasoning about termination properties.
 %
-% The current implementation mainly independent and-parallelism and
+%   Parallel conjunctions do not specify the order in which their conjuncts
+%   will be executed. However, any data dependencies between conjuncts
+%   will constrain the order of those conjuncts' execution at runtime.
+%   If the conjunction is executed with coroutining, a data dependency
+%   constrains the order of the start times of the conjuncts involved;
+%   if the conjunction is executed in parallel, the constraint does not
+%   extend that far, and imposes only a requirement for the standard
+%   reader-writer synchronization.
+%
+% Mode correctness:
+%   `,'/2 has a *sequential* behaviour: `A, B' proves *first* `A' and
+%   *then* proves `B'. Mode analysis only allows unidirectional data-
+%   dependencies for conjunction. Applying independent and-parallelism
+%   to `A & B', mode analysis would require that `A' and `B' bind
+%   disjoint sets of free variables (or when mode analysis supports
+%   it properly, disjoint sets of type-nodes), and that `A' does not
+%   require any bindings made in `B' and vice versa.
+%   With dependant and-parallelism, mode analysis requires that each
+%   variable (or type-node) have a unique producer (as in independent
+%   and-parallelism), but an and-parallel goal may use bindings made
+%   in conjoined goals to its left which may lead to coroutining.
+%   (Allowing it to use conjoined goals to its right would, in general,
+%   allow circular data dependencies, which would lead to deadlock.)
+%
+% The current system implements mainly independent and-parallelism and
 % a subset of dependent and-parallelism (see dep_par_conj.m).
-% The syntax for parallel conjunction is `&'/2 which behaves like `,'/2
-% in that sequences get flattened (ie A & (B & C) <=> (A & B) & C).
 %
 % Type checking and mode analysis work exactly the same for parallel
 % conjunction as for sequential conjunction.
@@ -58,25 +65,32 @@
 % its conjuncts in the same way as the determinism of a conjunction but
 % because the current runtime implementation only allows model_det parallel
 % conjunction, determinism analysis works by inferring the determinism of
-% each conjunct and reporting an error if it is not a model_det determinism.
+% each conjunct and reporting an error if it is not model_det.
 %
-% The code generated for a parallel conjunction consists of a piece of
-% initialization code which creates a term on the heap to be used for
-% controlling the synchronization of the conjuncts and the code for the
-% conjuncts.  The synchronization terms are referred to in the code as
-% 'sync_term's.  Conjuncts are executed "left to right".  At the start of
-% the i'th conjunct is a command to "spark" the i+1'th conjunct, i.e.
-% record enough information to begin executing the next conjunct either
-% in parallel, or to return to it after the current conjunct ends.
+% The code we generate for a parallel conjunction consists of
 %
-% At the end of each conjunct is a call to an join_and_continue instruction.
-% It executes the next parallel conjunct or, if the parallel conjunction is
-% finished, causes the code following the parallel conjunction to execute in
-% the context that originated the parallel conjunction.  If the originating
-% context can't execute the next conjunct and the parallel conjunction isn't
-% finished, it must suspend.  When a non-originating context later finds that
+%   - a piece of initialization code, which creates a term on the heap
+%     that we use for controlling the synchronization of the conjuncts
+%     (we call them `sync_term's), and
+%   - the code for the conjuncts themselves.
+%
+% We execute conjuncts left to right. Before the code of the i'th conjunct,
+% we put code to "spark" the i+1'th conjunct (if there is one). Sparking
+% a conjunct means either assigning its execution to a spare thread
+% (if there is one), or recording the information needed to begin executing it
+% when a thread becomes available. A thread *should* become available
+% when the ith conjunct ends.
+%
+% At the end of each conjunct we put a join_and_continue instruction.
+% This executes the next parallel conjunct if there is one, or if there isn't,
+% waits until all the conjuncts are finished, and then branches to the code
+% *following* the parallel conjunction. We take care to ensure that the
+% code following the parallel conjunction executes in the context
+% that *originated* the parallel conjunction. If the originating context
+% can't execute the next conjunct and the parallel conjunction isn't finished,
+% it must suspend. When a non-originating context later finds that
 % the parallel conjunction _is_ finished, it will then cause the originating
-% context to resume execution at the join point.  Please see the
+% context to resume execution at the join point. Please see the
 % implementation of MR_join_and_continue() for the details.
 %
 % The runtime support for parallel conjunction is documented in the runtime
@@ -87,10 +101,13 @@
 :- module ll_backend.par_conj_gen.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_goal.
 :- import_module ll_backend.code_info.
+:- import_module ll_backend.code_loc_dep.
 :- import_module ll_backend.llds.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
@@ -98,44 +115,44 @@
 %---------------------------------------------------------------------------%
 
 :- pred generate_par_conj(list(hlds_goal)::in, hlds_goal_info::in,
-    code_model::in, llds_code::out, code_info::in, code_info::out) is det.
+    code_model::in, llds_code::out,
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out) is det.
 
 :- pred generate_lc_spawn_off(hlds_goal::in, prog_var::in, prog_var::in,
-    lc_use_parent_stack::in, llds_code::out, code_info::in, code_info::out)
-    is det.
+    lc_use_parent_stack::in, llds_code::out,
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out) is det.
 
 %---------------------------------------------------------------------------%
 %---------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module hlds.hlds_llds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_out.
 :- import_module hlds.hlds_out.hlds_out_util.
 :- import_module hlds.instmap.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
 :- import_module ll_backend.code_gen.
-:- import_module ll_backend.code_info.
 :- import_module ll_backend.code_util.
 :- import_module ll_backend.continuation_info.
 :- import_module ll_backend.exprn_aux.
 :- import_module ll_backend.llds_out.
 :- import_module ll_backend.llds_out.llds_out_data.
-:- import_module ll_backend.var_locn.
+:- import_module mdbcomp.
 :- import_module mdbcomp.goal_path.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.set_of_var.
 
-:- import_module assoc_list.
 :- import_module bool.
 :- import_module cord.
 :- import_module int.
-:- import_module list.
 :- import_module map.
 :- import_module maybe.
-:- import_module pair.
 :- import_module require.
 :- import_module set.
 :- import_module string.
@@ -143,7 +160,8 @@
 
 %---------------------------------------------------------------------------%
 
-generate_par_conj(Goals, GoalInfo, CodeModel, Code, !CI) :-
+generate_par_conj(Conjuncts, GoalInfo, CodeModel, Code, !CI, !CLD) :-
+    % Some sanity checks.
     (
         CodeModel = model_det
     ;
@@ -161,10 +179,10 @@ generate_par_conj(Goals, GoalInfo, CodeModel, Code, !CI) :-
     % the procedure, we have to set the parent_sp register to the value
     % of the sp register, and restore it when the parallel conjunction
     % finishes.
-    get_par_conj_depth(!.CI, Depth),
-    ( Depth = 0 ->
+    get_par_conj_depth(!.CLD, Depth),
+    ( if Depth = 0 then
         acquire_temp_slot(slot_lval(parent_sp),
-            non_persistent_temp_slot, ParentSpSlot, !CI),
+            non_persistent_temp_slot, ParentSpSlot, !CI, !CLD),
         MaybeSetParentSpCode = from_list([
             llds_instr(assign(ParentSpSlot, lval(parent_sp)),
                 "save the old parent stack pointer"),
@@ -176,53 +194,59 @@ generate_par_conj(Goals, GoalInfo, CodeModel, Code, !CI) :-
                 "restore old parent stack pointer")
         ),
         MaybeReleaseParentSpSlot = yes(ParentSpSlot)
-    ;
+    else
         MaybeSetParentSpCode = empty,
         MaybeRestoreParentSpCode = empty,
         MaybeReleaseParentSpSlot = no
     ),
 
-    get_known_variables(!.CI, Vars),
-    save_variables_on_stack(Vars, SaveCode, !CI),
+    get_known_variables(!.CLD, Vars),
+    save_variables_on_stack(Vars, SaveCode, !.CI, !CLD),
 
     Nonlocals = goal_info_get_code_gen_nonlocals(GoalInfo),
     set_of_var.to_sorted_list(Nonlocals, Variables),
-    get_instmap(!.CI, Initial),
-    Delta = goal_info_get_instmap_delta(GoalInfo),
-    instmap.apply_instmap_delta(Initial, Delta, Final),
+    get_instmap(!.CLD, InitialInstMap),
+    InstMapDelta = goal_info_get_instmap_delta(GoalInfo),
+    instmap.apply_instmap_delta(InitialInstMap, InstMapDelta, Final),
     get_module_info(!.CI, ModuleInfo),
-    find_outputs(Variables, Initial, Final, ModuleInfo, [], Outputs),
+    find_outputs(Variables, InitialInstMap, Final, ModuleInfo, [], Outputs),
 
     % Reserve a contiguous block on the stack to hold the synchronisation term.
     Contents = list.duplicate(STSize, slot_sync_term),
     acquire_several_temp_slots(Contents, persistent_temp_slot, SyncTermSlots,
-        StackId, _N, _M, !CI),
-    (
+        StackId, _N, _M, !CI, !CLD),
+    ( if
         % The highest numbered slot has the lowest address.
         list.last(SyncTermSlots, SyncTermBaseSlotPrime),
         SyncTermBaseSlotPrime = stackvar(SlotNumPrime),
         StackId = det_stack
-    ->
+    then
         SlotNum = SlotNumPrime,
         SyncTermBaseSlot = SyncTermBaseSlotPrime,
         ParentSyncTermBaseSlot = parent_stackvar(SlotNum)
-    ;
+    else
         unexpected($module, $pred, "cannot find stack slot")
     ),
 
-    NumGoals = list.length(Goals),
+    NumConjuncts = list.length(Conjuncts),
     create_static_conj_id(GoalInfo, StaticConjId, !CI),
     MakeSyncTermCode = singleton(
-        llds_instr(init_sync_term(SyncTermBaseSlot, NumGoals, StaticConjId),
+        llds_instr(
+            init_sync_term(SyncTermBaseSlot, NumConjuncts, StaticConjId),
             "initialize sync term")
     ),
 
-    set_par_conj_depth(Depth+1, !CI),
     get_next_label(EndLabel, !CI),
-    clear_all_registers(no, !CI),
-    generate_det_par_conj_2(Goals, ParentSyncTermBaseSlot, EndLabel, Initial,
-        no, GoalCode, !CI),
-    set_par_conj_depth(Depth, !CI),
+    remember_position(!.CLD, BeforeConjunctionPos),
+
+    some [!InConjunctionCLD] (
+        !:InConjunctionCLD = !.CLD,
+        set_par_conj_depth(Depth+1, !InConjunctionCLD),
+        clear_all_registers(no, !InConjunctionCLD),
+        remember_position(!.InConjunctionCLD, ConjunctStartPos)
+    ),
+    generate_det_par_conjuncts(ConjunctStartPos, InitialInstMap,
+        EndLabel, ParentSyncTermBaseSlot, Conjuncts, no, GoalCode, !CI),
 
     EndLabelCode = from_list([
         llds_instr(label(EndLabel), "end of parallel conjunction"),
@@ -238,7 +262,7 @@ generate_par_conj(Goals, GoalInfo, CodeModel, Code, !CI) :-
         MaybeRestoreParentSpCode,
 
     % We can't release the sync slot right now, in case we are in a
-    % nested parallel conjunction.  Consider:
+    % nested parallel conjunction. Consider:
     %
     %   (
     %       (A & B)   % inner1
@@ -247,52 +271,58 @@ generate_par_conj(Goals, GoalInfo, CodeModel, Code, !CI) :-
     %   )
     %
     % If inner1 released its sync slot now then it might end up being reused
-    % by inner2.  But inner1 and inner2 could be executing simultaneously.
+    % by inner2. But inner1 and inner2 could be executing simultaneously.
     % In general we can't release the sync slot of any parallel conjunction
     % until we leave the shallowest parallel conjunction, i.e. at depth 0.
     % For now we only release the sync slots of parallel conjunctions at the
     % top level.
     %
-    % XXX release sync slots of nested parallel conjunctions
+    % XXX Release the sync slots of nested parallel conjunctions.
 
-    ( Depth = 0 ->
-        release_several_temp_slots(SyncTermSlots, persistent_temp_slot, !CI)
-    ;
+    reset_to_position(BeforeConjunctionPos, !.CI, !:CLD),
+    ( if Depth = 0 then
+        release_several_temp_slots(SyncTermSlots, persistent_temp_slot,
+            !CI, !CLD)
+    else
         true
     ),
     (
         MaybeReleaseParentSpSlot = yes(ParentSpSlot1),
-        release_temp_slot(ParentSpSlot1, non_persistent_temp_slot, !CI)
+        release_temp_slot(ParentSpSlot1, non_persistent_temp_slot, !CI, !CLD)
     ;
         MaybeReleaseParentSpSlot = no
     ),
-    clear_all_registers(no, !CI),
-    place_all_outputs(Outputs, !CI).
+    clear_all_registers(no, !CLD),
+    place_all_outputs(Outputs, !.CI, !CLD).
 
-:- pred generate_det_par_conj_2(list(hlds_goal)::in,
-    lval::in, label::in, instmap::in, branch_end::in, llds_code::out,
+:- pred generate_det_par_conjuncts(position_info::in, instmap::in, label::in,
+    lval::in, list(hlds_goal)::in, branch_end::in, llds_code::out,
     code_info::in, code_info::out) is det.
 
-generate_det_par_conj_2([], _ParentSyncTermBaseSlot, _EndLabel,
-        _Initial, _, empty, !CI).
-generate_det_par_conj_2([Goal | Goals], ParentSyncTermBaseSlot, EndLabel,
-        Initial, MaybeEnd0, Code, !CI) :-
-    remember_position(!.CI, StartPos),
-    code_gen.generate_goal(model_det, Goal, ThisGoalCode0, !CI),
-    replace_stack_vars_by_parent_sv(ThisGoalCode0, ThisGoalCode),
+generate_det_par_conjuncts(_ConjunctStartPos, _InitialInstMap, _EndLabel,
+        _ParentSyncTermBaseSlot, [], _, empty, !CI).
+generate_det_par_conjuncts(ConjunctStartPos, InitialInstMap, EndLabel,
+        ParentSyncTermBaseSlot, [Conjunct | Conjuncts], MaybeEnd0, Code,
+        !CI) :-
+    some [!CLD] (
+        reset_to_position(ConjunctStartPos, !.CI, !:CLD),
+        code_gen.generate_goal(model_det, Conjunct, ThisConjunctCode0,
+            !CI, !CLD),
+        replace_stack_vars_by_parent_sv(ThisConjunctCode0, ThisConjunctCode),
 
-    get_stack_slots(!.CI, AllSlots),
-    get_known_variables(!.CI, Variables),
-    set.list_to_set(Variables, LiveVars),
-    map.select(AllSlots, LiveVars, StoreMap0),
-    StoreMap = map.map_values_only(stack_slot_to_abs_locn, StoreMap0),
-    generate_branch_end(StoreMap, MaybeEnd0, MaybeEnd, SaveCode0, !CI),
-    replace_stack_vars_by_parent_sv(SaveCode0, SaveCode),
+        get_stack_slots(!.CI, AllSlots),
+        get_known_variables(!.CLD, Variables),
+        set.list_to_set(Variables, LiveVars),
+        map.select(AllSlots, LiveVars, StoreMap0),
+        StoreMap = map.map_values_only(stack_slot_to_abs_locn, StoreMap0),
+        generate_branch_end(StoreMap, MaybeEnd0, MaybeEnd, SaveCode0,
+            !.CI, !.CLD),
+        replace_stack_vars_by_parent_sv(SaveCode0, SaveCode)
+    ),
 
     (
-        Goals = [_ | _],
+        Conjuncts = [_ | _],
         get_next_label(NextConjunct, !CI),
-        reset_to_position(StartPos, !CI),
         ForkCode = singleton(
             llds_instr(fork_new_child(ParentSyncTermBaseSlot, NextConjunct),
                 "fork off a child")
@@ -304,56 +334,57 @@ generate_det_par_conj_2([Goal | Goals], ParentSyncTermBaseSlot, EndLabel,
                 "start of the next conjunct")
         ])
     ;
-        Goals = [],
+        Conjuncts = [],
         ForkCode = empty,
         JoinCode = singleton(
             llds_instr(join_and_continue(ParentSyncTermBaseSlot, EndLabel),
                 "finish")
         )
     ),
-    ThisCode = ForkCode ++ ThisGoalCode ++ SaveCode ++ JoinCode,
-    generate_det_par_conj_2(Goals, ParentSyncTermBaseSlot, EndLabel, Initial,
-        MaybeEnd, RestCode, !CI),
-    Code = ThisCode ++ RestCode.
+    ConjunctCode = ForkCode ++ ThisConjunctCode ++ SaveCode ++ JoinCode,
+    generate_det_par_conjuncts(ConjunctStartPos, InitialInstMap, EndLabel,
+        ParentSyncTermBaseSlot, Conjuncts, MaybeEnd, ConjunctsCode, !CI),
+    Code = ConjunctCode ++ ConjunctsCode.
 
 :- func ts_finish_par_conj_instr(int, lval) = instr.
 
-ts_finish_par_conj_instr(SyncTermBaseSlot, SyncTermBaseSlotLval) =
-        foreign_proc_code([], Components, proc_will_not_call_mercury, no, no,
-            no, no, no, yes, proc_may_duplicate) :-
+ts_finish_par_conj_instr(SyncTermBaseSlot, SyncTermBaseSlotLval) = Instr :-
+    CodeTemplate =
+"#ifdef MR_THREADSCOPE
+MR_threadscope_post_end_par_conj(&MR_sv(%d));
+#endif
+",
     Components = [foreign_proc_raw_code(cannot_branch_away,
         proc_does_not_affect_liveness,
         live_lvals_info(set([SyncTermBaseSlotLval])),
-        format(Code, [i(SyncTermBaseSlot)]))],
-    Code = "#ifdef MR_THREADSCOPE
-MR_threadscope_post_end_par_conj(&MR_sv(%d));
-#endif
-".
+        string.format(CodeTemplate, [i(SyncTermBaseSlot)]))],
+    Instr = foreign_proc_code([], Components, proc_will_not_call_mercury,
+        no, no, no, no, no, yes, proc_may_duplicate).
 
 %-----------------------------------------------------------------------------%
 
-generate_lc_spawn_off(Goal, LCVar, LCSVar, UseParentStack, Code, !CI) :-
+generate_lc_spawn_off(Goal, LCVar, LCSVar, UseParentStack, Code, !CI, !CLD) :-
     % We don't need to save the parent stack pointer, we do not use it in the
     % main context and all the worker contexts will never have some data that
     % we shouldn't clobber there.
     % We also expect the runtime code to setup the parent stack pointer for us.
 
-    get_known_variables(!.CI, KnownVars),
+    get_known_variables(!.CLD, KnownVars),
     KnownVarsSet = set_of_var.list_to_set(KnownVars),
     NonLocalsSet = goal_info_get_nonlocals(Goal ^ hlds_goal_info),
     InputVarsSet = set_of_var.intersect(NonLocalsSet, KnownVarsSet),
     InputVars = set_of_var.to_sorted_list(InputVarsSet),
-    save_variables_on_stack(InputVars, SaveCode, !CI),
+    save_variables_on_stack(InputVars, SaveCode, !.CI, !CLD),
 
-    best_variable_location_det(!.CI, LCVar, LCVarLocn),
-    best_variable_location_det(!.CI, LCSVar, LCSVarLocn),
+    best_variable_location_det(!.CLD, LCVar, LCVarLocn),
+    best_variable_location_det(!.CLD, LCSVar, LCSVarLocn),
 
     get_next_label(SpawnOffLabel, !CI),
     SpawnUinstr = lc_spawn_off(lval(LCVarLocn), lval(LCSVarLocn),
         SpawnOffLabel),
     SpawnInstr = llds_instr(SpawnUinstr, ""),
     SpawnOffCode = singleton(SpawnInstr),
-    remember_position(!.CI, PositionAfterSpawnOff),
+    remember_position(!.CLD, PositionAfterSpawnOff),
 
     % Code to spawn off.
     LabelUinstr = label(SpawnOffLabel),
@@ -363,13 +394,13 @@ generate_lc_spawn_off(Goal, LCVar, LCSVar, UseParentStack, Code, !CI) :-
     % We don't need to clear all the registers, all the variables except for
     % LC and LCS are considered to be on the stack.
     % Mark only the registers used by LC and LCS as clobbered.
-    clobber_regs([LCVarLocn, LCSVarLocn], !CI),
+    clobber_regs([LCVarLocn, LCSVarLocn], !CLD),
 
-    generate_goal(model_det, Goal, GoalCode, !CI),
+    generate_goal(model_det, Goal, GoalCode, !CI, !.CLD, _CLDAfterGoal),
     % We expect that the join_and_terminate call is already in Goal.
     SpawnedOffCode0 = LabelCode ++ GoalCode,
 
-    reset_to_position(PositionAfterSpawnOff, !CI),
+    reset_to_position(PositionAfterSpawnOff, !.CI, !:CLD),
 
     (
         UseParentStack = lc_use_parent_stack_frame,
@@ -377,15 +408,15 @@ generate_lc_spawn_off(Goal, LCVar, LCSVar, UseParentStack, Code, !CI) :-
         CopyCode = cord.empty,
 
         % Mark the output values as available in registers, code inserted after
-        % the recursive call expects to be able to read them.  Because they're
-        % gaurnteed to be placed in distinct stack slots it's okay to produce
+        % the recursive call expects to be able to read them. Because they are
+        % guaranteed to be placed in distinct stack slots it's okay to produce
         % them a little early - really they could be produced from any point
         % after spawn_off until the barrier in the base case.
 
         % This module has a find_outputs predicate, but I can't see how set
         % difference wouldn't work.
         OutputVars = set_of_var.difference(NonLocalsSet, KnownVarsSet),
-        place_all_outputs(set_of_var.to_sorted_list(OutputVars), !CI)
+        place_all_outputs(set_of_var.to_sorted_list(OutputVars), !.CI, !CLD)
     ;
         UseParentStack = lc_create_frame_on_child_stack,
         list.map(get_variable_slot(!.CI), InputVars, InputStackSlots),
@@ -401,7 +432,7 @@ generate_lc_spawn_off(Goal, LCVar, LCSVar, UseParentStack, Code, !CI) :-
         % There are several different ways we can set the size of the first
         % stack frame on the stack of the child context.
         %
-        % We have choosen to implement this by collecting all the stackvar
+        % We have chosen to implement this by collecting all the stackvar
         % references in SpawnedOffCode0, and base the size of the child stack
         % frame on the highest numbered stackvar reference in there.
         %
@@ -432,13 +463,13 @@ generate_lc_spawn_off(Goal, LCVar, LCSVar, UseParentStack, Code, !CI) :-
 
 copy_slots_to_child_stack(FrameSize, LCVarLocn, LCSVarLocn, StackSlots,
         CodeStr) :-
-    (
+    ( if
         LCVarNamePrime = lval_to_string(LCVarLocn),
         LCSVarNamePrime = lval_to_string(LCSVarLocn)
-    ->
+    then
         LCVarName = LCVarNamePrime,
         LCSVarName = LCSVarNamePrime
-    ;
+    else
         unexpected($module, $pred, "cannot convert to string")
     ),
 
@@ -455,43 +486,37 @@ copy_slots_to_child_stack(FrameSize, LCVarLocn, LCSVarLocn, StackSlots,
     string::out) is det.
 
 copy_one_slot_to_child_stack(LCVarName, LCSVarName, StackSlot, CopyStr) :-
-    ( StackSlotName = lval_to_string(StackSlot) ->
-        ( StackSlot = stackvar(N) ->
+    ( if StackSlotName = lval_to_string(StackSlot) then
+        ( if StackSlot = stackvar(N) then
             CopyStr = string.format("\tMR_lc_worker_sv(%s, %s, %d) = %s;\n",
                 [s(LCVarName), s(LCSVarName), i(N), s(StackSlotName)])
-        ;
+        else
             unexpected($module, $pred, "not stack slot")
         )
-    ;
+    else
         unexpected($module, $pred, "cannot convert to string")
     ).
 
 %----------------------------------------------------------------------------%
 
-:- pred best_variable_location_det(code_info::in, prog_var::in, lval::out)
+:- pred best_variable_location_det(code_loc_dep::in, prog_var::in, lval::out)
     is det.
 
-best_variable_location_det(CI, Var, Locn) :-
-    promise_equivalent_solutions [Locn] (
-        ( best_variable_location(CI, Var, LocnPrime) ->
-            Locn = LocnPrime
+best_variable_location_det(CLD, Var, Locn) :-
+    variable_locations(CLD, Map),
+    map.lookup(Map, Var, AllLocnsSet),
+    set.to_sorted_list(AllLocnsSet, AllLocns),
+    list.filter(lval_is_reg, AllLocns, RegLocns),
+    (
+        RegLocns = [Locn | _]
+    ;
+        RegLocns = [],
+        (
+            AllLocns = [Locn | _]
         ;
+            AllLocns = [],
             unexpected($module, $pred, "Could not find location for variable")
         )
-    ).
-
-:- pred best_variable_location(code_info::in, prog_var::in, lval::out)
-    is nondet.
-
-best_variable_location(CI, Var, Locn) :-
-    variable_locations(CI, Map),
-    map.search(Map, Var, AllLocns),
-    filter(lval_is_reg, AllLocns, RegLocns),
-    ( member(LocnPrime, RegLocns) ->
-        % Commit to register locations before trying any location.
-        LocnPrime = Locn
-    ;
-        member(Locn, AllLocns)
     ).
 
 :- pred lval_is_reg(lval::in) is semidet.
@@ -595,12 +620,12 @@ instr_list_max_stack_ref(Instrs, MaxRef) :-
 :- pred max_stack_ref_acc(lval::in, int::in, int::out) is det.
 
 max_stack_ref_acc(LVal, Max0, Max) :-
-    (
+    ( if
         LVal = stackvar(N),
         N > Max0
-    ->
+    then
         Max = N
-    ;
+    else
         Max = Max0
     ).
 
@@ -613,29 +638,29 @@ find_outputs([], _Initial, _Final, _ModuleInfo, !Outputs).
 find_outputs([Var | Vars],  Initial, Final, ModuleInfo, !Outputs) :-
     instmap_lookup_var(Initial, Var, InitialInst),
     instmap_lookup_var(Final, Var, FinalInst),
-    ( mode_is_output(ModuleInfo, (InitialInst -> FinalInst)) ->
+    ( if mode_is_output(ModuleInfo, from_to_mode(InitialInst, FinalInst)) then
         !:Outputs = [Var | !.Outputs]
-    ;
+    else
         !:Outputs = !.Outputs
     ),
     find_outputs(Vars, Initial, Final, ModuleInfo, !Outputs).
 
-:- pred place_all_outputs(list(prog_var)::in, code_info::in, code_info::out)
-    is det.
+:- pred place_all_outputs(list(prog_var)::in,
+    code_info::in, code_loc_dep::in, code_loc_dep::out) is det.
 
-place_all_outputs([], !CI).
-place_all_outputs([Var | Vars], !CI) :-
-    variable_locations(!.CI, VarLocations),
-    get_variable_slot(!.CI, Var, Slot),
-    (
+place_all_outputs([], _CI, !CLD).
+place_all_outputs([Var | Vars], CI, !CLD) :-
+    variable_locations(!.CLD, VarLocations),
+    get_variable_slot(CI, Var, Slot),
+    ( if
         map.search(VarLocations, Var, Locations),
         set.member(Slot, Locations)
-    ->
+    then
         true
-    ;
-        set_var_location(Var, Slot, !CI)
+    else
+        set_var_location(Var, Slot, !CLD)
     ),
-    place_all_outputs(Vars, !CI).
+    place_all_outputs(Vars, CI, !CLD).
 
 %----------------------------------------------------------------------------%
 
@@ -648,7 +673,7 @@ create_static_conj_id(GoalInfo, SlotNum, !CI) :-
     get_module_info(!.CI, ModuleInfo),
     ProcString = pred_proc_id_pair_to_string(ModuleInfo, PredId, ProcId),
 
-    get_containing_goal_map_det(!.CI, ContainingGoalMap),
+    get_containing_goal_map(!.CI, ContainingGoalMap),
     GoalId = goal_info_get_goal_id(GoalInfo),
     GoalPath = goal_id_to_forward_path(ContainingGoalMap, GoalId),
     GoalPathString = goal_path_to_string(GoalPath),

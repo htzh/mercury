@@ -18,9 +18,10 @@
 :- interface.
 
 :- import_module analysis.
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 
 %-----------------------------------------------------------------------------%
 
@@ -44,9 +45,11 @@
 :- implementation.
 
 :- import_module hlds.pred_table.
+:- import_module libs.
 :- import_module libs.file_util.
 :- import_module libs.globals.
 :- import_module libs.options.
+:- import_module parse_tree.
 :- import_module parse_tree.file_names.
 :- import_module transform_hlds.ctgc.
 :- import_module transform_hlds.ctgc.structure_sharing.
@@ -69,35 +72,38 @@
 :- instance compiler(mmc) where [
     compiler_name(mmc) = "mmc",
 
-    analyses(mmc, "mm_tabling_analysis") =
-        'new analysis_type'(
-            unit1 : unit(any_call),
-            unit1 : unit(mm_tabling_analysis_answer)),
-
-    analyses(mmc, "trail_usage") =
-        'new analysis_type'(
-            unit1 : unit(any_call),
-            unit1 : unit(trailing_analysis_answer)),
-
-    analyses(mmc, "exception_analysis") =
-        'new analysis_type'(
-            unit1 : unit(any_call),
-            unit1 : unit(exception_analysis_answer)),
-
-    analyses(mmc, "unused_args") =
-        'new analysis_type'(
-            unit1 : unit(unused_args_call),
-            unit1 : unit(unused_args_answer)),
-
-    analyses(mmc, "structure_sharing") =
-        'new analysis_type'(
-            unit1 : unit(structure_sharing_call),
-            unit1 : unit(structure_sharing_answer)),
-
-    analyses(mmc, "structure_reuse") =
-        'new analysis_type'(
-            unit1 : unit(structure_reuse_call),
-            unit1 : unit(structure_reuse_answer)),
+    analyses(mmc, Name, Analysis) :-
+        (
+            Name = "mm_tabling_analysis",
+            Analysis = 'new analysis_type'(
+                unit1 : unit(any_call),
+                unit1 : unit(mm_tabling_analysis_answer))
+        ;
+            Name = "trail_usage",
+            Analysis = 'new analysis_type'(
+                unit1 : unit(any_call),
+                unit1 : unit(trailing_analysis_answer))
+        ;
+            Name = "exception_analysis",
+            Analysis = 'new analysis_type'(
+                unit1 : unit(any_call),
+                unit1 : unit(exception_analysis_answer))
+        ;
+            Name = "unused_args",
+            Analysis = 'new analysis_type'(
+                unit1 : unit(unused_args_call),
+                unit1 : unit(unused_args_answer))
+        ;
+            Name = "structure_sharing",
+            Analysis = 'new analysis_type'(
+                unit1 : unit(structure_sharing_call),
+                unit1 : unit(structure_sharing_answer))
+        ;
+            Name = "structure_reuse",
+            Analysis = 'new analysis_type'(
+                unit1 : unit(structure_reuse_call),
+                unit1 : unit(structure_reuse_answer))
+        ),
 
     module_name_to_read_file_name(mmc, Globals, ModuleName, Ext,
             MaybeFileName, !IO) :-
@@ -117,7 +123,7 @@ mmc_module_name_to_read_file_name(Globals, ModuleName, Ext, MaybeFileName,
         !IO) :-
     module_name_to_search_file_name(Globals, ModuleName, Ext, FileName0, !IO),
     globals.lookup_accumulating_option(Globals, intermod_directories, Dirs),
-    search_for_file(do_not_open_file, Dirs, FileName0, MaybeFileName, !IO).
+    search_for_file(Dirs, FileName0, MaybeFileName, !IO).
 
 :- pred mmc_module_name_to_write_file_name(globals::in, module_name::in,
     string::in, string::out, io::di, io::uo) is det.

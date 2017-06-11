@@ -13,6 +13,7 @@
 :- module ml_backend.ml_proc_gen.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module ml_backend.mlds.
 
@@ -28,19 +29,22 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.foreign.      % XXX needed for foreign_proc
 :- import_module backend_libs.rtti.
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module hlds.code_model.
-:- import_module hlds.goal_util.
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.passes_aux.
 :- import_module hlds.quantification.
+:- import_module hlds.status.
+:- import_module hlds.vartypes.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
-:- import_module mdbcomp.prim_data.
 :- import_module ml_backend.ml_code_gen.
 :- import_module ml_backend.ml_code_util.
 :- import_module ml_backend.ml_gen_info.
@@ -48,12 +52,15 @@
 :- import_module ml_backend.ml_type_gen.
 :- import_module ml_backend.ml_unify_gen.
 :- import_module ml_backend.ml_util.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
+:- import_module parse_tree.prog_data_pragma.
 :- import_module parse_tree.prog_foreign.
 :- import_module parse_tree.prog_type.
-:- import_module parse_tree.set_of_var.
 
 :- import_module bool.
+:- import_module cord.
 :- import_module getopt_io.
 :- import_module int.
 :- import_module list.
@@ -71,55 +78,59 @@ ml_code_gen(!ModuleInfo, MLDS) :-
     module_info_get_name(!.ModuleInfo, ModuleName),
     ml_gen_foreign_code(!.ModuleInfo, ForeignCode),
     ml_gen_imports(!.ModuleInfo, Imports),
-    ml_gen_defns(!ModuleInfo, Defns, GlobalData),
+    ml_gen_defns(!ModuleInfo, TypeDefns, TableStructDefns, PredDefns,
+        GlobalData),
     ml_gen_exported_enums(!.ModuleInfo, ExportedEnums),
     module_info_user_init_pred_c_names(!.ModuleInfo, InitPreds),
     module_info_user_final_pred_c_names(!.ModuleInfo, FinalPreds),
-    MLDS = mlds(ModuleName, ForeignCode, Imports, GlobalData, Defns,
+    MLDS = mlds(ModuleName, ForeignCode, Imports, GlobalData, TypeDefns,
+        TableStructDefns, list.map(wrap_function_defn, PredDefns),
         InitPreds, FinalPreds, ExportedEnums).
 
 :- pred ml_gen_foreign_code(module_info::in,
     map(foreign_language, mlds_foreign_code)::out) is det.
 
-ml_gen_foreign_code(ModuleInfo, AllForeignCode) :-
-    module_info_get_foreign_decl(ModuleInfo, ForeignDecls),
-    module_info_get_foreign_import_module(ModuleInfo, ForeignImports),
-    module_info_get_foreign_body_code(ModuleInfo, ForeignBodys),
-    module_info_get_pragma_exported_procs(ModuleInfo, ForeignExports),
+ml_gen_foreign_code(ModuleInfo, AllForeignCodeMap) :-
+    module_info_get_foreign_decl_codes(ModuleInfo, ForeignDeclCodeCord),
+    module_info_get_foreign_body_codes(ModuleInfo, ForeignBodyCodeCord),
+    module_info_get_foreign_import_modules(ModuleInfo, ForeignImportModules),
+    module_info_get_pragma_exported_procs(ModuleInfo, ForeignExportsCord),
+    ForeignDeclCodes = cord.list(ForeignDeclCodeCord),
+    ForeignBodyCodes = cord.list(ForeignBodyCodeCord),
+    ForeignExports = cord.list(ForeignExportsCord),
+
     module_info_get_globals(ModuleInfo, Globals),
     globals.get_backend_foreign_languages(Globals, BackendForeignLanguages),
+    WantedForeignImports = set.to_sorted_list(set.union_list(
+        list.map(get_lang_foreign_import_module_infos(ForeignImportModules),
+            BackendForeignLanguages))),
 
-    WantedForeignImports = list.condense(
-        list.map((func(L) = Imports :-
-            foreign.filter_imports(L, ForeignImports, Imports, _)
-        ), BackendForeignLanguages)),
+    list.foldl(
+        ml_gen_foreign_code_lang(ModuleInfo,
+            ForeignDeclCodes, ForeignBodyCodes,
+            WantedForeignImports, ForeignExports),
+        BackendForeignLanguages, map.init, AllForeignCodeMap).
 
-    list.foldl(ml_gen_foreign_code_lang(ModuleInfo, ForeignDecls,
-        ForeignBodys, WantedForeignImports, ForeignExports),
-        BackendForeignLanguages, map.init, AllForeignCode).
-
-:- pred ml_gen_foreign_code_lang(module_info::in, foreign_decl_info::in,
-    foreign_body_info::in, foreign_import_module_info_list::in,
-    list(pragma_exported_proc)::in, foreign_language::in,
+:- pred ml_gen_foreign_code_lang(module_info::in,
+    list(foreign_decl_code)::in, list(foreign_body_code)::in,
+    list(foreign_import_module_info)::in, list(pragma_exported_proc)::in,
+    foreign_language::in,
     map(foreign_language, mlds_foreign_code)::in,
     map(foreign_language, mlds_foreign_code)::out) is det.
 
-ml_gen_foreign_code_lang(ModuleInfo, ForeignDecls, ForeignBodys,
+ml_gen_foreign_code_lang(ModuleInfo, ForeignDeclCodes, ForeignBodyCodes,
         WantedForeignImports, ForeignExports, Lang, !Map) :-
-    foreign.filter_decls(Lang, ForeignDecls, WantedForeignDecls,
-        _OtherForeignDecls),
-    foreign.filter_bodys(Lang, ForeignBodys, WantedForeignBodys,
-        _OtherForeignBodys),
+    foreign.filter_decls(Lang, ForeignDeclCodes, WantedForeignDeclCodes,
+        _OtherForeignDeclCodes),
+    foreign.filter_bodys(Lang, ForeignBodyCodes, WantedForeignBodyCodes,
+        _OtherForeignBodyCodes),
     foreign.filter_exports(Lang, ForeignExports, WantedForeignExports,
         _OtherForeignExports),
-    ConvBody = (func(foreign_body_code(L, S, C)) =
-        user_foreign_code(L, S, C)),
-    MLDSWantedForeignBodys = list.map(ConvBody, WantedForeignBodys),
     list.map(ml_gen_pragma_export_proc(ModuleInfo),
         WantedForeignExports, MLDSWantedForeignExports),
-    MLDS_ForeignCode = mlds_foreign_code(WantedForeignDecls,
-        WantedForeignImports, MLDSWantedForeignBodys,
-        MLDSWantedForeignExports),
+    MLDS_ForeignCode = mlds_foreign_code(
+        WantedForeignDeclCodes, WantedForeignBodyCodes,
+        WantedForeignImports, MLDSWantedForeignExports),
     map.det_insert(Lang, MLDS_ForeignCode, !Map).
 
 :- pred ml_gen_imports(module_info::in, mlds_imports::out) is det.
@@ -149,7 +160,7 @@ ml_gen_imports(ModuleInfo, MLDS_ImportList) :-
 :- func foreign_type_required_imports(compilation_target,
     pair(type_ctor, hlds_type_defn)) = list(mlds_import).
 
-foreign_type_required_imports(Target, _TypeCtor - TypeDefn) = Imports :-
+foreign_type_required_imports(Target, _TypeCtor - _TypeDefn) = Imports :-
     (
         ( Target = target_c
         ; Target = target_java
@@ -157,48 +168,21 @@ foreign_type_required_imports(Target, _TypeCtor - TypeDefn) = Imports :-
         ),
         Imports = []
     ;
-        Target = target_il,
-        hlds_data.get_type_defn_body(TypeDefn, TypeBody),
-        (
-            TypeBody = hlds_foreign_type(ForeignTypeBody),
-            ForeignTypeBody = foreign_type_body(MaybeIL,
-                _MaybeC, _MaybeJava, _MaybeCSharp, _MaybeErlang),
-            (
-                MaybeIL = yes(Data),
-                Data = foreign_type_lang_data(il_type(_, Location, _), _, _)
-            ->
-                Name = il_assembly_name(mercury_module_name_to_mlds(
-                    unqualified(Location))),
-                Imports = [foreign_import(Name)]
-            ;
-                unexpected($module, $pred, "no IL type")
-            )
-        ;
-            ( TypeBody = hlds_du_type(_, _, _,_,  _, _, _, _, _)
-            ; TypeBody = hlds_eqv_type(_)
-            ; TypeBody = hlds_solver_type(_, _)
-            ; TypeBody = hlds_abstract_type(_)
-            ),
-            Imports = []
-        )
-    ;
-        Target = target_x86_64,
-        unexpected($module, $pred, "target x86_64 and --high-level-code")
-    ;
         Target = target_erlang,
         unexpected($module, $pred, "target erlang")
     ).
 
 :- pred ml_gen_defns(module_info::in, module_info::out,
-    list(mlds_defn)::out, ml_global_data::out) is det.
+    list(mlds_class_defn)::out, list(mlds_data_defn)::out,
+    list(mlds_function_defn)::out, ml_global_data::out) is det.
 
-ml_gen_defns(!ModuleInfo, Defns, !:GlobalData) :-
+ml_gen_defns(!ModuleInfo, TypeDefns, TableStructDefns, PredDefns,
+        !:GlobalData) :-
     ml_gen_types(!.ModuleInfo, TypeDefns),
     ml_gen_table_structs(!.ModuleInfo, TableStructDefns),
     ml_gen_init_common_data(!.ModuleInfo, !:GlobalData),
     ml_gen_const_structs(!.ModuleInfo, ConstStructMap, !GlobalData),
-    ml_gen_preds(!ModuleInfo, ConstStructMap, PredDefns, !GlobalData),
-    Defns = TypeDefns ++ TableStructDefns ++ PredDefns.
+    ml_gen_preds(!ModuleInfo, ConstStructMap, PredDefns, !GlobalData).
 
 :- pred ml_gen_init_common_data(module_info::in, ml_global_data::out) is det.
 
@@ -212,10 +196,7 @@ ml_gen_init_common_data(ModuleInfo, GlobalData) :-
         ),
         UseCommonCells = use_common_cells
     ;
-        ( Target = target_il
-        ; Target = target_erlang
-        ; Target = target_x86_64
-        ),
+        Target = target_erlang,
         UseCommonCells = do_not_use_common_cells
     ),
     globals.lookup_bool_option(Globals, unboxed_float, UnboxedFloats),
@@ -240,8 +221,8 @@ ml_gen_init_common_data(ModuleInfo, GlobalData) :-
 ml_gen_pragma_export_proc(ModuleInfo, PragmaExportedProc, Defn) :-
     PragmaExportedProc = pragma_exported_proc(Lang, PredId, ProcId,
         ExportName, ProgContext),
-    ml_gen_proc_label(ModuleInfo, PredId, ProcId, Name, ModuleName),
-    MLDS_Name = qual(ModuleName, module_qual, Name),
+    ml_gen_proc_label(ModuleInfo, PredId, ProcId, ModuleName, PlainName),
+    MLDS_Name = qual(ModuleName, module_qual, mlds_function_name(PlainName)),
     ml_gen_export_proc_params(ModuleInfo, PredId, ProcId, FuncParams),
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
     pred_info_get_univ_quant_tvars(PredInfo, UnivQTVars),
@@ -255,7 +236,7 @@ ml_gen_pragma_export_proc(ModuleInfo, PragmaExportedProc, Defn) :-
 ml_gen_export_proc_params(ModuleInfo, PredId, ProcId, FuncParams) :-
     module_info_get_globals(ModuleInfo, Globals),
     globals.get_target(Globals, Target),
-    (
+    ( if
         ( Target = target_java
         ; Target = target_csharp
         ),
@@ -272,9 +253,9 @@ ml_gen_export_proc_params(ModuleInfo, PredId, ProcId, FuncParams) :-
         ;
             ReturnTypes = [_ | _]
         )
-    ->
+    then
         FuncParams = FuncParamsByRef
-    ;
+    else
         FuncParams = ml_gen_proc_params(ModuleInfo, PredId, ProcId)
     ).
 
@@ -291,7 +272,7 @@ has_ptr_type(mlds_argument(_, mlds_ptr_type(_), _)).
     % (and functions) in the HLDS.
     %
 :- pred ml_gen_preds(module_info::in, module_info::out,
-    ml_const_struct_map::in, list(mlds_defn)::out,
+    ml_const_struct_map::in, list(mlds_function_defn)::out,
     ml_global_data::in, ml_global_data::out) is det.
 
 ml_gen_preds(!ModuleInfo, ConstStructMap, PredDefns, !GlobalData) :-
@@ -302,52 +283,55 @@ ml_gen_preds(!ModuleInfo, ConstStructMap, PredDefns, !GlobalData) :-
 
 :- pred ml_gen_preds_acc(module_info::in, module_info::out,
     ml_const_struct_map::in, list(pred_id)::in,
-    list(mlds_defn)::in, list(mlds_defn)::out,
+    list(mlds_function_defn)::in, list(mlds_function_defn)::out,
     ml_global_data::in, ml_global_data::out) is det.
 
 ml_gen_preds_acc(!ModuleInfo, ConstStructMap, PredIds0,
-        !Defns, !GlobalDefns) :-
+        !FunctionDefns, !GlobalDefns) :-
     (
         PredIds0 = [PredId | PredIds],
         module_info_get_preds(!.ModuleInfo, PredTable),
         map.lookup(PredTable, PredId, PredInfo),
-        pred_info_get_import_status(PredInfo, ImportStatus),
-        (
+        pred_info_get_status(PredInfo, PredStatus),
+        ( if
             (
-                ImportStatus = status_imported(_)
+                PredStatus = pred_status(status_imported(_))
             ;
                 % We generate incorrect and unnecessary code for the external
                 % special preds which are pseudo_imported, so just ignore them.
                 is_unify_or_compare_pred(PredInfo),
-                ImportStatus = status_external(status_pseudo_imported)
+                PredStatus =
+                    pred_status(status_external(status_pseudo_imported))
             )
-        ->
+        then
             true
-        ;
-            ml_gen_pred(!ModuleInfo, ConstStructMap, PredId, PredInfo,
-                ImportStatus, !Defns, !GlobalDefns)
+        else
+            % Generate MLDS definitions for all the non-imported procedures
+            % of a given predicate (or function).
+            ( if PredStatus = pred_status(status_external(_)) then
+                ProcIds = pred_info_procids(PredInfo)
+            else
+                ProcIds = pred_info_non_imported_procids(PredInfo)
+            ),
+            ml_gen_pred(!ModuleInfo, ConstStructMap, PredId, ProcIds,
+                !FunctionDefns, !GlobalDefns)
         ),
         ml_gen_preds_acc(!ModuleInfo, ConstStructMap, PredIds,
-            !Defns, !GlobalDefns)
+            !FunctionDefns, !GlobalDefns)
     ;
         PredIds0 = []
     ).
 
-    % Generate MLDS definitions for all the non-imported procedures
+    % Generate MLDS definitions for all the specified procedures
     % of a given predicate (or function).
     %
 :- pred ml_gen_pred(module_info::in, module_info::out, ml_const_struct_map::in,
-    pred_id::in, pred_info::in, import_status::in,
-    list(mlds_defn)::in, list(mlds_defn)::out,
+    pred_id::in, list(proc_id)::in,
+    list(mlds_function_defn)::in, list(mlds_function_defn)::out,
     ml_global_data::in, ml_global_data::out) is det.
 
-ml_gen_pred(!ModuleInfo, ConstStructMap, PredId, PredInfo, ImportStatus,
-        !Defns, !GlobalData) :-
-    ( ImportStatus = status_external(_) ->
-        ProcIds = pred_info_procids(PredInfo)
-    ;
-        ProcIds = pred_info_non_imported_procids(PredInfo)
-    ),
+ml_gen_pred(!ModuleInfo, ConstStructMap, PredId, ProcIds,
+        !FunctionDefns, !GlobalData) :-
     (
         ProcIds = []
     ;
@@ -357,21 +341,21 @@ ml_gen_pred(!ModuleInfo, ConstStructMap, PredId, PredInfo, ImportStatus,
                 PredId, !.ModuleInfo, !IO)
         ),
         ml_gen_procs(!ModuleInfo, ConstStructMap, PredId, ProcIds,
-            !Defns, !GlobalData)
+            !FunctionDefns, !GlobalData)
     ).
 
 :- pred ml_gen_procs(module_info::in, module_info::out,
     ml_const_struct_map::in, pred_id::in, list(proc_id)::in,
-    list(mlds_defn)::in, list(mlds_defn)::out,
+    list(mlds_function_defn)::in, list(mlds_function_defn)::out,
     ml_global_data::in, ml_global_data::out) is det.
 
 ml_gen_procs(!ModuleInfo, _, _, [], !Defns, !GlobalData).
 ml_gen_procs(!ModuleInfo, ConstStructMap, PredId, [ProcId | ProcIds],
-        !Defns, !GlobalData) :-
+        !FunctionDefns, !GlobalData) :-
     ml_gen_proc(!ModuleInfo, ConstStructMap, PredId, ProcId,
-        !Defns, !GlobalData),
+        !FunctionDefns, !GlobalData),
     ml_gen_procs(!ModuleInfo, ConstStructMap, PredId, ProcIds,
-        !Defns, !GlobalData).
+        !FunctionDefns, !GlobalData).
 
 %-----------------------------------------------------------------------------%
 %
@@ -379,11 +363,12 @@ ml_gen_procs(!ModuleInfo, ConstStructMap, PredId, [ProcId | ProcIds],
 %
 
 :- pred ml_gen_proc(module_info::in, module_info::out, ml_const_struct_map::in,
-    pred_id::in, proc_id::in, list(mlds_defn)::in, list(mlds_defn)::out,
+    pred_id::in, proc_id::in,
+    list(mlds_function_defn)::in, list(mlds_function_defn)::out,
     ml_global_data::in, ml_global_data::out) is det.
 
 ml_gen_proc(!ModuleInfo, ConstStructMap, PredId, ProcId,
-        !Defns, !GlobalData) :-
+        !FunctionDefns, !GlobalData) :-
     % The specification of the HLDS allows goal_infos to overestimate
     % the set of non-locals. Such overestimates are bad for us for two reasons:
     %
@@ -403,7 +388,7 @@ ml_gen_proc(!ModuleInfo, ConstStructMap, PredId, ProcId,
     module_info_set_pred_proc_info(PredId, ProcId, PredInfo, ProcInfo,
         !ModuleInfo),
 
-    pred_info_get_import_status(PredInfo, ImportStatus),
+    pred_info_get_status(PredInfo, PredStatus),
     pred_info_get_arg_types(PredInfo, ArgTypes),
     CodeModel = proc_info_interface_code_model(ProcInfo),
     proc_info_get_headvars(ProcInfo, HeadVars),
@@ -417,18 +402,17 @@ ml_gen_proc(!ModuleInfo, ConstStructMap, PredId, ProcId,
         !:Info = ml_gen_info_init(!.ModuleInfo, ConstStructMap,
             PredId, ProcId, ProcInfo, !.GlobalData),
 
-        ( ImportStatus = status_external(_) ->
-            % For Mercury procedures declared `:- external', we generate an
-            % MLDS definition for them with no function body. The MLDS ->
-            % target code pass can treat this accordingly, e.g. for C
-            % it outputs a function declaration with no corresponding
-            % definition, making sure that the function is declared as `extern'
-            % rather than `static'.
-            %
+        ( if PredStatus = pred_status(status_external(_)) then
+            % For Mercury procedures declared `:- pragma external_{pred/func}',
+            % we generate an MLDS definition with no function body.
+            % The MLDS -> target code pass can treat this accordingly.
+            % For example, for C it outputs a function declaration with no
+            % corresponding definition, making sure that the function is
+            % declared as `extern' rather than `static'.
             FunctionBody = body_external,
             ExtraDefns = [],
             ml_gen_proc_params(PredId, ProcId, MLDS_Params, !.Info, _Info)
-        ;
+        else
             % Set up the initial success continuation, if any.
             % Also figure out which output variables are returned by value
             % (rather than being passed by reference) and remove them from
@@ -471,13 +455,14 @@ ml_gen_proc(!ModuleInfo, ConstStructMap, PredId, ProcId,
             MLDS_Context = mlds_make_context(Context),
             MLDS_LocalVars = [ml_gen_succeeded_var_decl(MLDS_Context) |
                 OutputVarLocals],
-            modes_to_arg_modes(!.ModuleInfo, Modes, ArgTypes, ArgModes),
-            ml_gen_proc_body(CodeModel, HeadVars, ArgTypes, ArgModes,
+            modes_to_top_functor_modes(!.ModuleInfo, Modes, ArgTypes,
+                TopFunctorModes),
+            ml_gen_proc_body(CodeModel, HeadVars, ArgTypes, TopFunctorModes,
                 CopiedOutputVars, Goal, Defns0, Statements, !Info),
             ml_gen_proc_params(PredId, ProcId, MLDS_Params, !Info),
             ml_gen_info_get_closure_wrapper_defns(!.Info, ExtraDefns),
             ml_gen_info_get_global_data(!.Info, !:GlobalData),
-            Defns = MLDS_LocalVars ++ Defns0,
+            Defns = list.map(wrap_data_defn, MLDS_LocalVars) ++ Defns0,
             Statement = ml_gen_block(Defns, Statements, Context),
             FunctionBody = body_defined_here(Statement)
 
@@ -489,38 +474,36 @@ ml_gen_proc(!ModuleInfo, ConstStructMap, PredId, ProcId,
     ),
 
     proc_info_get_context(ProcInfo0, ProcContext),
-    ml_gen_proc_label(!.ModuleInfo, PredId, ProcId, EntityName, _ModuleName),
+    ml_gen_proc_label(!.ModuleInfo, PredId, ProcId,
+        _ModuleName, PlainFuncName),
     MLDS_ProcContext = mlds_make_context(ProcContext),
     DeclFlags = ml_gen_proc_decl_flags(!.ModuleInfo, PredId, ProcId),
     MaybePredProcId = yes(proc(PredId, ProcId)),
+    proc_info_get_maybe_require_tailrec_info(ProcInfo0,
+        MaybeRequireTailrecInfo),
     pred_info_get_attributes(PredInfo, Attributes),
     attributes_to_attribute_list(Attributes, AttributeList),
     MLDS_Attributes =
         attributes_to_mlds_attributes(!.ModuleInfo, AttributeList),
-    EntityBody = mlds_function(MaybePredProcId, MLDS_Params,
-        FunctionBody, MLDS_Attributes, EnvVarNames),
-    ProcDefn = mlds_defn(EntityName, MLDS_ProcContext, DeclFlags, EntityBody),
-    !:Defns = ExtraDefns ++ [ProcDefn | !.Defns].
+    FunctionDefn = mlds_function_defn(mlds_function_name(PlainFuncName),
+        MLDS_ProcContext, DeclFlags, MaybePredProcId, MLDS_Params,
+        FunctionBody, MLDS_Attributes, EnvVarNames, MaybeRequireTailrecInfo),
+    !:FunctionDefns = ExtraDefns ++ [FunctionDefn | !.FunctionDefns].
 
     % Return the declaration flags appropriate for a procedure definition.
     %
 :- func ml_gen_proc_decl_flags(module_info, pred_id, proc_id)
-    = mlds_decl_flags.
+    = mlds_function_decl_flags.
 
 ml_gen_proc_decl_flags(ModuleInfo, PredId, ProcId) = DeclFlags :-
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    ( procedure_is_exported(ModuleInfo, PredInfo, ProcId) ->
+    ( if procedure_is_exported(ModuleInfo, PredInfo, ProcId) then
         Access = acc_public
-    ;
+    else
         Access = acc_private
     ),
     PerInstance = one_copy,
-    Virtuality = non_virtual,
-    Overridability = overridable,
-    Constness = modifiable,
-    Abstractness = concrete,
-    DeclFlags = init_decl_flags(Access, PerInstance,
-        Virtuality, Overridability, Constness, Abstractness).
+    DeclFlags = init_function_decl_flags(Access, PerInstance).
 
     % For model_det and model_semi procedures, figure out which output
     % variables are returned by value (rather than being passed by reference)
@@ -543,17 +526,17 @@ ml_det_copy_out_vars(ModuleInfo, CopiedOutputVars, !Info) :-
             _, CopiedOutputVars)
     ;
         DetCopyOut = no,
-        (
+        ( if
             % For det functions, the function result variable is returned by
             % value, and any remaining output variables are passed by
             % reference.
             ml_gen_info_get_pred_id(!.Info, PredId),
             ml_gen_info_get_proc_id(!.Info, ProcId),
             ml_is_output_det_function(ModuleInfo, PredId, ProcId, ResultVar)
-        ->
+        then
             CopiedOutputVars = [ResultVar],
             list.delete_all(OutputVars, ResultVar, ByRefOutputVars)
-        ;
+        else
             % Otherwise, all output vars are passed by reference.
             CopiedOutputVars = [],
             ByRefOutputVars = OutputVars
@@ -593,12 +576,12 @@ ml_set_up_initial_succ_cont(ModuleInfo, NondetCopiedOutputVars, !Info) :-
     % Generate the code for a procedure body.
     %
 :- pred ml_gen_proc_body(code_model::in, list(prog_var)::in,
-    list(mer_type)::in, list(arg_mode)::in, list(prog_var)::in,
+    list(mer_type)::in, list(top_functor_mode)::in, list(prog_var)::in,
     hlds_goal::in, list(mlds_defn)::out, list(statement)::out,
     ml_gen_info::in, ml_gen_info::out) is det.
 
-ml_gen_proc_body(CodeModel, HeadVars, ArgTypes, ArgModes, CopiedOutputVars,
-        Goal, Decls, Statements, !Info) :-
+ml_gen_proc_body(CodeModel, HeadVars, ArgTypes, TopFunctorModes,
+        CopiedOutputVars, Goal, Decls, Statements, !Info) :-
     Goal = hlds_goal(_, GoalInfo),
     Context = goal_info_get_context(GoalInfo),
 
@@ -613,31 +596,34 @@ ml_gen_proc_body(CodeModel, HeadVars, ArgTypes, ArgModes, CopiedOutputVars,
     % we append below, we want the original vars, not their cast versions.
 
     ml_gen_var_list(!.Info, CopiedOutputVars, CopiedOutputVarOriginalLvals),
-    ml_gen_convert_headvars(HeadVars, ArgTypes, ArgModes, CopiedOutputVars,
-        Context, ConvDecls, ConvInputStatements, ConvOutputStatements, !Info),
-    (
+    ml_gen_convert_headvars(HeadVars, ArgTypes, TopFunctorModes,
+        CopiedOutputVars, Context, ConvDecls,
+        ConvInputStatements, ConvOutputStatements, !Info),
+    ( if
         ConvDecls = [],
         ConvInputStatements = [],
         ConvOutputStatements = []
-    ->
+    then
         % No boxing/unboxing/casting required.
         ml_gen_goal(CodeModel, Goal, Decls, Statements1, !Info)
-    ;
+    else
         DoGenGoal = ml_gen_goal(CodeModel, Goal),
 
         % Boxing/unboxing/casting required. We need to convert the input
         % arguments, generate the goal, convert the output arguments,
         % and then succeeed.
-        DoConvOutputs = (pred(NewDecls::out, NewStatements::out,
-                Info0::in, Info::out) is det :-
-            ml_gen_success(CodeModel, Context, SuccStatements, Info0, Info),
-            NewDecls = [],
-            NewStatements = ConvOutputStatements ++ SuccStatements
-        ),
+        DoConvOutputs =
+            ( pred(NewDecls::out, NewStatements::out,
+                    Info0::in, Info::out) is det :-
+                ml_gen_success(CodeModel, Context, SuccStatements,
+                    Info0, Info),
+                NewDecls = [],
+                NewStatements = ConvOutputStatements ++ SuccStatements
+            ),
         ml_combine_conj(CodeModel, Context, DoGenGoal, DoConvOutputs,
             Decls0, Statements0, !Info),
         Statements1 = ConvInputStatements ++ Statements0,
-        Decls = ConvDecls ++ Decls0
+        Decls = list.map(wrap_data_defn, ConvDecls) ++ Decls0
     ),
 
     % Finally append an appropriate `return' statement, if needed.
@@ -651,44 +637,44 @@ ml_gen_proc_body(CodeModel, HeadVars, ArgTypes, ArgModes, CopiedOutputVars,
     % This procedure handles that.
     %
 :- pred ml_gen_convert_headvars(list(prog_var)::in, list(mer_type)::in,
-    list(arg_mode)::in, list(prog_var)::in, prog_context::in,
-    list(mlds_defn)::out, list(statement)::out, list(statement)::out,
+    list(top_functor_mode)::in, list(prog_var)::in, prog_context::in,
+    list(mlds_data_defn)::out, list(statement)::out, list(statement)::out,
     ml_gen_info::in, ml_gen_info::out) is det.
 
-ml_gen_convert_headvars(Vars, HeadTypes, ArgModes, CopiedOutputVars, Context,
-        Decls, InputStatements, OutputStatements, !Info) :-
-    (
+ml_gen_convert_headvars(Vars, HeadTypes, TopFunctorModes, CopiedOutputVars,
+        Context, Decls, InputStatements, OutputStatements, !Info) :-
+    ( if
         Vars = [],
         HeadTypes = [],
-        ArgModes = []
-    ->
+        TopFunctorModes = []
+    then
         Decls = [],
         InputStatements = [],
         OutputStatements = []
-    ;
+    else if
         Vars = [Var | VarsTail],
         HeadTypes = [HeadType | HeadTypesTail],
-        ArgModes = [ArgMode | ArgModesTail]
-    ->
+        TopFunctorModes = [TopFunctorMode | TopFunctorModesTail]
+    then
         ml_variable_type(!.Info, Var, BodyType),
-        (
+        ( if
             % Arguments with mode `top_unused' do not need to be converted.
-            ArgMode = top_unused
-        ->
-            ml_gen_convert_headvars(VarsTail, HeadTypesTail, ArgModesTail,
-                CopiedOutputVars, Context, Decls,
+            TopFunctorMode = top_unused
+        then
+            ml_gen_convert_headvars(VarsTail, HeadTypesTail,
+                TopFunctorModesTail, CopiedOutputVars, Context, Decls,
                 InputStatements, OutputStatements, !Info)
-        ;
+        else if
             % Check whether HeadType is the same as BodyType
             % (modulo the term.contexts). If so, no conversion is needed.
             map.init(Subst0),
             type_unify(HeadType, BodyType, [], Subst0, Subst),
             map.is_empty(Subst)
-        ->
-            ml_gen_convert_headvars(VarsTail, HeadTypesTail, ArgModesTail,
-                CopiedOutputVars, Context, Decls,
+        then
+            ml_gen_convert_headvars(VarsTail, HeadTypesTail,
+                TopFunctorModesTail, CopiedOutputVars, Context, Decls,
                 InputStatements, OutputStatements, !Info)
-        ;
+        else
             % Generate the lval for the head variable.
             ml_gen_var_with_type(!.Info, Var, HeadType, HeadVarLval),
 
@@ -696,7 +682,7 @@ ml_gen_convert_headvars(Vars, HeadTypes, ArgModes, CopiedOutputVars, Context,
             % to convert its type from HeadType to BodyType.
             ml_gen_info_get_varset(!.Info, VarSet),
             VarName = ml_gen_var_name(VarSet, Var),
-            ml_gen_box_or_unbox_lval(HeadType, BodyType, native_if_possible,
+            ml_gen_box_or_unbox_lval(HeadType, BodyType, bp_native_if_possible,
                 HeadVarLval, VarName, Context, no, 0, BodyLval, ConvDecls,
                 ConvInputStatements, ConvOutputStatements, !Info),
 
@@ -705,26 +691,26 @@ ml_gen_convert_headvars(Vars, HeadTypes, ArgModes, CopiedOutputVars, Context,
             % HeadVarLval (which has type HeadType).
             ml_gen_info_set_var_lval(Var, BodyLval, !Info),
 
-            ml_gen_convert_headvars(VarsTail, HeadTypesTail, ArgModesTail,
-                CopiedOutputVars, Context, DeclsTail,
+            ml_gen_convert_headvars(VarsTail, HeadTypesTail,
+                TopFunctorModesTail, CopiedOutputVars, Context, DeclsTail,
                 InputStatementsTail, OutputStatementsTail, !Info),
 
             % Add the code to convert this input or output.
             ml_gen_info_get_byref_output_vars(!.Info, ByRefOutputVars),
-            (
+            ( if
                 ( list.member(Var, ByRefOutputVars)
                 ; list.member(Var, CopiedOutputVars)
                 )
-            ->
+            then
                 InputStatements = InputStatementsTail,
                 OutputStatements = OutputStatementsTail ++ ConvOutputStatements
-            ;
+            else
                 InputStatements = ConvInputStatements ++ InputStatementsTail,
                 OutputStatements = OutputStatementsTail
             ),
             Decls = ConvDecls ++ DeclsTail
         )
-    ;
+    else
         unexpected($module, $pred, "length mismatch")
     ).
 
@@ -733,14 +719,15 @@ ml_gen_convert_headvars(Vars, HeadTypes, ArgModes, CopiedOutputVars, Context,
 % Code for handling tabling structures.
 %
 
-:- pred ml_gen_table_structs(module_info::in, list(mlds_defn)::out) is det.
+:- pred ml_gen_table_structs(module_info::in, list(mlds_data_defn)::out)
+    is det.
 
-ml_gen_table_structs(ModuleInfo, Defns) :-
+ml_gen_table_structs(ModuleInfo, DataDefns) :-
     module_info_get_table_struct_map(ModuleInfo, TableStructMap),
     map.to_assoc_list(TableStructMap, TableStructs),
     (
         TableStructs = [],
-        Defns = []
+        DataDefns = []
     ;
         TableStructs = [_ | _],
         module_info_get_globals(ModuleInfo, Globals),
@@ -754,14 +741,15 @@ ml_gen_table_structs(ModuleInfo, Defns) :-
         expect(isnt(unify(gc_accurate), GC_Method), $module, $pred,
             "tabling and `--gc accurate'"),
 
-        list.foldl(ml_gen_add_table_var(ModuleInfo), TableStructs, [], Defns)
+        list.foldl(ml_gen_add_table_var(ModuleInfo), TableStructs,
+            [], DataDefns)
     ).
 
 :- pred ml_gen_add_table_var(module_info::in,
     pair(pred_proc_id, table_struct_info)::in,
-    list(mlds_defn)::in, list(mlds_defn)::out) is det.
+    list(mlds_data_defn)::in, list(mlds_data_defn)::out) is det.
 
-ml_gen_add_table_var(ModuleInfo, PredProcId - TableStructInfo, !Defns) :-
+ml_gen_add_table_var(ModuleInfo, PredProcId - TableStructInfo, !DataDefns) :-
     module_info_get_name(ModuleInfo, ModuleName),
     MLDS_ModuleName = mercury_module_name_to_mlds(ModuleName),
     PredProcId = proc(_PredId, ProcId),
@@ -856,7 +844,8 @@ ml_gen_add_table_var(ModuleInfo, PredProcId - TableStructInfo, !Defns) :-
     ProcTableInfoDefn = tabling_name_and_init_to_defn(MLDS_ProcLabel,
         MLDS_Context, modifiable, tabling_info, ProcTableInfoInit),
 
-    !:Defns = CallDefns ++ AnswerDefns ++ [ProcTableInfoDefn | !.Defns].
+    !:DataDefns = CallDefns ++ AnswerDefns ++
+        [ProcTableInfoDefn | !.DataDefns].
 
 :- func init_step_desc(proc_tabling_struct_id, table_step_desc)
     = mlds_initializer.
@@ -878,8 +867,8 @@ init_step_desc(StructId, StepDesc) = init_struct(StructType, FieldInits) :-
 
 :- pred init_stats(mlds_module_name::in, mlds_proc_label::in, mlds_context::in,
     call_or_answer_table::in, curr_or_prev_table::in,
-    list(table_step_desc)::in, mlds_initializer::out, list(mlds_defn)::out)
-    is det.
+    list(table_step_desc)::in, mlds_initializer::out,
+    list(mlds_data_defn)::out) is det.
 
 init_stats(MLDS_ModuleName, MLDS_ProcLabel, MLDS_Context,
         CallOrAnswer, CurrOrPrev, StepDescs, StatsInit, StatsStepDefns) :-
@@ -957,42 +946,38 @@ gen_init_tabling_name(ModuleName, ProcLabel, TablingId) = Rval :-
     Rval = init_obj(ml_const(mlconst_data_addr(DataAddr))).
 
 :- func tabling_name_and_init_to_defn(mlds_proc_label, mlds_context, constness,
-    proc_tabling_struct_id, mlds_initializer) = mlds_defn.
+    proc_tabling_struct_id, mlds_initializer) = mlds_data_defn.
 
 tabling_name_and_init_to_defn(ProcLabel, MLDS_Context, Constness, Id,
-        Initializer) = Defn :-
+        Initializer) = DataDefn :-
     GCStatement = gc_no_stmt,
     MLDS_Type = mlds_tabling_type(Id),
     Flags = tabling_data_decl_flags(Constness),
-    DefnBody = mlds_data(MLDS_Type, Initializer, GCStatement),
-    Name = entity_data(mlds_tabling_ref(ProcLabel, Id)),
-    Defn = mlds_defn(Name, MLDS_Context, Flags, DefnBody).
+    Name = mlds_tabling_ref(ProcLabel, Id),
+    DataDefn = mlds_data_defn(Name, MLDS_Context, Flags,
+        MLDS_Type, Initializer, GCStatement).
 
     % Return the declaration flags appropriate for a tabling data structure.
     %
-:- func tabling_data_decl_flags(constness) = mlds_decl_flags.
+:- func tabling_data_decl_flags(constness) = mlds_data_decl_flags.
 
-tabling_data_decl_flags(Constness) = MLDS_DeclFlags :-
+tabling_data_decl_flags(Constness) = DeclFlags :-
     Access = acc_private,
     PerInstance = one_copy,
-    Virtuality = non_virtual,
-    Overridability = sealed,
-    Abstractness = concrete,
-    MLDS_DeclFlags = init_decl_flags(Access, PerInstance,
-        Virtuality, Overridability, Constness, Abstractness).
+    DeclFlags = init_data_decl_flags(Access, PerInstance, Constness).
 
 %-----------------------------------------------------------------------------%
 %
 % Code for handling attributes.
 %
 
-:- func attributes_to_mlds_attributes(module_info, list(hlds_pred.attribute))
+:- func attributes_to_mlds_attributes(module_info, list(pred_attribute))
     = list(mlds_attribute).
 
 attributes_to_mlds_attributes(ModuleInfo, Attrs) =
     list.map(attribute_to_mlds_attribute(ModuleInfo), Attrs).
 
-:- func attribute_to_mlds_attribute(module_info, hlds_pred.attribute)
+:- func attribute_to_mlds_attribute(module_info, pred_attribute)
     = mlds_attribute.
 
 attribute_to_mlds_attribute(ModuleInfo, custom(Type)) =

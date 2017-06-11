@@ -62,8 +62,6 @@ USE_DLLS		= @USE_DLLS@
 
 # Specify any special flags to pass to the C compiler when creating objects
 # for a shared library (e.g. -fpic or -fPIC for gcc).
-# For Irix 5 and Alpha/OSF, position-independent code is the default,
-# so leave this blank.
 CFLAGS_FOR_PIC		= @CFLAGS_FOR_PIC@
 
 # Specify EXT_FOR_PIC_OBJECTS as `pic_o' if any special $(PIC) flags are
@@ -76,9 +74,6 @@ EXT_FOR_PIC_OBJECTS	= @EXT_FOR_PIC_OBJECTS@
 # This is only used if EXT_FOR_SHARED_LIB was defined as `so' above.
 # This command may reference $(SO_LOCATIONS_DIR).
 #
-# LINK_SHARED_OBJ  	= ld -shared	# for Irix 5
-# LINK_SHARED_OBJ  	= gcc -assert nodefinitions
-#					# for SunOS 4 (completely untested)
 # LINK_SHARED_OBJ  	= gcc -shared	# for Solaris etc.
 LINK_SHARED_OBJ  	= @LINK_SHARED_OBJ@
 
@@ -100,6 +95,10 @@ ERROR_UNDEFINED	= @ERROR_UNDEFINED@
 ifeq "$(findstring .par,$(GRADE))$(findstring .gc,$(GRADE))" ".par.gc"
 ERROR_UNDEFINED	= $(ALLOW_UNDEFINED)
 endif
+
+# Specify any options required when linking if AddressSanitizer and other
+# sanitizers are enabled.
+LDFLAGS_FOR_SANITIZERS = @LDFLAGS_FOR_SANITIZERS@
 
 # The following variables specify how to pass options to the $(CC) or
 # $(LINK_SHARED_OBJ) command to specify directories to be searched at
@@ -169,15 +168,17 @@ GRADESTRING = $(shell $(SCRIPTS_DIR)/canonical_grade $(ALL_GRADEFLAGS))
 # MCFLAGS	+= --no-infer-all --halt-at-warn --no-warn-inferred-erroneous
 
 # Options to pass to the C compiler when building Boehm-GC.
-BOEHM_CFLAGS = @ENABLE_BOEHM_LARGE_CONFIG@ @ENABLE_BOEHM_USE_MUNMAP@ \
-    @ENABLE_BOEHM_XOPEN_SOURCE@
+BOEHM_CFLAGS = @ENABLE_BOEHM_LARGE_CONFIG@ \
+	@ENABLE_BOEHM_USE_MMAP@ \
+	@ENABLE_BOEHM_USE_MUNMAP@ \
+	@ENABLE_BOEHM_XOPEN_SOURCE@
 
 # Additional options to pass to the C compiler when building Boehm-GC for
 # threads.
 #
-BOEHM_CFLAGS_FOR_THREADS = @ENABLE_BOEHM_THREAD_LOCAL_ALLOC@ \
-	@ENABLE_BOEHM_PARALLEL_MARK@ \
-	@BOEHM_MISC_CFLAGS_FOR_THREADS@
+BOEHM_CFLAGS_FOR_THREADS = @BOEHM_CFLAGS_FOR_THREADS@ \
+	@ENABLE_BOEHM_THREAD_LOCAL_ALLOC@ \
+	@ENABLE_BOEHM_PARALLEL_MARK@
 
 # Do we want to deal with intermodule information when building the library?
 # By default yes, since this way we note immediately when intermodule
@@ -297,10 +298,6 @@ OBJ_CHECKS        = $(CHECK_OBJS:%=%.obj_check)
 # 		(the `mdbcomp' directory)
 # 	`GC_' for stuff in the Boehm et al conservative garbage collector
 # 		(the `boehm_gc' directory)
-# 	`MPS_' or `mps_' for stuff in the Memory Pool System toolkit
-# 		(the `mps_gc' directory, if present -- note that this
-# 		is in a separate CVS module and is not included in the
-# 		normal Mercury source distributions)
 # Exceptions to this policy must be listed in the RESERVED_MACRO_NAMES file
 # in the top directory (if applicable to all C source directories) or in
 # the relevant directory (if applicable only to some C source directories).
@@ -310,7 +307,7 @@ OBJ_CHECKS        = $(CHECK_OBJS:%=%.obj_check)
 # typeclass.
 
 GEN_MACRO_PREFIX_EXPRS = \
-	-e '^MR_' -e '^MERCURY_' -e '^GC_' -e '^MPS_' -e '^mps_'
+	-e '^MR_' -e '^MERCURY_' -e '^GC_'
 GEN_OBJ_PREFIX_EXPRS = \
 	-e '^@SYMPREFIX@MR_' -e '^_entry' -e '^@SYMPREFIX@mercury_' \
 	-e '^@SYMPREFIX@base_typeclass_info_'

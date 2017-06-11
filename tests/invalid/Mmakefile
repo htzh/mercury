@@ -1,12 +1,17 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab ft=make
+#-----------------------------------------------------------------------------#
 
 THIS_DIR = invalid
+SUBDIRS =
+TESTS_DIR = ..
+MAYBE_J1 =
 
 # Note: multi-module tests (including tests of nested modules)
 # need to be listed separately from single-module tests, since
 # we need to make dependencies only for multimodule tests.
 # However, multi-module tests where the error is detected when
-# building the dependencies (e.g. duplicate_module_test.m) should 
+# building the dependencies (e.g. duplicate_module_test.m) should
 # not be included in this list; we handle those specially (see below).
 
 MULTIMODULE_PROGS= \
@@ -39,19 +44,49 @@ SINGLEMODULE= \
 	any_to_ground_in_ite_cond \
 	any_to_ground_in_ite_cond_nomax \
 	anys_in_negated_contexts \
+	arg_permutation \
 	assert_in_interface \
+	bad_consider_used \
+	bad_detism \
+	bad_detism_category \
+	bad_end_module \
 	bad_finalise_decl \
+	bad_foreign_code \
+	bad_foreign_decl \
+	bad_foreign_enum \
+	bad_foreign_export \
+	bad_foreign_export_enum \
+	bad_foreign_import_module \
+	bad_foreign_proc \
+	bad_foreign_type \
 	bad_initialise_decl \
+	bad_inst_defn \
+	bad_inst_for_type \
 	bad_instance \
+	bad_instance2 \
+	bad_module_name \
 	bad_mutable \
 	bad_sv_unify_msg \
+	bad_with_inst \
 	bigtest \
 	bind_in_negated \
 	bind_var_errors \
+	bug10 \
 	bug113 \
+	bug115 \
+	bug117 \
 	bug150 \
+	bug17 \
+	bug184 \
+	bug191 \
 	bug197 \
+	bug214 \
 	bug238 \
+	bug257 \
+	bug278 \
+	bug363 \
+	bug415 \
+	bug436 \
 	bug83 \
 	builtin_int \
 	builtin_proc \
@@ -68,15 +103,22 @@ SINGLEMODULE= \
 	circ_type2 \
 	circ_type3 \
 	circ_type5 \
+	combined_ho_type_inst \
+	combined_ho_type_inst_2 \
+	comparison \
 	complex_constraint_err \
 	conflicting_fs \
 	conflicting_tabling_pragmas \
 	constrained_poly_insts \
+	constrained_poly_insts2 \
 	constraint_proof_bug_lib \
 	constructor_warning \
+	currying_multimode_func \
 	cyclic_typeclass \
 	cyclic_typeclass_2 \
 	cyclic_typeclass_3 \
+	default_ho_inst \
+	default_ho_inst_2 \
 	det_atomic_goal_msgs \
 	det_errors \
 	det_errors_cc \
@@ -89,6 +131,7 @@ SINGLEMODULE= \
 	errors1 \
 	errors2 \
 	exist_foreign_error \
+	exported_foreign_enum \
 	exported_mode \
 	ext_type \
 	ext_type_bug \
@@ -97,22 +140,28 @@ SINGLEMODULE= \
 	field_syntax_error \
 	foreign_enum_import \
 	foreign_enum_invalid \
+	foreign_include_file_missing \
 	foreign_purity_mismatch \
 	foreign_singleton \
 	foreign_type_2 \
-	foreign_type_missing \
 	foreign_type_visibility \
 	fp_dup_bug \
 	freefree \
+	func_class \
 	func_errors \
 	funcs_as_preds \
+	functor_ho_inst_bad \
+	functor_ho_inst_bad_2 \
+	functor_ho_inst_bad_3 \
 	fundeps_coverage \
 	fundeps_unbound_in_ctor \
 	fundeps_vars \
 	hawkins_mm_fail_reset \
+	higher_order_no_detism \
 	ho_any_inst \
 	ho_default_func_1 \
 	ho_default_func_3 \
+	ho_default_func_4 \
 	ho_type_mode_bug \
 	ho_unique_error \
 	illtyped_compare \
@@ -122,31 +171,41 @@ SINGLEMODULE= \
 	inconsistent_instances \
 	inline_conflict \
 	inst_list_dup \
+	inst_matches_final_bug \
 	instance_bug \
 	instance_no_type \
 	instance_var_bug \
+	invalid_binary_literal \
+	invalid_decimal_literal \
 	invalid_event \
 	invalid_export_detism \
+	invalid_float_literal \
+	invalid_hex_literal \
 	invalid_instance_declarations \
+	invalid_int \
 	invalid_main \
 	invalid_mllibs \
 	invalid_new \
+	invalid_octal_literal \
+	invalid_pragma \
 	invalid_typeclass \
+	invalid_uint_inst \
 	io_in_ite_cond \
 	kind \
 	lambda_syntax_error \
 	loopcheck \
 	magicbox \
 	make_opt_error \
+	malformed_ite \
 	max_error_line_width \
 	merge_ground_any \
 	merge_inst_error \
 	method_impl \
 	missing_concrete_instance \
 	missing_det_decls \
-	missing_init_pred \
 	missing_interface_import \
 	mixed_up_streams \
+	mode_decl_in_wrong_section \
 	mode_inf \
 	modes_erroneous \
 	mostly_uniq1 \
@@ -158,6 +217,7 @@ SINGLEMODULE= \
 	multimode_dcg \
 	multimode_missing_impure \
 	multimode_syntax \
+	multiply_star \
 	multisoln_func \
 	nested_impl_in_int \
 	no_exports \
@@ -185,9 +245,18 @@ SINGLEMODULE= \
 	quant_constraint_2 \
 	range_restrict \
 	record_syntax_errors \
+	ref_to_implicit_comma \
+	ref_to_implicit_pred \
+	repeated_field_name \
 	repeated_instance_vars_unsat \
 	require_det_in_lambda \
 	require_scopes \
+	require_switch_arms_detism \
+	require_tailrec_1 \
+	require_tailrec_2 \
+	require_tailrec_3 \
+	require_tailrec_invalid \
+	reserved \
 	some \
 	specified \
 	spurious_mode_error \
@@ -196,6 +265,7 @@ SINGLEMODULE= \
 	state_vars_test3 \
 	state_vars_test4 \
 	state_vars_test5 \
+	switch_arm_multi_not_det \
 	tc_err1 \
 	tc_err2 \
 	test_feature_set \
@@ -205,13 +275,17 @@ SINGLEMODULE= \
 	try_detism \
 	try_io_else \
 	type_error_ambiguous \
+	type_error_in_arg \
 	type_inf_loop \
+	type_lhs_var \
 	type_loop \
 	type_mismatch \
 	type_vars \
 	type_with_no_defn \
+	typeclass_bad_method_mode \
 	typeclass_bogus_method \
 	typeclass_constraint_extra_var \
+	typeclass_dup_method_mode \
 	typeclass_missing_det \
 	typeclass_missing_det_2 \
 	typeclass_missing_det_3 \
@@ -221,6 +295,7 @@ SINGLEMODULE= \
 	typeclass_mode_2 \
 	typeclass_mode_3 \
 	typeclass_mode_4 \
+	typeclass_no_param \
 	typeclass_test_1 \
 	typeclass_test_10 \
 	typeclass_test_11 \
@@ -251,18 +326,22 @@ SINGLEMODULE= \
 	uniq_modes \
 	uniq_mutable \
 	uniq_neg \
+	unrecognized_pragma \
 	unsatisfiable_constraint \
 	unsatisfiable_constraint_bug \
 	unsatisfiable_constraint_msg \
 	unsatisfiable_super \
+	unterminated_octal_escape \
 	user_eq_dummy \
 	uu_type \
+	var_as_pred_name \
 	vars_in_wrong_places \
 	where_abstract_enum \
 	where_direct_arg \
 	where_direct_arg2 \
 	with_type \
-	zinc2mer_lib
+	wrong_arity_function \
+	wrong_type_arity
 
 # The following require that num_tag_bits >= 1
 RESERVE_TAG_MODULES = \
@@ -274,7 +353,10 @@ TRAILED_MODULES = \
 
 # The following require that the back-end support the C interface
 C_INTERFACE_MODULES = \
+	fe_unmapped_nonverbose \
+	fe_unmapped_verbose \
 	foreign_decl_line_number \
+	pragma_qual_error \
 	trace_goal_env
 
 # The following require that the compiler not ignore `pragma type_spec'
@@ -299,11 +381,6 @@ NON_PROFDEEP_MODULES = \
 #		normal static linking; the error goes undetected
 #		when doing dynamic linking)
 #	parent.undeclared_child (just not yet implemented)
-#	ho_default_func_4 (due to a bug in the mode-checker ---
-#			see XXX comment in inst_match:inst_matches_final_3)
-#	inst_matches_final_bug (due to same bug as ho_default_func_4)
-#	bad_detism (error check not yet implemented)
-#	typeclass_dup_method_mode (error check NYI - just calls error)
 
 # XXX we do not currently pass the following tests:
 #	nonexistent_import (it is unclear whether the new output is OK or not)
@@ -312,14 +389,14 @@ NON_PROFDEEP_MODULES = \
 
 # These tests test things which only work for back-ends which support
 # the C interface.
-ifneq "$(filter java% csharp% il% erlang%,$(GRADE))" ""
+ifneq "$(filter java% csharp% erlang%,$(GRADE))" ""
 	C_INTERFACE_PROGS=
 else
 	C_INTERFACE_PROGS=$(C_INTERFACE_MODULES)
 endif
 
-# The java and il grades compile with num_tag_bits = 0.
-ifneq "$(filter java% csharp% il% erlang%,$(GRADE))" ""
+# The java, csharp and erlang grades compile with num_tag_bits = 0.
+ifneq "$(filter java% csharp% erlang%,$(GRADE))" ""
 	RESERVE_TAG_PROGS =
 else
 	RESERVE_TAG_PROGS = $(RESERVE_TAG_MODULES)
@@ -334,7 +411,7 @@ endif
 ifeq "$(findstring profdeep,$(GRADE))" ""
 	NON_PROFDEEP_PROGS = $(NON_PROFDEEP_MODULES)
 else
-	NON_PROFDEEP_PROGS = 
+	NON_PROFDEEP_PROGS =
 endif
 
 TYPE_SPEC_PROGS = $(TYPE_SPEC_MODULES)
@@ -348,14 +425,12 @@ SINGLEMODULE_PROGS = $(SINGLEMODULE) \
 
 #-----------------------------------------------------------------------------#
 
-PROGS= $(SINGLEMODULE_PROGS) $(MULTIMODULE_PROGS)
+PROGS =  $(SINGLEMODULE_PROGS) $(MULTIMODULE_PROGS)
 TESTS = $(sort $(MULTIMODULE_PROGS) $(SINGLEMODULE_PROGS:%=%-nodepend))
-SUBDIRS = purity
-TESTS_DIR = ..
 include $(TESTS_DIR)/Mmake.common
 
-# Module-specific options should go in Mercury.options so they
-# can be found by `mmc --make'.
+# Module-specific options should go in Mercury.options so they can be found
+# by `mmc --make'.
 include Mercury.options
 
 %.runtest: %.err_res ;
@@ -372,29 +447,29 @@ ifneq ($(MMAKE_USE_MMC_MAKE),yes)
 else
 
 % XXX: with `mmake --use-mmc-make' the ".DEFAULT:" rule seems to take
-% 	precedence over "%.err: %.m" rules.
-% XXX: the reason we run the $(MCM) command twice is to avoid 
-%	doubled up error messages, once while making interface files,
-%	then the module proper.  The second time the command is run
-%	only one set of error messages should appear.
+# precedence over "%.err: %.m" rules.
+% XXX: the reason we run the $(MCM) command twice is to avoid doubled up
+# error messages, once while making interface files, then the module proper.
+# The second time the command is run, only one set of error messages
+# should appear.
 $(addsuffix .err,$(PROGS)):
 	-$(MCM) $@
 	if $(MCM) -r $@ > /dev/null 2>&1 ; then false; else true; fi
 
 endif
 
-# For foreign_decl_line_number, the exact output is somewhat dependent
-# on the C compiler, etc.  So we just grep the output for "#error" to
-# make sure that it contains the lines that we expect.  That way we don't
-# fail this test if there is some additional output (e.g. spurious warnings
-# in system header files).  We also pipe the output through `sort -u'
-# to eliminate duplicates; this avoids spurious failures in cases where
-# the C foreign_proc code is inlined by the Mercury compiler.
-# We also pipe it through sed to remove "Mercury/cs/"; this
-# avoids spurious failures with --use-subdirs.
+# For foreign_decl_line_number, the exact output is somewhat dependent on
+# the C compiler, etc. So we just grep the output for "#error" to make sure
+# that it contains the lines that we expect. That way we don't fail this test
+# if there is some additional output (e.g. spurious warnings in system header
+# files). We also pipe the output through `sort -u' to eliminate duplicates;
+# this avoids spurious failures in cases where the C foreign_proc code
+# is inlined by the Mercury compiler. We also pipe it through sed to remove
+# "Mercury/cs/"; this avoids spurious failures with --use-subdirs.
 foreign_decl_line_number.err: foreign_decl_line_number.m
 	rm -f foreign_decl_line_number.err
 	if $(MC) --errorcheck-only $(ALL_GRADEFLAGS) $(ALL_MCFLAGS) \
+		--cflags "$(CFLAGS_FOR_ERRMSG_FILTER)" \
 		foreign_decl_line_number.m \
 		> foreign_decl_line_number.err.orig 2>&1; \
 	then false; else true; fi
@@ -402,12 +477,12 @@ foreign_decl_line_number.err: foreign_decl_line_number.m
 		sed 's@Mercury/cs/@@g' | sort -u \
 		> foreign_decl_line_number.err
 
-# Similarly for foreign_type_line_number, although in this case we
-# use "long short int" rather than #error, so we need to grep for that
-# instead.
+# Similarly for foreign_type_line_number, although in this case we use
+# "long short int" rather than #error, so we need to grep for that instead.
 foreign_type_line_number.err: foreign_type_line_number.m
 	rm -f foreign_type_line_number.err
 	if $(MC) --errorcheck-only $(ALL_GRADEFLAGS) $(ALL_MCFLAGS) \
+		--cflags "$(CFLAGS_FOR_ERRMSG_FILTER)" \
 		foreign_type_line_number.m \
 		> foreign_type_line_number.err.orig 2>&1; \
 	then false; else true; fi
@@ -417,9 +492,8 @@ foreign_type_line_number.err: foreign_type_line_number.m
 
 # For duplicate_instance_{1,2}, the error is only caught at link time.
 # So we need to use a different rule for that.
-# The exact error message varies a lot from system to system,
-# so we don't check the error output, we just check the command
-# return status.
+# The exact error message varies a lot from system to system, so we don't check
+# the error output, we just check the command return status.
 duplicate_instance_2.err: duplicate_instance_1.m duplicate_instance_2.m
 	if $(MCM) duplicate_instance_2 > /dev/null 2>&1; \
 	then	false; \
@@ -428,7 +502,7 @@ duplicate_instance_2.err: duplicate_instance_1.m duplicate_instance_2.m
 
 # For these test cases, the bug is caught when generating dependencies,
 # so it is easiest just to do that step.
-nested_impl_in_int.err duplicate_module_test.err: %.err: %.m
+bad_module_name.err duplicate_module_test.err func_class.err nested_impl_in_int.err: %.err: %.m
 	if $(MC) $(ALL_GRADEFLAGS) $(ALL_MCFLAGS) \
 			--generate-dependencies $* > $*.err 2>&1; \
 	then false; \
@@ -452,9 +526,20 @@ illtyped_compare.err: illtyped_compare.m
 	else true; \
 	fi
 
+# For these tests the error is only caught when generating target code.
+.PHONY: missing_file
+require_tailrec_1.err require_tailrec_2.err require_tailrec_3.err foreign_include_file_missing.err: %.err : %.m
+	if $(MC) --target-code-only $(ALL_GRADEFLAGS) $(ALL_MCFLAGS) \
+			$* > $*.err 2>&1; \
+	then false; \
+	else true; \
+	fi
+
 $(dates_subdir)undef_mod_qual.date: $(int0s_subdir)undef_mod_qual.int0
 
-clean_local:
+clean_local: clean_invalid
+
+clean_invalid:
 	rm -f *.err *.err_res
 
 #-----------------------------------------------------------------------------#

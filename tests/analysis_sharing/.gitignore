@@ -1,0 +1,6 @@
+*.gz
+*.opt
+*.optdate
+*.res1
+FAILED_TESTS
+Mercury.modules

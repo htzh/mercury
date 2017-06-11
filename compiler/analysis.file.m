@@ -103,12 +103,11 @@
 
 :- implementation.
 
-:- import_module libs.globals.
 :- import_module libs.options.
 :- import_module libs.pickle.
 :- import_module parse_tree.
 :- import_module parse_tree.module_cmds.        % XXX unwanted dependency
-:- import_module parse_tree.prog_io_sym_name.
+:- import_module parse_tree.parse_sym_name.
 :- import_module parse_tree.prog_out.
 
 :- import_module bool.
@@ -117,6 +116,7 @@
 :- import_module exception.
 :- import_module parser.
 :- import_module require.
+:- import_module string.
 :- import_module term.
 :- import_module term_io.
 :- import_module type_desc.
@@ -136,7 +136,7 @@
 
 % An .analysis_status file contains a single line, which is one of:
 %
-% optimal.  
+% optimal.
 % suboptimal.
 % invalid.
 %
@@ -201,8 +201,8 @@ read_module_overall_status(Compiler, Globals, ModuleName, ModuleStatus, !IO) :-
         read_module_overall_status_2(FileName, ModuleStatus0, !IO)
     ;
         MaybeFileName = error(_),
-        % Missing file means optimal.  We don't install `.analysis_status'
-        % files when installing libraries, for example.
+        % Missing file means optimal. We don't install `.analysis_status' files
+        % when installing libraries, for example.
         ModuleStatus0 = optimal
     ),
     (
@@ -235,13 +235,13 @@ read_module_overall_status_2(FileName, ModuleStatus, !IO) :-
         io.close_input(Stream, !IO),
         (
             ReadResult = ok(String),
-            ( string.prefix(String, "optimal.") ->
+            ( if string.prefix(String, "optimal.") then
                 ModuleStatus = optimal
-            ; string.prefix(String, "suboptimal.") ->
+            else if string.prefix(String, "suboptimal.") then
                 ModuleStatus = suboptimal
-            ; string.prefix(String, "invalid.") ->
+            else if string.prefix(String, "invalid.") then
                 ModuleStatus = invalid
-            ;
+            else
                 unexpected($module, $pred, "unexpected line")
             )
         ;
@@ -259,32 +259,32 @@ read_module_overall_status_2(FileName, ModuleStatus, !IO) :-
 %-----------------------------------------------------------------------------%
 
 read_module_analysis_results(Info, Globals, ModuleName, ModuleResults, !IO) :-
-    % If the module's overall status is `invalid' then at least one of its
-    % results is invalid.  However, we can't just discard the results as we
-    % want to know which results change after we reanalyse the module.
+    % If the module's overall status is `invalid', then at least one of its
+    % results is invalid. However, we can't just discard the results,
+    % as we want to know which results change after we reanalyse the module.
     Compiler = Info ^ compiler,
     module_name_to_read_file_name(Compiler, Globals, ModuleName,
         analysis_registry_suffix, MaybeAnalysisFileName, !IO),
     (
         MaybeAnalysisFileName = ok(AnalysisFileName),
 
-        % If analysis file caching is enabled, and the cache file exists and is
-        % up-to-date, then read from the cache instead.
+        % If analysis file caching is enabled, and the cache file exists
+        % and is up-to-date, then read from the cache instead.
         globals.lookup_string_option(Globals, analysis_file_cache_dir,
             CacheDir),
-        ( CacheDir = "" ->
+        ( if CacheDir = "" then
             read_module_analysis_results_2(Compiler, AnalysisFileName,
                 ModuleResults, !IO)
-        ;
+        else
             CacheFileName = make_cache_filename(CacheDir, AnalysisFileName),
             io.file_modification_time(AnalysisFileName, AnalysisTimeResult,
                 !IO),
             io.file_modification_time(CacheFileName, CacheTimeResult, !IO),
-            (
+            ( if
                 AnalysisTimeResult = ok(AnalysisTime),
                 CacheTimeResult = ok(CacheTime),
                 CacheTime @>= AnalysisTime
-            ->
+            then
                 Unpicklers = init_analysis_unpicklers(Compiler),
                 unpickle_from_file(Unpicklers, CacheFileName, UnpickleResult,
                     !IO),
@@ -302,7 +302,7 @@ read_module_analysis_results(Info, Globals, ModuleName, ModuleResults, !IO) :-
                     write_analysis_cache_file(CacheFileName, ModuleResults,
                         !IO)
                 )
-            ;
+            else
                 read_module_analysis_results_2(Compiler, AnalysisFileName,
                     ModuleResults, !IO),
                 write_analysis_cache_file(CacheFileName, ModuleResults, !IO)
@@ -328,14 +328,12 @@ read_module_analysis_results_2(Compiler, AnalysisFileName, ModuleResults,
             io.write_string(AnalysisFileName, !IO),
             io.nl(!IO)
         ), !IO),
-        io.set_input_stream(Stream, OldStream, !IO),
 
-        check_analysis_file_version_number(!IO),
+        check_analysis_file_version_number(Stream, !IO),
         promise_equivalent_solutions [Results, !:IO] (
-            try_io(read_analysis_file_2(parse_result_entry(Compiler),
+            try_io(read_analysis_file_2(Stream, parse_result_entry(Compiler),
                 ModuleResults0), Results, !IO)
         ),
-        io.set_input_stream(OldStream, _, !IO),
         io.close_input(Stream, !IO),
         (
             Results = succeeded(ModuleResults)
@@ -359,43 +357,42 @@ read_module_analysis_results_2(Compiler, AnalysisFileName, ModuleResults,
     <= compiler(Compiler).
 
 parse_result_entry(Compiler, Term, !Results) :-
-    (
+    ( if
         Term = term.functor(term.atom(AnalysisName),
             [VersionNumberTerm, FuncIdTerm,
             CallPatternTerm, AnswerPatternTerm, StatusTerm], _),
         StatusTerm = term.functor(term.atom(StatusString), [], _),
-        analysis_type(_ : unit(Call), _ : unit(Answer)) =
-            analyses(Compiler, AnalysisName),
+        analyses(Compiler, AnalysisName, Analysis),
+        analysis_type(_ : unit(Call), _ : unit(Answer)) = Analysis,
 
         parse_func_id(FuncIdTerm, FuncId),
         from_term(CallPatternTerm, CallPattern : Call),
         from_term(AnswerPatternTerm, AnswerPattern : Answer),
         analysis_status_to_string(Status, StatusString)
-    ->
-        (
+    then
+        ( if
             VersionNumber = analysis_version_number(_ : Call, _ : Answer),
-            VersionNumberTerm = term.functor(
-                term.integer(VersionNumber), [], _)
-        ->
+            decimal_term_to_int(VersionNumberTerm, VersionNumber)
+        then
             Result = 'new some_analysis_result'(CallPattern, AnswerPattern,
                 Status),
-            ( map.search(!.Results, AnalysisName, AnalysisResults0) ->
+            ( if map.search(!.Results, AnalysisName, AnalysisResults0) then
                 AnalysisResults1 = AnalysisResults0
-            ;
+            else
                 AnalysisResults1 = map.init
             ),
-            ( map.search(AnalysisResults1, FuncId, FuncResults0) ->
+            ( if map.search(AnalysisResults1, FuncId, FuncResults0) then
                 FuncResults = [Result | FuncResults0]
-            ;
+            else
                 FuncResults = [Result]
             ),
             map.set(FuncId, FuncResults, AnalysisResults1, AnalysisResults),
             map.set(AnalysisName, AnalysisResults, !Results)
-        ;
+        else
             % Ignore results with an out-of-date version number.
             true
         )
-    ;
+    else
         Msg = "failed to parse result entry: " ++ string(Term),
         throw(invalid_analysis_file(Msg))
     ).
@@ -414,40 +411,39 @@ read_module_analysis_requests(Info, Globals, ModuleName, ModuleRequests,
     <= compiler(Compiler).
 
 parse_request_entry(Compiler, Term, !Requests) :-
-    (
+    ( if
         Term = term.functor(atom("->"), [CallerModuleTerm, RHS], _),
         RHS = term.functor(atom(AnalysisName),
             [VersionNumberTerm, FuncIdTerm, CallPatternTerm], _),
-        analysis_type(_ : unit(Call), _ : unit(Answer)) =
-            analyses(Compiler, AnalysisName),
+        analyses(Compiler, AnalysisName, Analysis),
+        analysis_type(_ : unit(Call), _ : unit(Answer)) = Analysis,
 
         try_parse_module_name(CallerModuleTerm, CallerModule),
         parse_func_id(FuncIdTerm, FuncId),
         from_term(CallPatternTerm, CallPattern : Call)
-    ->
-        (
+    then
+        ( if
             VersionNumber = analysis_version_number(_ : Call, _ : Answer),
-            VersionNumberTerm = term.functor(
-                term.integer(VersionNumber), [], _)
-        ->
+            decimal_term_to_int(VersionNumberTerm, VersionNumber)
+        then
             Result = 'new analysis_request'(CallPattern, CallerModule),
-            ( map.search(!.Requests, AnalysisName, AnalysisRequests0) ->
+            ( if map.search(!.Requests, AnalysisName, AnalysisRequests0) then
                 AnalysisRequests1 = AnalysisRequests0
-            ;
+            else
                 AnalysisRequests1 = map.init
             ),
-            ( map.search(AnalysisRequests1, FuncId, FuncRequests0) ->
+            ( if map.search(AnalysisRequests1, FuncId, FuncRequests0) then
                 FuncRequests = [Result | FuncRequests0]
-            ;
+            else
                 FuncRequests = [Result]
             ),
             map.set(FuncId, FuncRequests, AnalysisRequests1, AnalysisRequests),
             map.set(AnalysisName, AnalysisRequests, !Requests)
-        ;
+        else
             % Ignore requests with an out-of-date version number.
             true
         )
-    ;
+    else
         Msg = "failed to parse request entry: " ++ string(Term),
         throw(invalid_analysis_file(Msg))
     ).
@@ -463,42 +459,41 @@ read_module_imdg(Info, Globals, ModuleName, ModuleEntries, !IO) :-
     is det <= compiler(Compiler).
 
 parse_imdg_arc(Compiler, Term, !Arcs) :-
-    (
+    ( if
         Term = term.functor(atom("->"), [DependentModuleTerm, ResultTerm], _),
         ResultTerm = functor(atom(AnalysisName),
             [VersionNumberTerm, FuncIdTerm, CallPatternTerm], _),
-        analysis_type(_ : unit(Call), _ : unit(Answer))
-            = analyses(Compiler, AnalysisName),
+        analyses(Compiler, AnalysisName, Analysis),
+        analysis_type(_ : unit(Call), _ : unit(Answer)) = Analysis,
 
         try_parse_module_name(DependentModuleTerm, DependentModule),
         parse_func_id(FuncIdTerm, FuncId),
         from_term(CallPatternTerm, CallPattern : Call)
-    ->
-        (
+    then
+        ( if
             VersionNumber = analysis_version_number(_ : Call, _ : Answer),
-            VersionNumberTerm = term.functor(
-                term.integer(VersionNumber), [], _)
-        ->
+            decimal_term_to_int(VersionNumberTerm, VersionNumber)
+        then
             Arc = 'new imdg_arc'(CallPattern, DependentModule),
-            ( map.search(!.Arcs, AnalysisName, AnalysisArcs0) ->
+            ( if map.search(!.Arcs, AnalysisName, AnalysisArcs0) then
                 AnalysisArcs1 = AnalysisArcs0
-            ;
+            else
                 AnalysisArcs1 = map.init
             ),
-            ( map.search(AnalysisArcs1, FuncId, FuncArcs0) ->
+            ( if map.search(AnalysisArcs1, FuncId, FuncArcs0) then
                 FuncArcs = [Arc | FuncArcs0]
-            ;
+            else
                 FuncArcs = [Arc]
             ),
             map.set(FuncId, FuncArcs, AnalysisArcs1, AnalysisArcs),
             map.set(AnalysisName, AnalysisArcs, !Arcs)
-        ;
+        else
             % Ignore results with an out-of-date version number.
             % XXX: is that the right thing to do?
             % do we really need a version number for the IMDG?
             true
         )
-    ;
+    else
         Msg = "failed to parse IMDG arc: " ++ string(Term),
         throw(invalid_analysis_file(Msg))
     ).
@@ -517,8 +512,8 @@ parse_func_id(Term, FuncId) :-
         PredOrFunc = pf_function
     ),
     NameTerm = functor(atom(Name), [], _),
-    ArityTerm = functor(integer(Arity), [], _),
-    ProcTerm = functor(integer(ProcInt), [], _),
+    decimal_term_to_int(ArityTerm, Arity),
+    decimal_term_to_int(ProcTerm, ProcInt),
     proc_id_to_int(ProcId, ProcInt),
     FuncId = func_id(PredOrFunc, Name, Arity, ProcId).
 
@@ -568,17 +563,15 @@ read_analysis_file(AnalysisFileName, ParseEntry, ModuleResults0, ModuleResults,
             io.write_string(AnalysisFileName, !IO),
             io.nl(!IO)
         ), !IO),
-        io.set_input_stream(Stream, OldStream, !IO),
 
         promise_equivalent_solutions [Result, !:IO] (
             try_io(
-                (pred(Results1::out, !.IO::di, !:IO::uo) is det :-
-                    check_analysis_file_version_number(!IO),
-                    read_analysis_file_2(ParseEntry, ModuleResults0, Results1,
-                        !IO)
+                ( pred(Results1::out, !.IO::di, !:IO::uo) is det :-
+                    check_analysis_file_version_number(Stream, !IO),
+                    read_analysis_file_2(Stream, ParseEntry,
+                        ModuleResults0, Results1, !IO)
                 ), Result, !IO)
         ),
-        io.set_input_stream(OldStream, _, !IO),
         io.close_input(Stream, !IO),
         (
             Result = succeeded(ModuleResults)
@@ -596,28 +589,30 @@ read_analysis_file(AnalysisFileName, ParseEntry, ModuleResults0, ModuleResults,
         ModuleResults = ModuleResults0
     ).
 
-:- pred check_analysis_file_version_number(io::di, io::uo) is det.
+:- pred check_analysis_file_version_number(io.text_input_stream::in,
+    io::di, io::uo) is det.
 
-check_analysis_file_version_number(!IO) :-
-    parser.read_term(TermResult : read_term, !IO),
-    (
-        TermResult = term(_, term.functor(term.integer(version_number), [], _))
-    ->
+check_analysis_file_version_number(Stream, !IO) :-
+    parser.read_term(Stream, TermResult : read_term, !IO),
+    ( if
+        TermResult  = term(_, NumberTerm),
+        decimal_term_to_int(NumberTerm, version_number)
+    then
         true
-    ;
+    else
         Msg = "bad analysis file version: " ++ string(TermResult),
         throw(invalid_analysis_file(Msg))
     ).
 
-:- pred read_analysis_file_2(parse_entry(T)::in(parse_entry), T::in, T::out,
-    io::di, io::uo) is det.
+:- pred read_analysis_file_2(io.text_input_stream::in,
+    parse_entry(T)::in(parse_entry), T::in, T::out, io::di, io::uo) is det.
 
-read_analysis_file_2(ParseEntry, Results0, Results, !IO) :-
-    parser.read_term(TermResult, !IO),
+read_analysis_file_2(Stream, ParseEntry, Results0, Results, !IO) :-
+    parser.read_term(Stream, TermResult : read_term, !IO),
     (
-        TermResult = term(_, Term) : read_term,
+        TermResult = term(_, Term),
         ParseEntry(Term, Results0, Results1),
-        read_analysis_file_2(ParseEntry, Results1, Results, !IO)
+        read_analysis_file_2(Stream, ParseEntry, Results1, Results, !IO)
     ;
         TermResult = eof,
         Results = Results0
@@ -673,13 +668,13 @@ write_module_analysis_results(Info, Globals, ModuleName, ModuleResults, !IO) :-
     % If analysis file caching is turned on, write the internal represention of
     % the module results to disk right now.
     globals.lookup_string_option(Globals, analysis_file_cache_dir, CacheDir),
-    (
+    ( if
         CacheDir \= "",
         Result = interface_new_or_changed
-    ->
+    then
         CacheFileName = make_cache_filename(CacheDir, FileName),
         write_analysis_cache_file(CacheFileName, ModuleResults, !IO)
-    ;
+    else
         true
     ).
 
@@ -719,17 +714,15 @@ write_module_analysis_requests(Info, Globals, ModuleName, ModuleRequests,
     io.open_input(AnalysisFileName, InputResult, !IO),
     (
         InputResult = ok(InputStream),
-        % Request file already exists.  Check it has the right version
-        % number, then append the new requests to the end.
+        % Request file already exists. Check it has the right version number,
+        % then append the new requests to the end.
 
-        io.set_input_stream(InputStream, OldInputStream, !IO),
-        parser.read_term(VersionResult : read_term, !IO),
-        io.set_input_stream(OldInputStream, _, !IO),
+        parser.read_term(InputStream, VersionResult : read_term, !IO),
         io.close_input(InputStream, !IO),
-        (
-            VersionResult = term(_, term.functor(
-                term.integer(version_number), [], _))
-        ->
+        ( if
+            VersionResult = term(_, NumberTerm),
+            decimal_term_to_int(NumberTerm, version_number)
+        then
             io.open_append(AnalysisFileName, AppendResult, !IO),
             (
                 AppendResult = ok(AppendStream),
@@ -743,7 +736,7 @@ write_module_analysis_requests(Info, Globals, ModuleName, ModuleRequests,
                 AppendResult = error(_),
                 Appended = no
             )
-        ;
+        else
             Appended = no
         )
     ;
@@ -763,16 +756,16 @@ write_module_analysis_requests(Info, Globals, ModuleName, ModuleRequests,
 
 write_request_entry(Compiler, AnalysisName, FuncId, Request, !IO) :-
     Request = analysis_request(Call, CallerModule),
-    (
-        analysis_type(_ : unit(Call), _ : unit(Answer))
-            = analyses(Compiler, AnalysisName)
-    ->
+    ( if
+        analyses(Compiler, AnalysisName, Analysis),
+        analysis_type(_ : unit(Call), _ : unit(Answer)) = Analysis
+    then
         VersionNumber = analysis_version_number(_ : Call, _ :  Answer)
-    ;
+    else
         unexpected($module, $pred, "unknown analysis type")
     ),
 
-    write_module_name(CallerModule, !IO),
+    write_quoted_module_name(CallerModule, !IO),
     io.write_string(" -> ", !IO),
     io.write_string(AnalysisName, !IO),
     io.write_string("(", !IO),
@@ -795,16 +788,16 @@ write_module_imdg(Info, Globals, ModuleName, ModuleEntries, !IO) :-
 
 write_imdg_arc(Compiler, AnalysisName, FuncId, Arc, !IO) :-
     Arc = imdg_arc(Call, DependentModule),
-    (
-        analysis_type(_ : unit(Call), _ : unit(Answer))
-            = analyses(Compiler, AnalysisName)
-    ->
+    ( if
+        analyses(Compiler, AnalysisName, Analysis),
+        analysis_type(_ : unit(Call), _ : unit(Answer)) = Analysis
+    then
         VersionNumber = analysis_version_number(_ : Call, _ : Answer)
-    ;
+    else
         unexpected($module, $pred, "unknown analysis type")
     ),
 
-    write_module_name(DependentModule, !IO),
+    write_quoted_module_name(DependentModule, !IO),
     io.write_string(" -> ", !IO),
     io.write_string(AnalysisName, !IO),
     io.write_char('(', !IO),
@@ -834,9 +827,9 @@ write_func_id(func_id(PredOrFunc, Name, Arity, ProcId), !IO) :-
     io.write_int(proc_id_to_int(ProcId), !IO),
     io.write_char(')', !IO).
 
-:- pred write_module_name(module_name::in, io::di, io::uo) is det.
+:- pred write_quoted_module_name(module_name::in, io::di, io::uo) is det.
 
-write_module_name(ModuleName, !IO) :-
+write_quoted_module_name(ModuleName, !IO) :-
     write_quoted_sym_name(ModuleName, !IO).
 
 %-----------------------------------------------------------------------------%
@@ -921,11 +914,11 @@ empty_request_file(Info, Globals, ModuleName, !IO) :-
 % Analysis file caching.
 %
 % An analysis cache file stores a binary representation of the parsed
-% information in the corresponding .analysis file.  In some cases, the binary
-% format can be faster to read than the usual representation.  The textual
-% analysis files are portable, more stable (doesn't depend on compiler
-% internals) and easier to debug, hence the reason we don't just use the
-% binary files exclusively.
+% information in the corresponding .analysis file. In some cases,
+% the binary format can be faster to read than the usual representation.
+% The textual analysis files are portable, they more stable (they don't depend
+% on compiler internals) and are easier to debug, which is why we don't
+% use binary files exclusively.
 %
 
 :- func make_cache_filename(string, string) = string.
@@ -944,8 +937,8 @@ dir_sep(Char) :-
     module_analysis_map(some_analysis_result)::in, io::di, io::uo) is det.
 
 write_analysis_cache_file(CacheFileName, ModuleResults, !IO) :-
-    % Write to a temporary file first and only move it into place once it is
-    % complete.
+    % Write to a temporary file first, and only move it into place
+    % once it is complete.
     TmpFileName = CacheFileName ++ ".tmp",
     io.tell_binary(TmpFileName, TellRes, !IO),
     (
@@ -1009,18 +1002,18 @@ init_analysis_unpicklers(Compiler) = Unpicklers :-
     <= compiler(Compiler).
 
 unpickle_analysis_result(Compiler, Unpicklers, Handle, _Type, Univ, !State) :-
-    unpickle(Unpicklers, Handle, Name : string, !State),
-    (
-        analysis_type(_ : unit(Call), _ : unit(Answer))
-            = analyses(Compiler, Name)
-    ->
+    unpickle(Unpicklers, Handle, AnalysisName : string, !State),
+    ( if
+        analyses(Compiler, AnalysisName, Analysis),
+        analysis_type(_ : unit(Call), _ : unit(Answer)) = Analysis
+    then
         unpickle(Unpicklers, Handle, Call : Call, !State),
         unpickle(Unpicklers, Handle, Answer : Answer, !State),
         unpickle(Unpicklers, Handle, Status, !State),
         Result = 'new some_analysis_result'(Call, Answer, Status),
         type_to_univ(Result, Univ)
-    ;
-        unexpected($module, $pred, Name)
+    else
+        unexpected($module, $pred, AnalysisName)
     ).
 
 % This is only needed so we can get the type_ctor_desc of

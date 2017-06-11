@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2001-2002, 2004-2006, 2008, 2010-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Authors: conway, zs.
 %
@@ -21,7 +21,7 @@
 :- import_module array.
 :- import_module list.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred find_cliques(initial_deep::in, list(list(proc_dynamic_ptr))::out)
     is det.
@@ -30,21 +30,20 @@
     array(list(proc_dynamic_ptr))::array_uo, array(clique_ptr)::array_uo)
     is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module array_util.
 :- import_module cliques.
-:- import_module profile.
 
 :- import_module int.
 :- import_module io.
 :- import_module set.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 find_cliques(InitDeep, BottomUpPDPtrCliqueList) :-
     make_graph(InitDeep, Graph),
@@ -75,7 +74,7 @@ foldl(P, !.L, !A) :-
     list(X)::in, list(X)::out, A::in, A::out) is det.
 
 foldl_2(Depth, P, !Xs, !A) :-
-    ( Depth > 0 ->
+    ( if Depth > 0 then
         (
             !.Xs = []
         ;
@@ -83,7 +82,7 @@ foldl_2(Depth, P, !Xs, !A) :-
             P(X, !A),
             foldl_2(Depth - 1, P, !Xs, !A)
         )
-    ;
+    else
         true
     ).
 
@@ -105,7 +104,7 @@ pdi_set_to_pdptr_list(PDISet, PDPtrList) :-
 
 pdi_to_pdptr(PDI, proc_dynamic_ptr(PDI)).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred make_graph(initial_deep::in, graph::out) is det.
 
@@ -141,7 +140,7 @@ add_call_site_arcs(InitDeep, FromPDI, CallSiteSlot, !Graph) :-
 
 add_csd_arcs(InitDeep, FromPDI, CSDPtr, !Graph) :-
     CSDPtr = call_site_dynamic_ptr(CSDI),
-    ( CSDI > 0 ->
+    ( if CSDI > 0 then
         array.lookup(InitDeep ^ init_call_site_dynamics, CSDI, CSD),
         ToPDPtr = CSD ^ csd_callee,
         ToPDPtr = proc_dynamic_ptr(ToPDI),
@@ -149,11 +148,11 @@ add_csd_arcs(InitDeep, FromPDI, CSDPtr, !Graph) :-
             write_arc(FromPDI, ToPDI, CSDI, !IO)
         ),
         add_arc(!.Graph, FromPDI, ToPDI, !:Graph)
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 make_clique_indexes(NPDs, CliqueList, Cliques, CliqueIndex) :-
     Cliques = array(CliqueList),
@@ -180,7 +179,7 @@ index_clique_member(CliqueNum, PDPtr, !CliqueIndex) :-
     ),
     array.set(PDI, clique_ptr(CliqueNum), !CliqueIndex).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Predicates for use in debugging.
 %
@@ -201,6 +200,6 @@ write_pdi_cn(PDI, CN, !IO) :-
     io.nl(!IO),
     io.flush_output(!IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module callgraph.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

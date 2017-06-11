@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2005-2007, 2010-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: dice.m
 % Authors: Ian MacLarty and Zoltan Somogyi
@@ -13,7 +13,7 @@
 % A dice is the difference between one or more passing test runs
 % and one (or more, but that is not yet implemented) failing test runs.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdbcomp.slice_and_dice.
 :- interface.
@@ -25,7 +25,7 @@
 :- import_module map.
 :- import_module maybe.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type slice
     --->    slice(
@@ -42,13 +42,12 @@
                 slice_filename      ::  string,
                 slice_linenumber    ::  int,
 
+                % The number of times the label was executed
+                % in all the test runs.
                 slice_count         :: int,
-                                    % The number of times the label was
-                                    % executed in all the test runs.
 
+                % The number of test runs the label was executed in.
                 slice_tests         :: int
-                                    % The number of test runs the label was
-                                    % executed in.
             ).
 
     % read_slice(File, MaybeSlice, !IO):
@@ -84,7 +83,7 @@
     maybe(int)::in, maybe(int)::in, maybe(int)::in,
     string::in, string::out, string::out, io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type dice
     --->    dice(
@@ -102,21 +101,19 @@
                 dice_filename   ::  string,
                 dice_linenumber ::  int,
 
+                % The number of times the label was executed in all
+                % the passing test runs.
                 pass_count      :: int,
-                                % The number of times the label was executed in
-                                % all the passing test runs.
 
+                % The number of passing test runs the label was executed in.
                 pass_tests      :: int,
-                                % The number of passing test runs the label
-                                % was executed in.
 
+                % The number of times the label was executed in failing
+                % test runs.
                 fail_count      :: int,
-                                % The number of times the label was executed in
-                                % failing test runs.
 
+                % The number of failing test runs the label was executed in.
                 fail_tests      :: int
-                                % The number of failing test runs the label
-                                % was executed in.
             ).
 
     % read_dice(PassFile, FailFile, MaybeDice, !IO):
@@ -181,12 +178,13 @@
     %
 :- func suspicion_ratio_binary(int, int) = float.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module mdbcomp.goal_path.
 :- import_module mdbcomp.rtti_access.
+:- import_module mdbcomp.sym_name.
 
 :- import_module float.
 :- import_module int.
@@ -196,10 +194,11 @@
 :- import_module set.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % The mechanism for reading in slices. The structure is similar to the
 % mechanism for reading in dices below.
+%
 
 read_slice(File, Result, !IO) :-
     read_trace_counts_source(File, ReadResult, !IO),
@@ -213,6 +212,56 @@ read_slice(File, Result, !IO) :-
         ReadResult = list_error_message(Problem),
         Result = error(Problem)
     ).
+
+%---------------------------------------------------------------------------%
+%
+% A mechanism for sorting and formatting slices. The structure is similar
+% to the mechanism for sorting and formatting dices below.
+%
+
+read_slice_to_string(File, SortStr0, MaxRows,
+        MaybeMaxPredColumns, MaybeMaxPathColumns, MaybeMaxFileColumns,
+        Module, SliceStr, Problem, !IO) :-
+    ( if slice_sort_string_is_valid(SortStr0) then
+        read_slice(File, ReadSliceResult, !IO),
+        (
+            ReadSliceResult = ok(Slice),
+            Slice = slice(TotalTests, SliceProcMap),
+            LabelCounts = slice_to_label_counts(SliceProcMap),
+            ( if Module = "" then
+                ModuleFilteredLabelCounts = LabelCounts
+            else
+                list.filter(slice_label_count_is_for_module(Module),
+                    LabelCounts, ModuleFilteredLabelCounts)
+            ),
+            ( if string.append("z", SortStrPrime, SortStr0) then
+                SortStr = SortStrPrime,
+                list.filter(slice_label_count_is_zero,
+                    ModuleFilteredLabelCounts, FilteredLabelCounts)
+            else
+                SortStr = SortStr0,
+                FilteredLabelCounts = ModuleFilteredLabelCounts
+            ),
+            list.sort(slice_label_count_compare(SortStr), FilteredLabelCounts,
+                SortedLabelCounts),
+            ( if list.take(MaxRows, SortedLabelCounts, Taken) then
+                TopNLabelCounts = Taken
+            else
+                TopNLabelCounts = SortedLabelCounts
+            ),
+            Problem = "",
+            SliceStr = format_slice_label_counts(TopNLabelCounts, TotalTests,
+                MaybeMaxPredColumns, MaybeMaxPathColumns, MaybeMaxFileColumns)
+        ;
+            ReadSliceResult = error(Problem),
+            SliceStr = ""
+        )
+    else
+        Problem = "Invalid sort string",
+        SliceStr = ""
+    ).
+
+%---------------------------------------------------------------------------%
 
     % Add the trace_counts to the given slice.
     %
@@ -229,11 +278,11 @@ slice_merge_proc_trace_counts(ProcLabelAndFile, ProcTraceCounts,
         !SliceProcMap) :-
     ProcLabelAndFile = proc_label_in_context(_ModuleNameSym, FileName,
         ProcLabel),
-    ( map.search(!.SliceProcMap, ProcLabel, FoundProcSlice) ->
+    ( if map.search(!.SliceProcMap, ProcLabel, FoundProcSlice) then
         map.foldl(slice_merge_path_port(FileName), ProcTraceCounts,
             FoundProcSlice, MergedProcSlice),
         map.det_update(ProcLabel, MergedProcSlice, !SliceProcMap)
-    ;
+    else
         map.foldl(slice_merge_path_port(FileName), ProcTraceCounts,
             map.init, MergedProcSlice),
         map.det_insert(ProcLabel, MergedProcSlice, !SliceProcMap)
@@ -243,12 +292,12 @@ slice_merge_proc_trace_counts(ProcLabelAndFile, ProcTraceCounts,
     proc_slice::in, proc_slice::out) is det.
 
 slice_merge_path_port(FileName, PathPort, LineNoAndCount, !ProcSlice) :-
-    (
+    ( if
         map.transform_value(slice_add_trace_count(LineNoAndCount),
             PathPort, !.ProcSlice, UpdatedProcSlice)
-    ->
+    then
         !:ProcSlice = UpdatedProcSlice
-    ;
+    else
         LineNoAndCount = line_no_and_count(LineNumber, ExecCount, NumTests),
         SliceExecCount = slice_exec_count(FileName, LineNumber, ExecCount,
             NumTests),
@@ -264,10 +313,11 @@ slice_add_trace_count(LineNoAndCount, ExecCounts0, ExecCounts) :-
     ExecCounts = slice_exec_count(FileName, LineNumber, Exec + ExecCount,
         Tests + NumTests).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % The mechanism for reading in dices. The structure is similar to the
 % mechanism for reading in slices above.
+%
 
 :- pragma foreign_export("C", read_dice(in, in, out, di, uo),
     "MR_MDBCOMP_read_dice").
@@ -297,10 +347,10 @@ read_dice(PassFile, FailFile, Result, !IO) :-
     ).
 
 :- pred maybe_dice_error_to_problem_string(maybe_error(dice)::in, string::out)
-	is det.
+    is det.
 
 :- pragma foreign_export("C", maybe_dice_error_to_problem_string(in, out),
-	"MR_MDBCOMP_maybe_dice_error_to_problem_string").
+    "MR_MDBCOMP_maybe_dice_error_to_problem_string").
 
 maybe_dice_error_to_problem_string(ok(_), "").
 maybe_dice_error_to_problem_string(error(ErrorStr), ErrorStr).
@@ -308,11 +358,11 @@ maybe_dice_error_to_problem_string(error(ErrorStr), ErrorStr).
 :- pred det_maybe_dice_error_to_dice(maybe_error(dice)::in, dice::out) is det.
 
 :- pragma foreign_export("C", det_maybe_dice_error_to_dice(in, out),
-	"MR_MDBCOMP_det_maybe_dice_error_to_dice").
+    "MR_MDBCOMP_det_maybe_dice_error_to_dice").
 
 det_maybe_dice_error_to_dice(ok(Dice), Dice).
 det_maybe_dice_error_to_dice(error(_), _) :-
-	error("det_maybe_dice_error_to_dice: result is error").
+    error("det_maybe_dice_error_to_dice: result is error").
 
 :- type trace_counts_kind
     --->    pass_slice
@@ -334,11 +384,11 @@ dice_merge_proc_trace_counts(Kind, ProcLabelAndFile, ProcTraceCounts,
         !DiceProcMap) :-
     ProcLabelAndFile = proc_label_in_context(_ModuleNameSym, FileName,
         ProcLabel),
-    ( map.search(!.DiceProcMap, ProcLabel, FoundProcDice) ->
+    ( if map.search(!.DiceProcMap, ProcLabel, FoundProcDice) then
         map.foldl(dice_merge_path_port(FileName, Kind), ProcTraceCounts,
             FoundProcDice, MergedProcDice),
         map.det_update(ProcLabel, MergedProcDice, !DiceProcMap)
-    ;
+    else
         map.foldl(dice_merge_path_port(FileName, Kind), ProcTraceCounts,
             map.init, MergedProcDice),
         map.det_insert(ProcLabel, MergedProcDice, !DiceProcMap)
@@ -348,12 +398,12 @@ dice_merge_proc_trace_counts(Kind, ProcLabelAndFile, ProcTraceCounts,
     line_no_and_count::in, proc_dice::in, proc_dice::out) is det.
 
 dice_merge_path_port(FileName, Kind, PathPort, LineNoAndCount, !ProcDice) :-
-    (
+    ( if
         map.transform_value(dice_add_trace_count(Kind, LineNoAndCount),
             PathPort, !.ProcDice, UpdatedProcDice)
-    ->
+    then
         !:ProcDice = UpdatedProcDice
-    ;
+    else
         LineNoAndCount = line_no_and_count(LineNumber, ExecCount, NumTests),
         (
             Kind = pass_slice,
@@ -383,52 +433,7 @@ dice_add_trace_count(fail_slice, LineNoAndCount, ExecCounts0, ExecCounts) :-
     ExecCounts  = dice_exec_count(FileName, LineNumber,
         PassExec, PassTests, FailExec + ExecCount, FailTests + NumTests).
 
-%-----------------------------------------------------------------------------%
-%
-% A mechanism for sorting and formatting slices. The structure is similar
-% to the mechanism for sorting and formatting dices below.
-
-read_slice_to_string(File, SortStr0, MaxRows,
-        MaybeMaxPredColumns, MaybeMaxPathColumns, MaybeMaxFileColumns,
-        Module, SliceStr, Problem, !IO) :-
-    ( slice_sort_string_is_valid(SortStr0) ->
-        read_slice(File, ReadSliceResult, !IO),
-        (
-            ReadSliceResult = ok(Slice),
-            Slice = slice(TotalTests, SliceProcMap),
-            LabelCounts = slice_to_label_counts(SliceProcMap),
-            ( Module \= "" ->
-                list.filter(slice_label_count_is_for_module(Module),
-                    LabelCounts, ModuleFilteredLabelCounts)
-            ;
-                ModuleFilteredLabelCounts = LabelCounts
-            ),
-            ( string.append("z", SortStrPrime, SortStr0) ->
-                SortStr = SortStrPrime,
-                list.filter(slice_label_count_is_zero,
-                    ModuleFilteredLabelCounts, FilteredLabelCounts)
-            ;
-                SortStr = SortStr0,
-                FilteredLabelCounts = ModuleFilteredLabelCounts
-            ),
-            list.sort(slice_label_count_compare(SortStr), FilteredLabelCounts,
-                SortedLabelCounts),
-            ( list.take(MaxRows, SortedLabelCounts, Taken) ->
-                TopNLabelCounts = Taken
-            ;
-                TopNLabelCounts = SortedLabelCounts
-            ),
-            Problem = "",
-            SliceStr = format_slice_label_counts(TopNLabelCounts, TotalTests,
-                MaybeMaxPredColumns, MaybeMaxPathColumns, MaybeMaxFileColumns)
-        ;
-            ReadSliceResult = error(Problem),
-            SliceStr = ""
-        )
-    ;
-        Problem = "Invalid sort string",
-        SliceStr = ""
-    ).
+%---------------------------------------------------------------------------%
 
     % Values of this type uniquely identify a label in the program
     % and contain some statistics about the execution of the label.
@@ -456,7 +461,7 @@ slice_label_count_is_zero(SliceLabelCount) :-
     builtin.comparison_result::out) is det.
 
 slice_label_count_compare(SortStr, LabelCountA, LabelCountB, Result) :-
-    ( SortStr = "" ->
+    ( if SortStr = "" then
         LabelCountA = slice_label_count(ProcLabelA, PathPortA, CountsA),
         LabelCountB = slice_label_count(ProcLabelB, PathPortB, CountsB),
         builtin.compare(ProcLabelResult, ProcLabelA, ProcLabelB),
@@ -480,7 +485,7 @@ slice_label_count_compare(SortStr, LabelCountA, LabelCountB, Result) :-
             ProcLabelResult = (>),
             Result = (>)
         )
-    ;
+    else
         slice_exec_count_compare(SortStr,
             LabelCountA ^ slc_counts, LabelCountB ^ slc_counts, Result)
     ).
@@ -489,9 +494,8 @@ slice_label_count_compare(SortStr, LabelCountA, LabelCountB, Result) :-
     builtin.comparison_result::out) is det.
 
 compare_path_ports(PathPortA, PathPortB, Result) :-
-    (
-        % Handle the case where PathPortA and PathPortB have the same
-        % functor.
+    ( if
+        % Handle the case where PathPortA and PathPortB have the same functor.
         (
             PathPortA = port_only(PortA),
             PathPortB = port_only(PortB),
@@ -525,9 +529,9 @@ compare_path_ports(PathPortA, PathPortB, Result) :-
                 )
             )
         )
-    ->
+    then
         Result = ResultPrime
-    ;
+    else
         % Handle the case where PathPortA and PathPortB have different
         % functors.
         builtin.compare(Result, PathPortA, PathPortB)
@@ -538,41 +542,41 @@ compare_path_ports(PathPortA, PathPortB, Result) :-
     builtin.comparison_result::out) is det.
 
 slice_exec_count_compare(SortStr, ExecCount1, ExecCount2, Result) :-
-    ( string.first_char(SortStr, C, Rest) ->
-        ( C = 'c' ->
+    ( if string.first_char(SortStr, C, Rest) then
+        ( if C = 'c' then
             builtin.compare(Result0, ExecCount1 ^ slice_count,
                 ExecCount2 ^ slice_count)
-        ; C = 'C' ->
+        else if C = 'C' then
             builtin.compare(Result0, ExecCount2 ^ slice_count,
                 ExecCount1 ^ slice_count)
-        ; C = 't' ->
+        else if C = 't' then
             builtin.compare(Result0, ExecCount1 ^ slice_tests,
                 ExecCount2 ^ slice_tests)
-        ; C = 'T' ->
+        else if C = 'T' then
             builtin.compare(Result0, ExecCount2 ^ slice_tests,
                 ExecCount1 ^ slice_tests)
-        ;
-            error("slice_exec_count_compare: invalid sort string")
+        else
+            unexpected($pred, "invalid sort string")
         ),
-        (
+        ( if
             Result0 = (=),
             string.length(Rest) > 0
-        ->
+        then
             slice_exec_count_compare(Rest, ExecCount1, ExecCount2, Result)
-        ;
+        else
             Result = Result0
         )
-    ;
-        error("slice_exec_count_compare: empty sort string")
+    else
+        unexpected($pred, "empty sort string")
     ).
 
 :- pred slice_sort_string_is_valid(string::in) is semidet.
 
 slice_sort_string_is_valid(Str0) :-
     Chrs0 = string.to_char_list(Str0),
-    ( Chrs0 = ['z' | ChrsPrime] ->
+    ( if Chrs0 = ['z' | ChrsPrime] then
         Chrs = ChrsPrime
-    ;
+    else
         Chrs = Chrs0
     ),
     ChrSet = set.list_to_set(Chrs),
@@ -611,10 +615,10 @@ format_slice_label_counts(LabelCounts, TotalTests,
     FormattedPathPorts = list.map(format_path_port, PathPorts),
     CountStrs = list.map(string.int_to_string_thousands, Counts),
     AlwaysColumns = [
-        left( ["Procedure"       | FormattedProcLabels]) - MaybeMaxPredColumns,
-        left( ["Path/Port"       | FormattedPathPorts]) - MaybePathColumns,
-        left( ["File:Line"       | FormattedContexts]) - MaybeMaxFileColumns,
-        right(["Count"           | CountStrs]) - no],
+        left( ["Procedure" | FormattedProcLabels]) - MaybeMaxPredColumns,
+        left( ["Path/Port" | FormattedPathPorts])  - MaybePathColumns,
+        left( ["File:Line" | FormattedContexts])   - MaybeMaxFileColumns,
+        right(["Count"     | CountStrs])           - no],
     filter(unify(1), Tests, _OneTests, OtherTests),
     (
         % All events were executed in one test. Don't include the redundant
@@ -627,7 +631,7 @@ format_slice_label_counts(LabelCounts, TotalTests,
         TestsStrs = list.map(bracket_int, Tests),
         TotalTestsStr = "(" ++ int_to_string_thousands(TotalTests) ++ ")",
         Columns = AlwaysColumns ++
-            [right([TotalTestsStr     | TestsStrs]) - no]
+            [right([TotalTestsStr | TestsStrs]) - no]
     ),
     Str = string.format_table_max(Columns, " ") ++ "\n".
 
@@ -640,16 +644,11 @@ deconstruct_slice_label_count(SliceLabelCount, PathPort, ProcLabel,
     ExecCounts = slice_exec_count(FileName, LineNumber, Count, Tests),
     FormattedContext = format_context(FileName, LineNumber).
 
-:- func format_slice_exec_count(slice_exec_count) = string.
-
-format_slice_exec_count(slice_exec_count(_, _, Count, Tests)) =
-    string.pad_left(int_to_string(Count), ' ', 12)
-    ++ string.pad_left("(" ++ int_to_string(Tests) ++ ")", ' ', 8).
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % A mechanism for sorting and formatting dices. The structure is similar
 % to the mechanism for sorting and formatting slices above.
+%
 
 :- pragma foreign_export("C",
     read_dice_to_string_no_limit(in, in, in, in, in, out, out, di, uo),
@@ -666,23 +665,23 @@ read_dice_to_string_no_limit(PassFile, FailFile, SortStr, MaxRow,
 read_dice_to_string(PassFile, FailFile, SortStr, MaxRow,
         MaybeMaxPredColumns, MaybeMaxPathColumns, MaybeMaxFileColumns,
         Module, DiceStr, Problem, !IO) :-
-    ( dice_sort_string_is_valid(SortStr) ->
+    ( if dice_sort_string_is_valid(SortStr) then
         read_dice(PassFile, FailFile, ReadDiceResult, !IO),
         (
             ReadDiceResult = ok(Dice),
             Dice = dice(TotalPassTests, TotalFailTests, DiceProcMap),
             LabelCounts = dice_to_label_counts(DiceProcMap),
-            ( Module \= "" ->
+            ( if Module = "" then
+                FilteredLabelCounts = LabelCounts
+            else
                 list.filter(dice_label_count_is_for_module(Module),
                     LabelCounts, FilteredLabelCounts)
-            ;
-                FilteredLabelCounts = LabelCounts
             ),
             list.sort(dice_label_count_compare(SortStr), FilteredLabelCounts,
                 SortedLabelCounts),
-            ( list.take(MaxRow, SortedLabelCounts, Taken) ->
+            ( if list.take(MaxRow, SortedLabelCounts, Taken) then
                 TopNLabelCounts = Taken
-            ;
+            else
                 TopNLabelCounts = SortedLabelCounts
             ),
             Problem = "",
@@ -693,7 +692,7 @@ read_dice_to_string(PassFile, FailFile, SortStr, MaxRow,
             ReadDiceResult = error(Problem),
             DiceStr = ""
         )
-    ;
+    else
         Problem = "Invalid sort string",
         DiceStr = ""
     ).
@@ -719,7 +718,7 @@ dice_label_count_is_for_module(Module, dice_label_count(Label, _, _)) :-
     builtin.comparison_result::out) is det.
 
 dice_label_count_compare(SortStr, LabelCountA, LabelCountB, Result) :-
-    ( SortStr = "" ->
+    ( if SortStr = "" then
         LabelCountA = dice_label_count(ProcLabelA, PathPortA, CountsA),
         LabelCountB = dice_label_count(ProcLabelB, PathPortB, CountsB),
         builtin.compare(ProcLabelResult, ProcLabelA, ProcLabelB),
@@ -743,7 +742,7 @@ dice_label_count_compare(SortStr, LabelCountA, LabelCountB, Result) :-
             ProcLabelResult = (>),
             Result = (>)
         )
-    ;
+    else
         dice_exec_count_compare(SortStr,
             LabelCountA ^ dlc_counts, LabelCountB ^ dlc_counts, Result)
     ).
@@ -753,60 +752,60 @@ dice_label_count_compare(SortStr, LabelCountA, LabelCountB, Result) :-
     builtin.comparison_result::out) is det.
 
 dice_exec_count_compare(SortStr, ExecCount1, ExecCount2, Result) :-
-    (
+    ( if
         string.first_char(SortStr, C, Rest)
-    ->
-        ( C = 'p' ->
+    then
+        ( if C = 'p' then
             builtin.compare(Result0, ExecCount1 ^ pass_count,
                 ExecCount2 ^ pass_count)
-        ; C = 'P' ->
+        else if C = 'P' then
             builtin.compare(Result0, ExecCount2 ^ pass_count,
                 ExecCount1 ^ pass_count)
-        ; C = 'f' ->
+        else if C = 'f' then
             builtin.compare(Result0, ExecCount1 ^ fail_count,
                 ExecCount2 ^ fail_count)
-        ; C = 'F' ->
+        else if C = 'F' then
             builtin.compare(Result0, ExecCount2 ^ fail_count,
                 ExecCount1 ^ fail_count)
-        ; C = 's' ->
+        else if C = 's' then
             builtin.compare(Result0,
                 suspicion_ratio(ExecCount1 ^ pass_count,
                     ExecCount1 ^ fail_count),
                 suspicion_ratio(ExecCount2 ^ pass_count,
                     ExecCount2 ^ fail_count))
-        ; C = 'S' ->
+        else if C = 'S' then
             builtin.compare(Result0,
                 suspicion_ratio(ExecCount2 ^ pass_count,
                     ExecCount2 ^ fail_count),
                 suspicion_ratio(ExecCount1 ^ pass_count,
                     ExecCount1 ^ fail_count))
-        ; C = 'd' ->
+        else if C = 'd' then
             % using - instead of int.minus is ambiguous.
             Diff1 = int.minus(ExecCount1 ^ pass_count,
                 ExecCount1 ^ fail_count),
             Diff2 = int.minus(ExecCount2 ^ pass_count,
                 ExecCount2 ^ fail_count),
             builtin.compare(Result0, Diff1, Diff2)
-        ; C = 'D' ->
+        else if C = 'D' then
             % using - instead of int.minus is ambiguous.
             Diff1 = int.minus(ExecCount1 ^ pass_count,
                 ExecCount1 ^ fail_count),
             Diff2 = int.minus(ExecCount2 ^ pass_count,
                 ExecCount2 ^ fail_count),
             builtin.compare(Result0, Diff2, Diff1)
-        ;
-            error("dice_exec_count_compare: invalid sort string")
+        else
+            unexpected($pred, "invalid sort string")
         ),
-        (
+        ( if
             Result0 = (=),
             string.length(Rest) > 0
-        ->
+        then
             dice_exec_count_compare(Rest, ExecCount1, ExecCount2, Result)
-        ;
+        else
             Result = Result0
         )
-    ;
-        error("dice_exec_count_compare: empty sort string")
+    else
+        unexpected($pred, "empty sort string")
     ).
 
 :- pred dice_sort_string_is_valid(string::in) is semidet.
@@ -857,11 +856,11 @@ format_dice_label_counts(LabelCounts, TotalPassTests, _TotalFailTests,
     TotalPassTestsStr = "(" ++ int_to_string_thousands(TotalPassTests) ++ ")",
     Columns = [
         left( ["Procedure"       | FormattedProcLabels]) - MaybeMaxPredColumns,
-        left( ["Path/Port"       | FormattedPathPorts]) - MaybeMaxPathColumns,
-        left( ["File:Line"       | FormattedContexts]) - MaybeMaxFileColumns,
-        right(["Pass"            | PassCountStrs]) - no,
-        right([TotalPassTestsStr | PassTestsStrs]) - no,
-        right(["Fail"            | FailCountStrs]) - no,
+        left( ["Path/Port"       | FormattedPathPorts])  - MaybeMaxPathColumns,
+        left( ["File:Line"       | FormattedContexts])   - MaybeMaxFileColumns,
+        right(["Pass"            | PassCountStrs])       - no,
+        right([TotalPassTestsStr | PassTestsStrs])       - no,
+        right(["Fail"            | FailCountStrs])       - no,
         right(["Suspicion"       | FormattedSuspicionIndices]) - no],
     Str = string.format_table_max(Columns, " ") ++ "\n".
 
@@ -876,36 +875,30 @@ deconstruct_dice_label_count(DiceLabelCount, ProcLabel, PathPort,
         FailCount, FailTests),
     FormattedContext = format_context(FileName, LineNumber).
 
-:- func format_dice_exec_count(dice_exec_count) = string.
-
-format_dice_exec_count(dice_exec_count(_, _, PassCount, PassTests,
-        FailCount, FailTests)) =
-    string.pad_left(int_to_string(PassCount), ' ', 12)
-    ++ string.pad_left("(" ++ int_to_string(PassTests) ++ ")", ' ', 8)
-    ++ string.pad_left(int_to_string(FailCount), ' ', 12)
-    ++ string.pad_left("(" ++ int_to_string(FailTests) ++ ")", ' ', 8).
+%---------------------------------------------------------------------------%
 
 suspicion_ratio(PassCount, FailCount) = R1 :-
     Denominator = PassCount + FailCount,
-    ( Denominator \= 0 ->
-        R = float(FailCount) / float(Denominator),
-        ( R >= 0.20 ->
-            R1 = R
-          ; R1 = 0.0
-        )
-    ;
+    ( if Denominator = 0 then
         % The denominator could be zero if user_all trace counts were
         % provided.
         R1 = 0.0
+    else
+        R = float(FailCount) / float(Denominator),
+        ( if R >= 0.20 then
+            R1 = R
+        else
+            R1 = 0.0
+        )
     ).
 
 suspicion_ratio_normalised(PassCount, PassTests, FailCount, FailTests) = R :-
-    ( FailCount = 0 ->
+    ( if FailCount = 0 then
         R = 0.0
-    ;
-        ( PassTests = 0 ->
+    else
+        ( if PassTests = 0 then
             PassNorm = 0.0
-        ;
+        else
             PassNorm = float(PassCount) / float(PassTests)
         ),
         FailNorm = float(FailCount) / float(FailTests),
@@ -913,9 +906,9 @@ suspicion_ratio_normalised(PassCount, PassTests, FailCount, FailTests) = R :-
     ).
 
 suspicion_ratio_binary(PassCount, FailCount) = R :-
-    ( FailCount > 0, PassCount = 0 ->
+    ( if FailCount > 0, PassCount = 0 then
         R = 1.0
-    ;
+    else
         R = 0.0
     ).
 
@@ -923,26 +916,27 @@ suspicion_ratio_binary(PassCount, FailCount) = R :-
 
 :- pragma foreign_export("C",
     get_suspicion_for_label_layout(in, in) = out,
-	"MR_MDBCOMP_get_suspicion_for_label_layout").
+    "MR_MDBCOMP_get_suspicion_for_label_layout").
 
 get_suspicion_for_label_layout(Dice, LabelLayout) = Suspicion :-
-	ProcLayout = get_proc_layout_from_label_layout(LabelLayout),
-	ProcLabel = get_proc_label_from_layout(ProcLayout),
-	PathPort = get_path_port_from_label_layout(LabelLayout),
-	( map.search(Dice ^ dice_proc_map, ProcLabel, PathPortMap) ->
-		( map.search(PathPortMap, PathPort, ExecCount) ->
-			Suspicion = suspicion_ratio_binary(
-			      ExecCount ^ pass_count, ExecCount ^ fail_count)
-		;
-			Suspicion = 0.0
-		)
-	;
-		Suspicion = 0.0
-	).
+    ProcLayout = get_proc_layout_from_label_layout(LabelLayout),
+    ProcLabel = get_proc_label_from_layout(ProcLayout),
+    PathPort = get_path_port_from_label_layout(LabelLayout),
+    ( if map.search(Dice ^ dice_proc_map, ProcLabel, PathPortMap) then
+        ( if map.search(PathPortMap, PathPort, ExecCount) then
+            Suspicion = suspicion_ratio_binary(
+                  ExecCount ^ pass_count, ExecCount ^ fail_count)
+        else
+            Suspicion = 0.0
+        )
+    else
+        Suspicion = 0.0
+    ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Generic predicates useful for both slices and dices.
+%
 
 :- func bracket_int(int) = string.
 
@@ -994,7 +988,7 @@ format_proc_label(ProcLabel) = Str :-
 :- func format_path_port(path_port) = string.
 
 format_path_port(port_only(Port)) = Str :-
-    mdbcomp.trace_counts.string_to_trace_port(Str, Port).
+    string_to_trace_port(Str, Port).
 format_path_port(path_only(Path)) =
     "<" ++ rev_goal_path_to_string(Path) ++ ">".
 format_path_port(port_and_path(Port, Path)) =
@@ -1005,3 +999,5 @@ format_path_port(port_and_path(Port, Path)) =
 
 format_context(FileName, LineNumber) = Str :-
     Str = FileName ++ ":" ++ int_to_string(LineNumber).
+
+%---------------------------------------------------------------------------%

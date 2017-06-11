@@ -1,18 +1,18 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2001, 2004-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% File: read_call_graph.m.
+% File: read_profile.m.
 % Authors: conway, zs.
 %
 % This module contains code for reading in a deep profiling data file.
 % Such files, named Deep.data, are created by deep profiled executables.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module read_profile.
 :- interface.
@@ -25,8 +25,8 @@
 :- pred read_call_graph(string::in, maybe_error(initial_deep)::out,
     io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -48,7 +48,7 @@
 :- import_module require.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type maybe_error2(T1, T2)
     --->    ok2(T1, T2)
@@ -113,16 +113,16 @@ read_deep_id_string(MaybeVersionNumber, !IO) :-
     (
         MaybeLine = ok(Line0),
         Line = string.chomp(Line0),
-        (
+        ( if
             string.append(deep_id_prefix, Suffix, Line),
             string.to_int(Suffix, VersionNumber)
-        ->
-            ( acceptable_version(VersionNumber) ->
+        then
+            ( if acceptable_version(VersionNumber) then
                 MaybeVersionNumber = ok(VersionNumber)
-            ;
+            else
                 MaybeVersionNumber = error("version number mismatch")
             )
-        ;
+        else
             MaybeVersionNumber = error("not a deep profiling data file")
         )
     ;
@@ -173,9 +173,9 @@ basename_chars([Char | Chars], MaybeChars) :-
         MaybeChars = MaybeTailChars
     ;
         MaybeTailChars = no,
-        ( path_separator(Char) ->
+        ( if path_separator(Char) then
             MaybeChars = yes(Chars)
-        ;
+        else
             MaybeChars = no
         )
     ).
@@ -233,7 +233,7 @@ maybe_deep_flags(FlagsInt, MaybeFlags) :-
         >> deep_flag_compression_shift,
     Coverage = (FlagsInt /\ deep_flag_coverage_mask)
         >> deep_flag_coverage_shift,
-    (
+    ( if
         (
             Canonical = 0,
             CanonicalFlag = maybe_not_canonical
@@ -257,10 +257,10 @@ maybe_deep_flags(FlagsInt, MaybeFlags) :-
             CoverageFlag = dynamic_coverage_data
         ),
         0 = ((\ deep_flag_all_fields_mask) /\ FlagsInt)
-    ->
+    then
         MaybeFlags = ok(deep_flags(BytesPerInt, CanonicalFlag, CompressionFlag,
             CoverageFlag))
-    ;
+    else
         MaybeFlags = error(
             format("Error parsing flags in file header, flags are 0x%x",
                 [i(FlagsInt)]))
@@ -340,9 +340,9 @@ read_nodes(InitDeep0, MaybeInitDeep, !IO) :-
     io::di, io::uo) is det.
 
 read_nodes_2(Depth, !.InitDeep, MaybeInitDeep, !IO) :-
-    ( Depth < 1 ->
+    ( if Depth < 1 then
         MaybeInitDeep = init_deep_incomplete(!.InitDeep)
-    ;
+    else
         read_nodes_3(Depth - 1, !.InitDeep, MaybeInitDeep, !IO)
     ).
 
@@ -354,7 +354,7 @@ read_nodes_3(Depth, !.InitDeep, MaybeInitDeep, !IO) :-
     read_byte(MaybeByte, !IO),
     (
         MaybeByte = ok(Byte),
-        ( is_next_item_token(Byte, NextItem) ->
+        ( if is_next_item_token(Byte, NextItem) then
             (
                 NextItem = deep_item_call_site_dynamic,
                 read_call_site_dynamic(MaybeCSD, !IO),
@@ -411,7 +411,7 @@ read_nodes_3(Depth, !.InitDeep, MaybeInitDeep, !IO) :-
                 NextItem = deep_item_end,
                 MaybeInitDeep = init_deep_complete(!.InitDeep)
             )
-        ;
+        else
             string.format("unexpected token %d", [i(Byte)], Msg),
             MaybeInitDeep = error(Msg)
         )
@@ -493,9 +493,9 @@ read_proc_static(ProfileStats, MaybePS, !IO) :-
                 DeclModule = decl_module(Id),
                 create_refined_proc_ids(Id, UnQualRefinedStr, QualRefinedStr),
                 RawStr = raw_proc_id_to_string(Id),
-                ( Interface = 0 ->
+                ( if Interface = 0 then
                     IsInInterface = no
-                ;
+                else
                     IsInInterface = yes
                 ),
                 % The `not_zeroed' for whether the procedure's proc_static
@@ -617,7 +617,7 @@ read_proc_id(MaybeProcId, !IO) :-
     read_deep_byte(MaybeByte, !IO),
     (
         MaybeByte = ok(Byte),
-        ( is_proclabel_kind(Byte, ProcLabelKind) ->
+        ( if is_proclabel_kind(Byte, ProcLabelKind) then
             (
                 ProcLabelKind = proclabel_special,
                 read_proc_id_uci_pred(MaybeProcId, !IO)
@@ -628,7 +628,7 @@ read_proc_id(MaybeProcId, !IO) :-
                 ProcLabelKind = proclabel_user_function,
                 read_proc_id_user_defined(pf_function, MaybeProcId, !IO)
             )
-        ;
+        else
             format("unexpected proclabel_kind %d", [i(Byte)], Msg),
             MaybeProcId = error(Msg)
         )
@@ -732,17 +732,15 @@ create_refined_proc_ids(ProcLabel, UnQualName, QualName) :-
     (
         ProcLabel = str_special_proc_label(TypeName, TypeModule,
             _DefModule, RawPredName, Arity, Mode),
-        ( RawPredName = "__Unify__" ->
+        ( if RawPredName = "__Unify__" then
             PredName = "Unify"
-        ; RawPredName = "__Compare__" ->
+        else if RawPredName = "__Compare__" then
             PredName = "Compare"
-        ; RawPredName = "__CompareRep__" ->
+        else if RawPredName = "__CompareRep__" then
             PredName = "CompareRep"
-        ; RawPredName = "__Index__" ->
+        else if RawPredName = "__Index__" then
             PredName = "Index"
-        ; RawPredName = "__Initialise__" ->
-            PredName = "Initialise"
-        ;
+        else
             Msg = "unknown special predicate name " ++ RawPredName,
             error(Msg)
         ),
@@ -750,10 +748,10 @@ create_refined_proc_ids(ProcLabel, UnQualName, QualName) :-
         AritySuffix = "/" ++ string.int_to_string(Arity),
         UnQualName0 = Prefix ++ TypeName ++ AritySuffix,
         QualName0 = Prefix ++ TypeModule ++ "." ++ TypeName ++ AritySuffix,
-        ( Mode = 0 ->
+        ( if Mode = 0 then
             UnQualName = UnQualName0,
             QualName = QualName0
-        ;
+        else
             ModeSuffix = " mode " ++ int_to_string(Mode),
             UnQualName = UnQualName0 ++ ModeSuffix,
             QualName = QualName0 ++ ModeSuffix
@@ -761,20 +759,20 @@ create_refined_proc_ids(ProcLabel, UnQualName, QualName) :-
     ;
         ProcLabel = str_ordinary_proc_label(PredOrFunc, DeclModule,
             _DefModule, ProcName, Arity, Mode),
-        (
+        ( if
             string.append("TypeSpecOf__", ProcName1, ProcName),
-            ( string.append("pred__", ProcName2A, ProcName1) ->
+            ( if string.append("pred__", ProcName2A, ProcName1) then
                 ProcName2 = ProcName2A
-            ; string.append("func__", ProcName2B, ProcName1) ->
+            else if string.append("func__", ProcName2B, ProcName1) then
                 ProcName2 = ProcName2B
-            ; string.append("pred_or_func__", ProcName2C, ProcName1) ->
+            else if string.append("pred_or_func__", ProcName2C, ProcName1) then
                 ProcName2 = ProcName2C
-            ;
+            else
                 error("typespec: neither pred nor func")
             ),
             string.to_char_list(ProcName2, ProcName2Chars),
             fix_type_spec_suffix(ProcName2Chars, ProcNameChars, SpecInfo)
-        ->
+        then
             RefinedProcName = string.from_char_list(ProcNameChars),
             Suffix = "/" ++ string.int_to_string(Arity) ++
                 add_plus_one_for_function(PredOrFunc) ++
@@ -782,20 +780,20 @@ create_refined_proc_ids(ProcLabel, UnQualName, QualName) :-
                 " [" ++ SpecInfo ++ "]",
             UnQualName = RefinedProcName ++ Suffix,
             QualName = DeclModule ++ "." ++ RefinedProcName ++ Suffix
-        ;
+        else if
             string.append("IntroducedFrom__", ProcName1, ProcName),
-            ( string.append("pred__", ProcName2A, ProcName1) ->
+            ( if string.append("pred__", ProcName2A, ProcName1) then
                 ProcName2 = ProcName2A
-            ; string.append("func__", ProcName2B, ProcName1) ->
+            else if string.append("func__", ProcName2B, ProcName1) then
                 ProcName2 = ProcName2B
-            ;
+            else
                 error("lambda: neither pred nor func")
             ),
             string.to_char_list(ProcName2, ProcName2Chars),
             split_lambda_name(ProcName2Chars, Segments),
             glue_lambda_name(Segments, ContainingNameChars,
                 LineNumberChars)
-        ->
+        then
             string.from_char_list(ContainingNameChars, ContainingName),
             string.from_char_list(LineNumberChars, LineNumber),
             Suffix =
@@ -804,7 +802,7 @@ create_refined_proc_ids(ProcLabel, UnQualName, QualName) :-
                 add_plus_one_for_function(PredOrFunc),
             UnQualName = ContainingName ++ Suffix,
             QualName = DeclModule ++ "." ++ ContainingName ++ Suffix
-        ;
+        else
             Suffix =
                 "/" ++ string.int_to_string(Arity) ++
                 add_plus_one_for_function(PredOrFunc) ++
@@ -823,14 +821,14 @@ add_plus_one_for_function(pf_predicate) = "".
     is semidet.
 
 fix_type_spec_suffix(Chars0, Chars, SpecInfoStr) :-
-    ( Chars0 = ['_', '_', '[' | SpecInfo0 ] ->
+    ( if Chars0 = ['_', '_', '[' | SpecInfo0 ] then
         Chars = [],
-        list.takewhile(non_right_bracket, SpecInfo0, SpecInfo, _),
+        list.take_while(non_right_bracket, SpecInfo0, SpecInfo),
         string.from_char_list(SpecInfo, SpecInfoStr)
-    ; Chars0 = [Char | TailChars0] ->
+    else if Chars0 = [Char | TailChars0] then
         fix_type_spec_suffix(TailChars0, TailChars, SpecInfoStr),
         Chars = [Char | TailChars]
-    ;
+    else
         fail
     ).
 
@@ -843,10 +841,10 @@ non_right_bracket(C) :-
 
 split_lambda_name([], []).
 split_lambda_name([Char0 | Chars0], StringList) :-
-    ( Chars0 = ['_', '_' | Chars1 ] ->
+    ( if Chars0 = ['_', '_' | Chars1 ] then
         split_lambda_name(Chars1, StringList0),
         StringList = [[Char0] | StringList0]
-    ;
+    else
         split_lambda_name(Chars0, StringList0),
         (
             StringList0 = [],
@@ -861,10 +859,10 @@ split_lambda_name([Char0 | Chars0], StringList) :-
     list(char)::out) is semidet.
 
 glue_lambda_name(Segments, PredName, LineNumber) :-
-    ( Segments = [LineNumberPrime, _] ->
+    ( if Segments = [LineNumberPrime, _] then
         PredName = [],
         LineNumber = LineNumberPrime
-    ; Segments = [Segment | TailSegments] ->
+    else if Segments = [Segment | TailSegments] then
         glue_lambda_name(TailSegments, PredName1, LineNumber),
         (
             PredName1 = [],
@@ -873,7 +871,7 @@ glue_lambda_name(Segments, PredName, LineNumber) :-
             PredName1 = [_ | _],
             list.append(Segment, ['_', '_' | PredName1], PredName)
         )
-    ;
+    else
         fail
     ).
 
@@ -1017,7 +1015,7 @@ read_profile(MaybeProfile, !IO) :-
     maybe(string)::in, maybe(string)::out, io::di, io::uo) is det.
 
 maybe_read_num_handle_error(MaskWord, MaskValue, Num, !MaybeError, !IO) :-
-    ( MaskWord /\ MaskValue \= 0 ->
+    ( if MaskWord /\ MaskValue \= 0 then
         read_num(MaybeNum, !IO),
         (
             MaybeNum = ok(Num)
@@ -1026,7 +1024,7 @@ maybe_read_num_handle_error(MaskWord, MaskValue, Num, !MaybeError, !IO) :-
             Num = 0,
             !:MaybeError = yes(Error)
         )
-    ;
+    else
         Num = 0
     ).
 
@@ -1116,9 +1114,9 @@ read_multi_call_site_csdis_2(CSDIs0, MaybeCSDIs, !IO) :-
     read_deep_byte(MaybeByte, !IO),
     (
         MaybeByte = ok(Byte),
-        ( Byte = 0 ->
+        ( if Byte = 0 then
             MaybeCSDIs = ok(CSDIs0)
-        ;
+        else
             putback_byte(Byte, !IO),
             read_ptr(csd, MaybeCSDI, !IO),
             (
@@ -1141,9 +1139,9 @@ read_call_site_kind(MaybeKind, !IO) :-
     read_deep_byte(MaybeByte, !IO),
     (
         MaybeByte = ok(Byte),
-        ( is_call_site_kind(Byte, CallSiteKind) ->
+        ( if is_call_site_kind(Byte, CallSiteKind) then
             MaybeKind = ok(CallSiteKind)
-        ;
+        else
             string.format("unexpected call_site_kind %d", [i(Byte)], Msg),
             MaybeKind = error(Msg)
         ),
@@ -1165,7 +1163,7 @@ read_call_site_kind_and_callee(MaybeKindAndCallee, !IO) :-
     read_deep_byte(MaybeByte, !IO),
     (
         MaybeByte = ok(Byte),
-        ( is_call_site_kind(Byte, CallSiteKind) ->
+        ( if is_call_site_kind(Byte, CallSiteKind) then
             (
                 CallSiteKind = normal_call,
                 read_num(MaybeCSS, !IO),
@@ -1197,7 +1195,7 @@ read_call_site_kind_and_callee(MaybeKindAndCallee, !IO) :-
                 CallSiteKind = callback,
                 MaybeKindAndCallee = ok(callback_and_no_callee)
             )
-        ;
+        else
             string.format("unexpected call_site_kind %d", [i(Byte)], Msg),
             MaybeKindAndCallee = error(Msg)
         ),
@@ -1211,7 +1209,7 @@ read_call_site_kind_and_callee(MaybeKindAndCallee, !IO) :-
         MaybeKindAndCallee = error(Error)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred read_n_things(int::in, pred(maybe_error(T), io, io)::
     in(pred(out, di, uo) is det), maybe_error(list(T))::out,
@@ -1233,9 +1231,9 @@ read_n_things(N, ItemReader, MaybeItems, !IO) :-
     io::di, io::uo) is det.
 
 read_n_things(N, ItemReader, RevItems0, MaybeItems, !IO) :-
-    ( N =< 0 ->
+    ( if N =< 0 then
         MaybeItems = ok(RevItems0)
-    ;
+    else
         call(ItemReader, MaybeItem, !IO),
         (
             MaybeItem = ok(Item),
@@ -1247,7 +1245,7 @@ read_n_things(N, ItemReader, RevItems0, MaybeItems, !IO) :-
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred read_line(int::in, maybe_error(string)::out, io::di, io::uo) is det.
 
@@ -1258,21 +1256,21 @@ read_line(Limit, MaybeLine, !IO) :-
     io::di, io::uo) is det.
 
 read_line_acc(Limit, !.RevChars, MaybeLine, !IO) :-
-    ( Limit > 0 ->
+    ( if Limit > 0 then
         read_byte(MaybeByte, !IO),
         (
             MaybeByte = ok(Byte),
-            ( char.to_int(Char, Byte) ->
+            ( if char.to_int(Char, Byte) then
                 % Include the newline in the string.
                 !:RevChars = [Char | !.RevChars],
-                ( Char = '\n' ->
+                ( if Char = '\n' then
                     list.reverse(!.RevChars, Chars),
                     string.from_char_list(Chars, Str),
                     MaybeLine = ok(Str)
-                ;
+                else
                     read_line_acc(Limit - 1, !.RevChars, MaybeLine, !IO)
                 )
-            ;
+            else
                 MaybeLine = error("unexpected end of file")
             )
         ;
@@ -1283,7 +1281,7 @@ read_line_acc(Limit, !.RevChars, MaybeLine, !IO) :-
             io.error_message(Error, Msg),
             MaybeLine = error(Msg)
         )
-    ;
+    else
         list.reverse(!.RevChars, Chars),
         string.from_char_list(Chars, Str),
         MaybeLine = ok(Str)
@@ -1296,9 +1294,9 @@ read_string(MaybeStr, !IO) :-
     read_num(MaybeNum, !IO),
     (
         MaybeNum = ok(Length),
-        ( Length = 0 ->
+        ( if Length = 0 then
             MaybeStr = ok("")
-        ;
+        else
             read_n_byte_string(Length, MaybeStr, !IO)
         )
     ;
@@ -1313,13 +1311,13 @@ read_n_byte_string(Length, MaybeStr, !IO) :-
     read_n_bytes(Length, MaybeNBytes, !IO),
     (
         MaybeNBytes = ok(Bytes),
-        (
+        ( if
             list.map((pred(I::in, C::out) is semidet :- char.to_int(C, I)),
                 Bytes, Chars)
-        ->
+        then
             string.from_char_list(Chars, Str),
             MaybeStr = ok(Str)
-        ;
+        else
             MaybeStr = error("string contained bad char")
         )
     ;
@@ -1382,9 +1380,9 @@ read_num_acc(Num0, MaybeNum, !IO) :-
     (
         MaybeByte = ok(Byte),
         Num1 = (Num0 << 7) \/ (Byte /\ 0x7F),
-        ( Byte /\ 0x80 \= 0 ->
+        ( if Byte /\ 0x80 \= 0 then
             read_num_acc(Num1, MaybeNum, !IO)
-        ;
+        else
             MaybeNum = ok(Num1)
         )
     ;
@@ -1416,9 +1414,9 @@ read_fixed_size_int(MaybeInt, !IO) :-
     maybe_error(int)::out, io::di, io::uo) is det.
 
 read_fixed_size_int_acc(BytesLeft, Num0, ShiftBy, MaybeInt, !IO) :-
-    ( BytesLeft =< 0 ->
+    ( if BytesLeft =< 0 then
         MaybeInt = ok(Num0)
-    ;
+    else
         read_deep_byte(MaybeByte, !IO),
         (
             MaybeByte = ok(Byte),
@@ -1449,9 +1447,9 @@ read_n_bytes(N, MaybeNBytes, !IO) :-
     io::di, io::uo) is det.
 
 read_n_bytes_acc(N, RevBytes0, MaybeNBytes, !IO) :-
-    ( N =< 0 ->
+    ( if N =< 0 then
         MaybeNBytes = ok(RevBytes0)
-    ;
+    else
         read_deep_byte(MaybeByte, !IO),
         (
             MaybeByte = ok(Byte),
@@ -1484,22 +1482,22 @@ read_deep_byte(MaybeByte, !IO) :-
         io.write_string("\n", !TIO)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred deep_insert(array(T)::in, int::in, T::in, array(T)::out) is det.
 
 deep_insert(A0, Ind, Item, A) :-
     array.max(A0, Max),
-    ( Ind > Max ->
+    ( if Ind > Max then
         error("deep_insert: array bounds violation")
         % array.lookup(A0, 0, X),
         % array.resize(u(A0), 2 * (Max + 1), X, A1),
         % deep_insert(A1, Ind, Item, A)
-    ;
+    else
         set(Ind, Item, u(A0), A)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func make_csdptr(int) = call_site_dynamic_ptr.
 :- func make_cssptr(int) = call_site_static_ptr.
@@ -1521,7 +1519,7 @@ make_dummy_cssptr = call_site_static_ptr(-1).
 make_dummy_pdptr = proc_dynamic_ptr(-1).
 make_dummy_psptr = proc_static_ptr(-1).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_decl("C", "#include ""mercury_deep_profiling.h""").
 
@@ -1563,5 +1561,5 @@ make_dummy_psptr = proc_static_ptr(-1).
     }
 ").
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

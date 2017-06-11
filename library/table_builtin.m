@@ -12,7 +12,7 @@
 %
 % This file is automatically imported, as if via `use_module', into every
 % module that contains a tabling pragma (`pragma loopcheck', `pragma memo',
-% or `pragma minimal_model').  It is intended for the builtin procedures
+% or `pragma minimal_model'). It is intended for the builtin procedures
 % that the compiler generates implicit calls to when implementing tabling.
 % This is separated from private_builtin.m, partly for modularity, but
 % mostly to improve compilation speed for programs that don't use tabling.
@@ -25,8 +25,8 @@
 % should never explicitly import this module. The interface for this module
 % does not get included in the Mercury library reference manual.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module table_builtin.
 :- interface.
@@ -96,10 +96,10 @@
 % this causes the predicates to become impure. The predicates with the semipure
 % directive only examine the tabling structures, but do not modify them.
 %
-% At the moment, tabling is supported only by the LLDS and MLDS C backends,
-% so in the next three type definitions, only the C definition is useful.
-% The Mercury and IL definitions are placeholders only, required to make
-% this module compile cleanly on the Java and .NET backends respectively.
+% At the moment, tabling is supported only by the LLDS and MLDS C backends, so
+% in the next three type definitions, only the C definition is useful.  The
+% Mercury definitions are placeholders only, required to make this module
+% compile cleanly on the non-C backends respectively.
 
     % This type represents the interior pointers of both call
     % tables and answer tables.
@@ -117,7 +117,7 @@
 
     % N.B. interface continued below
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -128,7 +128,6 @@
     --->   ml_trie_node(c_pointer).
 :- pragma foreign_type("C", ml_trie_node, "MR_TrieNode",
     [can_pass_as_mercury_type]).
-:- pragma foreign_type(il,  ml_trie_node, "class [mscorlib]System.Object").
 
     % This type represents a block of memory that contains one word
     % for each output argument of a procedure.
@@ -136,15 +135,12 @@
 :- type ml_answer_block --->    ml_answer_block(c_pointer).
 :- pragma foreign_type("C", ml_answer_block, "MR_AnswerBlock",
     [can_pass_as_mercury_type]).
-:- pragma foreign_type(il,  ml_answer_block, "class [mscorlib]System.Object").
 
 :- type ml_proc_table_info ---> ml_proc_table_info(c_pointer).
 :- pragma foreign_type("C", ml_proc_table_info, "MR_ProcTableInfoPtr",
     [can_pass_as_mercury_type]).
-:- pragma foreign_type(il,  ml_proc_table_info,
-    "class [mscorlib]System.Object").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -182,7 +178,7 @@
 
     % N.B. interface continued below
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -253,7 +249,7 @@ table_loop_mark_as_active_and_fail(_) :-
     private_builtin.sorry("table_loop_mark_as_active"),
     fail.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -371,7 +367,7 @@ table_loop_mark_as_active_and_fail(_) :-
 
     % N.B. interface continued below
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -515,8 +511,8 @@ table_loop_mark_as_active_and_fail(_) :-
     MR_tbl_memo_non_return_all_shortcut(R);
 ").
 
-:- external(table_memo_return_all_answers_nondet/2).
-:- external(table_memo_return_all_answers_multi/2).
+:- pragma external_pred(table_memo_return_all_answers_nondet/2).
+:- pragma external_pred(table_memo_return_all_answers_multi/2).
 
 table_memo_det_setup(_, _) :-
     % This version is only used for back-ends for which there is no
@@ -628,7 +624,7 @@ table_memo_non_create_answer_block_shortcut(_) :-
     impure private_builtin.imp,
     private_builtin.sorry("table_memo_non_create_answer_block_shortcut").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -684,7 +680,7 @@ table_memo_non_create_answer_block_shortcut(_) :-
 
     % N.B. interface continued below
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -790,7 +786,7 @@ table_io_right_bracket_unitized_goal(_TraceEnabled) :-
     impure private_builtin.imp,
     private_builtin.sorry("table_io_right_bracket_unitized_goal").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -869,21 +865,19 @@ table_io_right_bracket_unitized_goal(_TraceEnabled) :-
 
     % N.B. interface continued below
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- type ml_subgoal --->     ml_subgoal(c_pointer).
 :- pragma foreign_type("C", ml_subgoal, "MR_SubgoalPtr",
     [can_pass_as_mercury_type]).
-:- pragma foreign_type(il,  ml_subgoal, "class [mscorlib]System.Object").
 
     % This type represents a list of answers of a model_non predicate.
     %
 :- type ml_answer_list ---> ml_answer_list(c_pointer).
 :- pragma foreign_type("C", ml_answer_list, "MR_AnswerList",
     [can_pass_as_mercury_type]).
-:- pragma foreign_type(il,  ml_answer_list, "class [mscorlib]System.Object").
 
 :- pragma foreign_proc("C",
     table_mm_setup(T::in, Subgoal::out, Status::out),
@@ -895,10 +889,10 @@ table_io_right_bracket_unitized_goal(_TraceEnabled) :-
     % The definitions of these two predicates are in the runtime system,
     % in runtime/mercury_minimal_model.c.
     %
-:- external(table_mm_suspend_consumer/2).
-:- external(table_mm_completion/1).
-:- external(table_mm_return_all_nondet/2).
-:- external(table_mm_return_all_multi/2).
+:- pragma external_pred(table_mm_suspend_consumer/2).
+:- pragma external_pred(table_mm_completion/1).
+:- pragma external_pred(table_mm_return_all_nondet/2).
+:- pragma external_pred(table_mm_return_all_multi/2).
 
 :- pragma foreign_proc("C",
     table_mm_return_all_shortcut(AnswerBlock::in),
@@ -986,7 +980,7 @@ table_mm_fill_answer_block_shortcut(_) :-
     impure private_builtin.imp,
     private_builtin.sorry("table_mm_fill_answer_block_shortcut").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -1076,7 +1070,6 @@ table_mm_fill_answer_block_shortcut(_) :-
 :- type ml_consumer --->    ml_consumer(c_pointer).
 :- pragma foreign_type("C", ml_consumer, "MR_ConsumerPtr",
     [can_pass_as_mercury_type]).
-:- pragma foreign_type(il,  ml_consumer, "class [mscorlib]System.Object").
 
     % This type represents the generators in the own stack implementation
     % of minimal model tabling.
@@ -1084,7 +1077,6 @@ table_mm_fill_answer_block_shortcut(_) :-
 :- type ml_generator --->   ml_generator(c_pointer).
 :- pragma foreign_type("C", ml_generator, "MR_GeneratorPtr",
     [can_pass_as_mercury_type]).
-:- pragma foreign_type(il,  ml_generator, "class [mscorlib]System.Object").
 
 :- pragma foreign_proc("C",
     table_mmos_save_inputs,
@@ -1137,8 +1129,8 @@ table_mm_fill_answer_block_shortcut(_) :-
     MR_fatal_error(""table_mmos_answer_is_not_duplicate_shortcut: direct call"");
 ").
 
-:- external(table_mmos_consume_next_answer_nondet/2).
-:- external(table_mmos_consume_next_answer_multi/2).
+:- pragma external_pred(table_mmos_consume_next_answer_nondet/2).
+:- pragma external_pred(table_mmos_consume_next_answer_multi/2).
 
 :- pragma foreign_proc("C",
     table_mmos_restore_answers(AnswerBlock::in),
@@ -1222,7 +1214,7 @@ pretend_to_generate_value(Bogus) :-
     % The following code will throw an exception if executed.
     det_univ_to_type(univ(0), Bogus).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -1240,6 +1232,11 @@ pretend_to_generate_value(Bogus) :-
     % Lookup or insert an integer in the given table.
     %
 :- impure pred table_lookup_insert_int(ml_trie_node::in, int::in,
+    ml_trie_node::out) is det.
+
+    % Lookup or insert an unsigned integer in the given table.
+    %
+:- impure pred table_lookup_insert_uint(ml_trie_node::in, uint::in,
     ml_trie_node::out) is det.
 
     % Lookup or insert an integer in the given table.
@@ -1314,6 +1311,12 @@ pretend_to_generate_value(Bogus) :-
 :- impure pred table_save_int_answer(ml_answer_block::in, int::in, int::in)
     is det.
 
+    % Save an unsigned integer answer in the given answer block at the given
+    % offset.
+    %
+:- impure pred table_save_uint_answer(ml_answer_block::in, int::in, uint::in)
+    is det.
+
     % Save a character answer in the given answer block at the given
     % offset.
     %
@@ -1348,6 +1351,12 @@ pretend_to_generate_value(Bogus) :-
     %
 :- semipure pred table_restore_int_answer(ml_answer_block::in, int::in,
     int::out) is det.
+
+    % Restore an unsigned integer answer from the given answer block at
+    % the given offset.
+    %
+:- semipure pred table_restore_uint_answer(ml_answer_block::in, int::in,
+    uint::out) is det.
 
     % Restore a character answer from the given answer block at the
     % given offset.
@@ -1386,7 +1395,7 @@ pretend_to_generate_value(Bogus) :-
     %
 :- impure pred table_report_statistics is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -1403,13 +1412,20 @@ MR_DECLARE_TYPE_CTOR_INFO_STRUCT(MR_TYPE_CTOR_INFO_NAME(io, state, 0));
 
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
     table_lookup_insert_int(T0::in, V::in, T::out),
     [will_not_call_mercury, does_not_affect_liveness],
 "
     MR_tbl_lookup_insert_int(NULL, MR_TABLE_DEBUG_BOOL, MR_FALSE, T0, V, T);
+").
+
+:- pragma foreign_proc("C",
+    table_lookup_insert_uint(T0::in, V::in, T::out),
+    [will_not_call_mercury, does_not_affect_liveness],
+"
+    MR_tbl_lookup_insert_uint(NULL, MR_TABLE_DEBUG_BOOL, MR_FALSE, T0, V, T);
 ").
 
 :- pragma foreign_proc("C",
@@ -1505,13 +1521,20 @@ MR_DECLARE_TYPE_CTOR_INFO_STRUCT(MR_TYPE_CTOR_INFO_NAME(io, state, 0));
         MR_FALSE, T0, V, T);
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
     table_save_int_answer(AB::in, Offset::in, V::in),
     [will_not_call_mercury, does_not_affect_liveness],
 "
     MR_tbl_save_int_answer(MR_TABLE_DEBUG_BOOL, AB, Offset, V);
+").
+
+:- pragma foreign_proc("C",
+    table_save_uint_answer(AB::in, Offset::in, V::in),
+    [will_not_call_mercury, does_not_affect_liveness],
+"
+    MR_tbl_save_uint_answer(MR_TABLE_DEBUG_BOOL, AB, Offset, V);
 ").
 
 :- pragma foreign_proc("C",
@@ -1555,6 +1578,13 @@ MR_DECLARE_TYPE_CTOR_INFO_STRUCT(MR_TYPE_CTOR_INFO_NAME(io, state, 0));
     [will_not_call_mercury, promise_semipure, does_not_affect_liveness],
 "
     MR_tbl_restore_int_answer(MR_TABLE_DEBUG_BOOL, AB, Offset, V);
+").
+
+:- pragma foreign_proc("C",
+    table_restore_uint_answer(AB::in, Offset::in, V::out),
+    [will_not_call_mercury, promise_semipure, does_not_affect_liveness],
+"
+    MR_tbl_restore_uint_answer(MR_TABLE_DEBUG_BOOL, AB, Offset, V);
 ").
 
 :- pragma foreign_proc("C",
@@ -1607,6 +1637,12 @@ table_lookup_insert_int(_, _, _) :-
     % matching foreign_proc version.
     impure private_builtin.imp,
     private_builtin.sorry("table_lookup_insert_int").
+
+table_lookup_insert_uint(_, _, _) :-
+    % This version is only used for back-ends for which there is no
+    % matching foreign_proc version.
+    impure private_builtin.imp,
+    private_builtin.sorry("table_lookup_insert_uint").
 
 table_lookup_insert_start_int(_, _, _, _) :-
     % This version is only used for back-ends for which there is no
@@ -1667,6 +1703,12 @@ table_save_int_answer(_, _, _) :-
     % matching foreign_proc version.
     impure private_builtin.imp,
     private_builtin.sorry("table_save_int_answer").
+
+table_save_uint_answer(_, _, _) :-
+    % This version is only used for back-ends for which there is no
+    % matching foreign_proc version.
+    impure private_builtin.imp,
+    private_builtin.sorry("table_save_uint_answer").
 
 table_save_char_answer(_, _, _) :-
     % This version is only used for back-ends for which there is no
@@ -1740,7 +1782,7 @@ table_report_statistics :-
     impure private_builtin.imp,
     private_builtin.sorry("table_report_statistics").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_code("Erlang", "
 
@@ -1765,5 +1807,5 @@ table_report_statistics :-
         mercury__private_builtin:sorry_1_p_0(""tabling in Erlang backend"").
 ").
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

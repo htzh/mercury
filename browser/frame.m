@@ -5,17 +5,17 @@
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %---------------------------------------------------------------------------%
-% 
+%
 % File: frame.m.
 % Author: aet.
-% 
+%
 % frame - minimally implements ASCII graphics frames.
 % This module is used by the term browser for displaying terms.
 %
 % XXX: This implementation is:
 % - very inefficient.
 % - specific to our immediate needs, and could be made more general.
-% 
+%
 %---------------------------------------------------------------------------%
 %---------------------------------------------------------------------------%
 
@@ -34,6 +34,10 @@
     % coordinates is needed.
 :- type clip_rect == pair(int, int).
 
+    % Create a frame from a string.
+    %
+:- func from_string(string) = frame.
+
     % Width of a frame (horizontal size).
     %
 :- func hsize(frame) = int.
@@ -41,10 +45,6 @@
     % Height of a frame (vertical size).
     %
 :- func vsize(frame) = int.
-
-    % Create a frame from a string.
-    %
-:- func from_string(string) = frame.
 
     % Stack (vertically glue) two frames, left-aligned.
     %
@@ -68,12 +68,19 @@
 
 :- import_module assoc_list.
 :- import_module int.
-:- import_module list.
 :- import_module string.
 
 %---------------------------------------------------------------------------%
 
 from_string(Str) = [Str].
+
+hsize(Frame) = HSize :-
+    Lengths = list.map(func(Str) = string.length(Str), Frame),
+    list.foldl(int.max, Lengths, 0, MaxLen),
+    HSize = MaxLen.
+
+vsize(Frame) = VSize :-
+    length(Frame, VSize).
 
 vglue(TopFrame, BottomFrame) = StackedFrame :-
     % Glue frames vertically (stack). Align to left.
@@ -83,22 +90,23 @@ hglue(LeftFrame, RightFrame) = GluedFrame :-
     % Glue frames horizontally (juxtapose). align to top.
     RVSize = vsize(RightFrame),
     LVSize = vsize(LeftFrame),
-    ( RVSize < LVSize ->
+    ( if RVSize < LVSize then
         PadLines = LVSize - RVSize,
         RightFrameNew = frame_lower_pad(RightFrame, PadLines),
         LeftFrameNew = LeftFrame
-    ; LVSize < RVSize  ->
+    else if LVSize < RVSize  then
         PadLines = RVSize - LVSize,
         LeftFrameNew = frame_lower_pad(LeftFrame, PadLines),
         RightFrameNew = RightFrame
-    ;
+    else
         LeftFrameNew = LeftFrame,
         RightFrameNew = RightFrame
     ),
     frame_right_pad(LeftFrameNew, PaddedLeftFrameNew),
-    util.zip_with((pred(S1::in, S2::in, S3::out) is det :-
-            string.append(S1, S2, S3)),
-        PaddedLeftFrameNew, RightFrameNew, GluedFrame).
+    util.zip_with(
+        (pred(S1::in, S2::in, S3::out) is det :-
+            string.append(S1, S2, S3)
+        ), PaddedLeftFrameNew, RightFrameNew, GluedFrame).
 
     % Add right padding. That is, add whitespace on right so that
     % lines are all equal length.
@@ -133,14 +141,6 @@ subtract(M, X, Z) :-
 frame_lower_pad(Frame, PadLines) = PaddedFrame :-
     list.duplicate(PadLines, "", Padding),
     list.append(Frame, Padding, PaddedFrame).
-
-hsize(Frame) = HSize :-
-    Lengths = list.map(func(Str) = string.length(Str), Frame),
-    list.foldl(int.max, Lengths, 0, MaxLen),
-    HSize = MaxLen.
-
-vsize(Frame) = VSize :-
-    length(Frame, VSize).
 
 clip(X-Y, Frame) = ClippedFrame :-
     list.take_upto(Y, Frame, YClippedFrame),

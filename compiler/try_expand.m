@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2009-2012 The University of Melbourne.
+% Copyright (C) 2015 The Mercury team.
 % This file may only be copied under the terms of the GNU General
 % Public Licence - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -50,9 +51,9 @@
 %      magic_exception_result(TryResult),  % out(cannot_fail)
 %      (
 %          TryResult = succeeded({}),
-%          ( p(X, Y) ->
+%          ( if p(X, Y) then
 %              q(X, Y)
-%          ;
+%          else
 %              r
 %          )
 %      ;
@@ -72,9 +73,9 @@
 %      magic_exception_result(TryResult),  % out(cannot_fail)
 %      (
 %          TryResult = succeeded({}),
-%          ( <Goal> ->
+%          ( if <Goal> then
 %              <Then>
-%          ;
+%          else
 %              <Else>
 %          )
 %      ;
@@ -167,22 +168,22 @@
 % The <ExcpHandling> parts can be passed through from the pre-transformation.
 % If a `catch_any' is present the exception handling looks like this:
 %
-%      ( exc_univ_to_type(Excp, <CatchPattern1>) ->
+%      ( if exc_univ_to_type(Excp, <CatchPattern1>) then
 %          <CatchGoal1>
-%      ; exc_univ_to_type(Excp, <CatchPattern2>) ->
+%      else if exc_univ_to_type(Excp, <CatchPattern2>) then
 %          <CatchGoal2>
-%      ;
+%      else
 %          CatchAnyVar = exc_univ_value(Excp),
 %          <CatchAnyGoal>
 %      )
 %
 % Otherwise, if `catch_any' is not present:
 %
-%      ( exc_univ_to_type(Excp, <CatchPattern1>) ->
+%      ( if exc_univ_to_type(Excp, <CatchPattern1>) then
 %          <CatchGoal1>
-%      ; exc_univ_to_type(Excp, <CatchPattern2>) ->
+%      else if exc_univ_to_type(Excp, <CatchPattern2>) then
 %          <CatchGoal2>
-%      ;
+%      else
 %          rethrow(TryResult)
 %      )
 %
@@ -193,6 +194,7 @@
 
 :- import_module hlds.
 :- import_module hlds.hlds_module.
+:- import_module parse_tree.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
 
@@ -223,11 +225,14 @@
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.instmap.
+:- import_module hlds.make_goal.
 :- import_module hlds.pred_table.
 :- import_module hlds.quantification.
+:- import_module hlds.vartypes.
 :- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
-:- import_module parse_tree.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.builtin_lib_types.
 :- import_module parse_tree.prog_mode.
 :- import_module parse_tree.set_of_var.
@@ -237,7 +242,6 @@
 :- import_module maybe.
 :- import_module pair.
 :- import_module require.
-:- import_module set.
 :- import_module string.
 :- import_module term.
 
@@ -245,16 +249,16 @@
 
 expand_try_goals_in_module(!ModuleInfo, !Specs) :-
     % The exception module is implicitly imported if any try goals were seen,
-    % so if the exception module is not imported then we know there are no try
-    % goals to be expanded.
-    module_info_get_imported_module_specifiers(!.ModuleInfo, ImportedModules),
-    ( set.contains(ImportedModules, mercury_exception_module) ->
+    % so if the exception module is not imported, then we know there are
+    % no try goals to be expanded.
+    module_info_get_avail_module_map(!.ModuleInfo, AvailModuleMap),
+    ( if map.search(AvailModuleMap, mercury_exception_module, _) then
         some [!Globals] (
             module_info_get_globals(!.ModuleInfo, !:Globals),
             disable_det_warnings(OptionsToRestore, !Globals),
             module_info_set_globals(!.Globals, !ModuleInfo),
 
-            module_info_get_valid_predids(PredIds, !ModuleInfo),
+            module_info_get_valid_pred_ids(!.ModuleInfo, PredIds),
             list.foldl2(expand_try_goals_in_pred, PredIds,
                 !ModuleInfo, !Specs),
 
@@ -262,7 +266,7 @@ expand_try_goals_in_module(!ModuleInfo, !Specs) :-
             restore_det_warnings(OptionsToRestore, !Globals),
             module_info_set_globals(!.Globals, !ModuleInfo)
         )
-    ;
+    else
         true
     ).
 
@@ -376,11 +380,13 @@ expand_try_goals_in_goal(Instmap, Goal0, Goal, !Info) :-
             % There can be no try goals inside this scope.
             Goal = Goal0
         ;
-            ( Reason = exist_quant(_)
+            ( Reason = disable_warnings(_, _)
+            ; Reason = exist_quant(_)
             ; Reason = promise_solutions(_, _)
             ; Reason = promise_purity(_)
             ; Reason = require_detism(_)
             ; Reason = require_complete_switch(_)
+            ; Reason = require_switch_arms_detism(_, _)
             ; Reason = commit(_)
             ; Reason = barrier(_)
             ; Reason = from_ground_term(_, from_ground_term_deconstruct)
@@ -642,16 +648,16 @@ expand_try_goal_2(MaybeIO, ResultVar, Goal1, Then1, MaybeElse1, ExcpHandling1,
 
 extract_intermediate_goal_parts(ModuleInfo, ResultVar, IntermediateGoal,
         Goal, Then, MaybeElse, ExcpHandling) :-
-    (
+    ( if
         extract_intermediate_goal_parts_2(ModuleInfo, ResultVar,
             IntermediateGoal, GoalPrime, ThenPrime, MaybeElsePrime,
             ExcpHandlingPrime)
-    ->
+    then
         Goal = GoalPrime,
         Then = ThenPrime,
         MaybeElse = MaybeElsePrime,
         ExcpHandling = ExcpHandlingPrime
-    ;
+    else if
         % This form should only be encountered if there was an error in the
         % program, when the inner goal may fail, in a context where it must not
         % fail.  Compilation doesn't stop immediately after determinism
@@ -660,12 +666,12 @@ extract_intermediate_goal_parts(ModuleInfo, ResultVar, IntermediateGoal,
         extract_intermediate_goal_parts_2(ModuleInfo, ResultVar,
             ScopedGoal, GoalPrime, ThenPrime, MaybeElsePrime,
             ExcpHandlingPrime)
-    ->
+    then
         Goal = GoalPrime,
         Then = ThenPrime,
         MaybeElse = MaybeElsePrime,
         ExcpHandling = ExcpHandlingPrime
-    ;
+    else
         unexpected($module, $pred, "unexpected goal form")
     ).
 
@@ -694,9 +700,9 @@ extract_intermediate_goal_parts_2(ModuleInfo, ResultVar, IntermediateGoal,
     %
     %      TryResult = exception.succeeded(V),
     %      V = {},
-    %      ( Goal ->
+    %      ( if Goal then
     %          Then
-    %      ;
+    %      else
     %          Else
     %      ),
     %      Rest
@@ -718,12 +724,12 @@ extract_from_succeeded_goal(ModuleInfo, SucceededGoal, Goal, Then,
     Conjuncts0 = [DeconstructResult, TestNullTuple | Conjuncts1],
     DeconstructResult = hlds_goal(unify(_ResultVar, _, _, _, _), _),
     TestNullTuple = hlds_goal(unify(_, TestRHS, _, _, _), _),
-    TestRHS = rhs_functor(tuple_cons(0), no, []),
+    TestRHS = rhs_functor(tuple_cons(0), is_not_exist_constr, []),
 
-    (
+    ( if
         Conjuncts1 = [hlds_goal(IfThenElse, _) | Rest],
         IfThenElse = if_then_else(_, GoalPrime, Then0, Else0)
-    ->
+    then
         Goal = GoalPrime,
 
         % If Goal is erroneous the Then part may have been optimised away to
@@ -747,16 +753,16 @@ extract_from_succeeded_goal(ModuleInfo, SucceededGoal, Goal, Then,
 
         conjoin_goal_and_goal_list(Else0, Rest, Else),
         MaybeElse = yes(Else)
-    ;
+    else
         Conjuncts1 = [SomeGoal | AfterSomeGoal],
         SomeGoal = hlds_goal(scope(exist_quant([]), Goal), _),
-        (
+        ( if
             AfterSomeGoal = [SomeThen | Rest],
             SomeThen = hlds_goal(scope(exist_quant([]), Then0), _)
-        ->
+        then
             conjoin_goal_and_goal_list(Then0, Rest, Then),
             MaybeElse = no
-        ;
+        else
             % If "some [] Then" is missing then "some [] Goal" must be
             % `erroneous'.  Make the Then part into a call to an erroneous
             % procedure.
@@ -781,11 +787,11 @@ extract_from_succeeded_goal(ModuleInfo, SucceededGoal, Goal, Then,
 
 lookup_case_goal([], ConsId, _) :-
     unexpected($module, $pred, "couldn't find " ++ string(ConsId)).
-lookup_case_goal([H | T], ConsId, Goal) :-
-    ( H = case(ConsId, [], GoalPrime) ->
+lookup_case_goal([Case | Cases], ConsId, Goal) :-
+    ( if Case = case(ConsId, [], GoalPrime) then
         Goal = GoalPrime
-    ;
-        lookup_case_goal(T, ConsId, Goal)
+    else
+        lookup_case_goal(Cases, ConsId, Goal)
     ).
 
 :- pred bound_nonlocals_in_goal(module_info::in, instmap::in, hlds_goal::in,
@@ -824,8 +830,8 @@ make_try_lambda(Body0, OutputVarsSet, OutputTupleType, MaybeIO,
         LambdaParamModes = [out_mode],
         NonLocals = NonLocals0
     ),
-    LambdaType = higher_order_type(LambdaParamTypes, no, purity_pure,
-        lambda_normal),
+    LambdaType = higher_order_type(pf_predicate, LambdaParamTypes,
+        none_or_default_func, purity_pure, lambda_normal),
     proc_info_create_var_from_type(LambdaType, yes("TryLambda"), LambdaVar,
         !ProcInfo),
 
@@ -881,7 +887,9 @@ make_try_call(PredName, LambdaVar, ResultVar, ExtraArgs, OutputTupleType,
     create_poly_info(!.ModuleInfo, !.PredInfo, !.ProcInfo, PolyInfo0),
     polymorphism_make_type_info_var(OutputTupleType, Context,
         TypeInfoVar, MakeTypeInfoGoals, PolyInfo0, PolyInfo),
-    poly_info_extract(PolyInfo, !PredInfo, !ProcInfo, !:ModuleInfo),
+    poly_info_extract(PolyInfo, PolySpecs, !PredInfo, !ProcInfo, !:ModuleInfo),
+    expect(unify(PolySpecs, []), $module, $pred,
+        "got errors while making type_info_var"),
 
     % The mode will be fixed up by a later analysis.
     Mode = mode_no(0),
@@ -923,17 +931,17 @@ make_unreachable_call(ModuleInfo, Goal) :-
 make_output_tuple_inst_cast(TmpTupleVar, TupleVar, TupleArgInsts,
         CastOrUnify) :-
     % If all the arguments have inst `ground' then a unification is enough.
-    (
+    ( if
         list.member(ArgInst, TupleArgInsts),
-        ArgInst \= ground(_, none)
-    ->
+        ArgInst \= ground(_, none_or_default_func)
+    then
         TupleArity = list.length(TupleArgInsts),
         TupleInst = bound(shared, inst_test_no_results, [
             bound_functor(tuple_cons(TupleArity), TupleArgInsts)
         ]),
         generate_cast_with_insts(unsafe_type_inst_cast, TmpTupleVar, TupleVar,
             ground_inst, TupleInst, term.context_init, CastOrUnify)
-    ;
+    else
         create_pure_atomic_complicated_unification(TupleVar,
             rhs_var(TmpTupleVar), term.context_init,
             umc_implicit("try_expand"), [], CastOrUnify)

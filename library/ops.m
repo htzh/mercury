@@ -4,12 +4,12 @@
 % Copyright (C) 1995-2008, 2010, 2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: ops.m.
 % Main author: fjh.
 % Stability: low.
-% 
+%
 % This module exports a typeclass `ops.op_table' which is used to define
 % operator precedence tables for use by `parser.read_term_with_op_table'
 % and `term_io.write_term_with_op_table'.
@@ -18,16 +18,16 @@
 % Mercury operator table defined in the Mercury Language Reference Manual.
 %
 % See samples/calculator2.m for an example program.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module ops.
 :- interface.
 
 :- import_module list.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % An ops.class describes what structure terms constructed with an operator
     % of that class are allowed to take.
@@ -57,10 +57,10 @@
 :- type ops.op_info
     --->    op_info(
                 ops.class,
-                ops.priority  
+                ops.priority
             ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- typeclass ops.op_table(Table) where [
 
@@ -121,7 +121,7 @@
     func ops.arg_priority(Table) = ops.priority
 ].
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % The table of Mercury operators.
     % See the "Builtin Operators" section of the "Syntax" chapter
@@ -132,8 +132,8 @@
 
 :- func ops.init_mercury_op_table = (ops.mercury_op_table::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -154,7 +154,7 @@
 
 :- func ops.mercury_max_priority(mercury_op_table) = ops.priority.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -184,21 +184,21 @@ ops.init_mercury_op_table = ops.mercury_op_table.
 ops.lookup_mercury_infix_op(_OpTable, Name, Priority,
         LeftAssoc, RightAssoc) :-
     ops.op_table(Name, Info, MaybeOtherInfo),
-    (
+    ( if
         Info = op_info(Class, PriorityPrime),
         Class = infix(LeftAssocPrime, RightAssocPrime)
-    ->
+    then
         LeftAssoc = LeftAssocPrime,
         RightAssoc = RightAssocPrime,
         Priority = PriorityPrime
-    ;
+    else if
         MaybeOtherInfo = [op_info(Class, PriorityPrime)],
         Class = infix(LeftAssocPrime, RightAssocPrime)
-    ->
+    then
         LeftAssoc = LeftAssocPrime,
         RightAssoc = RightAssocPrime,
         Priority = PriorityPrime
-    ;
+    else
         fail
     ).
 
@@ -207,13 +207,17 @@ ops.lookup_mercury_infix_op(_OpTable, Name, Priority,
 
 ops.lookup_mercury_prefix_op(_OpTable, Name, Priority, LeftAssoc) :-
     ops.op_table(Name, Info, MaybeOtherInfo),
-    ( Info = op_info(prefix(LeftAssocPrime), PriorityPrime) ->
+    ( if
+        Info = op_info(prefix(LeftAssocPrime), PriorityPrime)
+    then
         LeftAssoc = LeftAssocPrime,
         Priority = PriorityPrime
-    ; MaybeOtherInfo = [op_info(prefix(LeftAssocPrime), PriorityPrime)] ->
+    else if
+        MaybeOtherInfo = [op_info(prefix(LeftAssocPrime), PriorityPrime)]
+    then
         LeftAssoc = LeftAssocPrime,
         Priority = PriorityPrime
-    ;
+    else
         fail
     ).
 
@@ -223,21 +227,21 @@ ops.lookup_mercury_prefix_op(_OpTable, Name, Priority, LeftAssoc) :-
 ops.lookup_mercury_binary_prefix_op(_OpTable, Name, Priority,
         LeftAssoc, RightAssoc) :-
     ops.op_table(Name, Info, MaybeOtherInfo),
-    (
+    ( if
         Info = op_info(Class, PriorityPrime),
         Class = binary_prefix(LeftAssocPrime, RightAssocPrime)
-    ->
+    then
         LeftAssoc = LeftAssocPrime,
         RightAssoc = RightAssocPrime,
         Priority = PriorityPrime
-    ;
+    else if
         MaybeOtherInfo = [op_info(Class, PriorityPrime)],
         Class = binary_prefix(LeftAssocPrime, RightAssocPrime)
-    ->
+    then
         LeftAssoc = LeftAssocPrime,
         RightAssoc = RightAssocPrime,
         Priority = PriorityPrime
-    ;
+    else
         fail
     ).
 
@@ -246,13 +250,17 @@ ops.lookup_mercury_binary_prefix_op(_OpTable, Name, Priority,
 
 ops.lookup_mercury_postfix_op(_OpTable, Name, Priority, LeftAssoc) :-
     ops.op_table(Name, Info, MaybeOtherInfo),
-    ( Info = op_info(postfix(LeftAssocPrime), PriorityPrime) ->
+    ( if
+        Info = op_info(postfix(LeftAssocPrime), PriorityPrime)
+    then
         LeftAssoc = LeftAssocPrime,
         Priority = PriorityPrime
-    ; MaybeOtherInfo = [op_info(postfix(LeftAssocPrime), PriorityPrime)] ->
+    else if
+        MaybeOtherInfo = [op_info(postfix(LeftAssocPrime), PriorityPrime)]
+    then
         LeftAssoc = LeftAssocPrime,
         Priority = PriorityPrime
-    ;
+    else
         fail
     ).
 
@@ -273,12 +281,19 @@ ops.lookup_mercury_op_infos(_OpTable, Name, Info, OtherInfos) :-
     % Left associative, lower priority than everything except record syntax.
 ops.lookup_mercury_operator_term(_OpTable, 120, y, x).
 
+%---------------------------------------------------------------------------%
+
+:- pragma inline(adjust_priority_for_assoc/3).
+
+adjust_priority_for_assoc(Priority, y, Priority).
+adjust_priority_for_assoc(Priority, x, Priority - 1).
+
 ops.mercury_max_priority(_Table) = 1200.
 
 :- func ops.mercury_arg_priority(mercury_op_table) = ops.priority.
 
-    % This needs to be less than the priority of the ','/2 operator.
 ops.mercury_arg_priority(_Table) = 999.
+    % This needs to be less than the priority of the ','/2 operator.
 
 :- pred ops.op_table(string::in, op_info::out, list(op_info)::out) is semidet.
 
@@ -404,11 +419,11 @@ ops.op_table(Op, Info, OtherInfos) :-
         ; Op = "==>",               Info = op_info(infix(x, x), 1175)
         ; Op = "=^",                Info = op_info(infix(x, x), 650)
         ; Op = "@",                 Info = op_info(infix(x, x), 90)
-        ; Op = "or_else",           Info = op_info(infix(x, y), 1100)
         ; Op = "end_module",        Info = op_info(prefix(x), 1199)
         ; Op = "event",             Info = op_info(prefix(x), 100)
         ; Op = "finalise",          Info = op_info(prefix(x), 1199)
         ; Op = "finalize",          Info = op_info(prefix(x), 1199)
+        ; Op = "for",               Info = op_info(infix(x, x), 500)
         ; Op = "func",              Info = op_info(prefix(x), 800)
         ; Op = "import_module",     Info = op_info(prefix(x), 1199)
         ; Op = "impure",            Info = op_info(prefix(y), 800)
@@ -419,6 +434,7 @@ ops.op_table(Op, Info, OtherInfos) :-
         ; Op = "instance",          Info = op_info(prefix(x), 1199)
         ; Op = "mode",              Info = op_info(prefix(x), 1199)
         ; Op = "module",            Info = op_info(prefix(x), 1199)
+        ; Op = "or_else",           Info = op_info(infix(x, y), 1100)
         ; Op = "pragma",            Info = op_info(prefix(x), 1199)
         ; Op = "promise",           Info = op_info(prefix(x), 1199)
         ; Op = "semipure",          Info = op_info(prefix(y), 800)
@@ -430,9 +446,19 @@ ops.op_table(Op, Info, OtherInfos) :-
         OtherInfos = []
     ;
         ( Op = "arbitrary"
+        ; Op = "disable_warning"
+        ; Op = "disable_warnings"
         ; Op = "promise_equivalent_solutions"
         ; Op = "promise_equivalent_solution_sets"
         ; Op = "require_complete_switch"
+        ; Op = "require_switch_arms_det"
+        ; Op = "require_switch_arms_semidet"
+        ; Op = "require_switch_arms_multi"
+        ; Op = "require_switch_arms_nondet"
+        ; Op = "require_switch_arms_cc_multi"
+        ; Op = "require_switch_arms_cc_nondet"
+        ; Op = "require_switch_arms_erroneous"
+        ; Op = "require_switch_arms_failure"
         ; Op = "trace"
         ; Op = "atomic"
         ; Op = "try"
@@ -463,11 +489,4 @@ ops.op_table(Op, Info, OtherInfos) :-
         OtherInfos = []
     ).
 
-%-----------------------------------------------------------------------------%
-
-:- pragma inline(adjust_priority_for_assoc/3).
-
-adjust_priority_for_assoc(Priority, y, Priority).
-adjust_priority_for_assoc(Priority, x, Priority - 1).
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

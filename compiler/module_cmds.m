@@ -16,7 +16,9 @@
 :- module parse_tree.module_cmds.
 :- interface.
 
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
+:- import_module libs.
 :- import_module libs.file_util.
 :- import_module libs.globals.
 
@@ -153,7 +155,7 @@
 :- pred get_mercury_std_libs_for_java(globals::in, list(string)::out) is det.
 
     % Given a list .class files, return the list of .class files that should be
-    % passed to `jar'.  This is required because nested classes are in separate
+    % passed to `jar'. This is required because nested classes are in separate
     % files which we don't know about, so we have to scan the directory to
     % figure out which files were produced by `javac'.
     %
@@ -203,7 +205,7 @@
 :- implementation.
 
 :- import_module libs.process_util.
-:- import_module libs.handle_options.   % for grade_directory_component
+:- import_module libs.compute_grade.    % for grade_directory_component
 :- import_module libs.options.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.file_names.
@@ -326,7 +328,7 @@ binary_input_stream_cmp(OutputFileStream, TmpOutputFileStream, FilesDiffer,
         ok(no), FilesDiffer0, !IO),
 
     % Check whether there is anything left in TmpOutputFileStream
-    ( FilesDiffer0 = ok(ok(no)) ->
+    ( if FilesDiffer0 = ok(ok(no)) then
         io.read_byte(TmpOutputFileStream, TmpByteResult2, !IO),
         (
             TmpByteResult2 = ok(_),
@@ -338,23 +340,22 @@ binary_input_stream_cmp(OutputFileStream, TmpOutputFileStream, FilesDiffer,
             TmpByteResult2 = error(Error),
             FilesDiffer = ok(error(Error))
         )
-    ;
+    else
         FilesDiffer = FilesDiffer0
     ).
 
 :- pred binary_input_stream_cmp_2(io.binary_input_stream::in, int::in,
-    bool::out, io.res(bool)::in, io.res(bool)::out,
-    io::di, io::uo) is det.
+    bool::out, io.res(bool)::in, io.res(bool)::out, io::di, io::uo) is det.
 
 binary_input_stream_cmp_2(TmpOutputFileStream, Byte, Continue, _, Differ,
         !IO) :-
     io.read_byte(TmpOutputFileStream, TmpByteResult, !IO),
     (
         TmpByteResult = ok(TmpByte),
-        ( TmpByte = Byte ->
+        ( if TmpByte = Byte then
             Differ = ok(no),
             Continue = yes
-        ;
+        else
             Differ = ok(yes),
             Continue = no
         )
@@ -426,13 +427,30 @@ maybe_make_symlink(Globals, LinkTarget, LinkName, Result, !IO) :-
 make_symlink_or_copy_file(Globals, SourceFileName, DestinationFileName,
         Succeeded, !IO) :-
     globals.lookup_bool_option(Globals, use_symlinks, UseSymLinks),
+    globals.lookup_bool_option(Globals, verbose_commands, PrintCommand),
     (
         UseSymLinks = yes,
         LinkOrCopy = "linking",
+        (
+            PrintCommand = yes,
+            io.format("%% Linking file `%s' -> `%s'\n",
+                [s(SourceFileName), s(DestinationFileName)], !IO),
+            io.flush_output(!IO)
+        ;
+            PrintCommand = no
+        ),
         io.make_symlink(SourceFileName, DestinationFileName, Result, !IO)
     ;
         UseSymLinks = no,
         LinkOrCopy = "copying",
+        (
+            PrintCommand = yes,
+            io.format("%% Copying file `%s' -> `%s'\n",
+                [s(SourceFileName), s(DestinationFileName)], !IO),
+            io.flush_output(!IO)
+        ;
+            PrintCommand = no
+        ),
         copy_file(Globals, SourceFileName, DestinationFileName, Result, !IO)
     ),
     (
@@ -442,16 +460,10 @@ make_symlink_or_copy_file(Globals, SourceFileName, DestinationFileName,
         Result = error(Error),
         Succeeded = no,
         io.progname_base("mercury_compile", ProgName, !IO),
-        io.write_string(ProgName, !IO),
-        io.write_string(": error ", !IO),
-        io.write_string(LinkOrCopy, !IO),
-        io.write_string(" `", !IO),
-        io.write_string(SourceFileName, !IO),
-        io.write_string("' to `", !IO),
-        io.write_string(DestinationFileName, !IO),
-        io.write_string("': ", !IO),
-        io.write_string(io.error_message(Error), !IO),
-        io.nl(!IO),
+        io.error_message(Error, ErrorMsg),
+        io.format("%s: error %s `%s' to `%s', %s\n",
+            [s(ProgName), s(LinkOrCopy), s(SourceFileName),
+            s(DestinationFileName), s(ErrorMsg)], !IO),
         io.flush_output(!IO)
     ).
 
@@ -485,7 +497,7 @@ make_symlink_or_copy_dir(Globals, SourceDirName, DestinationDirName,
         (
             Succeeded = yes
         ;
-            Succeeded = no, 
+            Succeeded = no,
             io.progname_base("mercury_compile", ProgName, !IO),
             io.write_string(ProgName, !IO),
             io.write_string(": error copying directory", !IO),
@@ -563,98 +575,124 @@ invoke_system_command_maybe_filter_output(Globals, ErrorStream, Verbosity,
     % the output from the command would go to the current C output
     % and error streams.
 
-    io.make_temp(TmpFile, !IO),
-    ( use_dotnet ->
-        % XXX can't use Bourne shell syntax to redirect on .NET
-        % XXX the output will go to the wrong place!
-        CommandRedirected = Command
-    ; use_win32 ->
-        % On windows we can't in general redirect standard error in the
-        % shell.
-        CommandRedirected = Command ++ " > " ++ TmpFile
-    ;
-        CommandRedirected =
-            string.append_list([Command, " > ", TmpFile, " 2>&1"])
-    ),
-    io.call_system_return_signal(CommandRedirected, Result, !IO),
+    io.make_temp_file(TmpFileResult, !IO),
     (
-        Result = ok(exited(Status)),
-        maybe_write_string(PrintCommand, "% done.\n", !IO),
-        ( Status = 0 ->
-            CommandSucceeded = yes
+        TmpFileResult = ok(TmpFile),
+        ( if use_dotnet then
+            % XXX can't use Bourne shell syntax to redirect on .NET
+            % XXX the output will go to the wrong place!
+            CommandRedirected = Command
+        else if use_win32 then
+            % On windows we can't in general redirect standard error in the
+            % shell.
+            CommandRedirected = Command ++ " > " ++ TmpFile
+        else
+            CommandRedirected =
+                string.append_list([Command, " > ", TmpFile, " 2>&1"])
+        ),
+        io.call_system_return_signal(CommandRedirected, Result, !IO),
+        (
+            Result = ok(exited(Status)),
+            maybe_write_string(PrintCommand, "% done.\n", !IO),
+            ( if Status = 0 then
+                CommandSucceeded = yes
+            else
+                % The command should have produced output describing the error.
+                CommandSucceeded = no
+            )
         ;
-            % The command should have produced output describing the error.
+            Result = ok(signalled(Signal)),
+            report_error_to_stream(ErrorStream,
+                "system command received signal "
+                ++ int_to_string(Signal) ++ ".", !IO),
+            % Also report the error to standard output, because if we raise the
+            % signal this error may not ever been seen, the process stops and
+            % the user is confused.
+            report_error("system command received signal "
+                ++ int_to_string(Signal) ++ ".", !IO),
+
+            % Make sure the current process gets the signal. Some systems (e.g.
+            % Linux) ignore SIGINT during a call to system().
+            raise_signal(Signal, !IO),
+            CommandSucceeded = no
+        ;
+            Result = error(Error),
+            report_error_to_stream(ErrorStream, io.error_message(Error), !IO),
             CommandSucceeded = no
         )
     ;
-        Result = ok(signalled(Signal)),
-        % Make sure the current process gets the signal. Some systems (e.g.
-        % Linux) ignore SIGINT during a call to system().
-        raise_signal(Signal, !IO),
-        report_error_to_stream(ErrorStream, "system command received signal "
-            ++ int_to_string(Signal) ++ ".", !IO),
-        CommandSucceeded = no
-    ;
-        Result = error(Error),
-        report_error_to_stream(ErrorStream, io.error_message(Error), !IO),
+        TmpFileResult = error(Error),
+        report_error_to_stream(ErrorStream,
+            "Could not create temporary file: " ++ error_message(Error), !IO),
+        TmpFile = "",
         CommandSucceeded = no
     ),
 
-    (
+    ( if
         % We can't do bash style redirection on .NET.
         not use_dotnet,
         MaybeProcessOutput = yes(ProcessOutput)
-    ->
-        io.make_temp(ProcessedTmpFile, !IO),
-       
-        % XXX we should get rid of use_win32 
-        ( use_win32 ->
-            get_system_env_type(Globals, SystemEnvType),
-            ( SystemEnvType = env_type_powershell ->
-                ProcessOutputRedirected = string.append_list(
-                    ["Get-Content ", TmpFile, " | ", ProcessOutput,
-                        " > ", ProcessedTmpFile, " 2>&1"])
-            ;
-                % On windows we can't in general redirect standard
-                % error in the shell.
+    then
+        io.make_temp_file(ProcessedTmpFileResult, !IO),
+        (
+            ProcessedTmpFileResult = ok(ProcessedTmpFile),
+
+            % XXX we should get rid of use_win32
+            ( if use_win32 then
+                get_system_env_type(Globals, SystemEnvType),
+                ( if SystemEnvType = env_type_powershell then
+                    ProcessOutputRedirected = string.append_list(
+                        ["Get-Content ", TmpFile, " | ", ProcessOutput,
+                            " > ", ProcessedTmpFile, " 2>&1"])
+                else
+                    % On windows we can't in general redirect standard
+                    % error in the shell.
+                    ProcessOutputRedirected = string.append_list(
+                        [ProcessOutput, " < ", TmpFile, " > ",
+                            ProcessedTmpFile])
+                )
+            else
                 ProcessOutputRedirected = string.append_list(
                     [ProcessOutput, " < ", TmpFile, " > ",
-                        ProcessedTmpFile])
-            )
-        ;
-            ProcessOutputRedirected = string.append_list(
-                [ProcessOutput, " < ", TmpFile, " > ",
-                    ProcessedTmpFile, " 2>&1"])
-        ),
-        io.call_system_return_signal(ProcessOutputRedirected,
-            ProcessOutputResult, !IO),
-        io.remove_file(TmpFile, _, !IO),
-        (
-            ProcessOutputResult = ok(exited(ProcessOutputStatus)),
-            maybe_write_string(PrintCommand, "% done.\n", !IO),
-            ( ProcessOutputStatus = 0 ->
-                ProcessOutputSucceeded = yes
+                        ProcessedTmpFile, " 2>&1"])
+            ),
+            io.call_system_return_signal(ProcessOutputRedirected,
+                ProcessOutputResult, !IO),
+            io.remove_file(TmpFile, _, !IO),
+            (
+                ProcessOutputResult = ok(exited(ProcessOutputStatus)),
+                maybe_write_string(PrintCommand, "% done.\n", !IO),
+                ( if ProcessOutputStatus = 0 then
+                    ProcessOutputSucceeded = yes
+                else
+                    % The command should have produced output
+                    % describing the error.
+                    ProcessOutputSucceeded = no
+                )
             ;
-                % The command should have produced output
-                % describing the error.
+                ProcessOutputResult = ok(signalled(ProcessOutputSignal)),
+                % Make sure the current process gets the signal. Some
+                % systems (e.g. Linux) ignore SIGINT during a call to
+                % system().
+                raise_signal(ProcessOutputSignal, !IO),
+                report_error_to_stream(ErrorStream,
+                    "system command received signal "
+                    ++ int_to_string(ProcessOutputSignal) ++ ".", !IO),
+                ProcessOutputSucceeded = no
+            ;
+                ProcessOutputResult = error(ProcessOutputError),
+                report_error_to_stream(ErrorStream,
+                    io.error_message(ProcessOutputError), !IO),
                 ProcessOutputSucceeded = no
             )
         ;
-            ProcessOutputResult = ok(signalled(ProcessOutputSignal)),
-            % Make sure the current process gets the signal. Some systems
-            % (e.g. Linux) ignore SIGINT during a call to system().
-            raise_signal(ProcessOutputSignal, !IO),
+            ProcessedTmpFileResult = error(ProcessTmpError),
             report_error_to_stream(ErrorStream,
-                "system command received signal "
-                ++ int_to_string(ProcessOutputSignal) ++ ".", !IO),
-            ProcessOutputSucceeded = no
-        ;
-            ProcessOutputResult = error(ProcessOutputError),
-            report_error_to_stream(ErrorStream,
-                io.error_message(ProcessOutputError), !IO),
-            ProcessOutputSucceeded = no
+                io.error_message(ProcessTmpError), !IO),
+            ProcessOutputSucceeded = no,
+            ProcessedTmpFile = ""
         )
-    ;
+    else
         ProcessOutputSucceeded = yes,
         ProcessedTmpFile = TmpFile
     ),
@@ -686,7 +724,7 @@ invoke_system_command_maybe_filter_output(Globals, ErrorStream, Verbosity,
     io.set_exit_status(OldStatus, !IO).
 
 make_command_string(String0, QuoteType, String) :-
-    ( use_win32 ->
+    ( if use_win32 then
         (
             QuoteType = forward,
             Quote = " '"
@@ -695,7 +733,7 @@ make_command_string(String0, QuoteType, String) :-
             Quote = " """
         ),
         string.append_list(["sh -c ", Quote, String0, Quote], String)
-    ;
+    else
         String = String0
     ).
 
@@ -716,7 +754,7 @@ use_dotnet :-
 
     % Are we compiling in a win32 environment?
     %
-    % If in doubt, use_win32 should succeed.  This is only used to decide
+    % If in doubt, use_win32 should succeed. This is only used to decide
     % whether to invoke Bourne shell command and shell scripts directly,
     % or whether to invoke them via `sh -c ...'. The latter should work
     % correctly in a Unix environment too, but is a little less efficient
@@ -744,14 +782,21 @@ use_win32 :-
 %
 
 create_java_shell_script(Globals, MainModuleName, Succeeded, !IO) :-
+    Ext = ".jar",
+    module_name_to_file_name(Globals, MainModuleName, Ext, do_not_create_dirs,
+        JarFileName, !IO),
     get_target_env_type(Globals, TargetEnvType),
     (
         ( TargetEnvType = env_type_posix
         ; TargetEnvType = env_type_cygwin
-        ; TargetEnvType = env_type_msys
         ),
         create_launcher_shell_script(Globals, MainModuleName,
-            write_java_shell_script(Globals, MainModuleName),
+            write_java_shell_script(Globals, MainModuleName, JarFileName),
+            Succeeded, !IO)
+    ;
+        TargetEnvType = env_type_msys,
+        create_launcher_shell_script(Globals, MainModuleName,
+            write_java_msys_shell_script(Globals, MainModuleName, JarFileName),
             Succeeded, !IO)
     ;
         % XXX should create a .ps1 file on PowerShell.
@@ -759,24 +804,20 @@ create_java_shell_script(Globals, MainModuleName, Succeeded, !IO) :-
         ; TargetEnvType = env_type_powershell
         ),
         create_launcher_batch_file(Globals, MainModuleName,
-            write_java_batch_file(Globals, MainModuleName),
+            write_java_batch_file(Globals, MainModuleName, JarFileName),
             Succeeded, !IO)
     ).
 
 :- pred write_java_shell_script(globals::in, module_name::in,
-    io.text_output_stream::in, io::di, io::uo) is det.
+    file_name::in, io.text_output_stream::in, io::di, io::uo) is det.
 
-write_java_shell_script(Globals, MainModuleName, Stream, !IO) :-
-    % In shell scripts always use / separators, even on Windows.
-    get_class_dir_name(Globals, ClassDirName),
-    string.replace_all(ClassDirName, "\\", "/", ClassDirNameUnix),
-
+write_java_shell_script(Globals, MainModuleName, JarFileName, Stream, !IO) :-
     get_mercury_std_libs_for_java(Globals, MercuryStdLibs),
     globals.lookup_accumulating_option(Globals, java_classpath,
         UserClasspath),
     % We prepend the .class files' directory and the current CLASSPATH.
-    Java_Incl_Dirs = ["$DIR/" ++ ClassDirNameUnix] ++ MercuryStdLibs ++
-        ["$CLASSPATH" | UserClasspath],
+    Java_Incl_Dirs = ["\"$DIR/" ++ JarFileName ++ "\""] ++
+        MercuryStdLibs ++ ["$CLASSPATH" | UserClasspath],
     ClassPath = string.join_list("${SEP}", Java_Incl_Dirs),
 
     globals.lookup_string_option(Globals, java_interpreter, Java),
@@ -785,6 +826,7 @@ write_java_shell_script(Globals, MainModuleName, Stream, !IO) :-
     io.write_strings(Stream, [
         "#!/bin/sh\n",
         "DIR=${0%/*}\n",
+        "DIR=$( cd \"${DIR}\" && pwd -P )\n",
         "case $WINDIR in\n",
         "   '') SEP=':' ;;\n",
         "   *)  SEP=';' ;;\n",
@@ -792,20 +834,61 @@ write_java_shell_script(Globals, MainModuleName, Stream, !IO) :-
         "CLASSPATH=", ClassPath, "\n",
         "export CLASSPATH\n",
         "JAVA=${JAVA:-", Java, "}\n",
-        "exec $JAVA jmercury.", ClassName, " \"$@\"\n"
+        "exec \"$JAVA\" jmercury.", ClassName, " \"$@\"\n"
     ], !IO).
 
-:- pred write_java_batch_file(globals::in, module_name::in,
-    io.text_output_stream::in, io::di, io::uo) is det.
+    % For the MSYS version of the Java launcher script, there are a few
+    % differences:
+    %
+    % 1. The value of the CLASSPATH environment variable we construct for the
+    % Java interpreter must contain Windows style paths.
+    %
+    % 2. We use forward slashes as directory separators rather than back
+    % slashes since the latter require escaping inside the shell script.
+    %
+    % 3. The path separator character, ';', in the value of CLASSPATH must be
+    % escaped because it is a statement separator in sh.
+    %
+    % 4. The path of the Java interpreter must be a Unix style path as it will
+    % be invoked directly from the MSYS shell.
+    %
+:- pred write_java_msys_shell_script(globals::in, module_name::in,
+    file_name::in, io.text_output_stream::in, io::di, io::uo) is det.
 
-write_java_batch_file(Globals, MainModuleName, Stream, !IO) :-
-    get_class_dir_name(Globals, ClassDirName),
-
+write_java_msys_shell_script(Globals, MainModuleName, JarFileName, Stream,
+        !IO) :-
     get_mercury_std_libs_for_java(Globals, MercuryStdLibs),
     globals.lookup_accumulating_option(Globals, java_classpath,
         UserClasspath),
     % We prepend the .class files' directory and the current CLASSPATH.
-    Java_Incl_Dirs = ["%DIR%\\" ++ ClassDirName] ++ MercuryStdLibs ++
+    Java_Incl_Dirs0 = ["\"$DIR/" ++ JarFileName ++ "\""] ++
+        MercuryStdLibs ++ ["$CLASSPATH" | UserClasspath],
+    Java_Incl_Dirs = list.map(func(S) = string.replace_all(S, "\\", "/"),
+        Java_Incl_Dirs0),
+    ClassPath = string.join_list("\\;", Java_Incl_Dirs),
+
+    globals.lookup_string_option(Globals, java_interpreter, Java),
+    mangle_sym_name_for_java(MainModuleName, module_qual, ".", ClassName),
+
+    io.write_strings(Stream, [
+        "#!/bin/sh\n",
+        "DIR=${0%/*}\n",
+        "DIR=$( cd \"${DIR}\" && pwd -W )\n",
+        "CLASSPATH=", ClassPath, "\n",
+        "export CLASSPATH\n",
+        "JAVA=${JAVA:-", Java, "}\n",
+        "exec \"$JAVA\" jmercury.", ClassName, " \"$@\"\n"
+    ], !IO).
+
+:- pred write_java_batch_file(globals::in, module_name::in, file_name::in,
+    io.text_output_stream::in, io::di, io::uo) is det.
+
+write_java_batch_file(Globals, MainModuleName, JarFileName, Stream, !IO) :-
+    get_mercury_std_libs_for_java(Globals, MercuryStdLibs),
+    globals.lookup_accumulating_option(Globals, java_classpath,
+        UserClasspath),
+    % We prepend the .class files' directory and the current CLASSPATH.
+    Java_Incl_Dirs = ["%DIR%\\" ++ JarFileName] ++ MercuryStdLibs ++
         ["%CLASSPATH%" | UserClasspath],
     ClassPath = string.join_list(";", Java_Incl_Dirs),
 
@@ -821,9 +904,9 @@ write_java_batch_file(Globals, MainModuleName, Stream, !IO) :-
         Java, " jmercury.", ClassName, " %*\n"
     ], !IO).
 
-    % NOTE: changes here may require changes to get_mercury_std_libs.
-    %
 get_mercury_std_libs_for_java(Globals, !:StdLibs) :-
+    % NOTE: changes here may require changes to get_mercury_std_libs.
+
     !:StdLibs = [],
     globals.lookup_maybe_string_option(Globals,
         mercury_standard_library_directory, MaybeStdlibDir),
@@ -873,9 +956,9 @@ list_class_files_for_jar(Globals, MainClassFiles, ClassSubDir,
         Result = ok(NestedClassFiles),
         AllClassFiles0 = MainClassFiles ++ NestedClassFiles,
         % Remove the `Mercury/classs' prefix if present.
-        ( ClassSubDir = dir.this_directory ->
+        ( if ClassSubDir = dir.this_directory then
             AllClassFiles = AllClassFiles0
-        ;
+        else
             ClassSubDirSep = ClassSubDir / "",
             AllClassFiles = list.map(
                 string.remove_prefix_if_present(ClassSubDirSep),
@@ -922,13 +1005,13 @@ make_nested_class_prefix(ClassFileName, ClassPrefix) :-
 
 accumulate_nested_class_files(NestedClassPrefixes, DirName, BaseName,
         _FileType, Continue, !Acc, !IO) :-
-    (
+    ( if
         string.sub_string_search(BaseName, "$", Dollar),
         BaseNameToDollar = string.left(BaseName, Dollar + 1),
         set.contains(NestedClassPrefixes, DirName / BaseNameToDollar)
-    ->
+    then
         !:Acc = [DirName / BaseName | !.Acc]
-    ;
+    else
         true
     ),
     Continue = yes.
@@ -950,7 +1033,7 @@ get_env_classpath(Classpath, !IO) :-
 
 %-----------------------------------------------------------------------------%
 %
-% Erlang utilities
+% Erlang utilities.
 %
 
 create_erlang_shell_script(Globals, MainModuleName, Succeeded, !IO) :-
@@ -1017,7 +1100,7 @@ write_erlang_shell_script(Globals, MainModuleName, Stream, !IO) :-
         list.sort_and_remove_dups(LinkLibrariesList))),
 
     % XXX main_2_p_0 is not necessarily in the main module itself and
-    % could be in a submodule.  We don't handle that yet.
+    % could be in a submodule. We don't handle that yet.
     SearchProg = pa_option(yes, no, """$DIR""/" ++ quote_arg(BeamDirName)),
 
     % Write the shell script.
@@ -1037,7 +1120,7 @@ write_erlang_shell_script(Globals, MainModuleName, Stream, !IO) :-
     io.text_output_stream::in, io::di, io::uo) is det.
 
 write_erlang_batch_file(Globals, MainModuleName, Stream, !IO) :-
-    % XXX It should be possibe to avoid some of the code duplication with
+    % XXX It should be possible to avoid some of the code duplication with
     % the Unix version above.
     globals.lookup_string_option(Globals, erlang_object_file_extension,
         BeamExt),
@@ -1080,7 +1163,7 @@ write_erlang_batch_file(Globals, MainModuleName, Stream, !IO) :-
         list.sort_and_remove_dups(LinkLibrariesList))),
 
     % XXX main_2_p_0 is not necessarily in the main module itself and
-    % could be in a submodule.  We don't handle that yet.
+    % could be in a submodule. We don't handle that yet.
     SearchProg = pa_option(no, no, "%DIR%\\" ++ quote_arg(BeamDirName)),
     io.write_strings(Stream, [
         "@echo off\n",
@@ -1102,13 +1185,13 @@ find_erlang_library_path(Globals, MercuryLibDirs, LibName, LibPath, !IO) :-
     module_name_to_lib_file_name(NoSubdirsGlobals, "lib", LibModuleName,
         ".beams", do_not_create_dirs, LibFileName, !IO),
 
-    search_for_file_returning_dir(do_not_open_file, MercuryLibDirs,
-        LibFileName, SearchResult, !IO),
+    search_for_file_returning_dir(MercuryLibDirs, LibFileName, MaybeDirName,
+        !IO),
     (
-        SearchResult = ok(DirName),
+        MaybeDirName = ok(DirName),
         LibPath = DirName / LibFileName
     ;
-        SearchResult = error(Error),
+        MaybeDirName = error(Error),
         LibPath = "",
         write_error_pieces_maybe_with_context(Globals, no, 0, [words(Error)],
             !IO)
@@ -1138,7 +1221,7 @@ pa_option(BreakLines, Quote, Dir0) = Option :-
 create_launcher_shell_script(Globals, MainModuleName, Pred, Succeeded, !IO) :-
     Extension = "",
     module_name_to_file_name(Globals, MainModuleName, Extension,
-        do_not_create_dirs, FileName, !IO),
+        do_create_dirs, FileName, !IO),
 
     globals.lookup_bool_option(Globals, verbose, Verbose),
     maybe_write_string(Verbose, "% Generating shell script `" ++
@@ -1154,10 +1237,10 @@ create_launcher_shell_script(Globals, MainModuleName, Pred, Succeeded, !IO) :-
         io.call_system("chmod a+x " ++ FileName, ChmodResult, !IO),
         (
             ChmodResult = ok(Status),
-            ( Status = 0 ->
+            ( if Status = 0 then
                 Succeeded = yes,
                 maybe_write_string(Verbose, "% done.\n", !IO)
-            ;
+            else
                 unexpected($module, $pred, "chmod exit status != 0"),
                 Succeeded = no
             )
@@ -1177,7 +1260,7 @@ create_launcher_shell_script(Globals, MainModuleName, Pred, Succeeded, !IO) :-
 create_launcher_batch_file(Globals, MainModuleName, Pred, Succeeded, !IO) :-
     Extension = ".bat",
     module_name_to_file_name(Globals, MainModuleName, Extension,
-        do_not_create_dirs, FileName, !IO),
+        do_create_dirs, FileName, !IO),
 
     globals.lookup_bool_option(Globals, verbose, Verbose),
     maybe_write_string(Verbose, "% Generating batch file `" ++

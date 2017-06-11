@@ -1,24 +1,24 @@
-%-----------------------------------------------------------------------------%
-% vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+% vim: ft=mercury ts=4 sw=4 et
+%---------------------------------------------------------------------------%
 % Copyright (C) 2002-2007, 2009-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: type_desc.m.
 % Main author: fjh, zs.
 % Stability: low.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module type_desc.
 :- interface.
 
 :- import_module list.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % The `type_desc', `pseudo_type_desc' and `type_ctor_desc' types
     % provide access to type information.
@@ -63,11 +63,15 @@
     %
 :- func ground_pseudo_type_desc_to_type_desc(pseudo_type_desc) = type_desc
     is semidet.
+:- pred ground_pseudo_type_desc_to_type_desc(pseudo_type_desc::in,
+    type_desc::out) is semidet.
 
     % Convert a pseudo_type_desc describing a ground type to a type_desc.
     % If the pseudo_type_desc describes a non-ground type, abort.
     %
 :- func det_ground_pseudo_type_desc_to_type_desc(pseudo_type_desc) = type_desc.
+
+%---------------------------------------------------------------------------%
 
     % The function type_of/1 returns a representation of the type
     % of its argument.
@@ -203,8 +207,8 @@
     %
 :- func det_make_type(type_ctor_desc, list(type_desc)) = type_desc.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -226,8 +230,8 @@
 :- pred type_info_list_to_type_desc_list(
     list(rtti_implementation.type_info)::in, list(type_desc)::out) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -263,88 +267,20 @@ import jmercury.runtime.TypeCtorInfo_Struct;
 import jmercury.runtime.TypeInfo_Struct;
 ").
 
-%-----------------------------------------------------------------------------%
-
-type_desc_to_type_info(TypeDesc, TypeInfo) :-
-    ( type_info_desc_same_representation ->
-        private_builtin.unsafe_type_cast(TypeDesc, TypeInfo)
-    ;
-        error("type_desc_to_type_info/2")
-    ).
-
-type_info_to_type_desc(TypeInfo, TypeDesc) :-
-    ( type_info_desc_same_representation ->
-        private_builtin.unsafe_type_cast(TypeInfo, TypeDesc)
-    ;
-        error("type_info_to_type_desc/2")
-    ).
-
-type_info_list_to_type_desc_list(TypeInfoList, TypeDescList) :-
-    ( type_info_desc_same_representation ->
-        private_builtin.unsafe_type_cast(TypeInfoList, TypeDescList)
-    ;
-        list.map(type_info_to_type_desc, TypeInfoList, TypeDescList)
-    ).
-
-:- pred type_ctor_desc_to_type_ctor_info(type_ctor_desc::in,
-    rtti_implementation.type_ctor_info::out) is det.
-
-type_ctor_desc_to_type_ctor_info(TypeCtorDesc, TypeCtorInfo) :-
-    ( type_info_desc_same_representation ->
-        private_builtin.unsafe_type_cast(TypeCtorDesc, TypeCtorInfo)
-    ;
-        error("type_ctor_desc_to_type_ctor_info/2")
-    ).
-
-:- pred pseudo_type_desc_to_pseudo_type_info(pseudo_type_desc::in,
-    rtti_implementation.pseudo_type_info::out) is det.
-
-pseudo_type_desc_to_pseudo_type_info(PseudoTypeDesc, PseudoTypeInfo) :-
-    ( type_info_desc_same_representation ->
-        private_builtin.unsafe_type_cast(PseudoTypeDesc, PseudoTypeInfo)
-    ;
-        error("pseudo_type_desc_to_pseudo_type_info/2")
-    ).
-
-:- pred type_info_desc_same_representation is semidet.
-
-type_info_desc_same_representation :-
-    semidet_true.
-
-%-----------------------------------------------------------------------------%
-
-    % We need to call the rtti_implementation module -- so that we get the
-    % dependencies right it's easiest to do it from Mercury.
-
-:- pragma foreign_export("C", call_rtti_compare_type_infos(out, in, in),
-    "ML_call_rtti_compare_type_infos").
-:- pragma foreign_export("IL", call_rtti_compare_type_infos(out, in, in),
-    "ML_call_rtti_compare_type_infos").
-
-:- pred call_rtti_compare_type_infos(comparison_result::out,
-    rtti_implementation.type_info::in, rtti_implementation.type_info::in)
-    is det.
-
-call_rtti_compare_type_infos(Res, T1, T2) :-
-    rtti_implementation.compare_type_infos(Res, T1, T2).
-
-%-----------------------------------------------------------------------------%
-%
-% Code for type manipulation
-%
+%---------------------------------------------------------------------------%
 
 pseudo_type_desc_is_ground(PseudoTypeDesc) :-
     pseudo_type_ctor_and_args(PseudoTypeDesc, _TypeCtor, ArgPseudos),
     list.all_true(pseudo_type_desc_is_ground, ArgPseudos).
 
 pseudo_type_desc_to_rep(PseudoTypeDesc) = PseudoTypeRep :-
-    ( pseudo_type_ctor_and_args(PseudoTypeDesc, TypeCtor, ArgPseudos) ->
+    ( if pseudo_type_ctor_and_args(PseudoTypeDesc, TypeCtor, ArgPseudos) then
         PseudoTypeRep = bound(TypeCtor, ArgPseudos)
-    ; is_exist_pseudo_type_desc(PseudoTypeDesc, UnivNum) ->
+    else if is_exist_pseudo_type_desc(PseudoTypeDesc, UnivNum) then
         PseudoTypeRep = exist_tvar(UnivNum)
-    ; is_univ_pseudo_type_desc(PseudoTypeDesc, UnivNum) ->
+    else if is_univ_pseudo_type_desc(PseudoTypeDesc, UnivNum) then
         PseudoTypeRep = univ_tvar(UnivNum)
-    ;
+    else
         error("pseudo_type_desc_to_rep: internal error")
     ).
 
@@ -369,9 +305,9 @@ pseudo_type_desc_to_rep(PseudoTypeDesc) = PseudoTypeRep :-
 ").
 
 is_univ_pseudo_type_desc(PTD, N) :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         erlang_rtti_implementation.is_univ_pseudo_type_desc(PTD, N)
-    ;
+    else
         pseudo_type_desc_to_pseudo_type_info(PTD, PTI),
         rtti_implementation.is_univ_pseudo_type_info(PTI, N)
     ).
@@ -397,12 +333,31 @@ is_univ_pseudo_type_desc(PTD, N) :-
 ").
 
 is_exist_pseudo_type_desc(PTD, N) :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         erlang_rtti_implementation.is_exist_pseudo_type_desc(PTD, N)
-    ;
+    else
         pseudo_type_desc_to_pseudo_type_info(PTD, PTI),
         rtti_implementation.is_exist_pseudo_type_info(PTI, N)
     ).
+
+%---------------------------------------------------------------------------%
+
+:- pred pseudo_type_desc_to_pseudo_type_info(pseudo_type_desc::in,
+    rtti_implementation.pseudo_type_info::out) is det.
+
+pseudo_type_desc_to_pseudo_type_info(PseudoTypeDesc, PseudoTypeInfo) :-
+    ( if type_info_desc_same_representation then
+        private_builtin.unsafe_type_cast(PseudoTypeDesc, PseudoTypeInfo)
+    else
+        error("pseudo_type_desc_to_pseudo_type_info/2")
+    ).
+
+:- pred type_info_desc_same_representation is semidet.
+
+type_info_desc_same_representation :-
+    semidet_true.
+
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
     type_desc_to_pseudo_type_desc(TypeDesc::in) = (PseudoTypeDesc::out),
@@ -438,18 +393,26 @@ type_desc_to_pseudo_type_desc(_TypeDesc) = _PseudoTypeDesc :-
     private_builtin.sorry("type_desc_to_pseudo_type_desc").
 
 ground_pseudo_type_desc_to_type_desc(PseudoTypeDesc) = TypeDesc :-
-    ( pseudo_type_desc_is_ground(PseudoTypeDesc) ->
+    ground_pseudo_type_desc_to_type_desc(PseudoTypeDesc, TypeDesc).
+
+ground_pseudo_type_desc_to_type_desc(PseudoTypeDesc, TypeDesc) :-
+    ( if pseudo_type_desc_is_ground(PseudoTypeDesc) then
         private_builtin.unsafe_type_cast(PseudoTypeDesc, TypeDesc)
-    ;
+    else
         fail
     ).
 
 det_ground_pseudo_type_desc_to_type_desc(PseudoTypeDesc) = TypeDesc :-
-    ( pseudo_type_desc_is_ground(PseudoTypeDesc) ->
+    ( if pseudo_type_desc_is_ground(PseudoTypeDesc) then
         private_builtin.unsafe_type_cast(PseudoTypeDesc, TypeDesc)
-    ;
+    else
         error("det_ground_pseudo_type_desc_to_type_desc: not ground")
     ).
+
+%---------------------------------------------------------------------------%
+%
+% Code for type manipulation.
+%
 
 :- pragma foreign_proc("C",
     type_of(_Value::unused) = (TypeInfo::out),
@@ -525,34 +488,33 @@ same_type(_, _).
 
 % Export this function in order to use it in runtime/mercury_trace_external.c
 :- pragma foreign_export("C", type_name(in) = out, "ML_type_name").
-:- pragma foreign_export("IL", type_name(in) = out, "ML_type_name").
 
 type_name(Type) = TypeName :-
     type_ctor_and_args(Type, TypeCtor, ArgTypes),
     type_ctor_name_and_arity(TypeCtor, ModuleName, Name, Arity),
-    ( Arity = 0 ->
+    ( if Arity = 0 then
         UnqualifiedTypeName = Name
-    ;
-        ( ModuleName = "builtin", Name = "func" ->
+    else
+        ( if ModuleName = "builtin", Name = "func" then
             IsFunc = yes
-        ;
+        else
             IsFunc = no
         ),
-        (
+        ( if
             ModuleName = "builtin", Name = "{}"
-        ->
+        then
             type_arg_names(ArgTypes, IsFunc, ArgTypeNames),
             list.append(ArgTypeNames, ["}"], TypeStrings0),
             TypeStrings = ["{" | TypeStrings0],
             string.append_list(TypeStrings, UnqualifiedTypeName)
-        ;
+        else if
             IsFunc = yes,
             ArgTypes = [FuncRetType]
-        ->
+        then
             FuncRetTypeName = type_name(FuncRetType),
             string.append_list(["((func) = ", FuncRetTypeName, ")"],
                 UnqualifiedTypeName)
-        ;
+        else
             type_arg_names(ArgTypes, IsFunc, ArgTypeNames),
             (
                 IsFunc = no,
@@ -565,19 +527,19 @@ type_name(Type) = TypeName :-
             string.append_list(TypeNameStrings, UnqualifiedTypeName)
         )
     ),
-    ( ModuleName = "builtin" ->
+    ( if ModuleName = "builtin" then
         TypeName = UnqualifiedTypeName
-    ;
+    else
         string.append_list([ModuleName, ".", UnqualifiedTypeName], TypeName)
     ).
 
     % Turn the types into a list of strings representing an argument list,
-    % adding commas as separators as required.  For example:
+    % adding commas as separators as required. For example:
     %   ["TypeName1", ",", "TypeName2"]
     % If formatting a function type, we close the parentheses around
     % the function's input parameters, e.g.
     %   ["TypeName1", ",", "TypeName2", ") = ", "ReturnTypeName"]
-    % It is the caller's reponsibility to add matching parentheses.
+    % It is the caller's responsibility to add matching parentheses.
     %
 :- pred type_arg_names(list(type_desc)::in, bool::in, list(string)::out)
     is det.
@@ -590,41 +552,81 @@ type_arg_names([Type | Types], IsFunc, ArgNames) :-
         ArgNames = [Name]
     ;
         Types = [_ | _],
-        (
+        ( if
             IsFunc = yes,
             Types = [FuncReturnType]
-        ->
+        then
             FuncReturnName = type_name(FuncReturnType),
             ArgNames = [Name, ") = ", FuncReturnName]
-        ;
+        else
             type_arg_names(Types, IsFunc, Names),
             ArgNames = [Name, ", " | Names]
         )
     ).
 
-type_args(Type) = ArgTypes :-
-    type_ctor_and_args(Type, _TypeCtor, ArgTypes).
+%---------------------------------------------------------------------------%
 
-pseudo_type_args(PseudoType) = ArgPseudoTypes :-
-    pseudo_type_ctor_and_args(PseudoType, _TypeCtor, ArgPseudoTypes).
+:- pragma foreign_proc("C",
+    type_ctor_and_args(TypeDesc::in, TypeCtorDesc::out, ArgTypes::out),
+    [will_not_call_mercury, thread_safe, promise_pure, will_not_modify_trail],
+"{
+    MR_TypeCtorDesc type_ctor_desc;
+    MR_TypeInfo     type_info;
 
-type_ctor_name(TypeCtor) = Name :-
-    type_ctor_name_and_arity(TypeCtor, _ModuleName, Name, _Arity).
+    MR_save_transient_registers();
 
-type_ctor_module_name(TypeCtor) = ModuleName :-
-    type_ctor_name_and_arity(TypeCtor, ModuleName, _Name, _Arity).
+    type_info = (MR_TypeInfo) TypeDesc;
+    MR_type_ctor_and_args(type_info, MR_TRUE, &type_ctor_desc, &ArgTypes);
+    TypeCtorDesc = (MR_Word) type_ctor_desc;
 
-type_ctor_arity(TypeCtor) = Arity :-
-    type_ctor_name_and_arity(TypeCtor, _ModuleName, _Name, Arity).
+    MR_restore_transient_registers();
+}").
 
-det_make_type(TypeCtor, ArgTypes) = Type :-
-    ( make_type(TypeCtor, ArgTypes) = NewType ->
-        Type = NewType
-    ;
-        error("det_make_type/2: make_type/2 failed (wrong arity)")
+type_ctor_and_args(TypeDesc, TypeCtorDesc, ArgTypeDescs) :-
+    ( if erlang_rtti_implementation.is_erlang_backend then
+        erlang_rtti_implementation.type_ctor_desc_and_args(TypeDesc,
+            TypeCtorDesc, ArgTypeDescs)
+    else
+        type_desc_to_type_info(TypeDesc, TypeInfo),
+        rtti_implementation.type_ctor_and_args(TypeInfo, TypeCtorInfo,
+            ArgTypeInfos),
+        make_type_ctor_desc(TypeInfo, TypeCtorInfo, TypeCtorDesc),
+        type_info_list_to_type_desc_list(ArgTypeInfos, ArgTypeDescs)
     ).
 
-%-----------------------------------------------------------------------------%
+:- pragma foreign_proc("C",
+    pseudo_type_ctor_and_args(PseudoTypeDesc::in, TypeCtorDesc::out,
+        ArgPseudoTypeInfos::out),
+    [will_not_call_mercury, thread_safe, promise_pure, will_not_modify_trail],
+"{
+    MR_TypeCtorDesc     type_ctor_desc;
+    MR_PseudoTypeInfo   pseudo_type_info;
+    MR_bool             success;
+
+    pseudo_type_info = (MR_PseudoTypeInfo) PseudoTypeDesc;
+    MR_save_transient_registers();
+    success = MR_pseudo_type_ctor_and_args(pseudo_type_info, MR_TRUE,
+        &type_ctor_desc, &ArgPseudoTypeInfos);
+    TypeCtorDesc = (MR_Word) type_ctor_desc;
+    MR_restore_transient_registers();
+    SUCCESS_INDICATOR = success;
+}").
+
+pseudo_type_ctor_and_args(PseudoTypeDesc, TypeCtorDesc, ArgPseudoTypeDescs) :-
+    ( if erlang_rtti_implementation.is_erlang_backend then
+        erlang_rtti_implementation.pseudo_type_ctor_and_args(PseudoTypeDesc,
+            TypeCtorDesc, ArgPseudoTypeDescs)
+    else
+        pseudo_type_desc_to_pseudo_type_info(PseudoTypeDesc, PseudoTypeInfo),
+        rtti_implementation.pseudo_type_ctor_and_args(PseudoTypeInfo,
+            TypeCtorInfo, ArgPseudoTypeInfos),
+        Arity = list.length(ArgPseudoTypeInfos),
+        make_type_ctor_desc_with_arity(Arity, TypeCtorInfo, TypeCtorDesc),
+        private_builtin.unsafe_type_cast(ArgPseudoTypeInfos,
+            ArgPseudoTypeDescs)
+    ).
+
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
     type_ctor(TypeInfo::in) = (TypeCtor::out),
@@ -643,9 +645,9 @@ det_make_type(TypeCtor, ArgTypes) = Type :-
 }").
 
 type_ctor(TypeDesc) = TypeCtorDesc :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         erlang_rtti_implementation.type_ctor_desc(TypeDesc, TypeCtorDesc)
-    ;
+    else
         type_desc_to_type_info(TypeDesc, TypeInfo),
         TypeCtorInfo = rtti_implementation.get_type_ctor_info(TypeInfo),
         make_type_ctor_desc(TypeInfo, TypeCtorInfo, TypeCtorDesc)
@@ -677,74 +679,31 @@ type_ctor(TypeDesc) = TypeCtorDesc :-
 pseudo_type_ctor(_) = _ :-
     private_builtin.sorry("pseudo_type_ctor/1").
 
-:- pragma foreign_proc("C",
-    type_ctor_and_args(TypeDesc::in, TypeCtorDesc::out, ArgTypes::out),
-    [will_not_call_mercury, thread_safe, promise_pure, will_not_modify_trail],
-"{
-    MR_TypeCtorDesc type_ctor_desc;
-    MR_TypeInfo     type_info;
+%---------------------------------------------------------------------------%
 
-    MR_save_transient_registers();
+type_args(Type) = ArgTypes :-
+    type_ctor_and_args(Type, _TypeCtor, ArgTypes).
 
-    type_info = (MR_TypeInfo) TypeDesc;
-    MR_type_ctor_and_args(type_info, MR_TRUE, &type_ctor_desc, &ArgTypes);
-    TypeCtorDesc = (MR_Word) type_ctor_desc;
+pseudo_type_args(PseudoType) = ArgPseudoTypes :-
+    pseudo_type_ctor_and_args(PseudoType, _TypeCtor, ArgPseudoTypes).
 
-    MR_restore_transient_registers();
-}").
+type_ctor_name(TypeCtor) = Name :-
+    type_ctor_name_and_arity(TypeCtor, _ModuleName, Name, _Arity).
 
-type_ctor_and_args(TypeDesc, TypeCtorDesc, ArgTypeDescs) :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
-        erlang_rtti_implementation.type_ctor_desc_and_args(TypeDesc,
-            TypeCtorDesc, ArgTypeDescs)
-    ;
-        type_desc_to_type_info(TypeDesc, TypeInfo),
-        rtti_implementation.type_ctor_and_args(TypeInfo, TypeCtorInfo,
-            ArgTypeInfos),
-        make_type_ctor_desc(TypeInfo, TypeCtorInfo, TypeCtorDesc),
-        type_info_list_to_type_desc_list(ArgTypeInfos, ArgTypeDescs)
-    ).
+type_ctor_module_name(TypeCtor) = ModuleName :-
+    type_ctor_name_and_arity(TypeCtor, ModuleName, _Name, _Arity).
 
-:- pragma foreign_proc("C",
-    pseudo_type_ctor_and_args(PseudoTypeDesc::in, TypeCtorDesc::out,
-        ArgPseudoTypeInfos::out),
-    [will_not_call_mercury, thread_safe, promise_pure, will_not_modify_trail],
-"{
-    MR_TypeCtorDesc     type_ctor_desc;
-    MR_PseudoTypeInfo   pseudo_type_info;
-    MR_bool             success;
+type_ctor_arity(TypeCtor) = Arity :-
+    type_ctor_name_and_arity(TypeCtor, _ModuleName, _Name, Arity).
 
-    pseudo_type_info = (MR_PseudoTypeInfo) PseudoTypeDesc;
-    MR_save_transient_registers();
-    success = MR_pseudo_type_ctor_and_args(pseudo_type_info, MR_TRUE,
-        &type_ctor_desc, &ArgPseudoTypeInfos);
-    TypeCtorDesc = (MR_Word) type_ctor_desc;
-    MR_restore_transient_registers();
-    SUCCESS_INDICATOR = success;
-}").
+%---------------------------------------------------------------------------%
 
-pseudo_type_ctor_and_args(PseudoTypeDesc, TypeCtorDesc, ArgPseudoTypeDescs) :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
-        erlang_rtti_implementation.pseudo_type_ctor_and_args(PseudoTypeDesc,
-            TypeCtorDesc, ArgPseudoTypeDescs)
-    ;
-        pseudo_type_desc_to_pseudo_type_info(PseudoTypeDesc, PseudoTypeInfo),
-        rtti_implementation.pseudo_type_ctor_and_args(PseudoTypeInfo,
-            TypeCtorInfo, ArgPseudoTypeInfos),
-        Arity = list.length(ArgPseudoTypeInfos),
-        make_type_ctor_desc_with_arity(Arity, TypeCtorInfo, TypeCtorDesc),
-        private_builtin.unsafe_type_cast(ArgPseudoTypeInfos,
-            ArgPseudoTypeDescs)
-    ).
-
-%-----------------------------------------------------------------------------%
-
-    % Make a type_info_desc from a type_ctor_info.  A type_info_desc is
+    % Make a type_info_desc from a type_ctor_info. A type_info_desc is
     % different to a type_ctor_info in the case of variable arity types,
     % i.e. predicates, functions and tuples.
     %
     % The C implementation uses small integers to encode variable arity
-    % type_ctor_infos (see mercury_type_desc.h).  In the Java backend we simply
+    % type_ctor_infos (see mercury_type_desc.h). In the Java backend we simply
     % allocate new TypeCtorInfo_Struct objects and set the `arity' field.
     % Two equivalent type_ctor_descs may have different addresses.
     %
@@ -846,14 +805,84 @@ make_type_ctor_desc(_, _, _) :-
 make_type_ctor_desc_with_arity(_, _, _) :-
     private_builtin.sorry("make_type_ctor_desc_with_arity/3").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+
+:- pragma foreign_proc("C",
+    type_ctor_name_and_arity(TypeCtorDesc::in, TypeCtorModuleName::out,
+        TypeCtorName::out, TypeCtorArity::out),
+    [will_not_call_mercury, thread_safe, promise_pure,
+        will_not_modify_trail],
+"{
+    MR_TypeCtorDesc type_ctor_desc;
+
+    type_ctor_desc = (MR_TypeCtorDesc) TypeCtorDesc;
+
+    if (MR_TYPECTOR_DESC_IS_VARIABLE_ARITY(type_ctor_desc)) {
+        TypeCtorModuleName = (MR_String) (MR_Word)
+            MR_TYPECTOR_DESC_GET_VA_MODULE_NAME(type_ctor_desc);
+        TypeCtorName = (MR_String) (MR_Word)
+            MR_TYPECTOR_DESC_GET_VA_NAME(type_ctor_desc);
+        TypeCtorArity = MR_TYPECTOR_DESC_GET_VA_ARITY(type_ctor_desc);
+    } else {
+        MR_TypeCtorInfo type_ctor_info;
+
+        type_ctor_info =
+            MR_TYPECTOR_DESC_GET_FIXED_ARITY_TYPE_CTOR_INFO(type_ctor_desc);
+
+        /*
+        ** We cast away the const-ness of the module and type names,
+        ** because MR_String is defined as char *, not const char *.
+        */
+
+        TypeCtorModuleName = (MR_String) (MR_Integer)
+            MR_type_ctor_module_name(type_ctor_info);
+        TypeCtorName = (MR_String) (MR_Integer)
+            MR_type_ctor_name(type_ctor_info);
+        TypeCtorArity = type_ctor_info->MR_type_ctor_arity;
+    }
+}").
+
+type_ctor_name_and_arity(TypeCtorDesc, ModuleName, TypeCtorName,
+        TypeCtorArity) :-
+    ( if erlang_rtti_implementation.is_erlang_backend then
+        erlang_rtti_implementation.type_ctor_desc_name_and_arity(TypeCtorDesc,
+            ModuleName, TypeCtorName, TypeCtorArity)
+    else
+        type_ctor_desc_to_type_ctor_info(TypeCtorDesc, TypeCtorInfo),
+        rtti_implementation.type_ctor_name_and_arity(TypeCtorInfo,
+            ModuleName, TypeCtorName, TypeCtorArity)
+    ).
+
+:- pred type_ctor_desc_to_type_ctor_info(type_ctor_desc::in,
+    rtti_implementation.type_ctor_info::out) is det.
+
+type_ctor_desc_to_type_ctor_info(TypeCtorDesc, TypeCtorInfo) :-
+    ( if type_info_desc_same_representation then
+        private_builtin.unsafe_type_cast(TypeCtorDesc, TypeCtorInfo)
+    else
+        error("type_ctor_desc_to_type_ctor_info/2")
+    ).
+
+%---------------------------------------------------------------------------%
+
+:- pragma promise_equivalent_clauses(make_type/2).
+
+make_type(TypeCtorDesc::in, ArgTypes::in) = (TypeDesc::out) :-
+    ( if erlang_rtti_implementation.is_erlang_backend then
+        erlang_rtti_implementation.make_type_desc(TypeCtorDesc, ArgTypes,
+            TypeDesc)
+    else
+        private_builtin.sorry("make_type(in, in) = out")
+    ).
+
+make_type(_TypeCtorDesc::out, _ArgTypes::out) = (_TypeDesc::in) :-
+    private_builtin.sorry("make_type(out, out) = in").
 
 % This is the forwards mode of make_type/2: given a type constructor and
 % a list of argument types, check that the length of the argument types
 % matches the arity of the type constructor, and if so, use the type
 % constructor to construct a new type with the specified arguments.
 
-:- pragma promise_equivalent_clauses(make_type/2).
 :- pragma foreign_proc("C",
     make_type(TypeCtorDesc::in, ArgTypes::in) = (TypeDesc::out),
     [promise_pure, will_not_call_mercury, thread_safe, will_not_modify_trail],
@@ -942,19 +971,8 @@ make_type_ctor_desc_with_arity(_, _, _) :-
     }
 }").
 
-make_type(TypeCtorDesc::in, ArgTypes::in) = (TypeDesc::out) :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
-        erlang_rtti_implementation.make_type_desc(TypeCtorDesc, ArgTypes,
-            TypeDesc)
-    ;
-        private_builtin.sorry("make_type(in, in) = out")
-    ).
-
-    /*
-    ** This is the reverse mode of make_type: given a type,
-    ** split it up into a type constructor and a list of
-    ** arguments.
-    */
+% This is the reverse mode of make_type: given a type,
+% split it up into a type constructor and a list of arguments.
 
 :- pragma foreign_proc("C",
     make_type(TypeCtorDesc::out, ArgTypes::out) = (TypeDesc::in),
@@ -972,58 +990,14 @@ make_type(TypeCtorDesc::in, ArgTypes::in) = (TypeDesc::out) :-
     MR_restore_transient_registers();
 }").
 
-make_type(_TypeCtorDesc::out, _ArgTypes::out) = (_TypeDesc::in) :-
-    private_builtin.sorry("make_type(out, out) = in").
-
-:- pragma foreign_proc("C",
-    type_ctor_name_and_arity(TypeCtorDesc::in, TypeCtorModuleName::out,
-        TypeCtorName::out, TypeCtorArity::out),
-    [will_not_call_mercury, thread_safe, promise_pure,
-        will_not_modify_trail],
-"{
-    MR_TypeCtorDesc type_ctor_desc;
-
-    type_ctor_desc = (MR_TypeCtorDesc) TypeCtorDesc;
-
-    if (MR_TYPECTOR_DESC_IS_VARIABLE_ARITY(type_ctor_desc)) {
-        TypeCtorModuleName = (MR_String) (MR_Word)
-            MR_TYPECTOR_DESC_GET_VA_MODULE_NAME(type_ctor_desc);
-        TypeCtorName = (MR_String) (MR_Word)
-            MR_TYPECTOR_DESC_GET_VA_NAME(type_ctor_desc);
-        TypeCtorArity = MR_TYPECTOR_DESC_GET_VA_ARITY(type_ctor_desc);
-    } else {
-        MR_TypeCtorInfo type_ctor_info;
-
-        type_ctor_info =
-            MR_TYPECTOR_DESC_GET_FIXED_ARITY_TYPE_CTOR_INFO(type_ctor_desc);
-
-        /*
-        ** We cast away the const-ness of the module and type names,
-        ** because MR_String is defined as char *, not const char *.
-        */
-
-        TypeCtorModuleName = (MR_String) (MR_Integer)
-            MR_type_ctor_module_name(type_ctor_info);
-        TypeCtorName = (MR_String) (MR_Integer)
-            MR_type_ctor_name(type_ctor_info);
-        TypeCtorArity = type_ctor_info->MR_type_ctor_arity;
-    }
-}").
-
-%-----------------------------------------------------------------------------%
-
-type_ctor_name_and_arity(TypeCtorDesc, ModuleName, TypeCtorName,
-        TypeCtorArity) :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
-        erlang_rtti_implementation.type_ctor_desc_name_and_arity(TypeCtorDesc,
-            ModuleName, TypeCtorName, TypeCtorArity)
-    ;
-        type_ctor_desc_to_type_ctor_info(TypeCtorDesc, TypeCtorInfo),
-        rtti_implementation.type_ctor_name_and_arity(TypeCtorInfo,
-            ModuleName, TypeCtorName, TypeCtorArity)
+det_make_type(TypeCtor, ArgTypes) = Type :-
+    ( if make_type(TypeCtor, ArgTypes) = NewType then
+        Type = NewType
+    else
+        error("det_make_type/2: make_type/2 failed (wrong arity)")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % This function returns the type_info for the builtin type "typeinfo"
     % itself. It is intended for use from C code, since Mercury code can access
@@ -1036,14 +1010,12 @@ type_ctor_name_and_arity(TypeCtorDesc, ModuleName, TypeCtorName,
 
 :- pragma foreign_export("C", get_type_info_for_type_info = out,
     "ML_get_type_info_for_type_info").
-:- pragma foreign_export("IL", get_type_info_for_type_info = out,
-    "ML_get_type_info_for_type_info").
 
 get_type_info_for_type_info = TypeDesc :-
     Type = type_of(1),
     TypeDesc = type_of(Type).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_code("C#", "
     public static bool
@@ -1174,4 +1146,29 @@ get_type_info_for_type_info = TypeDesc :-
     eval_if_function(X) -> X.
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+
+type_desc_to_type_info(TypeDesc, TypeInfo) :-
+    ( if type_info_desc_same_representation then
+        private_builtin.unsafe_type_cast(TypeDesc, TypeInfo)
+    else
+        error("type_desc_to_type_info/2")
+    ).
+
+type_info_to_type_desc(TypeInfo, TypeDesc) :-
+    ( if type_info_desc_same_representation then
+        private_builtin.unsafe_type_cast(TypeInfo, TypeDesc)
+    else
+        error("type_info_to_type_desc/2")
+    ).
+
+type_info_list_to_type_desc_list(TypeInfoList, TypeDescList) :-
+    ( if type_info_desc_same_representation then
+        private_builtin.unsafe_type_cast(TypeInfoList, TypeDescList)
+    else
+        list.map(type_info_to_type_desc, TypeInfoList, TypeDescList)
+    ).
+
+%---------------------------------------------------------------------------%
+:- end_module type_desc.
+%---------------------------------------------------------------------------%

@@ -1,18 +1,18 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2006-2007, 2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: stream.string_writer.m.
 % Authors: trd, fjh, stayl
 %
 % Predicates to write to streams that accept strings.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module stream.string_writer.
 :- interface.
@@ -24,9 +24,12 @@
 :- import_module string.
 :- import_module univ.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred put_int(Stream::in, int::in, State::di, State::uo) is det
+    <= stream.writer(Stream, string, State).
+
+:- pred put_uint(Stream::in, uint::in, State::di, State::uo) is det
     <= stream.writer(Stream, string, State).
 
 :- pred put_float(Stream::in, float::in, State::di, State::uo) is det
@@ -51,8 +54,12 @@
     % If the argument is just a single string or character, it will be printed
     % out exactly as is (unquoted).  If the argument is of type integer (i.e.
     % an arbitrary precision integer), then its decimal representation will be
-    % printed.  If the argument is of type univ, then it will print out the
-    % value stored in the univ, but not the type.
+    % printed.  If the argument is of type univ, then the value stored in the
+    % the univ will be printed out, but not the type.  If the argument is of
+    % type date_time, it will be printed out in the same form as the string
+    % returned by the function date_to_string/1.  If the argument is of type
+    % duration, it will be printed out in the same form as the string
+    % returned by the function duration_to_string/1.
     %
     % print/5 is the same as print/4 except that it allows the caller to
     % specify how non-canonical types should be handled.  print/4 implicitly
@@ -75,6 +82,10 @@
     <= (stream.writer(Stream, string, State),
     stream.writer(Stream, char, State)).
 
+:- pred print_cc(Stream::in, T::in, State::di, State::uo) is cc_multi
+    <= (stream.writer(Stream, string, State),
+    stream.writer(Stream, char, State)).
+
 :- pred print(Stream, deconstruct.noncanon_handling, T, State, State)
     <= (stream.writer(Stream, string, State),
     stream.writer(Stream, char, State)).
@@ -82,10 +93,6 @@
 :- mode print(in, in(canonicalize), in, di, uo) is det.
 :- mode print(in, in(include_details_cc), in, di, uo) is cc_multi.
 :- mode print(in, in, in, di, uo) is cc_multi.
-
-:- pred print_cc(Stream::in, T::in, State::di, State::uo) is cc_multi
-    <= (stream.writer(Stream, string, State),
-    stream.writer(Stream, char, State)).
 
     % write/4 writes its second argument to the string writer stream specified
     % in its first argument.  In all cases, the argument to output may be of
@@ -111,7 +118,11 @@
     <= (stream.writer(Stream, string, State),
     stream.writer(Stream, char, State)).
 
-:- pred write(Stream, deconstruct.noncanon_handling, T, State, State) is det
+:- pred write_cc(Stream::in, T::in, State::di, State::uo) is cc_multi
+    <= (stream.writer(Stream, string, State),
+    stream.writer(Stream, char, State)).
+
+:- pred write(Stream, deconstruct.noncanon_handling, T, State, State)
     <= (stream.writer(Stream, string, State),
     stream.writer(Stream, char, State)).
 :- mode write(in, in(do_not_allow), in, di, uo) is det.
@@ -119,12 +130,8 @@
 :- mode write(in, in(include_details_cc), in, di, uo) is cc_multi.
 :- mode write(in, in, in, di, uo) is cc_multi.
 
-:- pred write_cc(Stream::in, T::in, State::di, State::uo) is cc_multi
-    <= (stream.writer(Stream, string, State),
-    stream.writer(Stream, char, State)).
-
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -133,18 +140,7 @@
 :- import_module ops.
 
 %
-% For use by term_io.m
-%
-
-:- pred maybe_write_paren(Stream::in, char::in, ops.priority::in,
-    ops.priority::in, State::di, State::uo) is det
-    <= (stream.writer(Stream, string, State),
-    stream.writer(Stream, char, State)).
-:- pragma type_spec(maybe_write_paren/6,
-            (Stream = io.output_stream, State = io.state)).
-
-%
-% For use by browser/browse.m
+% For use by browser/browse.m.
 %
 
 % Predicates for writing out univs.
@@ -162,22 +158,41 @@
 :- mode write_univ(in, in(include_details_cc), in, di, uo) is cc_multi.
 :- mode write_univ(in, in, in, di, uo) is cc_multi.
 
-:- pragma type_spec(write/4, (Stream = io.output_stream, State = io.state)).
-:- pragma type_spec(write/5, (Stream = io.output_stream, State = io.state)).
+%
+% For use by term_io.m.
+%
+
+:- pred maybe_write_paren(Stream::in, char::in, ops.priority::in,
+    ops.priority::in, State::di, State::uo) is det
+    <= (stream.writer(Stream, string, State),
+    stream.writer(Stream, char, State)).
+:- pragma type_spec(maybe_write_paren/6,
+    (Stream = io.output_stream, State = io.state)).
+
+:- pragma type_spec(write/4,
+            (Stream = io.output_stream, State = io.state)).
+:- pragma type_spec(write/5,
+            (Stream = io.output_stream, State = io.state)).
 :- pragma type_spec(write_univ/4,
             (Stream = io.output_stream, State = io.state)).
 :- pragma type_spec(write_univ/5,
             (Stream = io.output_stream, State = io.state)).
-:- pragma type_spec(put_int/4, (Stream = io.output_stream, State = io.state)).
-:- pragma type_spec(put_float/4, (Stream = io.output_stream, State = io.state)).
-:- pragma type_spec(put_char/4, (Stream = io.output_stream, State = io.state)).
+:- pragma type_spec(put_int/4,
+            (Stream = io.output_stream, State = io.state)).
+:- pragma type_spec(put_uint/4,
+            (Stream = io.output_stream, State = io.state)).
+:- pragma type_spec(put_float/4,
+            (Stream = io.output_stream, State = io.state)).
+:- pragma type_spec(put_char/4,
+            (Stream = io.output_stream, State = io.state)).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module array.
 :- import_module bitmap.
+:- import_module calendar.
 :- import_module int.
 :- import_module integer.
 :- import_module require.
@@ -187,52 +202,69 @@
 :- import_module version_array.
 
 put_int(Stream, Int, !State) :-
-    (
+    ( if
         % Handle the common I/O case more efficiently.
         dynamic_cast(!.State, IOState0),
         dynamic_cast(Stream, IOStream)
-    ->
+    then
         io.write_int(IOStream, Int, unsafe_promise_unique(IOState0), IOState),
-        ( dynamic_cast(IOState, !:State) ->
+        ( if dynamic_cast(IOState, !:State) then
             !:State = unsafe_promise_unique(!.State)
-        ;
+        else
             error("stream.string_writer.put_int: unexpected type error")
         )
-    ;
+    else
         put(Stream, string.int_to_string(Int), !State)
     ).
 
-put_float(Stream, Float, !State) :-
-    (
+put_uint(Stream, UInt, !State) :-
+    ( if
         % Handle the common I/O case more efficiently.
         dynamic_cast(!.State, IOState0),
         dynamic_cast(Stream, IOStream)
-    ->
+    then
+        io.write_uint(IOStream, UInt,
+            unsafe_promise_unique(IOState0), IOState),
+        ( if dynamic_cast(IOState, !:State) then
+            !:State = unsafe_promise_unique(!.State)
+        else
+            error("stream.string_writer.put_uint: unexpected type error")
+        )
+    else
+        put(Stream, string.uint_to_string(UInt), !State)
+    ).
+
+put_float(Stream, Float, !State) :-
+    ( if
+        % Handle the common I/O case more efficiently.
+        dynamic_cast(!.State, IOState0),
+        dynamic_cast(Stream, IOStream)
+    then
         io.write_float(IOStream, Float,
             unsafe_promise_unique(IOState0), IOState),
-        ( dynamic_cast(IOState, !:State) ->
+        ( if dynamic_cast(IOState, !:State) then
             !:State = unsafe_promise_unique(!.State)
-        ;
+        else
             error("stream.string_writer.put_float: unexpected type error")
         )
-    ;
+    else
         put(Stream, string.float_to_string(Float), !State)
     ).
 
 put_char(Stream, Char, !State) :-
-    (
+    ( if
         % Handle the common I/O case more efficiently.
         dynamic_cast(!.State, IOState0),
         dynamic_cast(Stream, IOStream)
-    ->
+    then
         io.write_char(IOStream, Char,
             unsafe_promise_unique(IOState0), IOState),
-        ( dynamic_cast(IOState, !:State) ->
+        ( if dynamic_cast(IOState, !:State) then
             !:State = unsafe_promise_unique(!.State)
-        ;
+        else
             error("stream.string_writer.put_char: unexpected type error")
         )
-    ;
+    else
         put(Stream, string.char_to_string(Char), !State)
     ).
 
@@ -243,7 +275,7 @@ format(Stream, FormatString, Arguments, !State) :-
 nl(Stream, !State) :-
     put(Stream, "\n", !State).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Various different versions of print
 %
@@ -255,16 +287,22 @@ print_cc(Stream, Term, !State) :-
     print(Stream, include_details_cc, Term, !State).
 
 print(Stream, NonCanon, Term, !State) :-
-    % `string', `char' and `univ' are special cases for print
-    ( dynamic_cast(Term, String : string) ->
+    % `string', `char', `uint' and `univ' are special cases for print
+    ( if dynamic_cast(Term, String : string) then
         put(Stream, String, !State)
-    ; dynamic_cast(Term, Char : char) ->
+    else if dynamic_cast(Term, Char : char) then
         put(Stream, Char, !State)
-    ; dynamic_cast(Term, OrigUniv) ->
+    else if dynamic_cast(Term, UInt : uint) then
+        put(Stream, uint_to_string(UInt), !State)
+    else if dynamic_cast(Term, OrigUniv) then
         write_univ(Stream, OrigUniv, !State)
-    ; dynamic_cast(Term, BigInt) ->
+    else if dynamic_cast(Term, BigInt) then
         put(Stream, integer.to_string(BigInt), !State)
-    ;
+    else if dynamic_cast(Term, DateTime) then
+        put(Stream, date_to_string(DateTime), !State)
+    else if dynamic_cast(Term, Duration) then
+        put(Stream, duration_to_string(Duration), !State)
+    else
         print_quoted(Stream, NonCanon, Term, !State)
     ).
 
@@ -280,14 +318,14 @@ print_quoted(Stream, NonCanon, Term, !State) :-
     write(Stream, NonCanon, Term, !State).
 % When we have runtime type classes membership tests, then instead
 % of write(Term), we will want to do something like
-%   ( univ_to_type_class(Univ, Portrayable) ->
+%   ( if univ_to_type_class(Univ, Portrayable) then
 %       portray(Stream, Portrayable, !State)
-%   ;
+%   else
 %       ... code like write, but which prints the arguments
 %       using print_quoted, rather than write ...
 %   )
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Various different versions of write
 %
@@ -302,7 +340,7 @@ write(Stream, NonCanon, Term, !State) :-
     type_to_univ(Term, Univ),
     do_write_univ(Stream, NonCanon, Univ, !State).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Various different versions of write_univ
 %
@@ -346,37 +384,40 @@ do_write_univ(Stream, NonCanon, Univ, !State) :-
 
 do_write_univ_prio(Stream, NonCanon, Univ, Priority, !State) :-
     % We need to special-case the builtin types:
-    %   int, char, float, string
+    %   int, uint, char, float, string
     %   type_info, univ, c_pointer, array
     %   and private_builtin.type_info
     %
-    ( univ_to_type(Univ, String) ->
+    ( if univ_to_type(Univ, String) then
         term_io.quote_string(Stream, String, !State)
-    ; univ_to_type(Univ, Char) ->
+    else if univ_to_type(Univ, Char) then
         term_io.quote_char(Stream, Char, !State)
-    ; univ_to_type(Univ, Int) ->
+    else if univ_to_type(Univ, Int) then
         put_int(Stream, Int, !State)
-    ; univ_to_type(Univ, Float) ->
+    else if univ_to_type(Univ, UInt) then
+        put_uint(Stream, UInt, !State),
+        put_char(Stream, 'u', !State)
+    else if univ_to_type(Univ, Float) then
         put_float(Stream, Float, !State)
-    ; univ_to_type(Univ, Bitmap) ->
+    else if univ_to_type(Univ, Bitmap) then
         % Bitmaps are converted to strings of hex digits.
         put_char(Stream, '"', !State),
         put(Stream, bitmap.to_string(Bitmap), !State),
         put_char(Stream, '"', !State)
-    ; univ_to_type(Univ, TypeDesc) ->
+    else if univ_to_type(Univ, TypeDesc) then
         write_type_desc(Stream, TypeDesc, !State)
-    ; univ_to_type(Univ, TypeCtorDesc) ->
+    else if univ_to_type(Univ, TypeCtorDesc) then
         write_type_ctor_desc(Stream, TypeCtorDesc, !State)
-    ; univ_to_type(Univ, C_Pointer) ->
+    else if univ_to_type(Univ, C_Pointer) then
         write_c_pointer(Stream, C_Pointer, !State)
-    ;
+    else if
         impure io.get_stream_db_with_locking(StreamDB),
         StreamInfo = get_io_stream_info(StreamDB, univ_value(Univ))
-    ->
+    then
         type_to_univ(StreamInfo, StreamInfoUniv),
         do_write_univ_prio(Stream, NonCanon, StreamInfoUniv, Priority,
             !.State, !:State)
-    ;
+    else if
         % Check if the type is array.array/1. We can't just use univ_to_type
         % here since array.array/1 is a polymorphic type.
         %
@@ -394,7 +435,7 @@ do_write_univ_prio(Stream, NonCanon, Univ, Priority, !State) :-
         ArgTypes = [ElemType],
         type_ctor_name(TypeCtor) = "array",
         type_ctor_module_name(TypeCtor) = "array"
-    ->
+    then
         % Now that we know the element type, we can constrain the type
         % of the variable `Array' so that we can use det_univ_to_type.
 
@@ -402,17 +443,17 @@ do_write_univ_prio(Stream, NonCanon, Univ, Priority, !State) :-
         same_array_elem_type(Array, Elem),
         det_univ_to_type(Univ, Array),
         write_array(Stream, Array, !State)
-    ;
+    else if
         type_ctor_and_args(univ_type(Univ), TypeCtor, ArgTypes),
         ArgTypes = [ElemType],
         type_ctor_name(TypeCtor) = "version_array",
         type_ctor_module_name(TypeCtor) = "version_array"
-    ->
+    then
         has_type(Elem, ElemType),
         same_version_array_elem_type(VersionArray, Elem),
         det_univ_to_type(Univ, VersionArray),
         write_version_array(Stream, VersionArray, !State)
-    ;
+    else if
         % Check if the type is private_builtin.type_info/1.
         % See the comments above for array.array/1.
 
@@ -420,12 +461,12 @@ do_write_univ_prio(Stream, NonCanon, Univ, Priority, !State) :-
         ArgTypes = [ElemType],
         type_ctor_name(TypeCtor) = "type_info",
         type_ctor_module_name(TypeCtor) = "private_builtin"
-    ->
+    then
         has_type(Elem, ElemType),
         same_private_builtin_type(PrivateBuiltinTypeInfo, Elem),
         det_univ_to_type(Univ, PrivateBuiltinTypeInfo),
         write_private_builtin_type_info(Stream, PrivateBuiltinTypeInfo, !State)
-    ;
+    else
         write_ordinary_term(Stream, NonCanon, Univ, Priority, !State)
     ).
 
@@ -453,28 +494,28 @@ same_private_builtin_type(_, _).
     is cc_multi.
 :- mode write_ordinary_term(in, in, in, in, di, uo) is cc_multi.
 :- pragma type_spec(write_ordinary_term/6,
-            (Stream = io.output_stream, State = io.state)).
+    (Stream = io.output_stream, State = io.state)).
 
 write_ordinary_term(Stream, NonCanon, Univ, Priority, !State) :-
     univ_value(Univ) = Term,
     deconstruct.deconstruct(Term, NonCanon, Functor, _Arity, Args),
-    (
+    ( if
         Functor = "[|]",
         Args = [ListHead, ListTail]
-    ->
+    then
         put(Stream, '[', !State),
         write_arg(Stream, NonCanon, ListHead, !State),
         write_list_tail(Stream, NonCanon, ListTail, !State),
         put(Stream, ']', !State)
-    ;
+    else if
         Functor = "[]",
         Args = []
-    ->
+    then
         put(Stream, "[]", !State)
-    ;
+    else if
         Functor = "{}",
         Args = [BracedHead | BracedTail]
-    ->
+    then
         (
             BracedTail = [],
             put(Stream, "{ ", !State),
@@ -487,13 +528,13 @@ write_ordinary_term(Stream, NonCanon, Univ, Priority, !State) :-
             write_term_args(Stream, NonCanon, BracedTail, !State),
             put(Stream, '}', !State)
         )
-    ;
+    else if
         ops.lookup_op_infos(ops.init_mercury_op_table, Functor,
             FirstOpInfo, OtherOpInfos)
-    ->
+    then
         select_op_info_and_print(Stream, NonCanon, FirstOpInfo, OtherOpInfos,
             Priority, Functor, Args, !State)
-    ;
+    else
         write_functor_and_args(Stream, NonCanon, Functor, Args, !State)
     ).
 
@@ -517,7 +558,7 @@ select_op_info_and_print(Stream, NonCanon, OpInfo, OtherOpInfos, Priority,
     OpInfo = op_info(OpClass, _),
     (
         OpClass = prefix(_OpAssoc),
-        ( Args = [Arg] ->
+        ( if Args = [Arg] then
             OpInfo = op_info(_, OpPriority),
             maybe_write_paren(Stream, '(', Priority, OpPriority, !State),
             term_io.quote_atom(Stream, Functor, !State),
@@ -526,13 +567,13 @@ select_op_info_and_print(Stream, NonCanon, OpInfo, OtherOpInfos, Priority,
             adjust_priority_for_assoc(OpPriority, OpAssoc, NewPriority),
             do_write_univ_prio(Stream, NonCanon, Arg, NewPriority, !State),
             maybe_write_paren(Stream, ')', Priority, OpPriority, !State)
-        ;
+        else
             select_remaining_op_info_and_print(Stream, NonCanon, OtherOpInfos,
                 Priority, Functor, Args, !State)
         )
     ;
         OpClass = postfix(_OpAssoc),
-        ( Args = [PostfixArg] ->
+        ( if Args = [PostfixArg] then
             OpInfo = op_info(_, OpPriority),
             maybe_write_paren(Stream, '(', Priority, OpPriority, !State),
             OpClass = postfix(OpAssoc),
@@ -542,21 +583,21 @@ select_op_info_and_print(Stream, NonCanon, OpInfo, OtherOpInfos, Priority,
             put(Stream, " ", !State),
             term_io.quote_atom(Stream, Functor, !State),
             maybe_write_paren(Stream, ')', Priority, OpPriority, !State)
-        ;
+        else
             select_remaining_op_info_and_print(Stream, NonCanon, OtherOpInfos,
                 Priority, Functor, Args, !State)
         )
     ;
         OpClass = infix(_LeftAssoc, _RightAssoc),
-        ( Args = [Arg1, Arg2] ->
+        ( if Args = [Arg1, Arg2] then
             OpInfo = op_info(_, OpPriority),
             maybe_write_paren(Stream, '(', Priority, OpPriority, !State),
             OpClass = infix(LeftAssoc, _),
             adjust_priority_for_assoc(OpPriority, LeftAssoc, LeftPriority),
             do_write_univ_prio(Stream, NonCanon, Arg1, LeftPriority, !State),
-            ( Functor = "," ->
+            ( if Functor = "," then
                 put(Stream, ", ", !State)
-            ;
+            else
                 put(Stream, " ", !State),
                 term_io.quote_atom(Stream, Functor, !State),
                 put(Stream, " ", !State)
@@ -565,13 +606,13 @@ select_op_info_and_print(Stream, NonCanon, OpInfo, OtherOpInfos, Priority,
             adjust_priority_for_assoc(OpPriority, RightAssoc, RightPriority),
             do_write_univ_prio(Stream, NonCanon, Arg2, RightPriority, !State),
             maybe_write_paren(Stream, ')', Priority, OpPriority, !State)
-        ;
+        else
             select_remaining_op_info_and_print(Stream, NonCanon, OtherOpInfos,
                 Priority, Functor, Args, !State)
         )
     ;
         OpClass = binary_prefix(_FirstAssoc, _SecondAssoc),
-        ( Args = [Arg1, Arg2] ->
+        ( if Args = [Arg1, Arg2] then
             OpInfo = op_info(_, OpPriority),
             maybe_write_paren(Stream, '(', Priority, OpPriority, !State),
             term_io.quote_atom(Stream, Functor, !State),
@@ -585,7 +626,7 @@ select_op_info_and_print(Stream, NonCanon, OpInfo, OtherOpInfos, Priority,
                 SecondPriority),
             do_write_univ_prio(Stream, NonCanon, Arg2, SecondPriority, !State),
             maybe_write_paren(Stream, ')', Priority, OpPriority, !State)
-        ;
+        else
             select_remaining_op_info_and_print(Stream, NonCanon, OtherOpInfos,
                 Priority, Functor, Args, !State)
         )
@@ -605,7 +646,7 @@ select_op_info_and_print(Stream, NonCanon, OpInfo, OtherOpInfos, Priority,
 :- mode select_remaining_op_info_and_print(in, in, in, in, in, in, di, uo)
     is cc_multi.
 :- pragma type_spec(select_remaining_op_info_and_print/8,
-            (Stream = io.output_stream, State = io.state)).
+    (Stream = io.output_stream, State = io.state)).
 
 select_remaining_op_info_and_print(Stream, NonCanon,
         [FirstOpInfo | MoreOpInfos], Priority, Functor, Args, !State) :-
@@ -613,14 +654,14 @@ select_remaining_op_info_and_print(Stream, NonCanon,
         Priority, Functor, Args, !State).
 select_remaining_op_info_and_print(Stream, NonCanon, [],
         Priority, Functor, Args, !State) :-
-    (
+    ( if
         Args = [],
         Priority =< ops.mercury_max_priority(ops.init_mercury_op_table)
-    ->
+    then
         put(Stream, '(', !State),
         term_io.quote_atom(Stream, Functor, !State),
         put(Stream, ')', !State)
-    ;
+    else
         write_functor_and_args(Stream, NonCanon, Functor, Args, !State)
     ).
 
@@ -634,13 +675,13 @@ select_remaining_op_info_and_print(Stream, NonCanon, [],
     is cc_multi.
 :- mode write_functor_and_args(in, in, in, in, di, uo) is cc_multi.
 :- pragma type_spec(write_functor_and_args/6,
-            (Stream = io.output_stream, State = io.state)).
+    (Stream = io.output_stream, State = io.state)).
 
 :- pragma inline(write_functor_and_args/6).
 
 write_functor_and_args(Stream, NonCanon, Functor, Args, !State) :-
     term_io.quote_atom_agt(Stream, Functor,
-            maybe_adjacent_to_graphic_token, !State),
+        maybe_adjacent_to_graphic_token, !State),
     (
         Args = [X | Xs],
         put(Stream, '(', !State),
@@ -654,9 +695,9 @@ write_functor_and_args(Stream, NonCanon, Functor, Args, !State) :-
 :- pragma inline(maybe_write_paren/6).
 
 maybe_write_paren(Stream, String, Priority, OpPriority, !State) :-
-    ( OpPriority > Priority ->
+    ( if OpPriority > Priority then
         put(Stream, String, !State)
-    ;
+    else
         true
     ).
 
@@ -669,24 +710,24 @@ maybe_write_paren(Stream, String, Priority, OpPriority, !State) :-
 :- mode write_list_tail(in, in(include_details_cc), in, di, uo) is cc_multi.
 :- mode write_list_tail(in, in, in, di, uo) is cc_multi.
 :- pragma type_spec(write_list_tail/5,
-            (Stream = io.output_stream, State = io.state)).
+    (Stream = io.output_stream, State = io.state)).
 
 write_list_tail(Stream, NonCanon, Univ, !State) :-
     Term = univ_value(Univ),
     deconstruct.deconstruct(Term, NonCanon, Functor, _Arity, Args),
-    (
+    ( if
         Functor = "[|]",
         Args = [ListHead, ListTail]
-    ->
+    then
         put(Stream, ", ", !State),
         write_arg(Stream, NonCanon, ListHead, !State),
         write_list_tail(Stream, NonCanon, ListTail, !State)
-    ;
+    else if
         Functor = "[]",
         Args = []
-    ->
+    then
         true
-    ;
+    else
         put(Stream, " | ", !State),
         do_write_univ(Stream, NonCanon, Univ, !State)
     ).
@@ -702,7 +743,7 @@ write_list_tail(Stream, NonCanon, Univ, !State) :-
 :- mode write_term_args(in, in(include_details_cc), in, di, uo) is cc_multi.
 :- mode write_term_args(in, in, in, di, uo) is cc_multi.
 :- pragma type_spec(write_term_args/5,
-            (Stream = io.output_stream, State = io.state)).
+    (Stream = io.output_stream, State = io.state)).
 
 write_term_args(_Stream, _, [], !State).
 write_term_args(Stream, NonCanon, [X | Xs], !State) :-
@@ -737,7 +778,7 @@ write_arg(Stream, NonCanon, X, !State) :-
 % hard-code it.
 arg_priority(1000, !State).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred write_type_desc(Stream::in, type_desc::in, State::di, State::uo) is det
     <= stream.writer(Stream, string, State).
@@ -750,20 +791,20 @@ write_type_desc(Stream, TypeDesc, !State) :-
 
 write_type_ctor_desc(Stream, TypeCtorDesc, !State) :-
     type_ctor_name_and_arity(TypeCtorDesc, ModuleName, Name, Arity0),
-    (
+    ( if
         ModuleName = "builtin",
         Name = "func"
-    ->
+    then
         % The type ctor that we call `builtin:func/N' takes N + 1
         % type parameters: N arguments plus one return value.
         % So we need to subtract one from the arity here.
         Arity = Arity0 - 1
-    ;
+    else
         Arity = Arity0
     ),
-    ( ModuleName = "builtin" ->
+    ( if ModuleName = "builtin" then
         format(Stream, "%s/%d", [s(Name), i(Arity)], !State)
-    ;
+    else
         format(Stream, "%s.%s/%d", [s(ModuleName), s(Name), i(Arity)], !State)
     ).
 
@@ -777,7 +818,7 @@ write_c_pointer(Stream, C_Pointer, !State) :-
     <= (stream.writer(Stream, string, State),
     stream.writer(Stream, char, State)).
 :- pragma type_spec(write_array/4,
-            (Stream = io.output_stream, State = io.state)).
+    (Stream = io.output_stream, State = io.state)).
 
 write_array(Stream, Array, !State) :-
     put(Stream, "array(", !State),
@@ -789,7 +830,7 @@ write_array(Stream, Array, !State) :-
     State::di, State::uo) is det <= (stream.writer(Stream, string, State),
     stream.writer(Stream, char, State)).
 :- pragma type_spec(write_version_array/4,
-        (Stream = io.output_stream, State = io.state)).
+    (Stream = io.output_stream, State = io.state)).
 
 write_version_array(Stream, VersionArray, !State) :-
     put(Stream, "version_array(", !State),
@@ -806,4 +847,4 @@ write_private_builtin_type_info(Stream, PrivateBuiltinTypeInfo, !State) :-
     type_info_to_type_desc(TypeInfo, TypeDesc),
     write_type_desc(Stream, TypeDesc, !State).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

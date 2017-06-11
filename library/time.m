@@ -1,22 +1,22 @@
-%-----------------------------------------------------------------------------%
-% vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+% vim: ft=mercury ts=4 sw=4 et
+%---------------------------------------------------------------------------%
 % Originally written in 1999 by Tomas By <T.By@dcs.shef.ac.uk>
 % "Feel free to use this code or parts of it any way you want."
 %
 % Some portions are Copyright (C) 1999-2007,2009-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: time.m.
 % Main authors: Tomas By <T.By@dcs.shef.ac.uk>, fjh.
 % Stability: medium.
-% 
+%
 % Time functions.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module time.
 :- interface.
@@ -24,11 +24,11 @@
 :- import_module io.
 :- import_module maybe.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % The `clock_t' type represents times measured in clock ticks.
     % NOTE: the unit used for a value of this type depends on whether it was
-    % returned by `time.clock' or `time.times'.  See the comments on these
+    % returned by `clock' or `times'. See the comments on these
     % predicates below.
     %
 :- type clock_t == int.
@@ -79,47 +79,47 @@
 :- type time_error
     --->    time_error(string). % Error message
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-    % time.clock(Result, !IO):
+    % clock(Result, !IO):
     %
     % Returns the elapsed processor time (number of clock ticks). The base time
     % is arbitrary but doesn't change within a single process. If the time
     % cannot be obtained, this procedure will throw a time_error exception.
-    % To obtain a time in seconds, divide Result by `time.clocks_per_sec'.
+    % To obtain a time in seconds, divide Result by `clocks_per_sec'.
     %
     % On Java the elapsed time for the calling thread is returned.
     %
-:- pred time.clock(clock_t::out, io::di, io::uo) is det.
+:- pred clock(clock_t::out, io::di, io::uo) is det.
 
-    % time.clocks_per_sec:
+    % clocks_per_sec:
     %
     % Returns the number of "clocks" per second as defined by CLOCKS_PER_SEC.
-    % A `clock_t' value returned by `time.clock' can be divided by this value
+    % A `clock_t' value returned by `clock' can be divided by this value
     % to obtain a time in seconds. Note that the value of this function does
     % not necessarily reflect the actual clock precision; it just indicates the
-    % scaling factor for the results of time.clock.
+    % scaling factor for the results of `clock'.
     %
-:- func time.clocks_per_sec = int.
+:- func clocks_per_sec = int.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-    % time.time(Result, !IO):
+    % time(Result, !IO):
     %
     % Returns the current (simple) calendar time. If the time cannot be
     % obtained, this procedure will throw a time_error exception.
     %
-:- pred time.time(time_t::out, io::di, io::uo) is det.
+:- pred time(time_t::out, io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-    % time.times(ProcessorTime, ElapsedRealTime, !IO):
+    % times(ProcessorTime, ElapsedRealTime, !IO):
     %
     % (POSIX)
     %
     % Returns the processor time information in the `tms' value, and the
     % elapsed real time relative to an arbitrary base in the `clock_t' value.
-    % To obtain a time in seconds, divide the result by `time.clk_tck'.
+    % To obtain a time in seconds, divide the result by `clk_tck'.
     % If the time cannot be obtained, this procedure will throw a time_error
     % exception.
     %
@@ -129,67 +129,86 @@
     % On Java the times for the calling thread are returned.
     % On Win32 and Java the child part of 'tms' is always zero.
     %
-:- pred time.times(tms::out, clock_t::out, io::di, io::uo) is det.
+:- pred times(tms::out, clock_t::out, io::di, io::uo) is det.
 
-    % time.clk_tck:
+    % clk_tck:
     %
     % Returns the number of "clock ticks" per second as defined by
-    % sysconf(_SC_CLK_TCK). A `clock_t' value returned by `time.times'
+    % sysconf(_SC_CLK_TCK). A `clock_t' value returned by `times'
     % can be divided by this value to obtain a time in seconds.
     %
     % On non-POSIX systems that do not support this functionality,
     % this procedure may simply always throw an exception.
     %
-:- func time.clk_tck = int.
+:- func clk_tck = int.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-    % time.difftime(Time1, Time0) = Diff:
+    % difftime(Time1, Time0) = Diff:
     %
     % Computes the number of seconds elapsed between `Time1' and `Time0'.
     %
-:- func time.difftime(time_t, time_t) = float.
+:- func difftime(time_t, time_t) = float.
 
-    % time.localtime(Time) = TM:
+    % localtime(Time, TM, !IO):
     %
-    % Converts the calendar time `Time' to a broken-down representation,
-    % expressed relative to the user's specified time zone.
+    % Converts the (simple) calendar time `Time' to a broken-down
+    % representation `TM', expressed relative to the current time zone.
     %
-:- func time.localtime(time_t) = tm.
+:- pred localtime(time_t::in, tm::out, io::di, io::uo) is det.
 
-    % time.gmtime(Time) = TM:
+    % This function is deprecated because the current time zone is not
+    % reflected in its arguments.
     %
-    % Converts the calendar time `Time' to a broken-down representation,
-    % expressed as UTC (Universal Coordinated Time).
-    %
-:- func time.gmtime(time_t) = tm.
+:- pragma obsolete(localtime/1).
+:- func localtime(time_t) = tm.
 
-    % time.mktime(TM) = Time:
+    % gmtime(Time) = TM:
     %
-    % Converts the broken-down local time value to calendar time.
-    % It also normalises the value by filling in day of week and day of year
-    % based on the other components.
+    % Converts the (simple) calendar time `Time' to a broken-down
+    % representation `TM', expressed as UTC (Universal Coordinated Time).
     %
-:- func time.mktime(tm) = time_t.
+:- func gmtime(time_t) = tm.
 
-%-----------------------------------------------------------------------------%
+    % mktime(TM) = Time:
+    %
+    % Converts the broken-down time value `TM' to a (simple) calendar time
+    % `Time'. That is, `TM' is relative to the current time zone.
+    % The `tm_wday' and `tm_yday' fields of `TM' are ignored.
+    %
+:- pred mktime(tm::in, time_t::out, io::di, io::uo) is det.
 
-    % time.asctime(TM) = String:
+    % This function is deprecated because the current time zone is not
+    % reflected in its arguments.
+    %
+:- pragma obsolete(mktime/1).
+:- func mktime(tm) = time_t.
+
+%---------------------------------------------------------------------------%
+
+    % asctime(TM) = String:
     %
     % Converts the broken-down time value `TM' to a string in a standard
     % format.
     %
-:- func time.asctime(tm) = string.
+:- func asctime(tm) = string.
 
-    % time.ctime(Time) = String:
+    % ctime(Time) = String:
     %
     % Converts the calendar time value `Time' to a string in a standard format
     % (i.e. same as "asctime (localtime (<time>))").
     %
-:- func time.ctime(time_t) = string.
+    % This function is deprecated because the current time zone is not
+    % reflected in its arguments. New code should write:
+    %
+    %   localtime(Time, TM, !IO),
+    %   String = asctime(TM)
+    %
+:- pragma obsolete(ctime/1).
+:- func ctime(time_t) = string.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -215,32 +234,28 @@
     #include ""mercury_timing.h"" /* for MR_CLOCK_TICKS_PER_SECOND */
 ").
 
-% We use a no-tag wrapper type for time_t, rather than defining it as an
-% equivalence type or just using a d.u./pragma foreign_type directly,
-% to avoid the following problems:
-%
-%   - type errors in --high-level-code grades, due to the caller seeing
-%     the abstract type, but the callee seeing the equivalence type
-%     definition or the foreign_type definition.
-%
-%   - users can't define instance declarations for abstract equiv. types.
-%
-:- type time_t ---> time_t(time_t_rep).
+    % We use a no-tag wrapper type for time_t, rather than defining it as an
+    % equivalence type or just using a d.u./pragma foreign_type directly,
+    % to avoid the following problems:
+    %
+    %   - type errors in --high-level-code grades, due to the caller seeing
+    %     the abstract type, but the callee seeing the equivalence type
+    %     definition or the foreign_type definition.
+    %
+    %   - users can't define instance declarations for abstract equiv. types.
+    %
+:- type time_t
+    --->    time_t(time_t_rep).
 
-:- type time_t_rep ---> time_t_rep(c_pointer).
+:- type time_t_rep
+    --->    time_t_rep(c_pointer).
+
 :- pragma foreign_type("C", time_t_rep, "time_t")
     where comparison is compare_time_t_reps.
-
-    % The System.DateTime will hold the value in UTC.
-:- pragma foreign_type("IL", time_t_rep, "valuetype [mscorlib]System.DateTime")
-    where comparison is compare_time_t_reps.
-
 :- pragma foreign_type("C#", time_t_rep, "System.DateTime")
     where comparison is compare_time_t_reps.
-
 :- pragma foreign_type("Java", time_t_rep, "java.util.Date")
     where comparison is compare_time_t_reps.
-
 :- pragma foreign_type("Erlang", time_t_rep, "")
     where comparison is compare_time_t_reps.
 
@@ -250,36 +265,34 @@
 compare_time_t_reps(Result, X, Y) :-
     compare(Result, difftime(time_t(X), time_t(Y)), 0.0).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-time.clock(Result, !IO) :-
-    time.c_clock(Ret, !IO),
-    ( Ret = -1 ->
+clock(Result, !IO) :-
+    c_clock(Ret, !IO),
+    ( if Ret = -1 then
         throw(time_error("can't get clock value"))
-    ;
+    else
         Result = Ret
     ).
 
-:- pred time.c_clock(int::out, io::di, io::uo) is det.
+:- pred c_clock(int::out, io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    time.c_clock(Ret::out, _IO0::di, _IO::uo),
+    c_clock(Ret::out, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
 "
     Ret = (MR_Integer) clock();
 ").
-/* XXX need to add System.dll to the references list.
 :- pragma foreign_proc("C#",
-    time.c_clock(Ret::out, _IO0::di, _IO::uo),
+    c_clock(Ret::out, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, tabled_for_io],
 "{
     // XXX Ticks is long in .NET!
-    Ret = (int) System.Diagnostics.Process.GetCurrentProcess
-        .UserProcessorTime.Ticks;
+    Ret = (int) System.Diagnostics.Process.GetCurrentProcess().
+        UserProcessorTime.Ticks;
 }").
-*/
 :- pragma foreign_proc("Java",
-    time.c_clock(Ret::out, _IO0::di, _IO::uo),
+    c_clock(Ret::out, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, tabled_for_io],
 "
     java.lang.management.ThreadMXBean bean =
@@ -293,38 +306,100 @@ time.clock(Result, !IO) :-
     }
 ").
 
-%-----------------------------------------------------------------------------%
-
-%:- func time.clocks_per_sec = int.
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
-    time.clocks_per_sec = (Ret::out),
+    clocks_per_sec = (Ret::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
     Ret = (MR_Integer) CLOCKS_PER_SEC;
 ").
 :- pragma foreign_proc("C#",
-    time.clocks_per_sec = (Ret::out),
+    clocks_per_sec = (Ret::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "{
     // TicksPerSecond is guaranteed to be 10,000,000
     Ret = (int) System.TimeSpan.TicksPerSecond;
 }").
 :- pragma foreign_proc("Java",
-    time.clocks_per_sec = (Ret::out),
+    clocks_per_sec = (Ret::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
     /* Emulate the POSIX value. */
     Ret = 1000000;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-time.times(Tms, Result, !IO) :-
-    time.c_times(Ret, Ut, St, CUt, CSt, !IO),
-    ( Ret = -1 ->
+time(Result, !IO) :-
+    c_time(Ret, !IO),
+    ( if time_t_is_invalid(Ret) then
+        throw(time_error("can't get time value"))
+    else
+        Result = time_t(Ret)
+    ).
+
+:- pred c_time(time_t_rep::out, io::di, io::uo) is det.
+
+:- pragma foreign_proc("C",
+    c_time(Ret::out, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
+"
+    Ret = time(NULL);
+").
+:- pragma foreign_proc("C#",
+    c_time(Ret::out, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, tabled_for_io],
+"{
+    Ret = System.DateTime.UtcNow;
+}").
+:- pragma foreign_proc("Java",
+    c_time(Ret::out, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, tabled_for_io],
+"
+    Ret = new java.util.Date();
+").
+:- pragma foreign_proc("Erlang",
+    c_time(Ret::out, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, tabled_for_io],
+"
+    Ret = erlang:universaltime()
+").
+
+:- pred time_t_is_invalid(time_t_rep::in) is semidet.
+
+:- pragma foreign_proc("C",
+    time_t_is_invalid(Val::in),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    SUCCESS_INDICATOR = (Val == -1);
+").
+:- pragma foreign_proc("C#",
+    time_t_is_invalid(_Val::in),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"{
+    SUCCESS_INDICATOR = false;
+}").
+:- pragma foreign_proc("Java",
+    time_t_is_invalid(_Val::in),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    SUCCESS_INDICATOR = false;
+").
+:- pragma foreign_proc("Erlang",
+    time_t_is_invalid(_Val::in),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    SUCCESS_INDICATOR = false
+").
+
+%---------------------------------------------------------------------------%
+
+times(Tms, Result, !IO) :-
+    c_times(Ret, Ut, St, CUt, CSt, !IO),
+    ( if Ret = -1 then
         throw(time_error("can't get times value"))
-    ;
+    else
         Tms = tms(Ut, St, CUt, CSt),
         Result = Ret
     ).
@@ -339,11 +414,12 @@ time.times(Tms, Result, !IO) :-
     } timeKernel;
 #endif
 ").
-:- pred time.c_times(int::out, int::out, int::out, int::out, int::out,
+
+:- pred c_times(int::out, int::out, int::out, int::out, int::out,
     io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    time.c_times(Ret::out, Ut::out, St::out, CUt::out, CSt::out,
+    c_times(Ret::out, Ut::out, St::out, CUt::out, CSt::out,
         _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
@@ -358,7 +434,7 @@ time.times(Tms, Result, !IO) :-
     CUt = (MR_Integer) t.tms_cutime;
     CSt = (MR_Integer) t.tms_cstime;
 #else
-  #ifdef MR_WIN32
+  #if defined(MR_WIN32) && defined(MR_CLOCK_TICKS_PER_SECOND)
     HANDLE hProcess;
     FILETIME ftCreation, ftExit, ftKernel, ftUser;
     timeKernel user, kernel;
@@ -369,7 +445,7 @@ time.times(Tms, Result, !IO) :-
     GetProcessTimes(hProcess, &ftCreation, &ftExit, &ftKernel, &ftUser);
 
     factor = 10000000U / MR_CLOCK_TICKS_PER_SECOND;
-    
+
     user.ft = ftUser;
     kernel.ft = ftKernel;
 
@@ -386,7 +462,7 @@ time.times(Tms, Result, !IO) :-
 }").
 
 :- pragma foreign_proc("Java",
-    time.c_times(Ret::out, Ut::out, St::out, CUt::out, CSt::out,
+    c_times(Ret::out, Ut::out, St::out, CUt::out, CSt::out,
         _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, tabled_for_io, may_not_duplicate],
 "
@@ -422,11 +498,13 @@ time.times(Tms, Result, !IO) :-
 "
     Ret = (int) System.DateTime.UtcNow.Ticks;
 
-    /* Should We keep only the lower 31 bits of the timestamp, like in java? */
+    // Should We keep only the lower 31 bits of the timestamp, like in java?
     // Ret = Ret & 0x7fffffff;
 
-    long user = System.Diagnostics.Process.GetCurrentProcess().UserProcessorTime.Ticks;
-    long total = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime.Ticks;
+    long user =
+        System.Diagnostics.Process.GetCurrentProcess().UserProcessorTime.Ticks;
+    long total =
+        System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime.Ticks;
 
     Ut = (int) user;
     St = (int) (total - user);
@@ -435,20 +513,20 @@ time.times(Tms, Result, !IO) :-
     CSt = 0;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-time.clk_tck = Ret :-
-    Ret0 = time.c_clk_tck,
-    ( Ret0 = -1 ->
+clk_tck = Ret :-
+    Ret0 = c_clk_tck,
+    ( if Ret0 = -1 then
         throw(time_error("can't get clk_tck value"))
-    ;
+    else
         Ret = Ret0
     ).
 
-:- func time.c_clk_tck = int.
+:- func c_clk_tck = int.
 
 :- pragma foreign_proc("C",
-    time.c_clk_tck = (Ret::out),
+    c_clk_tck = (Ret::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
 #if defined(MR_CLOCK_TICKS_PER_SECOND)
@@ -457,17 +535,18 @@ time.clk_tck = Ret :-
     Ret = -1;
 #endif
 ").
-time.c_clk_tck = -1.   % default is to throw an exception.
+
+c_clk_tck = -1.   % default is to throw an exception.
 
 :- pragma foreign_proc("C#",
-    time.clk_tck = (Ret::out),
+    clk_tck = (Ret::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "{
     // TicksPerSecond is guaranteed to be 10,000,000
     Ret = (int) System.TimeSpan.TicksPerSecond;
 }").
 :- pragma foreign_proc("Java",
-    time.c_clk_tck = (Ret::out),
+    c_clk_tck = (Ret::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
     /*
@@ -477,87 +556,21 @@ time.c_clk_tck = -1.   % default is to throw an exception.
     Ret = 1000;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-time.time(Result, !IO) :-
-    time.c_time(Ret, !IO),
-    ( time.time_t_is_invalid(Ret) ->
-        throw(time_error("can't get time value"))
-    ;
-        Result = time_t(Ret)
-    ).
+difftime(time_t(T1), time_t(T0)) = Diff :-
+    c_difftime(T1, T0, Diff).
 
-:- pred time.c_time(time_t_rep::out, io::di, io::uo) is det.
+:- pred c_difftime(time_t_rep::in, time_t_rep::in, float::out) is det.
 
 :- pragma foreign_proc("C",
-    time.c_time(Ret::out, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
-"
-    Ret = time(NULL);
-").
-:- pragma foreign_proc("C#",
-    time.c_time(Ret::out, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, tabled_for_io],
-"{
-    Ret = System.DateTime.UtcNow;
-}").
-:- pragma foreign_proc("Java",
-    time.c_time(Ret::out, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, tabled_for_io],
-"
-    Ret = new java.util.Date();
-").
-:- pragma foreign_proc("Erlang",
-    time.c_time(Ret::out, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, tabled_for_io],
-"
-    Ret = erlang:universaltime()
-").
-
-:- pred time.time_t_is_invalid(time_t_rep::in) is semidet.
-
-:- pragma foreign_proc("C",
-    time.time_t_is_invalid(Val::in),
-    [will_not_call_mercury, promise_pure, thread_safe],
-"
-    SUCCESS_INDICATOR = (Val == -1);
-").
-:- pragma foreign_proc("C#",
-    time.time_t_is_invalid(_Val::in),
-    [will_not_call_mercury, promise_pure, thread_safe],
-"{
-    SUCCESS_INDICATOR = false;
-}").
-:- pragma foreign_proc("Java",
-    time.time_t_is_invalid(_Val::in),
-    [will_not_call_mercury, promise_pure, thread_safe],
-"
-    SUCCESS_INDICATOR = false;
-").
-:- pragma foreign_proc("Erlang",
-    time.time_t_is_invalid(_Val::in),
-    [will_not_call_mercury, promise_pure, thread_safe],
-"
-    SUCCESS_INDICATOR = false
-").
-
-%-----------------------------------------------------------------------------%
-
-%:- func time.difftime(time_t, time_t) = float.
-
-time.difftime(time_t(T1), time_t(T0)) = Diff :-
-    time.c_difftime(T1, T0, Diff).
-
-:- pred time.c_difftime(time_t_rep::in, time_t_rep::in, float::out) is det.
-
-:- pragma foreign_proc("C",
-    time.c_difftime(T1::in, T0::in, Diff::out),
+    c_difftime(T1::in, T0::in, Diff::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
     Diff = (MR_Float) difftime(T1, T0);
 ").
 :- pragma foreign_proc("C#",
-    time.c_difftime(T1::in, T0::in, Diff::out),
+    c_difftime(T1::in, T0::in, Diff::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "{
     System.TimeSpan span;
@@ -565,13 +578,13 @@ time.difftime(time_t(T1), time_t(T0)) = Diff :-
     Diff = span.TotalSeconds;
 }").
 :- pragma foreign_proc("Java",
-    time.c_difftime(T1::in, T0::in, Diff::out),
+    c_difftime(T1::in, T0::in, Diff::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
     Diff = (double) (T1.getTime() - T0.getTime()) / 1000;
 ").
 :- pragma foreign_proc("Erlang",
-    time.c_difftime(T1::in, T0::in, Diff::out),
+    c_difftime(T1::in, T0::in, Diff::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
     S0 = calendar:datetime_to_gregorian_seconds(T0),
@@ -579,19 +592,28 @@ time.difftime(time_t(T1), time_t(T0)) = Diff :-
     Diff = float(S1 - S0)
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-time.localtime(time_t(Time)) = TM :-
-    time.c_localtime(Time, Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, N),
-    TM = tm(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, int_to_maybe_dst(N)).
+localtime(time_t(Time), TM, !IO) :-
+    promise_pure (
+        semipure c_localtime(Time, Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, N),
+        TM = tm(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, int_to_maybe_dst(N))
+    ).
 
-:- pred time.c_localtime(time_t_rep::in, int::out, int::out, int::out,
+localtime(time_t(Time)) = TM :-
+    % localtime/1 is not really pure, that's why it is deprecated.
+    promise_pure (
+        semipure c_localtime(Time, Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, N),
+        TM = tm(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, int_to_maybe_dst(N))
+    ).
+
+:- semipure pred c_localtime(time_t_rep::in, int::out, int::out, int::out,
     int::out, int::out, int::out, int::out, int::out, int::out) is det.
 
 :- pragma foreign_proc("C",
-    time.c_localtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
+    c_localtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
         Min::out, Sec::out, YD::out, WD::out, N::out),
-    [will_not_call_mercury, promise_pure],
+    [will_not_call_mercury, promise_semipure, not_thread_safe],
 "
     struct tm   *p;
     time_t      t;
@@ -613,9 +635,9 @@ time.localtime(time_t(Time)) = TM :-
     N = (MR_Integer) p->tm_isdst;
 ").
 :- pragma foreign_proc("C#",
-    time.c_localtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
+    c_localtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
         Min::out, Sec::out, YD::out, WD::out, N::out),
-    [will_not_call_mercury, promise_pure],
+    [will_not_call_mercury, promise_semipure],
 "{
     System.DateTime t = Time.ToLocalTime();
 
@@ -631,7 +653,7 @@ time.localtime(time_t(Time)) = TM :-
     // XXX On the day when you switch back to standard time from daylight
     // savings time, the time '2:30am' occurs twice, once during daylight
     // savings time (N = 1), and then again an hour later, during standard
-    // time (N = 0).  The .NET API does not seem to provide any way to
+    // time (N = 0). The .NET API does not seem to provide any way to
     // get the right answer in both cases.
     if (System.TimeZone.CurrentTimeZone.IsDaylightSavingTime(t)) {
         N = 1;
@@ -640,9 +662,9 @@ time.localtime(time_t(Time)) = TM :-
     }
 }").
 :- pragma foreign_proc("Java",
-    time.c_localtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
+    c_localtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
         Min::out, Sec::out, YD::out, WD::out, N::out),
-    [will_not_call_mercury, promise_pure, may_not_duplicate],
+    [will_not_call_mercury, promise_semipure, may_not_duplicate],
 "
     java.util.GregorianCalendar gc = new java.util.GregorianCalendar();
 
@@ -689,19 +711,17 @@ time.localtime(time_t(Time)) = TM :-
     }
 ").
 
-%:- func time.gmtime(time_t) = tm.
-
-time.gmtime(time_t(Time)) = TM :-
-    time.c_gmtime(Time, Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, N),
+gmtime(time_t(Time)) = TM :-
+    c_gmtime(Time, Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, N),
     TM = tm(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, int_to_maybe_dst(N)).
 
-:- pred time.c_gmtime(time_t_rep::in, int::out, int::out, int::out, int::out,
+:- pred c_gmtime(time_t_rep::in, int::out, int::out, int::out, int::out,
     int::out, int::out, int::out, int::out, int::out) is det.
 
 :- pragma foreign_proc("C",
-    time.c_gmtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
+    c_gmtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
         Min::out, Sec::out, YD::out, WD::out, N::out),
-    [will_not_call_mercury, promise_pure],
+    [will_not_call_mercury, promise_pure, not_thread_safe],
 "{
     struct tm   *p;
     time_t      t;
@@ -723,7 +743,7 @@ time.gmtime(time_t(Time)) = TM :-
     N = (MR_Integer) p->tm_isdst;
 }").
 :- pragma foreign_proc("C#",
-    time.c_gmtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
+    c_gmtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
         Min::out, Sec::out, YD::out, WD::out, N::out),
     [will_not_call_mercury, promise_pure],
 "{
@@ -742,7 +762,7 @@ time.gmtime(time_t(Time)) = TM :-
     N = 0;
 }").
 :- pragma foreign_proc("Java",
-    time.c_gmtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
+    c_gmtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
         Min::out, Sec::out, YD::out, WD::out, N::out),
     [will_not_call_mercury, promise_pure, may_not_duplicate],
 "
@@ -789,12 +809,13 @@ time.gmtime(time_t(Time)) = TM :-
     N = 0;
 ").
 :- pragma foreign_proc("Erlang",
-    time.c_gmtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
+    c_gmtime(Time::in, Yr::out, Mnt::out, MD::out, Hrs::out,
         Min::out, Sec::out, YD::out, WD::out, N::out),
     [will_not_call_mercury, promise_pure],
 "
-    {{Yr0, Mnt, MD}, {Hrs, Min, Sec}} = Time,
+    {{Yr0, Mnt0, MD}, {Hrs, Min, Sec}} = Time,
     Yr = Yr0 - 1900,
+    Mnt = Mnt0 - 1,
 
     DayNumber = calendar:date_to_gregorian_days(Yr, Mnt, MD),
     Jan1_Number = calendar:date_to_gregorian_days(Yr, 1, 1),
@@ -809,153 +830,125 @@ time.gmtime(time_t(Time)) = TM :-
 :- func int_to_maybe_dst(int) = maybe(dst).
 
 int_to_maybe_dst(N) = DST :-
-    ( N = 0 ->
+    ( if N = 0 then
         DST = yes(standard_time)
-    ; N > 0 ->
+    else if N > 0 then
         DST = yes(daylight_time)
-    ; % N < 0
+    else % N < 0
         DST = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-%:- func time.mktime(tm) = time_t.
+mktime(TM, time_t(Time), !IO) :-
+    promise_pure (
+        TM = tm(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, DST),
+        semipure c_mktime(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD,
+            maybe_dst_to_int(DST), Time)
+    ).
 
-time.mktime(TM) = time_t(Time) :-
-    TM = tm(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, DST),
-    time.c_mktime(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD,
-        maybe_dst_to_int(DST), Time).
+mktime(TM) = time_t(Time) :-
+    % mktime/1 is not really pure, that's why it is deprecated.
+    promise_pure (
+        TM = tm(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD, DST),
+        semipure c_mktime(Yr, Mnt, MD, Hrs, Min, Sec, YD, WD,
+            maybe_dst_to_int(DST), Time)
+    ).
 
-:- pred time.c_mktime(int::in, int::in, int::in, int::in, int::in, int::in,
-    int::in, int::in, int::in, time_t_rep::out) is det.
+    % NOTE: mktime() modifies tzname so is strictly impure.
+    % We do not expose tzname through a Mercury interface, though.
+    %
+:- semipure pred c_mktime(int::in, int::in, int::in, int::in, int::in,
+    int::in, int::in, int::in, int::in, time_t_rep::out) is det.
 
 :- pragma foreign_proc("C",
-    time.c_mktime(Yr::in, Mnt::in, MD::in, Hrs::in, Min::in, Sec::in,
+    c_mktime(Yr::in, Mnt::in, MD::in, Hrs::in, Min::in, Sec::in,
         YD::in, WD::in, N::in, Time::out),
-    [will_not_call_mercury, promise_pure],
+    [will_not_call_mercury, promise_semipure, not_thread_safe],
  "{
     struct tm t;
 
-    t.tm_sec = Sec;
-    t.tm_min = Min;
-    t.tm_hour = Hrs;
-    t.tm_mon = Mnt;
-    t.tm_year = Yr;
-    t.tm_wday = WD;
-    t.tm_mday = MD;
-    t.tm_yday = YD;
-    t.tm_isdst = N;
+    t.tm_sec = (int) Sec;
+    t.tm_min = (int) Min;
+    t.tm_hour = (int) Hrs;
+    t.tm_mon = (int) Mnt;
+    t.tm_year = (int) Yr;
+    t.tm_wday = (int) WD;
+    t.tm_mday = (int) MD;
+    t.tm_yday = (int) YD;
+    t.tm_isdst = (int) N;
 
     Time = mktime(&t);
 }").
 :- pragma foreign_proc("C#",
-    time.c_mktime(Yr::in, Mnt::in, MD::in, Hrs::in, Min::in, Sec::in,
+    c_mktime(Yr::in, Mnt::in, MD::in, Hrs::in, Min::in, Sec::in,
         _YD::in, _WD::in, _N::in, Time::out),
-    [will_not_call_mercury, promise_pure],
+    [will_not_call_mercury, promise_semipure],
  "{
     // We don't use YD, WD and N.
     // XXX Ignoring N the daylight savings time indicator is bad
     // On the day when you switch back to standard time from daylight
     // savings time, the time '2:30am' occurs twice, once during daylight
     // savings time (N = 1), and then again an hour later, during standard
-    // time (N = 0).  The .NET API does not seem to provide any way to
+    // time (N = 0). The .NET API does not seem to provide any way to
     // get the right answer in both cases.
     System.DateTime local_time =
         new System.DateTime(Yr + 1900, Mnt + 1, MD, Hrs, Min, Sec);
     Time = local_time.ToUniversalTime();
 }").
 :- pragma foreign_proc("Java",
-    time.c_mktime(Yr::in, Mnt::in, MD::in, Hrs::in, Min::in, Sec::in,
+    c_mktime(Yr::in, Mnt::in, MD::in, Hrs::in, Min::in, Sec::in,
         _YD::in, _WD::in, N::in, Time::out),
-    [will_not_call_mercury, promise_pure, may_not_duplicate],
+    [will_not_call_mercury, promise_semipure, may_not_duplicate],
 "
     java.util.GregorianCalendar gc = new java.util.GregorianCalendar(
         Yr + 1900, Mnt, MD, Hrs, Min, Sec);
 
     Time = gc.getTime();
+    java.util.TimeZone tz = gc.getTimeZone();
 
-    // Correct for DST:  This is only an issue when it is possible for the
-    // same 'time' to occur twice due to daylight savings ending.
+    // Correct for DST:  This is only an issue when it is possible for the same
+    // 'time' to occur twice due to daylight savings ending.
     // (In Melbourne, 2:00am-2:59am occur twice when leaving DST)
 
-    // If the time we constructed is not in daylight savings time, but
-    // it should be, we need to subtract the DSTSavings.
+    // If the time we constructed is not in daylight savings time, but it
+    // should be, we need to subtract the DSTSavings.
     if (N == 1 && gc.getTimeZone().inDaylightTime(Time) == false) {
-        Time.setTime(Time.getTime() - getDSTSavings(gc.getTimeZone()));
-        if (gc.getTimeZone().inDaylightTime(Time) == false) {
+        Time.setTime(Time.getTime() - tz.getDSTSavings());
+        if (tz.inDaylightTime(Time) == false) {
             throw new RuntimeException(
                 ""time.mktime: failed to correct for DST"");
         }
     }
 
-    // If the time we constructed is in daylight savings time, but
-    // should not be, we need to add the DSTSavings.
-    if (N == 0 && gc.getTimeZone().inDaylightTime(Time) == true) {
-        Time.setTime(Time.getTime() + getDSTSavings(gc.getTimeZone()));
-        if (gc.getTimeZone().inDaylightTime(Time) == true) {
+    // If the time we constructed is in daylight savings time, but should not
+    // be, we need to add the DSTSavings.
+    if (N == 0 && tz.inDaylightTime(Time) == true) {
+        Time.setTime(Time.getTime() + tz.getDSTSavings());
+        if (tz.inDaylightTime(Time) == true) {
             throw new RuntimeException(
                 ""time.mktime: failed to correct for DST"");
         }
     }
-").
-
-:- pragma foreign_code("Java",
-"
-/*
-** getDSTSavings():
-**
-** This method uses reflection to retrieve and call the getDSTSavings()
-** method for a given TimeZone object.
-**
-** The reason we do this is that for Java versions < 1.4, the
-** TimeZone.getDSTSavings() method did not exist, but the
-** SimpleTimeZone.getDSTSavings() method did, and the concrete instance of
-** TimeZone used by GregorianCalender (which is what we use in this
-** module) is a SimpleTimeZone.
-** However, we can't just cast the TimeZone instance to SimpleTimeZone,
-** because for Java versions >= 1.4, GregorianCalender no longer uses a
-** SimpleTimeZone.  So in this case, what we really want is
-** TimeZone.getDSTSavings(), but we can't just put that or the code won't
-** compile for Java versions < 1.4.
-**
-** Thus, the solution is to invoke the getDSTSavings() method using
-** reflection, which will cover both cases.
-*/
-public static int
-getDSTSavings(java.util.TimeZone tz) {
-    try {
-        // Simulate
-        //  return tz.getDSTSavings()
-        // using reflection.
-
-        return ((java.lang.Integer) (tz.getClass().
-            getMethod(""getDSTSavings"").
-            invoke(tz))).intValue();
-    }
-    catch (java.lang.Exception e) {
-        throw new java.lang.RuntimeException(
-            ""time.c_mktime: Failed to locate "" +
-            ""getDSTSavings() method."");
-    }
-}
 ").
 
 :- func maybe_dst_to_int(maybe(dst)) = int.
 
 maybe_dst_to_int(M) = N :-
-    ( M = yes(DST), DST = daylight_time,
+    (
+        M = yes(DST), DST = daylight_time,
         N = 1
-    ; M = yes(DST), DST = standard_time,
+    ;
+        M = yes(DST), DST = standard_time,
         N = 0
-    ; M = no,
+    ;
+        M = no,
         N = -1
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-%:- func time.asctime(tm) = string.
-
-time.asctime(TM) = Str :-
+asctime(TM) = Str :-
     TM = tm(Yr, Mnt, MD, Hrs, Min, Sec, _YD, WD, _DST),
     Str = string.format("%.3s %.3s%3d %.2d:%.2d:%.2d %d\n",
         [s(wday_name(WD)), s(mon_name(Mnt)), i(MD), i(Hrs),
@@ -964,9 +957,9 @@ time.asctime(TM) = Str :-
 :- func wday_name(int) = string.
 
 wday_name(N) = Name :-
-    ( wday_name(N, Name0) ->
+    ( if wday_name(N, Name0) then
         Name = Name0
-    ;
+    else
         error("time: wday_name")
     ).
 
@@ -983,9 +976,9 @@ wday_name(6, "Sat").
 :- func mon_name(int) = string.
 
 mon_name(N) = Name :-
-    ( mon_name(N, Name0) ->
+    ( if mon_name(N, Name0) then
         Name = Name0
-    ;
+    else
         error("time: mon_name")
     ).
 
@@ -1004,25 +997,17 @@ mon_name(9, "Oct").
 mon_name(10, "Nov").
 mon_name(11, "Dec").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-time.ctime(Time) = asctime(localtime(Time)).
+ctime(Time) = asctime(localtime(Time)).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-% XXX This needs to be in the interface because pragma export doesn't work yet
-% on the .NET backend and io.m needs to access this.
-:- interface.
-
-:- type time_t_rep.
-
+    % For io.m.
+    %
 :- func construct_time_t(time_t_rep) = time_t.
 
-:- implementation.
-
 :- pragma foreign_export("C", construct_time_t(in) = out,
-    "ML_construct_time_t").
-:- pragma foreign_export("IL", construct_time_t(in) = out,
     "ML_construct_time_t").
 :- pragma foreign_export("C#", construct_time_t(in) = out,
     "ML_construct_time_t").
@@ -1031,4 +1016,4 @@ time.ctime(Time) = asctime(localtime(Time)).
 
 construct_time_t(T) = time_t(T).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

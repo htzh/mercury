@@ -13,15 +13,15 @@
 % This module defines types and predicates that can be used with the
 % Software Transactional Memory constructs.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module stm_builtin.
 :- interface.
 
 :- import_module io.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Transaction state
 %
@@ -39,7 +39,7 @@
     %
 :- type stm.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Transaction variables
 %
@@ -69,19 +69,19 @@
     %
 :- pred read_stm_var(stm_var(T)::in, T::out, stm::di, stm::uo) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Retry
 %
 
     % Abort the current transaction and restart it from the beginning.
-    % Operationally this casuses the calling thread to block until the value
+    % Operationally this causes the calling thread to block until the value
     % of at least one transaction variable read during the attempted
     % transaction is written by another thread.
     %
 :- pred retry(stm::ui) is erroneous.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Closure versions of atomic transactions.  These predicates can be used
 % to perform Software Transactional Memory without using the atomic scope.
@@ -105,12 +105,12 @@
     pred(T, stm, stm)::in(pred(out, di, uo) is det),
     T::out, stm::di, stm::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -200,15 +200,15 @@
 
 :- impure pred stm_merge_nested_logs(stm::di, stm::di, stm::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module exception.
 :- import_module univ.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_decl("C", "#include \"mercury_stm.h\"").
 
@@ -226,7 +226,7 @@
 :- type stm
     --->    stm(c_pointer).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
     new_stm_var(T::in, TVar::out, _IO0::di, _IO::uo),
@@ -365,7 +365,7 @@
     IO = MR_initial_io_state();
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 
 % In high level C grades, stm_block calls a C procedure in the runtime that
@@ -461,7 +461,7 @@ INIT mercury_sys_init_stm_builtin_modules
 ").
 
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Retry
 %
@@ -469,7 +469,7 @@ INIT mercury_sys_init_stm_builtin_modules
 retry(_) :-
     throw(rollback_retry).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Atomic transactions
 %
@@ -492,10 +492,10 @@ or_else(TransA, TransB, Result, OuterSTM0, OuterSTM) :-
     ;
         ResultA = exception(ExcpA),
 
-        % If transaction A retried, then we should attemp transaction B.
+        % If transaction A retried, then we should attempt transaction B.
         % Otherwise we just propagate the exception upwards.
 
-        ( ExcpA = univ(rollback_retry) ->
+        ( if ExcpA = univ(rollback_retry) then
             impure stm_create_nested_transaction_log(OuterSTM0, InnerSTM_B0),
             promise_equivalent_solutions [ResultB, InnerSTM_B] (
                 unsafe_try_stm(TransB, ResultB,
@@ -506,14 +506,14 @@ or_else(TransA, TransB, Result, OuterSTM0, OuterSTM) :-
                 impure stm_merge_nested_logs(InnerSTM_B, OuterSTM0, OuterSTM)
             ;
                 ResultB = exception(ExcpB),
-                ( ExcpB = univ(rollback_retry) ->
+                ( if ExcpB = univ(rollback_retry) then
                     impure stm_lock,
                     impure stm_validate(InnerSTM_A, IsValidA),
                     impure stm_validate(InnerSTM_B, IsValidB),
-                    (
+                    ( if
                         IsValidA = stm_transaction_valid,
                         IsValidB = stm_transaction_valid
-                    ->
+                    then
                         % We want to wait on the union of the transaction
                         % variables accessed during both alternatives.
                         % We merge the transaction logs (the order does not
@@ -524,16 +524,16 @@ or_else(TransA, TransB, Result, OuterSTM0, OuterSTM) :-
                             OuterSTM),
                         impure stm_unlock,
                         retry(OuterSTM)
-                    ;
+                    else
                         impure stm_unlock,
                         throw(rollback_invalid_transaction)
                     )
-                ;
+                else
                     impure stm_discard_transaction_log(InnerSTM_B),
                     rethrow(ResultB)
                 )
             )
-        ;
+        else
             impure stm_discard_transaction_log(InnerSTM_A),
             rethrow(ResultA)
         )
@@ -551,10 +551,10 @@ atomic_transaction_impl(Goal, Result) :-
         Result0 = succeeded(Result)
     ;
         Result0 = exception(Excp),
-        ( Excp = univ(rollback_invalid_transaction) ->
+        ( if Excp = univ(rollback_invalid_transaction) then
             impure stm_discard_transaction_log(STM),
             impure atomic_transaction_impl(Goal, Result)
-        ; Excp = univ(rollback_retry) ->
+        else if Excp = univ(rollback_retry) then
             impure stm_lock,
             impure stm_validate(STM, IsValid),
             (
@@ -567,7 +567,7 @@ atomic_transaction_impl(Goal, Result) :-
             ),
             impure stm_discard_transaction_log(STM),
             impure atomic_transaction_impl(Goal, Result)
-        ;
+        else
             impure stm_lock,
             impure stm_validate(STM, IsValid),
             impure stm_unlock,
@@ -601,6 +601,6 @@ call_atomic_goal(Goal, Result, !STM) :-
         )
     ).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module stm_builtin.
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1999-2002, 2005-2006 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: collect_lib.m.
 % Author: jahier.
@@ -62,8 +62,8 @@
 
 :- pred dummy_pred_to_avoid_warning_about_nothing_exported is det.
 
-%------------------------------------------------------------------------------%
-%------------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -72,7 +72,7 @@
 :- import_module char.
 :- import_module io.
 
-%------------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 dummy_pred_to_avoid_warning_about_nothing_exported.
 
@@ -96,10 +96,8 @@ dummy_pred_to_avoid_warning_about_nothing_exported.
 
 link_collect(ObjectFile, Filter, Initialize, PostProcess, SendResult,
         GetCollectType, MaybeHandle, Result, !IO) :-
-    %
     % Link in the object code for the module `collect' from ObjectFile.
-    %
-    dl.open(ObjectFile, lazy, local, MaybeHandle, !IO),
+    dl.open(ObjectFile, lazy, scope_local, MaybeHandle, !IO),
     (
         MaybeHandle = dl_error(Msg),
         print("dlopen failed: ", !IO),
@@ -113,29 +111,28 @@ link_collect(ObjectFile, Filter, Initialize, PostProcess, SendResult,
         Result = 'n'
     ;
         MaybeHandle = dl_ok(Handle),
-        %
+
         % Look up the address of the C functions corresponding to the
         % initialize/1 and filter/15 predicates in the collect module.
-        %
         dl.sym(Handle, "ML_COLLECT_initialize", MaybeInitialize, !IO),
         dl.sym(Handle, "ML_COLLECT_filter", MaybeFilter, !IO),
         dl.sym(Handle, "ML_COLLECT_post_process", MaybePostProcess, !IO),
         dl.sym(Handle, "ML_COLLECT_send_collect_result", MaybeSendResult, !IO),
         dl.sym(Handle, "ML_COLLECT_collected_variable_type", MaybeType, !IO),
-        (
+        ( if
             MaybeInitialize = dl_ok(Initialize0),
             MaybeFilter = dl_ok(Filter0),
             MaybePostProcess = dl_ok(PostProcess0),
             MaybeSendResult = dl_ok(SendResult0),
             MaybeType = dl_ok(Type0)
-        ->
+        then
             Result = 'y',
             Initialize = Initialize0,
             Filter = Filter0,
             PostProcess = PostProcess0,
             GetCollectType = Type0,
             SendResult = SendResult0
-        ;
+        else
             set_to_null_pointer(Initialize),
             set_to_null_pointer(Filter),
             set_to_null_pointer(PostProcess),
@@ -156,7 +153,7 @@ link_collect(ObjectFile, Filter, Initialize, PostProcess, SendResult,
 set_to_null_pointer(_) :-
     private_builtin.sorry("collect_lib.set_to_null_pointer").
 
-%------------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Dynamically unlink a module that was dynamically linked in
     % using `link_collect'.

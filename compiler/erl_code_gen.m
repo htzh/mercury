@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2007-2012 The University of Melbourne.
+% Copyright (C) 2015 The Mercury team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -30,6 +31,7 @@
 :- interface.
 
 :- import_module erl_backend.elds.
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 
 :- import_module io.
@@ -46,7 +48,9 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.foreign.
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
 :- import_module erl_backend.erl_call_gen.
 :- import_module erl_backend.erl_code_util.
@@ -59,15 +63,22 @@
 :- import_module hlds.instmap.
 :- import_module hlds.passes_aux.
 :- import_module hlds.pred_table.
+:- import_module hlds.status.
+:- import_module hlds.vartypes.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module parse_tree.prog_foreign.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.set_of_var.
 
 :- import_module bool.
+:- import_module cord.
 :- import_module int.
 :- import_module list.
 :- import_module map.
@@ -106,27 +117,24 @@ erl_gen_imports(ModuleInfo, AllImports) :-
     list(foreign_body_code)::out, list(pragma_exported_proc)::out,
     io::di, io::uo) is det.
 
-filter_erlang_foreigns(ModuleInfo, ForeignDecls, ForeignBodies, PragmaExports,
-        !IO) :-
+filter_erlang_foreigns(ModuleInfo, ForeignDeclCodes, ForeignBodyCodes,
+        PragmaExports, !IO) :-
     module_info_get_globals(ModuleInfo, Globals),
     globals.get_backend_foreign_languages(Globals, BackendForeignLanguages),
-    ( BackendForeignLanguages = [lang_erlang] ->
+    ( if BackendForeignLanguages = [lang_erlang] then
         true
-    ;
+    else
         unexpected($module, $pred, "foreign language other than Erlang")
     ),
-    module_info_get_foreign_decl(ModuleInfo, AllForeignDecls),
-    module_info_get_foreign_body_code(ModuleInfo, AllForeignBodys),
-    module_info_get_pragma_exported_procs(ModuleInfo, AllPragmaExports),
-    foreign.filter_decls(lang_erlang, AllForeignDecls, RevForeignDecls,
-        _OtherForeignDecls),
-    foreign.filter_bodys(lang_erlang, AllForeignBodys, RevForeignBodies,
-        _OtherForeignBodys),
-    foreign.filter_exports(lang_erlang, AllPragmaExports, RevPragmaExports,
-        _OtherForeignExports),
-    ForeignDecls = list.reverse(RevForeignDecls),
-    ForeignBodies = list.reverse(RevForeignBodies),
-    PragmaExports = list.reverse(RevPragmaExports).
+    module_info_get_foreign_decl_codes(ModuleInfo, ForeignDeclCodeCord),
+    module_info_get_foreign_body_codes(ModuleInfo, ForeignBodyCodeCord),
+    module_info_get_pragma_exported_procs(ModuleInfo, PragmaExportsCord),
+    foreign.filter_decls(lang_erlang, cord.list(ForeignDeclCodeCord),
+        ForeignDeclCodes, _OtherForeignDeclCodes),
+    foreign.filter_bodys(lang_erlang, cord.list(ForeignBodyCodeCord),
+        ForeignBodyCodes, _OtherForeignBodyCodes),
+    foreign.filter_exports(lang_erlang, cord.list(PragmaExportsCord),
+        PragmaExports, _OtherForeignExports).
 
 %-----------------------------------------------------------------------------%
 
@@ -146,48 +154,50 @@ erl_gen_preds_2(ModuleInfo, PredIds0, PredTable, !Defns, !IO) :-
     (
         PredIds0 = [PredId | PredIds],
         map.lookup(PredTable, PredId, PredInfo),
-        pred_info_get_import_status(PredInfo, ImportStatus),
-        (
+        pred_info_get_status(PredInfo, PredStatus),
+        ( if
             (
-                ImportStatus = status_imported(_)
+                PredStatus = pred_status(status_imported(_))
             ;
                 % XXX comment was from ml_code_gen.m, don't know if it applies.
                 % We generate incorrect and unnecessary code for the external
                 % special preds which are pseudo_imported, so just ignore them.
                 is_unify_or_compare_pred(PredInfo),
-                ImportStatus = status_external(status_pseudo_imported)
+                PredStatus =
+                    pred_status(status_external(status_pseudo_imported))
             )
-        ->
+        then
             true
-        ;
-            erl_gen_pred(ModuleInfo, PredId, PredInfo, ImportStatus,
-                !Defns, !IO)
+        else
+            % Generate ELDS definitions for all the predicate's
+            % non-imported procedures.
+            ( if PredStatus = pred_status(status_external(_)) then
+                ProcIds = pred_info_procids(PredInfo)
+            else
+                ProcIds = pred_info_non_imported_procids(PredInfo)
+            ),
+            erl_gen_pred(ModuleInfo, PredId, PredInfo, ProcIds, !Defns, !IO)
         ),
         erl_gen_preds_2(ModuleInfo, PredIds, PredTable, !Defns, !IO)
     ;
         PredIds0 = []
     ).
 
-    % Generate ELDS definitions for all the non-imported procedures
+    % Generate ELDS definitions for all the specified procedures
     % of a given predicate (or function).
     %
 :- pred erl_gen_pred(module_info::in, pred_id::in, pred_info::in,
-    import_status::in, list(elds_defn)::in, list(elds_defn)::out,
+    list(proc_id)::in, list(elds_defn)::in, list(elds_defn)::out,
     io::di, io::uo) is det.
 
-erl_gen_pred(ModuleInfo, PredId, PredInfo, ImportStatus, !Defns, !IO) :-
-    ( ImportStatus = status_external(_) ->
-        ProcIds = pred_info_procids(PredInfo)
-    ;
-        ProcIds = pred_info_non_imported_procids(PredInfo)
-    ),
+erl_gen_pred(ModuleInfo, PredId, PredInfo, ProcIds, !Defns, !IO) :-
     (
         ProcIds = []
     ;
         ProcIds = [_ | _],
         write_pred_progress_message("% Generating ELDS code for ",
             PredId, ModuleInfo, !IO),
-        pred_info_get_procedures(PredInfo, ProcTable),
+        pred_info_get_proc_table(PredInfo, ProcTable),
         erl_gen_procs(ProcIds, ModuleInfo, PredId, PredInfo, ProcTable, !Defns)
     ).
 
@@ -199,12 +209,12 @@ erl_gen_procs([], _, _, _, _, !Defns).
 erl_gen_procs([ProcId | ProcIds], ModuleInfo, PredId, PredInfo, ProcTable,
         !Defns) :-
     map.lookup(ProcTable, ProcId, ProcInfo),
-    (
+    ( if
         erl_maybe_gen_simple_special_pred(ModuleInfo, PredId, ProcId,
             PredInfo, ProcInfo, !Defns)
-    ->
+    then
         true
-    ;
+    else
         erl_gen_proc(ModuleInfo, PredId, ProcId, PredInfo, ProcInfo, !Defns)
     ),
     erl_gen_procs(ProcIds, ModuleInfo, PredId, PredInfo, ProcTable, !Defns).
@@ -336,7 +346,7 @@ erl_gen_proc(ModuleInfo, PredId, ProcId, PredInfo, ProcInfo, !Defns) :-
 
 erl_gen_proc_defn(ModuleInfo, PredId, ProcId, PredInfo, ProcInfo,
         ProcVarSet, ProcBody, EnvVarNames) :-
-    pred_info_get_import_status(PredInfo, ImportStatus),
+    pred_info_get_status(PredInfo, PredStatus),
     CodeModel = proc_info_interface_code_model(ProcInfo),
     proc_info_get_headvars(ProcInfo, HeadVars),
     proc_info_get_initial_instmap(ProcInfo, ModuleInfo, InstMap0),
@@ -360,7 +370,7 @@ erl_gen_proc_defn(ModuleInfo, PredId, ProcId, PredInfo, ProcInfo,
     some [!Info] (
         !:Info = erl_gen_info_init(ModuleInfo, PredId, ProcId),
 
-        ( ImportStatus = status_external(_) ->
+        ( if PredStatus = pred_status(status_external(_)) then
             % This procedure is externally defined.
             pred_info_get_arg_types(PredInfo, ArgTypes),
             proc_info_get_argmodes(ProcInfo, ArgModes),
@@ -377,9 +387,8 @@ erl_gen_proc_defn(ModuleInfo, PredId, ProcId, PredInfo, ProcInfo,
                 Arity = list.length(InputArgs) + 1
             ),
             ProcBody = body_external(Arity)
-        ;
-            erl_gen_proc_body(CodeModel, InstMap0, Goal, ProcClause,
-                !Info),
+        else
+            erl_gen_proc_body(CodeModel, InstMap0, Goal, ProcClause, !Info),
             ProcBody = body_defined_here(ProcClause)
         ),
 
@@ -450,7 +459,7 @@ erl_gen_goal(CodeModel, InstMap, Goal, MaybeSuccessExpr0, Code, !Info) :-
     Goal = hlds_goal(GoalExpr, GoalInfo),
     Context = goal_info_get_context(GoalInfo),
     GoalCodeModel = goal_info_get_code_model(GoalInfo),
-    (
+    ( if
         (
             CodeModel = model_det,
             GoalCodeModel = model_semi
@@ -461,26 +470,31 @@ erl_gen_goal(CodeModel, InstMap, Goal, MaybeSuccessExpr0, Code, !Info) :-
             CodeModel = model_semi,
             GoalCodeModel = model_non
         )
-    ->
+    then
         unexpected($module, $pred, "code model mismatch")
-    ;
+    else
         Determinism = goal_info_get_determinism(GoalInfo),
         (
-            Determinism = detism_erroneous
-        ->
-            % This goal can't succeed.  Don't pass a success expression
+            Determinism = detism_erroneous,
+            % This goal can't succeed. Don't pass a success expression
             % which, if inserted into the generated code, could contain
             % references to unbound variables (since the goal may have
             % aborted before binding them).
             MaybeSuccessExpr = no
         ;
-            Determinism = detism_failure
-        ->
+            Determinism = detism_failure,
             % This goal can't succeed.  As above we don't want to pass a
             % success expression, but we must pass something to maintain the
             % invariant that a model_semi goal has a success expression.
             MaybeSuccessExpr = yes(elds_term(elds_fail))
         ;
+            ( Determinism = detism_det
+            ; Determinism = detism_semi
+            ; Determinism = detism_non
+            ; Determinism = detism_multi
+            ; Determinism = detism_cc_non
+            ; Determinism = detism_cc_multi
+            ),
             MaybeSuccessExpr = MaybeSuccessExpr0
         ),
         erl_gen_goal_expr(GoalExpr, GoalCodeModel, Determinism, InstMap,
@@ -501,11 +515,11 @@ erl_gen_commit(Goal, CodeModel, ScopeDetism, InstMap, Context,
     GoalCodeModel = goal_info_get_code_model(GoalInfo),
     _GoalContext = goal_info_get_context(GoalInfo),
 
-    (
+    ( if
         GoalCodeModel = model_non,
         CodeModel = model_semi
-    ->
-        ( ScopeDetism = detism_failure ->
+    then
+        ( if ScopeDetism = detism_failure then
             % If the scope has determinism `failure' then Goal can't succeed.
             % The code is probably implementing a failure driven loop or
             % something similar.  No commit is required.
@@ -519,7 +533,7 @@ erl_gen_commit(Goal, CodeModel, ScopeDetism, InstMap, Context,
             erl_gen_goal(GoalCodeModel, InstMap, Goal, MaybeSuccessExpr,
                 GoalStatement, !Info),
             Statement = join_exprs(GoalStatement, elds_term(elds_fail))
-        ;
+        else
             %   model_non in semi context:
             %       <succeeded = Goal>
             %   ===>
@@ -545,10 +559,10 @@ erl_gen_commit(Goal, CodeModel, ScopeDetism, InstMap, Context,
                 elds_tuple([elds_commit_marker, PackedNonLocals]),
                 det_expr(MaybeSuccessExpr))
         )
-    ;
+    else if
         GoalCodeModel = model_non,
         CodeModel = model_det
-    ->
+    then
         %   model_non in det context:
         %       <do Goal>
         %   ===>
@@ -573,7 +587,7 @@ erl_gen_commit(Goal, CodeModel, ScopeDetism, InstMap, Context,
         TryExpr = elds_try(GoalStatement, [], yes(Catch), no),
         Catch = elds_catch(elds_throw_atom,
             elds_tuple([elds_commit_marker, ResultsVarExpr]), ResultsVarExpr)
-    ;
+    else
         % No commit required.
         erl_gen_goal(CodeModel, InstMap, Goal, MaybeSuccessExpr, Statement,
             !Info)
@@ -640,7 +654,11 @@ erl_gen_goal_expr(GoalExpr, CodeModel, Detism, InstMap, Context,
             Reason = require_complete_switch(_),
             unexpected($module, $pred, "require_complete_switch")
         ;
-            ( Reason = exist_quant(_)
+            Reason = require_switch_arms_detism(_, _),
+            unexpected($module, $pred, "require_complete_switch")
+        ;
+            ( Reason = disable_warnings(_, _)
+            ; Reason = exist_quant(_)
             ; Reason = promise_purity(_)
             ; Reason = barrier(_)
             ; Reason = from_ground_term(_, _)
@@ -705,9 +723,6 @@ erl_gen_goal_expr(GoalExpr, CodeModel, Detism, InstMap, Context,
             BuiltinState = inline_builtin,
             erl_gen_builtin(PredId, ProcId, ArgVars, CodeModel, Context,
                 MaybeSuccessExpr, Statement, !Info)
-        ;
-            BuiltinState = out_of_line_builtin,
-            unexpected($module, $pred, "out_of_line_builtin")
         )
     ;
         GoalExpr = unify(_LHS, _RHS, _Mode, Unification, _UnifyContext),
@@ -716,7 +731,7 @@ erl_gen_goal_expr(GoalExpr, CodeModel, Detism, InstMap, Context,
     ;
         GoalExpr = call_foreign_proc(_Attributes, _PredId, _ProcId,
             Args, _ExtraArgs, MaybeTraceRuntimeCond, PragmaImpl),
-        erl_gen_foreign_code_call(Args, MaybeTraceRuntimeCond, PragmaImpl,
+        erl_gen_foreign_proc_call(Args, MaybeTraceRuntimeCond, PragmaImpl,
             CodeModel, Context, MaybeSuccessExpr, Statement, !Info)
     ;
         GoalExpr = shorthand(_),
@@ -786,7 +801,7 @@ erl_gen_switch(Var, CanFail, CasesList, CodeModel, InstMap0, _Context,
     erl_gen_info_get_module_info(!.Info, ModuleInfo),
     type_util.classify_type(ModuleInfo, VarType) = TypeCtorCategory,
 
-    (if
+    ( if
         % The HiPE compiler is extremely slow compiling functions containing
         % long case statements involving strings.  Workaround: for a string
         % switch with many cases, convert the string to an atom and switch on
@@ -864,9 +879,11 @@ erl_gen_case(Type, CodeModel, InstMap, MustBindNonLocals, MaybeSuccessExpr,
     erl_gen_info_get_module_info(!.Info, ModuleInfo),
     Size = cons_id_size(ModuleInfo, Type, MainConsId),
     erl_gen_info_new_anonymous_vars(Size, DummyVars, !Info),
-    ( cons_id_to_term(MainConsId, DummyVars, elds_anon_var, Pattern0, !Info) ->
+    ( if
+        cons_id_to_term(MainConsId, DummyVars, elds_anon_var, Pattern0, !Info)
+    then
         Pattern = Pattern0
-    ;
+    else
         unexpected($module, $pred, "cannot pattern match on object")
     ),
     erl_fix_success_expr(InstMap, Goal, MaybeSuccessExpr,
@@ -884,17 +901,16 @@ erl_gen_case(Type, CodeModel, InstMap, MustBindNonLocals, MaybeSuccessExpr,
 
     % cons_id_size(ModuleInfo, Type, ConsId)
     %
-    % Returns the size - 1 of the tuple which represents the
-    % type, Type, with cons_id, ConsId.
+    % Returns the size - 1 of the tuple which represents the type, Type,
+    % with cons_id, ConsId.
     %
 :- func cons_id_size(module_info, mer_type, cons_id) = int.
 
 cons_id_size(ModuleInfo, Type, ConsId) = Size :-
-    (
+    ( if
         type_to_ctor(Type, TypeCtor),
         get_cons_defn(ModuleInfo, TypeCtor, ConsId, ConsDefn)
-    ->
-
+    then
         % There will be a cell for each existential type variable
         % which isn't mentioned in a typeclass constraint and
         % a cell for each constraint and for each arg.
@@ -906,7 +922,7 @@ cons_id_size(ModuleInfo, Type, ConsId) = Size :-
 
         Size = list.length(UnconstrainedTVars) + list.length(Constraints) +
             list.length(ConsDefn ^ cons_args)
-    ;
+    else
         Size = 0
     ).
 
@@ -919,9 +935,9 @@ erl_gen_case_on_atom(CodeModel, InstMap, MustBindNonLocals, MaybeSuccessExpr,
     Case = case(MainConsId, OtherConsIds, Goal),
     expect(unify(OtherConsIds, []), $module, $pred,
         "multi-cons-id switch arms NYI"),
-    ( MainConsId = string_const(String0) ->
+    ( if MainConsId = string_const(String0) then
         String = String0
-    ;
+    else
         unexpected($module, $pred, "non-string const")
     ),
     erl_fix_success_expr(InstMap, Goal, MaybeSuccessExpr,
@@ -961,7 +977,7 @@ union_bound_nonlocals_in_goals(Info, InstMap, Goals, NonLocalsUnion) :-
 
 maybe_create_closure_for_success_expr(NonLocals, MaybeSuccessExpr0,
         MaybeMakeClosure, MaybeSuccessExpr, InstMap0, InstMap, !Info) :-
-    (if
+    ( if
         MaybeSuccessExpr0 = yes(SuccessExpr0),
         erl_expr_size(SuccessExpr0) > duplicate_expr_limit
     then
@@ -1008,7 +1024,7 @@ ground_var_in_instmap(Var, !InstMap) :-
     % not bound before the place where the success expression will be
     % inserted).  For our purposes it doesn't matter what insts these variables
     % have, other than not being free, so we just use `ground'.
-    instmap_set_var(Var, ground(shared, none), !InstMap).
+    instmap_set_var(Var, ground(shared, none_or_default_func), !InstMap).
 
 %-----------------------------------------------------------------------------%
 %
@@ -1034,10 +1050,10 @@ erl_gen_ite(CodeModel, InstMap0, Cond, Then, Else, _Context, MaybeSuccessExpr0,
         CondCodeModel = model_det,
         erl_gen_goal(model_det, InstMap0, Cond, no, CondStatement, !Info),
         CondDeterminism = goal_info_get_determinism(CondGoalInfo),
-        ( CondDeterminism = detism_erroneous ->
+        ( if CondDeterminism = detism_erroneous then
             % The `Then' code is unreachable.
             Statement = CondStatement
-        ;
+        else
             update_instmap(Cond, InstMap0, CondInstMap),
             erl_gen_goal(CodeModel, CondInstMap, Then, MaybeSuccessExpr0,
                 ThenStatement, !Info),
@@ -1101,11 +1117,11 @@ erl_gen_ite(CodeModel, InstMap0, Cond, Then, Else, _Context, MaybeSuccessExpr0,
             ElseStatement0, ElseStatement),
 
         CondDeterminism = goal_info_get_determinism(CondGoalInfo),
-        ( CondDeterminism = detism_failure ->
+        ( if CondDeterminism = detism_failure then
             % If the condition cannot succeed then just concatenate the
             % condition and the else branch.
             IfStatement = join_exprs(CondStatement, ElseStatement)
-        ;
+        else
             CaseExpr = elds_case_expr(CondStatement, [TrueCase, FalseCase]),
             TrueCase = elds_case(CondVarsTerm, ThenStatement),
             FalseCase = elds_case(elds_anon_var, ElseStatement),
@@ -1245,7 +1261,7 @@ erl_gen_conj(Goals, CodeModel, Detism, InstMap, Context, MaybeSuccessExpr,
         Statement, !Info) :-
     erl_gen_conj_2(Goals, CodeModel, InstMap, Context, MaybeSuccessExpr,
         Statement0, !Info),
-    ( Detism = detism_erroneous ->
+    ( if Detism = detism_erroneous then
         % This conjunction may be part of a conditional statement, in which
         % this branch binds some variables Vars before throwing an exception.
         % Another, non-erroneous, branch might not bind those Vars, leaving
@@ -1256,7 +1272,7 @@ erl_gen_conj(Goals, CodeModel, Detism, InstMap, Context, MaybeSuccessExpr,
         erl_gen_info_get_module_info(!.Info, ModuleInfo),
         instmap_bound_vars(InstMap, ModuleInfo, BoundVars),
         erl_rename_vars_in_expr_except(BoundVars, Statement0, Statement, !Info)
-    ;
+    else
         Statement = Statement0
     ).
 
@@ -1284,11 +1300,17 @@ erl_gen_conj_2([First | Rest], CodeModel, InstMap0, Context, MaybeSuccessExpr,
     Rest = [_ | _],
     First = hlds_goal(_, FirstGoalInfo),
     FirstDeterminism = goal_info_get_determinism(FirstGoalInfo),
-    ( determinism_components(FirstDeterminism, _, at_most_zero) ->
-        % the `Rest' code is unreachable
+    determinism_components(FirstDeterminism, _, FirstMaxSolns),
+    (
+        FirstMaxSolns = at_most_zero,
+        % The `Rest' code is unreachable.
         % There is no success expression in this case.
         erl_gen_goal(CodeModel, InstMap0, First, no, Statement, !Info)
     ;
+        ( FirstMaxSolns = at_most_one
+        ; FirstMaxSolns = at_most_many
+        ; FirstMaxSolns = at_most_many_cc
+        ),
         determinism_to_code_model(FirstDeterminism, FirstCodeModel),
         update_instmap(First, InstMap0, InstMap1),
         (
@@ -1492,7 +1514,7 @@ erl_gen_disjunct([First | Rest], CodeModel, InstMap, Context,
             erl_create_renaming(FirstVars, Subn, !Info),
             erl_rename_vars_in_expr(Subn, FirstStatement0, FirstStatement),
 
-            ( FirstDeterminism = detism_failure ->
+            ( if FirstDeterminism = detism_failure then
                 % Special case the situation when the first disjunct has
                 % determinism `failure'.  This can avoid some spurious
                 % warnings from the Erlang compiler about "unsafe" variables
@@ -1500,16 +1522,16 @@ erl_gen_disjunct([First | Rest], CodeModel, InstMap, Context,
                 % statement will always be taken and therefore it doesn't
                 % matter that some variables aren't bound in other branches).
                 Statement = join_exprs(FirstStatement0, RestStatement)
-            ;
+            else
                 erl_fix_success_expr(InstMap, First, MaybeSuccessExpr,
                     MaybeSuccessExprForFirst, !Info),
-                (
+                ( if
                     MaybeSuccessExprForFirst = yes(elds_term(FirstVarsTerm)),
                     RestStatement = elds_term(elds_fail)
-                ->
+                then
                     % No need to wrap this with a case expression.
                     Statement = FirstStatement
-                ;
+                else
                     Statement0 = elds_case_expr(FirstStatement,
                         [SucceedCase, FailCase]),
                     SucceedCase = elds_case(FirstVarsTerm,
@@ -1574,7 +1596,7 @@ erl_gen_foreign_exports(ProcDefns, PragmaExports, ForeignExportDefns) :-
 erl_gen_foreign_export_defn(ProcDefns, PragmaExport, ForeignExportDefn) :-
     PragmaExport = pragma_exported_proc(_Lang, PredId, ProcId, Name, _Context),
     PredProcId = proc(PredId, ProcId),
-    ( search_elds_defn(ProcDefns, PredProcId, TargetProc) ->
+    ( if search_elds_defn(ProcDefns, PredProcId, TargetProc) then
         TargetProc = elds_defn(_TargetPPId, _TargetVarSet, TargetBody,
             _EnvVarNames),
         Arity = elds_body_arity(TargetBody),
@@ -1584,7 +1606,7 @@ erl_gen_foreign_export_defn(ProcDefns, PragmaExport, ForeignExportDefn) :-
         Clause = elds_clause(terms_from_vars(Vars),
             elds_call(elds_call_plain(PredProcId), exprs_from_vars(Vars))),
         ForeignExportDefn = elds_foreign_export_defn(Name, VarSet, Clause)
-    ;
+    else
         unexpected($module, $pred,
             "missing definition of foreign exported procedure")
     ).
@@ -1593,9 +1615,9 @@ erl_gen_foreign_export_defn(ProcDefns, PragmaExport, ForeignExportDefn) :-
     elds_defn::out) is semidet.
 
 search_elds_defn([Defn0 | Defns], PredProcId, Defn) :-
-    ( Defn0 = elds_defn(PredProcId, _, _, _) ->
+    ( if Defn0 = elds_defn(PredProcId, _, _, _) then
         Defn = Defn0
-    ;
+    else
         search_elds_defn(Defns, PredProcId, Defn)
     ).
 

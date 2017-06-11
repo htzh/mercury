@@ -1,27 +1,23 @@
-/*
-** vim: ts=4 sw=4 expandtab
-*/
-/*
-** Copyright (C) 1998-2007 The University of Melbourne.
-** This file may only be copied under the terms of the GNU Library General
-** Public License - see the file COPYING.LIB in the Mercury distribution.
-*/
+// vim: ts=4 sw=4 expandtab ft=c
 
-/*
-** This module implements the mdb commands in the "misc" category.
-**
-** The structure of these files is:
-**
-** - all the #includes
-** - local macros and declarations of local static functions
-** - one function for each command in the category
-** - any auxiliary functions
-** - any command argument strings
-** - option processing functions.
-*/
+// Copyright (C) 1998-2007 The University of Melbourne.
+// This file may only be copied under the terms of the GNU Library General
+// Public License - see the file COPYING.LIB in the Mercury distribution.
+
+// This module implements the mdb commands in the "misc" category.
+//
+// The structure of these files is:
+//
+// - all the #includes
+// - local macros and declarations of local static functions
+// - one function for each command in the category
+// - any auxiliary functions
+// - any command argument strings
+// - option processing functions.
 
 #include "mercury_std.h"
 #include "mercury_getopt.h"
+#include "mercury_runtime_util.h"
 
 #include "mercury_trace_internal.h"
 #include "mercury_trace_cmds.h"
@@ -33,14 +29,14 @@
 
 #include "mdb.listing.mh"
 
-/****************************************************************************/
+////////////////////////////////////////////////////////////////////////////
 
 static  MR_bool     MR_trace_options_ignore(MR_bool *ignore_errors,
                         char ***words, int *word_count);
 static  MR_bool     MR_trace_options_confirmed(MR_bool *confirmed,
                         char ***words, int *word_count);
 
-/****************************************************************************/
+////////////////////////////////////////////////////////////////////////////
 
 MR_Next
 MR_trace_cmd_source(char **words, int word_count, MR_TraceCmdInfo *cmd,
@@ -51,13 +47,13 @@ MR_trace_cmd_source(char **words, int word_count, MR_TraceCmdInfo *cmd,
 
     ignore_errors = MR_FALSE;
     if (! MR_trace_options_ignore(&ignore_errors, &words, &word_count)) {
-        ; /* the usage message has already been printed */
+        // The usage message has already been printed.
+        ;
     } else if (word_count >= 2) {
-        /*
-        ** If the source fails, the error message
-        ** will have already been printed by MR_trace_source
-        ** (unless ignore_errors suppresses the message).
-        */
+        // If the source fails, the error message
+        // will have already been printed by MR_trace_source
+        // (unless ignore_errors suppresses the message).
+
         if (word_count == 2) {
             args = NULL;
         } else {
@@ -80,12 +76,13 @@ MR_trace_cmd_save(char **words, int word_count, MR_TraceCmdInfo *cmd,
         FILE    *fp;
         MR_bool found_error;
         MR_Word path_list;
+        char    errbuf[MR_STRERROR_BUF_SIZE];
 
         fp = fopen(words[1], "w");
         if (fp == NULL) {
             fflush(MR_mdb_out);
             fprintf(MR_mdb_err, "mdb: error opening `%s': %s.\n",
-                words[1], strerror(errno));
+                words[1], MR_strerror(errno, errbuf, sizeof(errbuf)));
             return KEEP_INTERACTING;
         }
 
@@ -204,7 +201,7 @@ MR_trace_cmd_save(char **words, int word_count, MR_TraceCmdInfo *cmd,
         } else if (fclose(fp) != 0) {
             fflush(MR_mdb_out);
             fprintf(MR_mdb_err, "mdb: error closing `%s': %s.\n",
-                words[1], strerror(errno));
+                words[1], MR_strerror(errno, errbuf, sizeof(errbuf)));
         } else {
             fprintf(MR_mdb_out, "Debugger state saved to %s.\n", words[1]);
         }
@@ -223,7 +220,8 @@ MR_trace_cmd_quit(char **words, int word_count, MR_TraceCmdInfo *cmd,
 
     confirmed = MR_FALSE;
     if (! MR_trace_options_confirmed(&confirmed, &words, &word_count)) {
-        ; /* the usage message has already been printed */
+        // The usage message has already been printed.
+        ;
     } else if (word_count == 1) {
         if (! confirmed) {
             char    *line2;
@@ -231,7 +229,7 @@ MR_trace_cmd_quit(char **words, int word_count, MR_TraceCmdInfo *cmd,
             line2 = MR_trace_getline("mdb: are you sure you want to quit? ",
                 MR_mdb_in, MR_mdb_out);
             if (line2 == NULL) {
-                /* This means the user input EOF. */
+                // This means the user input EOF.
                 confirmed = MR_TRUE;
             } else {
                 int i = 0;
@@ -258,12 +256,10 @@ MR_trace_cmd_quit(char **words, int word_count, MR_TraceCmdInfo *cmd,
     return KEEP_INTERACTING;
 }
 
-/****************************************************************************/
+////////////////////////////////////////////////////////////////////////////
 
-/*
-** It's better to have a single completion where possible,
-** so don't include `-i' here.
-*/
+// It's better to have a single completion where possible,
+// so don't include `-i' here.
 
 const char *const    MR_trace_source_cmd_args[] =
     { "--ignore-errors", NULL };
@@ -271,40 +267,39 @@ const char *const    MR_trace_source_cmd_args[] =
 const char *const    MR_trace_quit_cmd_args[] =
     { "-y", NULL };
 
-/****************************************************************************/
+////////////////////////////////////////////////////////////////////////////
 
 static struct MR_option MR_trace_ignore_opts[] =
-{                       
+{
     { "ignore-errors",  MR_no_argument, NULL,   'i' },
     { NULL,             MR_no_argument, NULL,   0   }
 };
-                        
-static MR_bool          
-MR_trace_options_ignore(MR_bool *ignore_errors, char ***words, int *word_count)
-{                       
-    int c;              
 
-    MR_optind = 0;      
+static MR_bool
+MR_trace_options_ignore(MR_bool *ignore_errors, char ***words, int *word_count)
+{
+    int c;
+
+    MR_optind = 0;
     while ((c = MR_getopt_long(*word_count, *words, "i",
         MR_trace_ignore_opts, NULL)) != EOF)
-    {                   
+    {
         switch (c) {
-                        
+
             case 'i':
-                *ignore_errors = MR_TRUE; 
+                *ignore_errors = MR_TRUE;
                 break;
-                        
+
             default:
                 MR_trace_usage_cur_cmd();
                 return MR_FALSE;
-        }               
-    }                   
+        }
+    }
 
     *words = *words + MR_optind - 1;
     *word_count = *word_count - MR_optind + 1;
-    return MR_TRUE;     
-}                       
-
+    return MR_TRUE;
+}
 
 static MR_bool
 MR_trace_options_confirmed(MR_bool *confirmed, char ***words, int *word_count)
@@ -336,4 +331,4 @@ MR_trace_options_confirmed(MR_bool *confirmed, char ***words, int *word_count)
     return MR_TRUE;
 }
 
-/****************************************************************************/
+////////////////////////////////////////////////////////////////////////////

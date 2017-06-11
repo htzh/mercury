@@ -20,16 +20,18 @@
 :- module transform_hlds.term_traversal.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module hlds.vartypes.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module transform_hlds.term_errors.
 :- import_module transform_hlds.term_norm.
 :- import_module transform_hlds.term_util.
 
 :- import_module bag.
-:- import_module io.
 :- import_module list.
 :- import_module maybe.
 :- import_module pair.
@@ -54,18 +56,18 @@
                 % the error here. (This is not an error in pass 1, but
                 % we want to find this out in pass 1 so we can avoid
                 % doing pass 2.)
-                list(termination_error_context)
+                list(term_error)
             )
     ;       term_traversal_error(
                 % Errors which are fatal in both passes.
-                list(termination_error_context),
+                list(term_error),
 
                 % Have we processed a call to a procedure whose maybe
                 % termination info was yes(can_loop(_))? If yes, record
                 % the error here. (This is not an error in pass 1, but
                 % we want to find this out in pass 1 so we can avoid
                 % doing pass 2.)
-                list(termination_error_context)
+                list(term_error)
             ).
 
 :- type term_path_info
@@ -96,9 +98,8 @@
     used_args::in, used_args::in, int::in, int::in,
     term_traversal_params::out) is det.
 
-:- pred term_traverse_goal(hlds_goal::in, term_traversal_params::in,
-    term_traversal_info::in, term_traversal_info::out,
-    module_info::in, module_info::out, io::di, io::uo) is det.
+:- pred term_traverse_goal(module_info::in, term_traversal_params::in,
+    hlds_goal::in, term_traversal_info::in, term_traversal_info::out) is det.
 
 :- pred upper_bound_active_vars(list(term_path_info)::in, bag(prog_var)::out)
     is det.
@@ -108,9 +109,9 @@
 
 :- implementation.
 
+:- import_module parse_tree.prog_data_pragma.
 :- import_module parse_tree.prog_type.
 
-:- import_module assoc_list.
 :- import_module bool.
 :- import_module int.
 :- import_module map.
@@ -118,48 +119,47 @@
 
 %-----------------------------------------------------------------------------%
 
-term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
+term_traverse_goal(ModuleInfo, Params, Goal, !Info) :-
     Goal = hlds_goal(GoalExpr, GoalInfo),
-    (
+    ( if
         Detism = goal_info_get_determinism(GoalInfo),
         determinism_components(Detism, _, at_most_zero)
-    ->
+    then
         cannot_succeed(!Info)
-    ;
+    else
         true
     ),
     (
         GoalExpr = unify(_Var, _RHS, _UniMode, Unification, _Context),
         (
             Unification = construct(OutVar, ConsId, Args, Modes, _, _, _),
-            (
-                unify_change(!.ModuleInfo, OutVar, ConsId, Args, Modes, Params,
+            ( if
+                unify_change(ModuleInfo, OutVar, ConsId, Args, Modes, Params,
                     Gamma, InVars, OutVars0)
-            ->
+            then
                 bag.insert(OutVar, OutVars0, OutVars),
                 record_change(InVars, OutVars, Gamma, [], !Info)
-            ;
+            else
                 % length(Args) is not necessarily equal to length(Modes)
                 % for higher order constructions.
                 true
             )
         ;
             Unification = deconstruct(InVar, ConsId, Args, Modes, _, _),
-            (
-                unify_change(!.ModuleInfo, InVar, ConsId, Args, Modes, Params,
+            ( if
+                unify_change(ModuleInfo, InVar, ConsId, Args, Modes, Params,
                     Gamma0, InVars0, OutVars)
-            ->
+            then
                 bag.insert(InVar, InVars0, InVars),
                 Gamma = 0 - Gamma0,
                 record_change(InVars, OutVars, Gamma, [], !Info)
-            ;
+            else
                 unexpected($module, $pred, "higher order deconstruction")
             )
         ;
             Unification = assign(OutVar, InVar),
-            bag.init(Empty),
-            bag.insert(InVar, Empty, InVars),
-            bag.insert(OutVar, Empty, OutVars),
+            InVars = bag.singleton(InVar),
+            OutVars = bag.singleton(OutVar),
             record_change(InVars, OutVars, 0, [], !Info)
         ;
             Unification = simple_test(_InVar1, _InVar2)
@@ -173,7 +173,7 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
         params_get_ppid(Params, PPId),
         CallPPId = proc(CallPredId, CallProcId),
 
-        module_info_pred_proc_info(!.ModuleInfo, CallPredId, CallProcId, _,
+        module_info_pred_proc_info(ModuleInfo, CallPredId, CallProcId, _,
             CallProcInfo),
         proc_info_get_argmodes(CallProcInfo, CallArgModes),
         % XXX intermod
@@ -181,7 +181,7 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
         proc_info_get_maybe_termination_info(CallProcInfo,
             CallTerminationInfo),
 
-        partition_call_args(!.ModuleInfo, CallArgModes, Args, InVars, OutVars),
+        partition_call_args(ModuleInfo, CallArgModes, Args, InVars, OutVars),
 
         % Handle existing paths.
         (
@@ -204,30 +204,30 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
         ),
 
         % Did we call a non-terminating procedure?
-        ( CallTerminationInfo = yes(can_loop(_)) ->
+        ( if CallTerminationInfo = yes(can_loop(_)) then
             called_can_loop(Context, can_loop_proc_called(PPId, CallPPId),
                 Params, !Info)
-        ;
+        else
             true
         ),
 
         % Did we call a procedure with some procedure-valued arguments?
-        (
+        ( if
             % XXX This is an overapproximation, since it includes
             % higher order outputs.
             params_get_var_types(Params, VarTypes),
             horder_vars(Args, VarTypes)
-        ->
-            add_error(Context, horder_args(PPId, CallPPId), Params, !Info)
-        ;
+        then
+            add_error(Params, Context, horder_args(PPId, CallPPId), !Info)
+        else
             true
         ),
 
         % Do we start another path?
-        (
+        ( if
             params_get_rec_input_suppliers(Params, RecInputSuppliersMap),
             map.search(RecInputSuppliersMap, CallPPId, RecInputSuppliers)
-        ->
+        then
             % We should get to this point only in pass 2, and then
             % only if this call is to a procedure in the current SCC.
             % In pass 1, RecInputSuppliersMap will be empty.
@@ -235,30 +235,30 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
             PathStart = yes(CallPPId - Context),
             NewPath = term_path_info(PPId, PathStart, 0, [], Bag),
             add_path(NewPath, !Info)
-        ;
+        else
             true
         )
     ;
         GoalExpr = call_foreign_proc(Attributes, CallPredId, CallProcId, Args,
             _, _, _),
-        module_info_pred_proc_info(!.ModuleInfo, CallPredId, CallProcId, _,
+        module_info_pred_proc_info(ModuleInfo, CallPredId, CallProcId, _,
             CallProcInfo),
         proc_info_get_argmodes(CallProcInfo, CallArgModes),
         ArgVars = list.map(foreign_arg_var, Args),
-        partition_call_args(!.ModuleInfo, CallArgModes, ArgVars,
+        partition_call_args(ModuleInfo, CallArgModes, ArgVars,
             _InVars, OutVars),
         Context = goal_info_get_context(GoalInfo),
 
-        ( is_termination_known(!.ModuleInfo, proc(CallPredId, CallProcId)) ->
+        ( if
+            is_termination_known(ModuleInfo, proc(CallPredId, CallProcId))
+        then
             error_if_intersect(OutVars, Context, pragma_foreign_code, !Info)
-        ;
-            ( attributes_imply_termination(Attributes) ->
-                error_if_intersect(OutVars, Context, pragma_foreign_code,
-                    !Info)
-            ;
-                add_error(Context, does_not_term_pragma(CallPredId), Params,
-                    !Info)
-            )
+        else if
+            attributes_imply_termination(Attributes)
+        then
+            error_if_intersect(OutVars, Context, pragma_foreign_code, !Info)
+        else
+            add_error(Params, Context, does_not_term_pragma(CallPredId), !Info)
         )
     ;
         GoalExpr = generic_call(Details, Args, ArgModes, _, _),
@@ -272,14 +272,14 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
             % terminate. We cannot find out anything about the sizes of the
             % arguments of the higher-order call, so we assume that they are
             % unbounded.
-            ( map.search(ClosureValueMap, Var, ClosureValues0) ->
+            ( if map.search(ClosureValueMap, Var, ClosureValues0) then
                 ClosureValues = set.to_sorted_list(ClosureValues0),
                 % XXX intermod
-                list.filter(pred_proc_id_terminates(!.ModuleInfo),
+                list.filter(pred_proc_id_terminates(ModuleInfo),
                     ClosureValues, Terminating, NonTerminating),
                 (
                     NonTerminating = [],
-                    partition_call_args(!.ModuleInfo, ArgModes, Args,
+                    partition_call_args(ModuleInfo, ArgModes, Args,
                         _InVars, OutVars),
                     params_get_ppid(Params, PPId),
                     Error = ho_inf_termination_const(PPId, Terminating),
@@ -288,10 +288,10 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
                     NonTerminating = [_ | _],
                     % XXX We should tell the user what the
                     % non-terminating closures are.
-                    add_error(Context, horder_call, Params, !Info)
+                    add_error(Params, Context, horder_call, !Info)
                 )
-            ;
-                add_error(Context, horder_call, Params, !Info)
+            else
+                add_error(Params, Context, horder_call, !Info)
             )
         ;
             Details = class_method(_, _, _, _),
@@ -299,7 +299,7 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
             % than this, since we know that the method being called must
             % come from one of the instance declarations, and we could
             % potentially (globally) analyse these.
-            add_error(Context, method_call, Params, !Info)
+            add_error(Params, Context, method_call, !Info)
         ;
             Details = event_call(_)
         ;
@@ -308,18 +308,18 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
     ;
         GoalExpr = conj(_, Goals),
         list.reverse(Goals, RevGoals),
-        term_traverse_conj(RevGoals, Params, !Info, !ModuleInfo, !IO)
+        term_traverse_rev_conj(ModuleInfo, Params, RevGoals, !Info)
     ;
         GoalExpr = disj(Goals),
-        term_traverse_disj(Goals, Params, !Info, !ModuleInfo, !IO)
+        term_traverse_disj(ModuleInfo, Params, Goals, !Info)
     ;
         GoalExpr = switch(_, _, Cases),
-        term_traverse_switch(Cases, Params, !Info, !ModuleInfo, !IO)
+        term_traverse_switch(ModuleInfo, Params, Cases, !Info)
     ;
         GoalExpr = if_then_else(_, Cond, Then, Else),
-        term_traverse_conj([Then, Cond], Params, !.Info, CondThenInfo,
-            !ModuleInfo, !IO),
-        term_traverse_goal(Else, Params, !.Info, ElseInfo, !ModuleInfo, !IO),
+        term_traverse_rev_conj(ModuleInfo, Params, [Then, Cond],
+            !.Info, CondThenInfo),
+        term_traverse_goal(ModuleInfo, Params, Else, !.Info, ElseInfo),
         combine_paths(CondThenInfo, ElseInfo, Params, !:Info)
     ;
         GoalExpr = negation(SubGoal),
@@ -327,12 +327,12 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
         % it cannot bind any active variables. However, we must traverse it
         % during pass 1 to ensure that it does not call any non-terminating
         % procedures. Pass 2 relies on pass 1 having done this.
-        term_traverse_goal(SubGoal, Params, !Info, !ModuleInfo, !IO)
+        term_traverse_goal(ModuleInfo, Params, SubGoal, !Info)
     ;
         GoalExpr = scope(_, SubGoal),
         % XXX We should special-case the handling of from_ground_term_construct
         % scopes.
-        term_traverse_goal(SubGoal, Params, !Info, !ModuleInfo, !IO)
+        term_traverse_goal(ModuleInfo, Params, SubGoal, !Info)
     ;
         GoalExpr = shorthand(_),
         % These should have been expanded out by now.
@@ -341,41 +341,37 @@ term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-    % traverse_conj should be invoked with a reversed list of goals.
+    % term_traverse_rev_conj should be invoked with a reversed list of goals.
     % This is to keep stack consumption down.
     %
-:- pred term_traverse_conj(hlds_goals::in, term_traversal_params::in,
-    term_traversal_info::in, term_traversal_info::out,
-    module_info::in, module_info::out, io::di, io::uo) is det.
+:- pred term_traverse_rev_conj(module_info::in, term_traversal_params::in,
+    list(hlds_goal)::in,
+    term_traversal_info::in, term_traversal_info::out) is det.
 
-term_traverse_conj([], _, !Info, !ModuleInfo, !IO).
-term_traverse_conj([Goal | Goals], Params, !Info, !ModuleInfo, !IO) :-
-    term_traverse_goal(Goal, Params, !Info, !ModuleInfo, !IO),
-    term_traverse_conj(Goals, Params, !Info, !ModuleInfo, !IO).
+term_traverse_rev_conj(_, _, [], !Info).
+term_traverse_rev_conj(ModuleInfo, Params, [Goal | Goals], !Info) :-
+    term_traverse_goal(ModuleInfo, Params, Goal, !Info),
+    term_traverse_rev_conj(ModuleInfo, Params, Goals, !Info).
 
-:- pred term_traverse_disj(hlds_goals::in, term_traversal_params::in,
-    term_traversal_info::in, term_traversal_info::out,
-    module_info::in, module_info::out, io::di, io::uo) is det.
+:- pred term_traverse_disj(module_info::in, term_traversal_params::in,
+    list(hlds_goal)::in,
+    term_traversal_info::in, term_traversal_info::out) is det.
 
-term_traverse_disj([], _, _, term_traversal_ok(Empty, []), !ModuleInfo, !IO) :-
-    set.init(Empty).
-term_traverse_disj([Goal | Goals], Params, !Info, !ModuleInfo, !IO) :-
-    term_traverse_goal(Goal, Params, !.Info, GoalInfo, !ModuleInfo, !IO),
-    term_traverse_disj(Goals, Params, !.Info, GoalsInfo, !ModuleInfo, !IO),
+term_traverse_disj(_, _, [], _, term_traversal_ok(set.init, [])).
+term_traverse_disj(ModuleInfo, Params, [Goal | Goals], !Info) :-
+    term_traverse_goal(ModuleInfo, Params, Goal, !.Info, GoalInfo),
+    term_traverse_disj(ModuleInfo, Params, Goals, !.Info, GoalsInfo),
     combine_paths(GoalInfo, GoalsInfo, Params, !:Info).
 
-:- pred term_traverse_switch(list(case)::in, term_traversal_params::in,
-    term_traversal_info::in, term_traversal_info::out,
-    module_info::in, module_info::out, io::di, io::uo) is det.
+:- pred term_traverse_switch(module_info::in, term_traversal_params::in,
+    list(case)::in, term_traversal_info::in, term_traversal_info::out) is det.
 
-term_traverse_switch([], _, _, term_traversal_ok(Empty, []),
-        !ModuleInfo, !IO) :-
-    set.init(Empty).
-term_traverse_switch([case(_, _, Goal) | Cases], Params, !Info,
-        !ModuleInfo, !IO) :-
-    term_traverse_goal(Goal, Params, !.Info, GoalInfo, !ModuleInfo, !IO),
-    term_traverse_switch(Cases, Params, !.Info, CasesInfo, !ModuleInfo, !IO),
-    combine_paths(GoalInfo, CasesInfo, Params, !:Info).
+term_traverse_switch(_, _, [], _, term_traversal_ok(set.init, [])).
+term_traverse_switch(ModuleInfo, Params, [Case | Cases], !Info) :-
+    Case = case(_, _, Goal),
+    term_traverse_goal(ModuleInfo, Params, Goal, !.Info, CaseInfo),
+    term_traverse_switch(ModuleInfo, Params, Cases, !.Info, CasesInfo),
+    combine_paths(CaseInfo, CasesInfo, Params, !:Info).
 
 %-----------------------------------------------------------------------------%
 
@@ -404,37 +400,37 @@ add_path(Path, Info0, Info) :-
         Info = term_traversal_ok(Paths, CanLoop)
     ).
 
-:- pred add_error(prog_context::in, termination_error::in,
-    term_traversal_params::in,
+:- pred add_error(term_traversal_params::in,
+    prog_context::in, term_error_kind::in,
     term_traversal_info::in, term_traversal_info::out) is det.
 
-add_error(Context, Error, Params, Info0, Info) :-
+add_error(Params, Context, ErrorKind, Info0, Info) :-
     (
         Info0 = term_traversal_error(Errors0, CanLoop),
-        Errors1 = [termination_error_context(Error, Context) | Errors0],
+        Errors1 = [term_error(Context, ErrorKind) | Errors0],
         params_get_max_errors(Params, MaxErrors),
         list.take_upto(MaxErrors, Errors1, Errors),
         Info = term_traversal_error(Errors, CanLoop)
     ;
         Info0 = term_traversal_ok(_, CanLoop),
-        ErrorContext = termination_error_context(Error, Context),
+        ErrorContext = term_error(Context, ErrorKind),
         Info = term_traversal_error([ErrorContext], CanLoop)
     ).
 
-:- pred called_can_loop(prog_context::in, termination_error::in,
+:- pred called_can_loop(prog_context::in, term_error_kind::in,
     term_traversal_params::in,
     term_traversal_info::in, term_traversal_info::out) is det.
 
-called_can_loop(Context, Error, Params, Info0, Info) :-
+called_can_loop(Context, ErrorKind, Params, Info0, Info) :-
     (
         Info0 = term_traversal_error(Errors, CanLoop0),
-        CanLoop1 = [termination_error_context(Error, Context) | CanLoop0],
+        CanLoop1 = [term_error(Context, ErrorKind) | CanLoop0],
         params_get_max_errors(Params, MaxErrors),
         list.take_upto(MaxErrors, CanLoop1, CanLoop),
         Info = term_traversal_error(Errors, CanLoop)
     ;
         Info0 = term_traversal_ok(Paths, CanLoop0),
-        CanLoop1 = [termination_error_context(Error, Context) | CanLoop0],
+        CanLoop1 = [term_error(Context, ErrorKind) | CanLoop0],
         params_get_max_errors(Params, MaxErrors),
         list.take_upto(MaxErrors, CanLoop1, CanLoop),
         Info = term_traversal_ok(Paths, CanLoop)
@@ -470,17 +466,17 @@ combine_paths(InfoA, InfoB, Params, Info) :-
         list.take_upto(MaxErrors, CanLoopA ++ CanLoopB, CanLoop),
         set.union(PathsB, PathsA, Paths),
         params_get_max_paths(Params, MaxPaths),
-        (
+        ( if
             % Don't try to track the state of too many paths;
             % doing so can require too much memory.
             set.count(Paths, Count),
             Count =< MaxPaths
-        ->
+        then
             Info = term_traversal_ok(Paths, CanLoop)
-        ;
+        else
             params_get_context(Params, Context),
-            ErrorContext = termination_error_context(too_many_paths, Context),
-            Info = term_traversal_error([ErrorContext], CanLoop)
+            Error = term_error(Context, too_many_paths),
+            Info = term_traversal_error([Error], CanLoop)
         )
     ).
 
@@ -518,7 +514,7 @@ compute_rec_start_vars([Var | Vars], [RecInputSupplier | RecInputSuppliers],
     % order unification.
     %
 :- pred unify_change(module_info::in, prog_var::in, cons_id::in,
-    list(prog_var)::in, list(uni_mode)::in, term_traversal_params::in,
+    list(prog_var)::in, list(unify_mode)::in, term_traversal_params::in,
     int::out, bag(prog_var)::out, bag(prog_var)::out) is semidet.
 
 unify_change(ModuleInfo, OutVar, ConsId, Args0, Modes0, Params, Gamma,
@@ -526,8 +522,8 @@ unify_change(ModuleInfo, OutVar, ConsId, Args0, Modes0, Params, Gamma,
     params_get_functor_info(Params, FunctorInfo),
     params_get_var_types(Params, VarTypes),
     lookup_var_type(VarTypes, OutVar, Type),
-    \+ type_is_higher_order(Type),
-    \+ (
+    not type_is_higher_order(Type),
+    not (
         ConsId = type_info_const(_)
     ;
         ConsId = typeclass_info_const(_)
@@ -543,7 +539,7 @@ unify_change(ModuleInfo, OutVar, ConsId, Args0, Modes0, Params, Gamma,
 
 :- pred filter_typeinfos_from_args_and_modes(vartypes::in,
     list(prog_var)::in, list(prog_var)::out,
-    list(uni_mode)::in, list(uni_mode)::out) is det.
+    list(unify_mode)::in, list(unify_mode)::out) is det.
 
 filter_typeinfos_from_args_and_modes(_, [], [], [], []).
 filter_typeinfos_from_args_and_modes(_, [], _, [_ | _], _) :-
@@ -555,10 +551,10 @@ filter_typeinfos_from_args_and_modes(VarTypes, [Arg0 | Args0], Args,
     filter_typeinfos_from_args_and_modes(VarTypes, Args0, TailArgs,
         Modes0, TailModes),
     lookup_var_type(VarTypes, Arg0, Type),
-    ( is_introduced_type_info_type(Type) ->
+    ( if is_introduced_type_info_type(Type) then
         Args = TailArgs,
         Modes = TailModes
-    ;
+    else
         Args = [Arg0 | TailArgs],
         Modes = [Mode0 | TailModes]
     ).
@@ -590,14 +586,14 @@ record_change_2([], _, _, _, _, !PathSet).
 record_change_2([Path0 | Paths0], InVars, OutVars, CallGamma, CallPPIds,
         !PathSet) :-
     Path0 = term_path_info(ProcData, Start, Gamma0, PPIds0, Vars0),
-    ( bag.intersect(OutVars, Vars0) ->
+    ( if bag.intersect(OutVars, Vars0) then
         % The change produces some active variables.
         Gamma = CallGamma + Gamma0,
         list.append(CallPPIds, PPIds0, PPIds),
         bag.subtract(Vars0, OutVars, Vars1),
         bag.union(InVars, Vars1, Vars),
         Path = term_path_info(ProcData, Start, Gamma, PPIds, Vars)
-    ;
+    else
         % The change produces no active variables.
         Path = Path0
     ),
@@ -607,23 +603,22 @@ record_change_2([Path0 | Paths0], InVars, OutVars, CallGamma, CallPPIds,
 %-----------------------------------------------------------------------------%
 
 :- pred error_if_intersect(bag(prog_var)::in, prog_context::in,
-    termination_error::in, term_traversal_info::in, term_traversal_info::out)
+    term_error_kind::in, term_traversal_info::in, term_traversal_info::out)
     is det.
 
-error_if_intersect(OutVars, Context, ErrorMsg, Info0, Info) :-
+error_if_intersect(OutVars, Context, ErrorKind, !Info) :-
     (
-        Info0 = term_traversal_error(_, _),
-        Info = Info0
+        !.Info = term_traversal_error(_, _)
     ;
-        Info0 = term_traversal_ok(Paths, CanLoop),
-        (
+        !.Info = term_traversal_ok(Paths, CanLoop),
+        ( if
             set.to_sorted_list(Paths, PathList),
             some_active_vars_in_bag(PathList, OutVars)
-        ->
-            ErrorContext = termination_error_context(ErrorMsg, Context),
-            Info = term_traversal_error([ErrorContext], CanLoop)
-        ;
-            Info = term_traversal_ok(Paths, CanLoop)
+        then
+            Error = term_error(Context, ErrorKind),
+            !:Info = term_traversal_error([Error], CanLoop)
+        else
+            true
         )
     ).
 

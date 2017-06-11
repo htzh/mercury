@@ -18,6 +18,7 @@
 :- interface.
 
 :- import_module hlds.hlds_module.
+
 :- import_module io.
 
     % Write out size statistics about each procedure in the module.
@@ -35,7 +36,9 @@
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_error_util.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
 
@@ -65,14 +68,14 @@ write_proc_stats_for_module(OutStream, Msg, ModuleInfo, !IO) :-
 
 write_proc_stats_for_pred(OutStream, Msg, ModuleInfo, PredId - PredInfo,
         !IO) :-
-    (
+    ( if
         ( pred_info_is_imported(PredInfo)
         ; is_unify_or_compare_pred(PredInfo)
         )
-    ->
+    then
         true
-    ;
-        pred_info_get_procedures(PredInfo, ProcTable),
+    else
+        pred_info_get_proc_table(PredInfo, ProcTable),
         map.to_assoc_list(ProcTable, Procs),
         list.foldl(
             write_proc_stats_for_proc(OutStream, Msg, ModuleInfo, PredId),
@@ -433,10 +436,10 @@ do_write_proc_stats(OutStream, Msg, Name, PredId, ProcId,
 
 output_proc_stat_component(OutStream, _Msg, _Name, _PredId, _ProcId,
         ComponentName, ComponentCount, !IO) :-
-    ( ComponentCount > 0 ->
+    ( if ComponentCount > 0 then
         io.format(OutStream, "GOAL %s: %d\n",
             [s(ComponentName), i(ComponentCount)], !IO)
-    ;
+    else
         true
     ).
 

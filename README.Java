@@ -2,24 +2,22 @@
 
 INTRODUCTION
 
-This release of Mercury contains a port to Java,
-in particular to Sun Microsystems' Java 2 Platform, Standard Edition (J2SE).
-The Mercury compiler will generate Java source code that can be compiled into
-Java bytecode suitable for running in the J2SE runtime system.
+The Mercury compiler can generate Java source code that can be compiled into
+Java bytecode suitable for running the Java SE runtime system.  The port is
+mostly complete, but some parts of the Mercury standard library are not yet
+implemented (for a full list see the FAQ below).
 
-The port is mostly complete, but some parts of the Mercury standard
-library are not yet implemented (for a full list see the FAQ below).
-
-The port is currently targeted at J2SE version 1.5 or higher.
+The port requires Java SE 6 or higher -- older versions of Java are *not*
+supported.
 
 PREREQUISITES
 
 In order to try this system you will need 
 
-	- The J2SE SDK, which can be downloaded for free from
-		<http://java.sun.com/downloads/index.html>
+    * The J2SE SDK, which can be downloaded for free from
+      <http://www.oracle.com/technetwork/indexes/downloads/index.html>
 
-	  OR any other compatible Java implementation.
+    * OR any other compatible Java implementation, such as OpenJDK.
 
 -----------------------------------------------------------------------------
 
@@ -47,7 +45,8 @@ Now you can run hello
 
 Note that hello is a simple shell script that invokes the program using the
 Java interpreter.  The actual class files are stored in the Mercury
-subdirectory in `classs'.
+subdirectory in `classs'.  These class files will be packaged up into Java
+archive (JAR) named `hello.jar'.
 
 If you are using the Windows command-line interpreter, i.e. cmd.exe, then
 setting the value of the option --target-env-type to "windows" will cause the
@@ -73,9 +72,11 @@ foreign language interface.
 For example:
 
 :- pred to_string(T::in, string::out) is det.
-:- pragma foreign_proc("Java", to_string(T::in, Str::out), [],
+:- pragma foreign_proc("Java",
+    to_string(T::in, Str::out),
+    [promise_pure, will_not_call_mercury],
 "
-        Str = T.toString();
+    Str = T.toString();
 ").
 
 The implementation will include this Java code in the module's .java file, and
@@ -124,7 +125,7 @@ However, if you want to give it a try, the required steps are:
 (1) Ensure that you have an existing working Mercury compiler in your PATH
 and a clean version of the Mercury source tree.
 
-(2) Run aclocal -I m4; autoconf; ./configure as normal.
+(2) Run ./prepare.sh; ./configure as normal.
 
 (3) Add the line:
 
@@ -140,6 +141,10 @@ The Java version of the compiler MUST be built using mmake's --use-mmc-make
 option; the build will not work otherwise.  Setting the variable GRADE in the
 invocation of mmake is currently necessary in order to avoid some variable
 definition ordering problems in Mmake.workspace.
+
+(5) To install the Java version of the compiler, do:
+
+   $ mmake --use-mmc-make install GRADE=java
 
 -----------------------------------------------------------------------------
 
@@ -177,6 +182,7 @@ A. The following implementation features are not supported:
 	Mercury-level profiling
 	trailing
 	tabling
+	backjumping
 
    In addition, the following individual procedures are incompletely
    implemented:

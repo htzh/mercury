@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: from_ground_term_util.m.
 % Author: zs.
@@ -30,7 +30,7 @@
 :- import_module list.
 :- import_module map.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Describe whether a goal or sequence of goals inside a from_ground_term
     % scope of the initial or construct kind still obeys the invariants
@@ -92,22 +92,23 @@
     --->    construct_bottom_up
     ;       deconstruct_top_down.
 
-    % introduce_partial_fgt_scopes(GoalInfo0, SubGoalInfo0, RevMarkedSubGoals,
-    %   Order, SubGoal):
+    % introduce_partial_fgt_scopes(GoalInfo0, SubGoalInfo0,
+    %   ConstructOrderMarkedSubGoals, Order, SubGoal):
     %
-    % Thes input to this predicate are:
+    % The inputs to this predicate are:
     %
     % - The original goal infos for a fgt{i,c} goal and for its subgoal
     %   (GoalInfo0 and SubGoalInfo0).
     %
-    % - A list (MarkedSubGoals) of the transformed versions of the conjuncts
-    %   that were originally in that scope, in bottom up (construct) order,
-    %   marked up in the way required by the comment on the definition of the
-    %   fgt_marked_goal type). This predicate assumes that this list contains
-    %   some violations of the fgt{i,c} invariants (other than the order
-    %   invariant for initial scopes); if it doesn't, then the the WHOLE
-    %   conjunction can have a fgt{i,c} scope wrapped around it, using code
-    %   much simpler than what is in this predicate.
+    % - A list (ConstructOrderMarkedSubGoals) of the transformed versions
+    %   of the conjuncts that were originally in that scope, in bottom up
+    %   (construct) order, marked up in the way required by the comment
+    %   on the definition of the fgt_marked_goal type). This predicate
+    %   assumes that this list contains some violations of the fgt{i,c}
+    %   invariants (other than the order invariant for initial scopes);
+    %   if it doesn't, then the WHOLE conjunction can have a fgt{i,c} scope
+    %   wrapped around it, using code much simpler than what is in this
+    %   predicate.
     %
     % - The order into which the goals should be put (Order).
     %
@@ -121,14 +122,14 @@
     % fgt{i,c} scopes for as large a portion of the original scope as possible.
     %
 :- pred introduce_partial_fgt_scopes(hlds_goal_info::in, hlds_goal_info::in,
-    list(fgt_marked_goal)::in, goal_order::in, hlds_goal::out)
-    is det.
+    list(fgt_marked_goal)::in, goal_order::in, hlds_goal::out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module hlds.goal_util.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module parse_tree.set_of_var.
 
@@ -137,7 +138,7 @@
 :- import_module maybe.
 :- import_module require.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Has a goal or sequence of goals broken the fgt{i,c} invariants?
     %
@@ -170,7 +171,7 @@
                 cord(hlds_goal)
             ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 introduce_partial_fgt_scopes(GoalInfo0, SubGoalInfo0, RevMarkedSubGoals,
         Order, SubGoal) :-
@@ -190,17 +191,17 @@ introduce_partial_fgt_scopes(GoalInfo0, SubGoalInfo0, RevMarkedSubGoals,
         SubGoalExpr1 = conj(plain_conj, BuildGoals),
         SubGoal1 = hlds_goal(SubGoalExpr1, SubGoalInfo0)
     ),
-    ( goal_info_has_feature(GoalInfo0, feature_from_head) ->
+    ( if goal_info_has_feature(GoalInfo0, feature_from_head) then
         attach_features_to_all_goals([feature_from_head],
             attach_in_from_ground_term, SubGoal1, SubGoal)
-    ;
+    else
         SubGoal = SubGoal1
     ).
 
     % The main input to this predicate is a list of the goals in an fgt{i,c}
     % scope, as transformed and marked up by a compiler pass.
     % All the original goals were of the form X = f(Y1, ..., Yn), and
-    % the list is in reverse order, so that the code constructing the Yi
+    % the list is in construct order, so that the code constructing the Yi
     % precedes the code constructing X. Each of the Yi will have appeared
     % exactly twice in the original goal sequence: once when constructed,
     % and once when used.
@@ -305,14 +306,14 @@ lookup_and_remove_arg_vars_insert_fgt([Var | Vars], Order, !GoalCord,
     BuildInfo = fgt_build_info(VarKept, VarGoalCord0),
     (
         VarKept = kept_old_gi(Size0, GoalInfo0),
-        ( cord.is_empty(VarGoalCord0) ->
+        ( if cord.is_empty(VarGoalCord0) then
             unexpected($module, $pred, "VarGoalCord0 is empty")
-        ;
+        else
             MaybeThreshold = get_maybe_from_ground_term_threshold,
-            (
+            ( if
                 MaybeThreshold = yes(Threshold),
                 Size0 >= Threshold
-            ->
+            then
                 goal_info_set_nonlocals(set_of_var.make_singleton(Var),
                     GoalInfo0, GoalInfo),
                 VarGoals0 = cord.list(VarGoalCord0),
@@ -329,7 +330,7 @@ lookup_and_remove_arg_vars_insert_fgt([Var | Vars], Order, !GoalCord,
                 ScopeGoalExpr = scope(Reason, ConjGoal),
                 ScopeGoal = hlds_goal(ScopeGoalExpr, GoalInfo),
                 VarGoalCord = cord.singleton(ScopeGoal)
-            ;
+            else
                 VarGoalCord = VarGoalCord0
             )
         )

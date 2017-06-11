@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %---------------------------------------------------------------------------%
 % Copyright (C) 2010 The University of Melbourne.
+% Copyright (C) 2017 The Mercury team.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -50,10 +51,10 @@
     % surface.mark_dirty_rectangle(Surface, X, Y, Width, Height, !IO):
     %  XXX - rest of documentation.
 :- pred mark_dirty_rectangle(S::in, int::in, int::in, int::in, int::in,
-	io::di, io::uo) is det <= surface(S).
+    io::di, io::uo) is det <= surface(S).
 
     % surface.set_device_offset(Surface, X, Y, !IO):
-    % Sets an offset, X (Y) in divice units in that X (Y) direction, that is
+    % Sets an offset, X (Y) in device units in that X (Y) direction, that is
     % added to the device coordinates determined by the current transformation
     % matrix  when drawing to Surface.
     %
@@ -66,13 +67,26 @@
 :- pred get_device_offset(S::in, float::out, float::out,
     io::di, io::uo) is det <= surface(S).
 
+    % surface.set_device_scale(Surface, XScale, YScale, !IO):
+    % Sets a scale that is multiplied to the device coordinates determined by
+    % the current transformation matrix when drawing to Surface.
+    %
+:- pred set_device_scale(S::in, float::in, float::in,
+    io::di, io::uo) is det <= surface(S).
+
+    % surface.get_device_scale(Surface, XScale, YScale, !IO):
+    % Return the previous device scale set by the above.
+    %
+:- pred get_device_scale(S::in, float::out, float::out,
+    io::di, io::uo) is det <= surface(S).
+
     % surface.set_fallback_resolution(Surface, X, Y, !IO):
     % Set the horizontal and vertical resolution for image fallbacks.
     %
 :- pred set_fallback_resolution(S::in, float::in, float::in, io::di, io::uo)
     is det <= surface(S).
 
-    % suface.get_fallback_resultion(Surface, X, Y, !IO):
+    % surface.get_fallback_resolution(Surface, X, Y, !IO):
     % Get the current fallback resolution for Surface.
     %
 :- pred get_fallback_resolution(S::in, float::out, float::out, io::di, io::uo)
@@ -110,10 +124,10 @@
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     cairo_font_options_t    *raw_font_options;
-    
+
     raw_font_options = cairo_font_options_create();
     cairo_surface_get_font_options(
-	    ((MCAIRO_surface *)Surface)->mcairo_raw_surface,
+        ((MCAIRO_surface *)Surface)->mcairo_raw_surface,
         raw_font_options);
     FntOpts = MR_GC_NEW(MCAIRO_font_options);
     FntOpts->mcairo_raw_font_options = raw_font_options;
@@ -125,7 +139,7 @@
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     Content = cairo_surface_get_content(
-	((MCAIRO_surface *)Surface)->mcairo_raw_surface);
+        ((MCAIRO_surface *)Surface)->mcairo_raw_surface);
 ").
 
 :- pragma foreign_proc("C",
@@ -135,10 +149,9 @@
     cairo_surface_mark_dirty(((MCAIRO_surface *)Surface)->mcairo_raw_surface);
 ").
 
-
 :- pragma foreign_proc("C",
     mark_dirty_rectangle(Surface::in, X::in, Y::in, Width::in, Height::in,
-	_IO0::di, _IO::uo),
+        _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     cairo_surface_mark_dirty_rectangle(
@@ -146,7 +159,7 @@
 ").
 
 :- pragma foreign_proc("C",
-    set_device_offset(Surface::in, X::in, Y::in, _IO0::di, _IO::uo),    
+    set_device_offset(Surface::in, X::in, Y::in, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     cairo_surface_set_device_offset(
@@ -154,11 +167,35 @@
 ").
 
 :- pragma foreign_proc("C",
-    get_device_offset(Surface::in, X::out, Y::out, _IO0::di, _IO::uo),    
+    get_device_offset(Surface::in, X::out, Y::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
+    double  x, y;
+
     cairo_surface_get_device_offset(
-        ((MCAIRO_surface *)Surface)->mcairo_raw_surface, &X, &Y);
+        ((MCAIRO_surface *)Surface)->mcairo_raw_surface, &x, &y);
+    X = x;
+    Y = y;
+").
+
+:- pragma foreign_proc("C",
+    set_device_scale(Surface::in, XScale::in, YScale::in, _IO0::di, _IO::uo),
+    [promise_pure, will_not_call_mercury, tabled_for_io],
+"
+    cairo_surface_set_device_scale(
+        ((MCAIRO_surface *)Surface)->mcairo_raw_surface, XScale, YScale);
+").
+
+:- pragma foreign_proc("C",
+    get_device_scale(Surface::in, XScale::out, YScale::out, _IO0::di, _IO::uo),
+    [promise_pure, will_not_call_mercury, tabled_for_io],
+"
+    double  x_scale, y_scale;
+
+    cairo_surface_get_device_scale(
+        ((MCAIRO_surface *)Surface)->mcairo_raw_surface, &x_scale, &y_scale);
+    XScale = x_scale;
+    YScale = y_scale;
 ").
 
 :- pragma foreign_proc("C",
@@ -173,8 +210,12 @@
     get_fallback_resolution(Surface::in, X::out, Y::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
+    double  x, y;
+
     cairo_surface_get_fallback_resolution(
-        ((MCAIRO_surface *)Surface)->mcairo_raw_surface, &X, &Y);
+        ((MCAIRO_surface *)Surface)->mcairo_raw_surface, &x, &y);
+    X = x;
+    Y = y;
 ").
 
 :- pragma foreign_proc("C",

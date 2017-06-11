@@ -40,6 +40,7 @@
 :- import_module check_hlds.mode_util.
 :- import_module hlds.hlds_error_util.
 :- import_module hlds.hlds_pred.
+:- import_module hlds.status.
 :- import_module parse_tree.prog_type.
 
 :- import_module bool.
@@ -98,10 +99,10 @@ add_pred_to_kind_map(TypeCtor, Kind, PredId, !KindMap) :-
         Kind = oisu_destructor,
         KindFor = oisu_destructor_for(TypeCtor)
     ),
-    ( map.search(!.KindMap, PredId, OldEntries) ->
+    ( if map.search(!.KindMap, PredId, OldEntries) then
         Entries = [KindFor | OldEntries],
         map.det_update(PredId, Entries, !KindMap)
-    ;
+    else
         Entries = [KindFor],
         map.det_insert(PredId, Entries, !KindMap)
     ).
@@ -114,23 +115,23 @@ add_pred_to_kind_map(TypeCtor, Kind, PredId, !KindMap) :-
     set(pred_proc_id)::in, set(pred_proc_id)::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
-check_local_oisu_pred(ModuleInfo, KindMap, OISUTypeCtors,
-        Pair0, Pair, !OISUProcs, !Specs) :-
+check_local_oisu_pred(ModuleInfo, KindMap, OISUTypeCtors, Pair0, Pair,
+        !OISUProcs, !Specs) :-
     Pair0 = PredId - PredInfo0,
-    pred_info_get_import_status(PredInfo0, Status0),
-    ( Status0 = status_external(StatusPrime) ->
-        Status = StatusPrime
-    ;
+    pred_info_get_status(PredInfo0, Status0),
+    ( if Status0 = pred_status(status_external(StatusPrime)) then
+        Status = pred_status(StatusPrime)
+    else
         Status = Status0
     ),
-    IsDefnInModule = status_defined_in_this_module(Status),
+    IsDefnInModule = pred_status_defined_in_this_module(Status),
     (
         IsDefnInModule = no,
         Pair = Pair0
     ;
         IsDefnInModule = yes,
-        ( map.search(KindMap, PredId, KindFors) ->
-            pred_info_get_procedures(PredInfo0, ProcTable0),
+        ( if map.search(KindMap, PredId, KindFors) then
+            pred_info_get_proc_table(PredInfo0, ProcTable0),
             map.to_assoc_list(ProcTable0, Procs0),
             (
                 Procs0 = [],
@@ -146,7 +147,7 @@ check_local_oisu_pred(ModuleInfo, KindMap, OISUTypeCtors,
                 proc_info_set_oisu_kind_fors(KindFors, ProcInfo0, ProcInfo),
                 Procs = [ProcId - ProcInfo],
                 map.from_assoc_list(Procs, ProcTable),
-                pred_info_set_procedures(ProcTable, PredInfo0, PredInfo),
+                pred_info_set_proc_table(ProcTable, PredInfo0, PredInfo),
                 Pair = PredId - PredInfo,
                 set.insert(proc(PredId, ProcId), !OISUProcs)
             ;
@@ -154,7 +155,7 @@ check_local_oisu_pred(ModuleInfo, KindMap, OISUTypeCtors,
                 PredDesc = describe_one_pred_info_name(
                     should_not_module_qualify, PredInfo0),
                 ProcsPieces = PredDesc ++ [words("is mentioned"),
-                    words("in a"), quote("pragma oisu"), words("declaration,"),
+                    words("in a"), pragma_decl("oisu"), words("declaration,"),
                     words("so it should have exactly one procedure."), nl],
                 pred_info_get_context(PredInfo0, Context),
                 ProcsMsg = simple_msg(Context, [always(ProcsPieces)]),
@@ -163,11 +164,11 @@ check_local_oisu_pred(ModuleInfo, KindMap, OISUTypeCtors,
                 !:Specs = [ProcsSpec | !.Specs],
                 Pair = Pair0
             )
-        ; 
+        else
             pred_info_get_origin(PredInfo0, Origin),
-            ( Origin = origin_special_pred(_) ->
+            ( if Origin = origin_special_pred(_, _) then
                 true
-            ;
+            else
                 pred_info_get_arg_types(PredInfo0, ArgTypes),
                 check_args_have_no_oisu_types(PredInfo0, OISUTypeCtors,
                     ArgTypes, !Specs)
@@ -185,19 +186,19 @@ check_local_oisu_pred(ModuleInfo, KindMap, OISUTypeCtors,
 
 check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors, ArgNum,
         !.HandledOISUTypeCtors, [TypeMode | TypesModes], !Specs) :-
-    (
+    ( if
         TypeMode = Type - Mode,
         type_to_ctor_and_args(Type, TypeCtor, ArgTypes),
         list.member(TypeCtor, OISUTypeCtors)
-    ->
+    then
         (
             ArgTypes = []
         ;
             ArgTypes = [_ | _],
             unexpected($module, $pred, "ArgTypes != []")
         ),
-        ( find_kind_for_oisu_type(KindFors, TypeCtor, ThisKind) ->
-            ( list.member(TypeCtor, !.HandledOISUTypeCtors) ->
+        ( if find_kind_for_oisu_type(KindFors, TypeCtor, ThisKind) then
+            ( if list.member(TypeCtor, !.HandledOISUTypeCtors) then
                 DupPredDesc = describe_one_pred_info_name(
                     should_not_module_qualify, PredInfo),
                 DupPieces = [words("The"), nth_fixed(ArgNum),
@@ -210,13 +211,13 @@ check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors, ArgNum,
                 !:Specs = [DupSpec | !.Specs],
                 RestArgNum = ArgNum + 1,
                 RestTypesModes = TypesModes
-            ;
+            else
                 !:HandledOISUTypeCtors = [TypeCtor | !.HandledOISUTypeCtors],
                 (
                     ThisKind = oisu_creator,
-                    ( mode_is_output(ModuleInfo, Mode) ->
+                    ( if mode_is_output(ModuleInfo, Mode) then
                         true
-                    ;
+                    else
                         PredDesc = describe_one_pred_info_name(
                             should_not_module_qualify, PredInfo),
                         Pieces = [words("The"), nth_fixed(ArgNum),
@@ -233,14 +234,14 @@ check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors, ArgNum,
                     RestTypesModes = TypesModes
                 ;
                     ThisKind = oisu_mutator,
-                    (
+                    ( if
                         TypesModes = [NextTypeMode | TailTypesModes],
                         NextTypeMode = NextType - NextMode,
                         NextType = Type
-                    ->
-                        ( mode_is_input(ModuleInfo, Mode) ->
+                    then
+                        ( if mode_is_input(ModuleInfo, Mode) then
                             true
-                        ;
+                        else
                             InPredDesc = describe_one_pred_info_name(
                                 should_not_module_qualify, PredInfo),
                             InPieces = [words("The"), nth_fixed(ArgNum),
@@ -254,9 +255,9 @@ check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors, ArgNum,
                                 phase_oisu_check, [InMsg]),
                             !:Specs = [InSpec | !.Specs]
                         ),
-                        ( mode_is_output(ModuleInfo, NextMode) ->
+                        ( if mode_is_output(ModuleInfo, NextMode) then
                             true
-                        ;
+                        else
                             OutPredDesc = describe_one_pred_info_name(
                                 should_not_module_qualify, PredInfo),
                             OutPieces = [words("The"), nth_fixed(ArgNum + 1),
@@ -273,7 +274,7 @@ check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors, ArgNum,
                         ),
                         RestArgNum = ArgNum + 2,
                         RestTypesModes = TailTypesModes
-                    ;
+                    else
                         PredDesc = describe_one_pred_info_name(
                             should_not_module_qualify, PredInfo),
                         Pieces = [words("Since the"), nth_fixed(ArgNum),
@@ -291,9 +292,9 @@ check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors, ArgNum,
                     )
                 ;
                     ThisKind = oisu_destructor,
-                    ( mode_is_input(ModuleInfo, Mode) ->
+                    ( if mode_is_input(ModuleInfo, Mode) then
                         true
-                    ;
+                    else
                         PredDesc = describe_one_pred_info_name(
                             should_not_module_qualify, PredInfo),
                         Pieces = [words("The"), nth_fixed(ArgNum),
@@ -312,7 +313,7 @@ check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors, ArgNum,
             ),
             check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors,
                 RestArgNum, !.HandledOISUTypeCtors, RestTypesModes, !Specs)
-        ;
+        else
             PredDesc = describe_one_pred_info_name(should_not_module_qualify,
                 PredInfo),
             Pieces = [words("The"), nth_fixed(ArgNum), words("argument of")] ++
@@ -325,7 +326,7 @@ check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors, ArgNum,
             check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors,
                 ArgNum + 1, !.HandledOISUTypeCtors, TypesModes, !Specs)
         )
-    ;
+    else
         check_arg_oisu_types(ModuleInfo, PredInfo, KindFors, OISUTypeCtors,
             ArgNum + 1, !.HandledOISUTypeCtors, TypesModes, !Specs)
     ).
@@ -354,7 +355,7 @@ check_arg_oisu_types(_ModuleInfo, PredInfo, KindFors, _OISUTypeCtors,
     oisu_pred_kind::out) is semidet.
 
 find_kind_for_oisu_type([KindFor | KindFors], TypeCtor, Kind) :-
-    (
+    ( if
         (
             KindFor = oisu_creator_for(TypeCtor),
             KindPrime = oisu_creator
@@ -365,9 +366,9 @@ find_kind_for_oisu_type([KindFor | KindFors], TypeCtor, Kind) :-
             KindFor = oisu_destructor_for(TypeCtor),
             KindPrime = oisu_destructor
         )
-    ->
+    then
         Kind = KindPrime
-    ;
+    else
         find_kind_for_oisu_type(KindFors, TypeCtor, Kind)
     ).
 
@@ -383,9 +384,9 @@ find_unhandled_oisu_kind_fors([KindFor | KindFors], HandledOISUTypeCtors,
     ; KindFor = oisu_mutator_for(TypeCtor)
     ; KindFor = oisu_destructor_for(TypeCtor)
     ),
-    ( list.member(TypeCtor, HandledOISUTypeCtors) ->
+    ( if list.member(TypeCtor, HandledOISUTypeCtors) then
         UnhandledKindFors = UnhandledKindForsTail
-    ;
+    else
         UnhandledKindFors = [KindFor | UnhandledKindForsTail]
     ).
 
@@ -399,7 +400,9 @@ describe_unhandled_kind_fors(HeadKindFor, TailKindFors, Pieces) :-
     ; HeadKindFor = oisu_destructor_for(HeadTypeCtor), HeadKind = "destructor"
     ),
     HeadTypeCtor = type_ctor(HeadTypeSymName, HeadTypeArity),
-    HeadPieces0 = [sym_name_and_arity(HeadTypeSymName / HeadTypeArity),
+    HeadPieces0 =
+        [unqual_sym_name_and_arity(
+            sym_name_arity(HeadTypeSymName, HeadTypeArity)),
         fixed("(as " ++ HeadKind ++ ")")],
     (
         TailKindFors = [],
@@ -421,24 +424,25 @@ describe_unhandled_kind_fors(HeadKindFor, TailKindFors, Pieces) :-
 check_args_have_no_oisu_types(_PredInfo, _OISUTypeCtors, [], !Specs).
 check_args_have_no_oisu_types(PredInfo, OISUTypeCtors, [Type | Types],
         !Specs) :-
-    (
+    ( if
         type_to_ctor_and_args(Type, TypeCtor, ArgTypes),
         ArgTypes = [],
         list.member(TypeCtor, OISUTypeCtors)
-    ->
+    then
         PredDesc = describe_one_pred_info_name(should_not_module_qualify,
             PredInfo),
         TypeCtor = type_ctor(TypeName, TypeArity),
         ProcsPieces = PredDesc ++ [words("is not mentioned"),
-            words("in the"), quote("pragma oisu"), words("declaration"),
+            words("in the"), pragma_decl("oisu"), words("declaration"),
             words("as a predicate that handles values of the type"),
-            sym_name_and_arity(TypeName / TypeArity), nl],
+            unqual_sym_name_and_arity(sym_name_arity(TypeName, TypeArity)),
+            suffix("."), nl],
         pred_info_get_context(PredInfo, Context),
         ProcsMsg = simple_msg(Context, [always(ProcsPieces)]),
         ProcsSpec = error_spec(severity_error, phase_oisu_check,
             [ProcsMsg]),
         !:Specs = [ProcsSpec | !.Specs]
-    ;
+    else
         true
     ),
     check_args_have_no_oisu_types(PredInfo, OISUTypeCtors, Types, !Specs).

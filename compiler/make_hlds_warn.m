@@ -18,18 +18,20 @@
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.quantification.
+:- import_module parse_tree.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
 
 :- import_module list.
-:- import_module pair.
 
 %-----------------------------------------------------------------------------%
 
     % Warn about variables with overlapping scopes.
     %
-:- pred warn_overlap(list(quant_warning)::in, prog_varset::in,
-    simple_call_id::in, list(error_spec)::in, list(error_spec)::out) is det.
+:- pred add_quant_warnings(simple_call_id::in, prog_varset::in,
+    list(quant_warning)::in, list(error_spec)::in, list(error_spec)::out)
+    is det.
 
     % Warn about variables which occur only once but don't start with
     % an underscore, or about variables which do start with an underscore
@@ -48,8 +50,8 @@
     % Mercury variable names into identifiers for that foreign language).
     %
 :- pred warn_singletons_in_pragma_foreign_proc(module_info::in,
-    pragma_foreign_code_impl::in, foreign_language::in,
-    list(maybe(pair(string, mer_mode)))::in, prog_context::in,
+    pragma_foreign_proc_impl::in, foreign_language::in,
+    list(maybe(foreign_arg_name_mode))::in, prog_context::in,
     simple_call_id::in, pred_id::in, proc_id::in,
     list(error_spec)::in, list(error_spec)::out) is det.
 
@@ -70,11 +72,13 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module hlds.goal_util.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
-:- import_module parse_tree.mercury_to_mercury.
+:- import_module parse_tree.parse_tree_out_term.
 :- import_module parse_tree.prog_out.
 :- import_module parse_tree.set_of_var.
 
@@ -86,26 +90,26 @@
 
 %----------------------------------------------------------------------------%
 
-warn_overlap(Warnings, VarSet, PredCallId, !Specs) :-
-    !:Specs =
-        list.map(warn_overlap_to_spec(VarSet, PredCallId), Warnings)
-        ++ !.Specs.
+add_quant_warnings(PredCallId, VarSet, Warnings, !Specs) :-
+    WarningSpecs =
+        list.map(quant_warning_to_spec(PredCallId, VarSet), Warnings),
+    !:Specs = WarningSpecs ++ !.Specs.
 
-:- func warn_overlap_to_spec(prog_varset, simple_call_id, quant_warning)
+:- func quant_warning_to_spec(simple_call_id, prog_varset, quant_warning)
     = error_spec.
 
-warn_overlap_to_spec(VarSet, PredCallId, Warn) = Spec :-
-    Warn = warn_overlap(Vars, Context),
+quant_warning_to_spec(PredCallId, VarSet, Warning) = Spec :-
+    Warning = warn_overlap(Vars, Context),
     Pieces1 =
         [words("In clause for"), simple_call(PredCallId), suffix(":"), nl],
-    ( Vars = [Var] ->
+    ( if Vars = [Var] then
         Pieces2 = [words("warning: variable"),
-            quote(mercury_var_to_string(VarSet, no, Var)),
-            words("has overlapping scopes.")]
-    ;
+            quote(mercury_var_to_name_only(VarSet, Var)),
+            words("has overlapping scopes."), nl]
+    else
         Pieces2 = [words("warning: variables"),
-            quote(mercury_vars_to_string(VarSet, no, Vars)),
-            words("each have overlapping scopes.")]
+            quote(mercury_vars_to_name_only(VarSet, Vars)),
+            words("each have overlapping scopes."), nl]
     ),
     Msg = simple_msg(Context,
         [option_is_set(warn_overlapping_scopes, yes,
@@ -234,9 +238,24 @@ warn_singletons_in_goal(Goal, QuantVars, !Info) :-
             ),
             warn_singletons_in_goal(SubGoal, SubQuantVars, !Info)
         ;
+            Reason = disable_warnings(HeadWarning, TailWarnings),
+            ( if
+                ( HeadWarning = goal_warning_singleton_vars
+                ; list.member(goal_warning_singleton_vars, TailWarnings)
+                )
+            then
+                % Since we don't want to generate any singleton variable
+                % warnings inside this scope, there is no point in examining
+                % the goals inside this scope.
+                true
+            else
+                warn_singletons_in_goal(SubGoal, QuantVars, !Info)
+            )
+        ;
             ( Reason = promise_purity(_)
             ; Reason = require_detism(_)
             ; Reason = require_complete_switch(_)
+            ; Reason = require_switch_arms_detism(_, _)
             ; Reason = commit(_)
             ; Reason = barrier(_)
             ; Reason = trace_goal(_, _, _, _, _)
@@ -398,20 +417,20 @@ warn_singletons_goal_vars(GoalVars, GoalInfo, NonLocals, QuantVars, !Info) :-
         SingleVars),
 
     % If there were any such variables, issue a warning.
-    (
+    ( if
         ( SingleVars = []
         ; goal_info_has_feature(GoalInfo, feature_dont_warn_singleton)
         )
-    ->
+    then
         true
-    ;
-        ( goal_info_has_feature(GoalInfo, feature_from_head) ->
+    else
+        ( if goal_info_has_feature(GoalInfo, feature_from_head) then
             SingleHeadVars0 = !.Info ^ wi_singleton_headvars,
             set_of_var.insert_list(SingleVars,
                 SingleHeadVars0, SingleHeadVars),
             !Info ^ wi_singleton_headvars := SingleHeadVars,
             !Info ^ wi_head_context := goal_info_get_context(GoalInfo)
-        ;
+        else
             generate_variable_warning(sm_single, Context, CallId, VarSet,
                 SingleVars, SingleSpec),
             add_warn_spec(SingleSpec, !Info)
@@ -427,12 +446,12 @@ warn_singletons_goal_vars(GoalVars, GoalInfo, NonLocals, QuantVars, !Info) :-
         MultiVars = []
     ;
         MultiVars = [_ | _],
-        ( goal_info_has_feature(GoalInfo, feature_from_head) ->
+        ( if goal_info_has_feature(GoalInfo, feature_from_head) then
             MultiHeadVars0 = !.Info ^ wi_multi_headvars,
             set_of_var.insert_list(MultiVars, MultiHeadVars0, MultiHeadVars),
             !Info ^ wi_multi_headvars := MultiHeadVars,
             !Info ^ wi_head_context := goal_info_get_context(GoalInfo)
-        ;
+        else
             generate_variable_warning(sm_multi, Context, CallId, VarSet,
                 MultiVars, MultiSpec),
             add_warn_spec(MultiSpec, !Info)
@@ -456,13 +475,13 @@ generate_variable_warning(SingleMulti, Context, CallId, VarSet, Vars, Spec) :-
         Count = "more than once"
     ),
     Preamble = [words("In clause for"), simple_call(CallId), suffix(":"), nl],
-    VarStrs0 = list.map(mercury_var_to_string(VarSet, no), Vars),
+    VarStrs0 = list.map(mercury_var_to_name_only(VarSet), Vars),
     list.sort_and_remove_dups(VarStrs0, VarStrs),
     VarsPiece = quote(string.join_list(", ", VarStrs)),
-    ( VarStrs = [_] ->
+    ( if VarStrs = [_] then
         Pieces = [words("warning: variable"), VarsPiece,
             words("occurs"), words(Count), words("in this scope."), nl]
-    ;
+    else
         Pieces = [words("warning: variables"), VarsPiece,
             words("occur"), words(Count), words("in this scope."), nl]
     ),
@@ -485,8 +504,8 @@ add_warn_spec(Spec, !Info) :-
 warn_singletons_in_pragma_foreign_proc(ModuleInfo, PragmaImpl, Lang,
         Args, Context, SimpleCallId, PredId, ProcId, !Specs) :-
     LangStr = foreign_language_string(Lang),
-    PragmaImpl = fc_impl_ordinary(C_Code, _),
-    c_code_to_name_list(C_Code, C_CodeList),
+    PragmaImpl = fp_impl_ordinary(Code, _),
+    c_code_to_name_list(Code, C_CodeList),
     list.filter_map(var_is_unmentioned(C_CodeList), Args, UnmentionedVars),
     (
         UnmentionedVars = []
@@ -506,41 +525,41 @@ warn_singletons_in_pragma_foreign_proc(ModuleInfo, PragmaImpl, Lang,
     pragma_foreign_proc_body_checks(ModuleInfo, Lang, Context, SimpleCallId,
         PredId, ProcId, C_CodeList, !Specs).
 
-:- pred var_is_unmentioned(list(string)::in, maybe(pair(string, mer_mode))::in,
+:- pred var_is_unmentioned(list(string)::in, maybe(foreign_arg_name_mode)::in,
     string::out) is semidet.
 
 var_is_unmentioned(NameList1, MaybeArg, Name) :-
-    MaybeArg = yes(Name - _Mode),
-    \+ string.prefix(Name, "_"),
-    \+ list.member(Name, NameList1).
+    MaybeArg = yes(foreign_arg_name_mode(Name, _Mode)),
+    not string.prefix(Name, "_"),
+    not list.member(Name, NameList1).
 
 :- pred input_var_is_unmentioned(module_info::in,
-    list(string)::in, maybe(pair(string, mer_mode))::in,
+    list(string)::in, maybe(foreign_arg_name_mode)::in,
     string::out) is semidet.
 
 input_var_is_unmentioned(ModuleInfo, NameList1, MaybeArg, Name) :-
-    MaybeArg = yes(Name - Mode),
+    MaybeArg = yes(foreign_arg_name_mode(Name, Mode)),
     mode_is_input(ModuleInfo, Mode),
-    \+ string.prefix(Name, "_"),
-    \+ list.member(Name, NameList1).
+    not string.prefix(Name, "_"),
+    not list.member(Name, NameList1).
 
 :- pred output_var_is_unmentioned(module_info::in,
-    list(string)::in, list(string)::in, maybe(pair(string, mer_mode))::in,
+    list(string)::in, list(string)::in, maybe(foreign_arg_name_mode)::in,
     string::out) is semidet.
 
 output_var_is_unmentioned(ModuleInfo, NameList1, NameList2, MaybeArg, Name) :-
-    MaybeArg = yes(Name - Mode),
+    MaybeArg = yes(foreign_arg_name_mode(Name, Mode)),
     mode_is_output(ModuleInfo, Mode),
-    \+ string.prefix(Name, "_"),
-    \+ list.member(Name, NameList1),
-    \+ list.member(Name, NameList2).
+    not string.prefix(Name, "_"),
+    not list.member(Name, NameList1),
+    not list.member(Name, NameList2).
 
 :- func variable_warning_start(list(string)) = list(format_component).
 
 variable_warning_start(UnmentionedVars) = Pieces :-
-    ( UnmentionedVars = [Var] ->
+    ( if UnmentionedVars = [Var] then
         Pieces = [words("warning: variable"), quote(Var), words("does")]
-    ;
+    else
         Pieces = [words("warning: variables"),
             words(add_quotes(string.join_list(", ", UnmentionedVars))),
             words("do")]
@@ -575,10 +594,10 @@ c_code_to_name_list_2(C_Code, List) :-
 
 get_first_c_name([], [], []).
 get_first_c_name([C | CodeChars], NameCharList, TheRest) :-
-    ( char.is_alnum_or_underscore(C) ->
+    ( if char.is_alnum_or_underscore(C) then
         get_first_c_name_in_word(CodeChars, NameCharList0, TheRest),
         NameCharList = [C | NameCharList0]
-    ;
+    else
         % Strip off any characters in the C code which don't form part
         % of an identifier.
         get_first_c_name(CodeChars, NameCharList, TheRest)
@@ -589,11 +608,11 @@ get_first_c_name([C | CodeChars], NameCharList, TheRest) :-
 
 get_first_c_name_in_word([], [], []).
 get_first_c_name_in_word([C | CodeChars], NameCharList, TheRest) :-
-    ( char.is_alnum_or_underscore(C) ->
+    ( if char.is_alnum_or_underscore(C) then
         % There are more characters in the word.
         get_first_c_name_in_word(CodeChars, NameCharList0, TheRest),
         NameCharList = [C|NameCharList0]
-    ;
+    else
         % The word is finished.
         NameCharList = [],
         TheRest = CodeChars
@@ -603,11 +622,11 @@ get_first_c_name_in_word([C | CodeChars], NameCharList, TheRest) :-
     set_of_progvar::in, prog_varset::in, prog_var::in) is semidet.
 
 is_singleton_var(NonLocals, QuantVars, VarSet, Var) :-
-    \+ set_of_var.member(NonLocals, Var),
+    not set_of_var.member(NonLocals, Var),
     varset.search_name(VarSet, Var, Name),
-    \+ string.prefix(Name, "_"),
-    \+ string.prefix(Name, "DCG_"),
-    \+ (
+    not string.prefix(Name, "_"),
+    not string.prefix(Name, "DCG_"),
+    not (
         set_of_var.member(QuantVars, QuantVar),
         varset.search_name(VarSet, QuantVar, Name)
     ).
@@ -627,8 +646,8 @@ is_multi_var(NonLocals, VarSet, Var) :-
 pragma_foreign_proc_body_checks(ModuleInfo, Lang, Context, SimpleCallId,
         PredId, ProcId, BodyPieces, !Specs) :-
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    pred_info_get_import_status(PredInfo, ImportStatus),
-    IsImported = status_is_imported(ImportStatus),
+    pred_info_get_status(PredInfo, PredStatus),
+    IsImported = pred_status_is_imported(PredStatus),
     (
         IsImported = yes
     ;
@@ -662,10 +681,10 @@ check_fp_body_for_success_indicator(ModuleInfo, Lang, Context, SimpleCallId,
                 ; Detism = detism_cc_multi
                 ; Detism = detism_erroneous
                 ),
-                ( list.member(SuccIndStr, BodyPieces) ->
+                ( if list.member(SuccIndStr, BodyPieces) then
                     LangStr = foreign_language_string(Lang),
                     Pieces = [
-                        words("warning: the "), fixed(LangStr),
+                        words("Warning: the"), fixed(LangStr),
                         words("code for"), simple_call(SimpleCallId),
                         words("may set"), quote(SuccIndStr), suffix(","),
                         words("but it cannot fail.")
@@ -679,19 +698,19 @@ check_fp_body_for_success_indicator(ModuleInfo, Lang, Context, SimpleCallId,
                     Spec = error_spec(Severity, phase_parse_tree_to_hlds,
                         [Msg]),
                     !:Specs = [Spec | !.Specs]
-                ;
+                else
                     true
                 )
             ;
                 ( Detism = detism_semi
                 ; Detism = detism_cc_non
                 ),
-                ( list.member(SuccIndStr, BodyPieces) ->
+                ( if list.member(SuccIndStr, BodyPieces) then
                     true
-                ;
+                else
                     LangStr = foreign_language_string(Lang),
                     Pieces = [
-                        words("warning: the "), fixed(LangStr),
+                        words("Warning: the"), fixed(LangStr),
                         words("code for"), simple_call(SimpleCallId),
                         words("does not appear to set"),
                         quote(SuccIndStr), suffix(","),
@@ -713,8 +732,6 @@ check_fp_body_for_success_indicator(ModuleInfo, Lang, Context, SimpleCallId,
                 ; Detism = detism_failure
                 )
             )
-        ;
-            Lang = lang_il
         )
     ;
         MaybeDeclDetism = no
@@ -733,14 +750,12 @@ check_fp_body_for_return(Lang, Context, SimpleCallId, BodyPieces, !Specs) :-
         ; Lang = lang_csharp
         ; Lang = lang_java
         ),
-        ( list.member("return", BodyPieces) ->
+        ( if list.member("return", BodyPieces) then
             LangStr = foreign_language_string(Lang),
-            Pieces = [
-                words("warning: the "), fixed(LangStr),
+            Pieces = [words("Warning: the"), fixed(LangStr),
                 words("code for"), simple_call(SimpleCallId),
                 words("may contain a"), quote("return"),
-                words("statement."), nl
-            ],
+                words("statement."), nl],
             Msg = simple_msg(Context,
                 [option_is_set(warn_suspicious_foreign_procs, yes,
                     [always(Pieces)])]
@@ -749,31 +764,7 @@ check_fp_body_for_return(Lang, Context, SimpleCallId, BodyPieces, !Specs) :-
                 warn_suspicious_foreign_procs, yes, severity_warning, no),
             Spec = error_spec(Severity, phase_parse_tree_to_hlds, [Msg]),
             !:Specs = [Spec | !.Specs]
-        ;
-            true
-        )
-    ;
-        Lang = lang_il,
-        (
-            ( list.member("ret", BodyPieces)
-            ; list.member("jmp", BodyPieces)
-            )
-        ->
-            Pieces = [
-                words("warning: the IL code for"), simple_call(SimpleCallId),
-                words("may contain a"), quote("ret"),
-                words("or"), quote("jmp"),
-                words("instruction."), nl
-            ],
-            Msg = simple_msg(Context,
-                [option_is_set(warn_suspicious_foreign_procs, yes,
-                    [always(Pieces)])]
-            ),
-            Severity = severity_conditional(
-                warn_suspicious_foreign_procs, yes, severity_warning, no),
-            Spec = error_spec(Severity, phase_parse_tree_to_hlds, [Msg]),
-            !:Specs = [Spec | !.Specs]
-        ;
+        else
             true
         )
     ;
@@ -802,54 +793,61 @@ check_promise_ex_decl(UnivVars, PromiseType, Goal, Context, !Specs) :-
 :- pred check_promise_ex_goal(promise_type::in, goal::in,
     list(error_spec)::in, list(error_spec)::out) is det.
 
-check_promise_ex_goal(PromiseType, GoalExpr - Context, !Specs) :-
-    ( GoalExpr = some_expr(_, Goal) ->
-        check_promise_ex_goal(PromiseType, Goal, !Specs)
-    ; GoalExpr = disj_expr(_, _) ->
-        flatten_to_disj_list(GoalExpr - Context, DisjList),
+check_promise_ex_goal(PromiseType, Goal, !Specs) :-
+    ( if
+        Goal = quant_expr(quant_some, quant_ordinary_vars, _, _, SubGoal)
+    then
+        check_promise_ex_goal(PromiseType, SubGoal, !Specs)
+    else if
+        Goal = disj_expr(_, _, _)
+    then
+        flatten_to_disj_list(Goal, DisjList),
         list.map(flatten_to_conj_list, DisjList, DisjConjList),
         check_promise_ex_disjunction(PromiseType, DisjConjList, !Specs)
-    ; GoalExpr = all_expr(_UnivVars, Goal) ->
+    else if
+        Goal = quant_expr(quant_all, quant_ordinary_vars, Context, _UnivVars,
+            SubGoal)
+    then
         promise_ex_error(PromiseType, Context,
             "universal quantification should come before " ++
             "the declaration name", !Specs),
-        check_promise_ex_goal(PromiseType, Goal, !Specs)
-    ;
-        promise_ex_error(PromiseType, Context,
+        check_promise_ex_goal(PromiseType, SubGoal, !Specs)
+    else
+        promise_ex_error(PromiseType, goal_get_context(Goal),
             "goal in declaration is not a disjunction", !Specs)
     ).
 
     % Turns the goal of a promise_ex declaration into a list of goals,
     % where each goal is an arm of the disjunction.
     %
-:- pred flatten_to_disj_list(goal::in, goals::out) is det.
+:- pred flatten_to_disj_list(goal::in, list(goal)::out) is det.
 
-flatten_to_disj_list(GoalExpr - Context, GoalList) :-
-    ( GoalExpr = disj_expr(GoalA, GoalB) ->
+flatten_to_disj_list(Goal, GoalList) :-
+    ( if Goal = disj_expr(_, GoalA, GoalB) then
         flatten_to_disj_list(GoalA, GoalListA),
         flatten_to_disj_list(GoalB, GoalListB),
         GoalList = GoalListA ++ GoalListB
-    ;
-        GoalList = [GoalExpr - Context]
+    else
+        GoalList = [Goal]
     ).
 
     % Takes a goal representing an arm of a disjunction and turns it into
     % a list of conjunct goals.
     %
-:- pred flatten_to_conj_list(goal::in, goals::out) is det.
+:- pred flatten_to_conj_list(goal::in, list(goal)::out) is det.
 
-flatten_to_conj_list(GoalExpr - Context, GoalList) :-
-    ( GoalExpr = conj_expr(GoalA, GoalB) ->
+flatten_to_conj_list(Goal, GoalList) :-
+    ( if Goal = conj_expr(_, GoalA, GoalB) then
         flatten_to_conj_list(GoalA, GoalListA),
         flatten_to_conj_list(GoalB, GoalListB),
         GoalList = GoalListA ++ GoalListB
-    ;
-        GoalList = [GoalExpr - Context]
+    else
+        GoalList = [Goal]
     ).
 
     % Taking a list of arms of the disjunction, check each arm individually.
     %
-:- pred check_promise_ex_disjunction(promise_type::in, list(goals)::in,
+:- pred check_promise_ex_disjunction(promise_type::in, list(list(goal))::in,
     list(error_spec)::in, list(error_spec)::out) is det.
 
 check_promise_ex_disjunction(PromiseType, DisjConjList, !Specs) :-
@@ -864,20 +862,28 @@ check_promise_ex_disjunction(PromiseType, DisjConjList, !Specs) :-
     % Only one goal in an arm is allowed to be a call, the rest must be
     % unifications.
     %
-:- pred check_promise_ex_disj_arm(promise_type::in, goals::in, bool::in,
+:- pred check_promise_ex_disj_arm(promise_type::in, list(goal)::in, bool::in,
     list(error_spec)::in, list(error_spec)::out) is det.
 
 check_promise_ex_disj_arm(PromiseType, Goals, CallUsed, !Specs) :-
     (
         Goals = []
     ;
-        Goals = [GoalExpr - Context | Rest],
-        ( GoalExpr = unify_expr(_, _, _) ->
-            check_promise_ex_disj_arm(PromiseType, Rest, CallUsed, !Specs)
-        ; GoalExpr = some_expr(_, Goal) ->
-            check_promise_ex_disj_arm(PromiseType, [Goal | Rest], CallUsed,
-                !Specs)
-        ; GoalExpr = call_expr(_, _, _) ->
+        Goals = [HeadGoal | TailGoals],
+        ( if
+            HeadGoal = unify_expr(_, _, _, _)
+        then
+            check_promise_ex_disj_arm(PromiseType, TailGoals,
+                CallUsed, !Specs)
+        else if
+            HeadGoal = quant_expr(quant_some, quant_ordinary_vars, _, _,
+                HeadSubGoal)
+            then
+            check_promise_ex_disj_arm(PromiseType, [HeadSubGoal | TailGoals],
+                CallUsed, !Specs)
+        else if
+            HeadGoal = call_expr(Context, _, _, _)
+        then
             (
                 CallUsed = no
             ;
@@ -885,11 +891,11 @@ check_promise_ex_disj_arm(PromiseType, Goals, CallUsed, !Specs) :-
                 promise_ex_error(PromiseType, Context,
                     "disjunct contains more than one call", !Specs)
             ),
-            check_promise_ex_disj_arm(PromiseType, Rest, yes, !Specs)
-        ;
-            promise_ex_error(PromiseType, Context,
+            check_promise_ex_disj_arm(PromiseType, TailGoals, yes, !Specs)
+        else
+            promise_ex_error(PromiseType, goal_get_context(HeadGoal),
                 "disjunct is not a call or unification", !Specs),
-            check_promise_ex_disj_arm(PromiseType, Rest, CallUsed, !Specs)
+            check_promise_ex_disj_arm(PromiseType, TailGoals, CallUsed, !Specs)
         )
     ).
 
@@ -907,5 +913,5 @@ promise_ex_error(PromiseType, Context, Message, !Specs) :-
     !:Specs = [Spec | !.Specs].
 
 %-----------------------------------------------------------------------------%
-:- end_module make_hlds_warn.
+:- end_module hlds.make_hlds.make_hlds_warn.
 %-----------------------------------------------------------------------------%

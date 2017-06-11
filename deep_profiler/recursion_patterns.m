@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2010-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: recursion_patterns.m.
 % Authors: pbone.
@@ -12,7 +12,7 @@
 % This module contains code that analysis the recursive structures of cliques.
 % It is intended for use on the automatic parallelisation analysis.
 %
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module recursion_patterns.
 :- interface.
@@ -23,7 +23,7 @@
 
 :- import_module maybe.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred create_clique_recursion_costs_report(deep::in, clique_ptr::in,
     maybe_error(clique_recursion_report)::out) is det.
@@ -31,7 +31,7 @@
 :- pred create_recursion_types_frequency_report(deep::in,
     maybe_error(recursion_types_frequency_report)::out) is det.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred recursion_type_get_maybe_avg_max_depth(recursion_type,
     maybe(recursion_depth)).
@@ -39,8 +39,8 @@
     out(maybe_yes(ground))) is det.
 :- mode recursion_type_get_maybe_avg_max_depth(in, out) is det.
 
-%----------------------------------------------------------------------------%
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -52,8 +52,6 @@
 :- import_module mdbcomp.goal_path.
 :- import_module mdbcomp.program_representation.
 :- import_module measurement_units.
-:- import_module measurements.
-:- import_module report.
 
 :- import_module array.
 :- import_module assoc_list.
@@ -65,21 +63,20 @@
 :- import_module pair.
 :- import_module require.
 :- import_module set.
-:- import_module solutions.
 :- import_module string.
 :- import_module unit.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 create_clique_recursion_costs_report(Deep, CliquePtr,
         MaybeCliqueRecursionReport) :-
     find_clique_first_and_other_procs(Deep, CliquePtr, MaybeFirstPDPtr,
         OtherPDPtrs),
     deep_lookup_clique_parents(Deep, CliquePtr, ParentCallPtr),
-    ( valid_call_site_dynamic_ptr(Deep, ParentCallPtr) ->
+    ( if valid_call_site_dynamic_ptr(Deep, ParentCallPtr) then
         deep_lookup_call_site_dynamics(Deep, ParentCallPtr, ParentCall),
         ParentCalls = calls(ParentCall ^ csd_own_prof)
-    ;
+    else
         % The first call from the runtime doesn't have a valid CSD.
         ParentCalls = 1
     ),
@@ -141,64 +138,73 @@ proc_get_recursion_type(Deep, ThisClique, PDPtr, ParentCalls,
     recursion_type::out) is det.
 
 recursion_data_to_recursion_type(ParentCallsI, TotalCallsI,
-        recursion_data(Levels, Maximum, Errors), Type) :-
-    ParentCalls = float(ParentCallsI),
-    TotalCalls = float(TotalCallsI),
-    ( search(Levels, 0, RLBase) ->
-        RLBase = recursion_level(BaseCost, BaseProb),
-        BaseCountF = probability_to_float(BaseProb) * TotalCalls,
-        BaseCount = round_to_int(BaseCountF)
+        RecursionData, Type) :-
+    (
+        RecursionData = no_recursion_data_dead_proc,
+        % A procedure that is never called never recurses.
+        Type = rt_not_recursive
     ;
-        BaseCost = 0.0,
-        BaseCount = 0,
-        BaseProb = impossible
-    ),
-    BaseLevel = recursion_level_report(0, BaseCount, BaseProb, BaseCost, 0.0),
-    ( empty(Errors) ->
-        ( Maximum < 0 ->
-            unexpected($module, $pred, "negative number of recursive calls")
-        ; Maximum = 0 ->
-            Type = rt_not_recursive
-        ; Maximum = 1 ->
-            ( search(Levels, 1, RLRec) ->
-                RLRec = recursion_level(RecCost, RecProb),
-                RecCountF = probability_to_float(RecProb) * TotalCalls,
-                RecLevel = recursion_level_report(1, round_to_int(RecCountF),
-                    RecProb, RecCost, 1.0)
-            ;
-                string.format("maximum level %d not found", [i(1)], Msg),
-                unexpected($module, $pred, Msg)
-            ),
-            AvgMaxDepth = TotalCalls / ParentCalls,
-            AvgRecCost = single_rec_average_recursion_cost(BaseCost, RecCost,
-                AvgMaxDepth),
-            AnyRecCost = single_rec_recursion_cost(BaseCost, RecCost),
-            Type = rt_single(BaseLevel, RecLevel, AvgMaxDepth, AvgRecCost,
-                AnyRecCost)
-        ;
-            Maximum = 2,
-            not search(Levels, 1, _)
-        ->
-            ( search(Levels, 2, RLRec) ->
-                RLRec = recursion_level(RecCost, RecProb),
-                RecCountF = probability_to_float(RecProb) * ParentCalls,
-                RecLevel = recursion_level_report(2, round_to_int(RecCountF),
-                    RecProb, RecCost, RecCountF*2.0)
-            ;
-                string.format("maximum level %d not found", [i(1)], Msg),
-                unexpected($module, $pred, Msg)
-            ),
-            Type = rt_divide_and_conquer(BaseLevel, RecLevel)
-        ;
-            map(recursion_level_report(TotalCalls), Levels, LevelsReport),
-            Type = rt_other(LevelsReport)
+        RecursionData = recursion_data(Levels, Maximum, Errors),
+        ParentCalls = float(ParentCallsI),
+        TotalCalls = float(TotalCallsI),
+        ( if assoc_list.search(Levels, 0, RLBase) then
+            RLBase = recursion_level(BaseCost, BaseProb),
+            BaseCountF = probability_to_float(BaseProb) * TotalCalls,
+            BaseCount = round_to_int(BaseCountF)
+        else
+            BaseCost = 0.0,
+            BaseCount = 0,
+            BaseProb = impossible
+        ),
+        BaseLevel =
+            recursion_level_report(0, BaseCount, BaseProb, BaseCost, 0.0),
+        ( if set.empty(Errors) then
+            ( if Maximum < 0 then
+                unexpected($module, $pred,
+                    "negative number of recursive calls")
+            else if Maximum = 0 then
+                Type = rt_not_recursive
+            else if Maximum = 1 then
+                ( if assoc_list.search(Levels, 1, RLRec) then
+                    RLRec = recursion_level(RecCost, RecProb),
+                    RecCountF = probability_to_float(RecProb) * TotalCalls,
+                    RecLevel = recursion_level_report(1,
+                        round_to_int(RecCountF), RecProb, RecCost, 1.0)
+                else
+                    string.format("maximum level %d not found", [i(1)], Msg),
+                    unexpected($module, $pred, Msg)
+                ),
+                AvgMaxDepth = TotalCalls / ParentCalls,
+                AvgRecCost = single_rec_average_recursion_cost(BaseCost,
+                    RecCost, AvgMaxDepth),
+                AnyRecCost = single_rec_recursion_cost(BaseCost, RecCost),
+                Type = rt_single(BaseLevel, RecLevel, AvgMaxDepth, AvgRecCost,
+                    AnyRecCost)
+            else if
+                Maximum = 2,
+                not assoc_list.search(Levels, 1, _)
+            then
+                ( if assoc_list.search(Levels, 2, RLRec) then
+                    RLRec = recursion_level(RecCost, RecProb),
+                    RecCountF = probability_to_float(RecProb) * ParentCalls,
+                    RecLevel = recursion_level_report(2,
+                        round_to_int(RecCountF), RecProb, RecCost,
+                        RecCountF*2.0)
+                else
+                    string.format("maximum level %d not found", [i(1)], Msg),
+                    unexpected($module, $pred, Msg)
+                ),
+                Type = rt_divide_and_conquer(BaseLevel, RecLevel)
+            else
+                list.map(recursion_level_report(TotalCalls), Levels,
+                    LevelsReport),
+                Type = rt_other(LevelsReport)
+            )
+        else
+            Messages = list.map(error_to_string, to_sorted_list(Errors)),
+            Type = rt_errors(Messages)
         )
-    ;
-        Messages = map(error_to_string, to_sorted_list(Errors)),
-        Type = rt_errors(Messages)
     ).
-% A procedure that is never called never recurses.
-recursion_data_to_recursion_type(_, _, proc_dead_code, rt_not_recursive).
 
 :- pred recursion_level_report(float::in, pair(int, recursion_level)::in,
     recursion_level_report::out) is det.
@@ -255,17 +261,17 @@ single_rec_average_recursion_cost(BaseCost, RecCost, AvgMaxDepth) = Cost :-
     Sum = 0.5 * RecCost * ((AvgMaxDepth * AvgMaxDepth) + AvgMaxDepth),
     Cost = BaseCost + ((Sum) / (AvgMaxDepth + 1.0)).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type recursion_data
-    --->    recursion_data(
+    --->    no_recursion_data_dead_proc
+            % There is no recursion data for this proc, since it is
+            % never called.
+    ;       recursion_data(
                 rd_recursions           :: assoc_list(int, recursion_level),
                 rd_maximum              :: int,
                 rd_errors               :: set(recursion_error)
-            )
-
-                % This code is dead, it is never entered.
-    ;       proc_dead_code.
+            ).
 
 :- type recursion_level
     --->    recursion_level(
@@ -300,14 +306,14 @@ single_rec_average_recursion_cost(BaseCost, RecCost, AvgMaxDepth) = Cost :-
 goal_recursion_data(Info, RevGoalPath, GoalRep, !:RecursionData) :-
     GoalRep = goal_rep(GoalExpr, Detism, GoalId),
     CoverageInfo = get_goal_attribute_det(Info ^ rai_coverage_info, GoalId),
-    ( get_coverage_before(CoverageInfo, CallsPrime) ->
+    ( if get_coverage_before(CoverageInfo, CallsPrime) then
         Calls = CallsPrime
-    ;
-        unexpected($module, $pred, "couldn't retrive coverage information")
+    else
+        unexpected($module, $pred, "couldn't retrieve coverage information")
     ),
-    ( Calls = 0 ->
-        !:RecursionData = proc_dead_code
-    ;
+    ( if Calls = 0 then
+        !:RecursionData = no_recursion_data_dead_proc
+    else
         (
             GoalExpr = conj_rep(Conjs),
             conj_recursion_data(Info, RevGoalPath, 1, Conjs,
@@ -368,11 +374,11 @@ conj_recursion_data(Info, RevGoalPath, ConjNum, [Conj | Conjs],
     goal_recursion_data(Info, rgp_cons(RevGoalPath, step_conj(ConjNum)), Conj,
         ConjRecursionData),
     (
-        ConjRecursionData = proc_dead_code,
+        ConjRecursionData = no_recursion_data_dead_proc,
         % If the first conjunct is dead then the remaining ones will
         % also be dead. This speeds up execution and avoids a divide by zero
         % when calculating ConjSuccessProb below.
-        RecursionData = proc_dead_code
+        RecursionData = no_recursion_data_dead_proc
     ;
         ConjRecursionData = recursion_data(_, _, _),
 
@@ -417,10 +423,10 @@ disj_recursion_data(Info, RevGoalPath, DisjNum, [Disj | Disjs],
     goal_recursion_data(Info, rgp_cons(RevGoalPath, step_disj(DisjNum)), Disj,
         DisjRecursionData),
     (
-        DisjRecursionData = proc_dead_code,
+        DisjRecursionData = no_recursion_data_dead_proc,
         % If the first disjunct was never tried, then no other disjuncts will
         % ever be tried.
-        RecursionData = proc_dead_code
+        RecursionData = no_recursion_data_dead_proc
     ;
         DisjRecursionData = recursion_data(_, _, _),
         CoverageInfo = get_goal_attribute_det(Info ^ rai_coverage_info,
@@ -429,7 +435,7 @@ disj_recursion_data(Info, RevGoalPath, DisjNum, [Disj | Disjs],
             DisjSuccessProb),
         DisjFailureProb = not_probability(DisjSuccessProb),
 
-        % The code can branch here, either it tries the next disjuct, which we
+        % The code can branch here, either it tries the next disjunct, which we
         % represent as DisjsRecursionData, ...
         disj_recursion_data(Info, RevGoalPath, DisjNum + 1, Disjs,
             DisjsRecursionData0),
@@ -452,14 +458,14 @@ disj_recursion_data(Info, RevGoalPath, DisjNum, [Disj | Disjs],
     is det.
 
 success_probability_from_coverage(Coverage, SuccessProb) :-
-    ( get_coverage_before_and_after(Coverage, Before, After) ->
-        ( After > Before ->
+    ( if get_coverage_before_and_after(Coverage, Before, After) then
+        ( if After > Before then
             % Nondet code can overflow this probability.
             SuccessProb = certain
-        ;
+        else
             SuccessProb = probable(float(After) / float(Before))
         )
-    ;
+    else
         unexpected($module, $pred, "expected complete coverage information")
     ).
 
@@ -495,7 +501,7 @@ ite_recursion_data(Info, RevGoalPath, Cond, Then, Else, Calls,
 
     % Because the condition goal has coverage information as if it is
     % entered before either branch, we have to model it in the same way here,
-    % even though it would be fesable to model it sas something that happens
+    % even though it would be feasible to model it as something that happens
     % in sequence with both the then and else branches (within each branch).
     merge_recursion_data_after_branch(ThenRecursionData,
         ElseRecursionData, !:RecursionData),
@@ -519,9 +525,9 @@ switch_recursion_data(Info, RevGoalPath, CaseNum, [Case | Cases],
     goal_recursion_data(Info, RevArmPath, Goal, CaseRecursionData0),
     CoverageInfo = get_goal_attribute_det(Info ^ rai_coverage_info,
         Goal ^ goal_annotation),
-    ( get_coverage_before(CoverageInfo, CallsPrime) ->
+    ( if get_coverage_before(CoverageInfo, CallsPrime) then
         Calls = CallsPrime
-    ;
+    else
         unexpected($module, $pred, "expected coverage information")
     ),
     CaseProb = probable(float(Calls) / TotalCalls),
@@ -561,11 +567,11 @@ atomic_goal_recursion_data(Info, RevGoalPath, AtomicGoal, RecursionData) :-
         % Get the cost of the call.
         Info = recursion_analysis_info(ThisClique, CallSiteMap, _),
         map.lookup(CallSiteMap, RevGoalPath, CostAndCallees),
-        ( cost_and_callees_is_recursive(ThisClique, CostAndCallees) ->
+        ( if cost_and_callees_is_recursive(ThisClique, CostAndCallees) then
             % Cost will be 1.0 for for each call to recursive calls but we
             % calculate this later.
             RecursionLevel = 1 - recursion_level(0.0, certain)
-        ;
+        else
             CostPercall = cs_cost_get_percall(CostAndCallees ^ cac_cost),
             RecursionLevel = 0 - recursion_level(CostPercall, certain)
         )
@@ -609,22 +615,22 @@ merge_recursion_data_after_branch(A, B, Result) :-
         Result = recursion_data(Recursions, MaxLevel, Errors)
     ;
         A = recursion_data(_, _, _),
-        B = proc_dead_code,
+        B = no_recursion_data_dead_proc,
         Result = A
     ;
-        A = proc_dead_code,
+        A = no_recursion_data_dead_proc,
         B = recursion_data(_, _, _),
         Result = B
     ;
-        A = proc_dead_code,
-        B = proc_dead_code,
-        Result = proc_dead_code
+        A = no_recursion_data_dead_proc,
+        B = no_recursion_data_dead_proc,
+        Result = no_recursion_data_dead_proc
     ).
 
     % merge_recursion_data_sequence(A, B, Merged).
     %
-    % Merge the recursion datas A and B to produce Merged.  This is not
-    % commutative, A must represent something occuring before B.
+    % Merge the recursion datas A and B to produce Merged.
+    % This is not commutative; A must represent something occurring before B.
     %
     % Consider the following conjoined switches.
     %
@@ -639,9 +645,8 @@ merge_recursion_data_after_branch(A, B, Result) :-
     %     rec2
     % )
     %
-    % It's like algabra! Treating the conjunction as multiplication and
+    % It's like algebra! Treating the conjunction as multiplication and
     % disjunction as addition we might factorise it as:
-    % Note that this is just to show the pattern I can see here.
     %
     % base1*base2 + base1*rec2 + base2*rec1 + rec1*rec2.
     %
@@ -676,11 +681,11 @@ merge_recursion_data_sequence(A, B, Result) :-
         Result = recursion_data(Recursions, MaxLevel, Errors)
     ;
         A = recursion_data(_, _, _),
-        B = proc_dead_code,
-        Result = proc_dead_code
+        B = no_recursion_data_dead_proc,
+        Result = no_recursion_data_dead_proc
     ;
-        A = proc_dead_code,
-        Result = proc_dead_code
+        A = no_recursion_data_dead_proc,
+        Result = no_recursion_data_dead_proc
     ).
 
 :- pred condense_recursions(assoc_list(int, recursion_level)::in,
@@ -696,7 +701,7 @@ condense_recursions([Num - Rec | Pairs0], Pairs) :-
 
 condense_recursions_2(Pair, [], [Pair]).
 condense_recursions_2(NumA - RecA, [NumB - RecB | Pairs0], Pairs) :-
-    ( NumA = NumB ->
+    ( if NumA = NumB then
         RecA = recursion_level(CostA, ProbabilityA),
         RecB = recursion_level(CostB, ProbabilityB),
         weighted_average(
@@ -706,7 +711,7 @@ condense_recursions_2(NumA - RecA, [NumB - RecB | Pairs0], Pairs) :-
         Probability = or(ProbabilityA, ProbabilityB),
         Rec = recursion_level(Cost, Probability),
         condense_recursions_2(NumA - Rec, Pairs0, Pairs)
-    ;
+    else
         condense_recursions([NumB - RecB | Pairs0], Pairs1),
         Pairs = [NumA - RecA | Pairs1]
     ).
@@ -715,7 +720,7 @@ condense_recursions_2(NumA - RecA, [NumB - RecB | Pairs0], Pairs) :-
     %
     % A X B = C <=> A.1 * B.1 + A.1 * B.2 + A.2 * B.1 + A.2 * B.2 = C
     %
-    % Note that this is not commutative.  A represents a computation occuring
+    % Note that this is not commutative. A represents a computation occurring
     % before B.
     %
 :- pred recursions_cross_product(assoc_list(int, recursion_level)::in,
@@ -749,7 +754,9 @@ recursion_data_and_probability(Prob,
         recursion_data(!.Recursions, MaxLevel, Errors),
         recursion_data(!:Recursions, MaxLevel, Errors)) :-
     map_values(recursion_level_and_probability(Prob), !Recursions).
-recursion_data_and_probability(_, proc_dead_code, proc_dead_code).
+recursion_data_and_probability(_,
+    no_recursion_data_dead_proc,
+    no_recursion_data_dead_proc).
 
 :- pred recursion_level_and_probability(probability::in, T::in,
     recursion_level::in, recursion_level::out) is det.
@@ -768,7 +775,7 @@ recursion_data_add_error(Error, !RecursionData) :-
             set.insert(Error, !Errors),
             !RecursionData ^ rd_errors := !.Errors
         ;
-            !.RecursionData = proc_dead_code
+            !.RecursionData = no_recursion_data_dead_proc
         )
     ).
 
@@ -786,7 +793,7 @@ simple_recursion_data(Cost, Calls) =
 error_to_string(re_unhandled_determinism(Detism)) =
     format("%s code is not handled", [s(string(Detism))]).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 create_recursion_types_frequency_report(Deep, MaybeReport) :-
     % This report is impossible without procrep data, but we don't use it
@@ -824,7 +831,7 @@ rec_types_freq_build_histogram(Deep, _, CliquePtr, !Histogram) :-
     (
         MaybeCliqueRecursionReport = ok(CliqueRecursionReport),
         Type = CliqueRecursionReport ^ crr_recursion_type,
-        solutions(recursion_type_to_simple_type(Type), SimpleTypes)
+        recursion_type_to_simple_type(Type, SimpleTypes)
     ;
         MaybeCliqueRecursionReport = error(Error),
         SimpleTypes = [rts_error(Error), rts_total_error_instances]
@@ -845,7 +852,7 @@ rec_types_freq_build_histogram(Deep, _, CliquePtr, !Histogram) :-
         MaybeFirstPDPtr = no,
         MaybeFirstProcInfo = no
     ),
-    foldl(update_histogram(MaybeFirstProcInfo), SimpleTypes, !Histogram).
+    list.foldl(update_histogram(MaybeFirstProcInfo), SimpleTypes, !Histogram).
 
 :- type first_proc_info
     --->    first_proc_info(
@@ -853,7 +860,7 @@ rec_types_freq_build_histogram(Deep, _, CliquePtr, !Histogram) :-
                 fpi_prof_info           :: own_and_inherit_prof_info
             ).
 
-    % XXX: Consider moving this to measuerments.m
+    % XXX Consider moving this to measurements.m
     %
 :- type own_and_inherit_prof_info
     --->    own_and_inherit_prof_info(
@@ -892,7 +899,7 @@ add_own_and_inherit_prof_info(
     map(recursion_type_simple, recursion_type_raw_freq_data)::out) is det.
 
 update_histogram(MaybeFirstProcInfo, SimpleType, !Histogram) :-
-    ( map.search(!.Histogram, SimpleType, Data0) ->
+    ( if map.search(!.Histogram, SimpleType, Data0) then
         Data0 = recursion_type_raw_freq_data(Count0, MaybeProfInfo0, Procs0),
         (
             MaybeFirstProcInfo = yes(FirstProcInfo),
@@ -913,7 +920,7 @@ update_histogram(MaybeFirstProcInfo, SimpleType, !Histogram) :-
         ),
         Count = Count0 + 1,
         Data = recursion_type_raw_freq_data(Count, MaybeProfInfo, Procs)
-    ;
+    else
         Count = 1,
         (
             MaybeFirstProcInfo = yes(FirstProcInfo),
@@ -935,34 +942,35 @@ update_histogram(MaybeFirstProcInfo, SimpleType, !Histogram) :-
 update_procs_map(FirstProcInfo, !Map) :-
     FirstProcInfo = first_proc_info(PSDesc, FirstProfInfo),
     PsPtr = PSDesc ^ pdesc_ps_ptr,
-    ( map.search(!.Map, PsPtr, ProcFreqData0) ->
+    ( if map.search(!.Map, PsPtr, ProcFreqData0) then
         ProcFreqData0 =
             recursion_type_raw_proc_freq_data(Count0, ProfInfo0, ProcDesc),
         add_own_and_inherit_prof_info(FirstProfInfo, ProfInfo0, ProfInfo),
         Count = Count0 + 1,
         ProcFreqData =
             recursion_type_raw_proc_freq_data(Count, ProfInfo, ProcDesc)
-    ;
+    else
         ProcFreqData =
             recursion_type_raw_proc_freq_data(1, FirstProfInfo, PSDesc)
     ),
     map.set(PsPtr, ProcFreqData, !Map).
 
 :- pred recursion_type_to_simple_type(recursion_type::in,
-    recursion_type_simple::out) is multi.
+    list(recursion_type_simple)::out) is det.
 
-recursion_type_to_simple_type(rt_not_recursive, rts_not_recursive).
-recursion_type_to_simple_type(rt_single(_, _, _, _, _), rts_single).
+recursion_type_to_simple_type(rt_not_recursive, [rts_not_recursive]).
+recursion_type_to_simple_type(rt_single(_, _, _, _, _), [rts_single]).
 recursion_type_to_simple_type(rt_divide_and_conquer(_, _),
-    rts_divide_and_conquer).
+    [rts_divide_and_conquer]).
 recursion_type_to_simple_type(rt_mutual_recursion(NumProcs),
-    rts_mutual_recursion(NumProcs)).
-recursion_type_to_simple_type(rt_other(Levels), rts_other(SimpleLevels)) :-
+    [rts_mutual_recursion(NumProcs)]).
+recursion_type_to_simple_type(rt_other(Levels), [rts_other(SimpleLevels)]) :-
     SimpleLevels = set.from_list(
         map((func(Level) = Level ^ rlr_level), Levels)).
-recursion_type_to_simple_type(rt_errors(Errors), rts_error(Error)) :-
-    member(Error, Errors).
-recursion_type_to_simple_type(rt_errors(_), rts_total_error_instances).
+recursion_type_to_simple_type(rt_errors(Errors), SimpleTypes) :-
+    SimpleTypes =
+        list.map((func(E) = rts_error(E)), Errors)
+        ++ [rts_total_error_instances].
 
 :- pred finalize_histogram(deep::in, int::in,
     map(recursion_type_simple, recursion_type_raw_freq_data)::in,
@@ -1004,8 +1012,8 @@ finalize_histogram_proc_rec_type(Deep, NumCliques, _PSPtr,
     ProfInfo = own_and_inherit_prof_info(Own, Inherit),
     own_and_inherit_to_perf_row_data(Deep, ProcDesc, Own, Inherit, Summary).
 
-%----------------------------------------------------------------------------%
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 recursion_type_get_maybe_avg_max_depth(rt_not_recursive,
     yes(recursion_depth_from_float(0.0))).
@@ -1016,6 +1024,6 @@ recursion_type_get_maybe_avg_max_depth(rt_mutual_recursion(_), no).
 recursion_type_get_maybe_avg_max_depth(rt_other(_), no).
 recursion_type_get_maybe_avg_max_depth(rt_errors(_), no).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module recursion_patterns.
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

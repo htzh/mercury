@@ -1,7 +1,7 @@
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
-% Copyright (C) 2005-2011 The University of Melbourne.
+% Copyright (C) 2005-2011,2014 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -54,8 +54,9 @@
 
     % Replace !X args with two args !.X, !:X in that order.
     %
-:- pred expand_bang_states(list(prog_term)::in, list(prog_term)::out) is det.
-:- pred expand_bang_states_instance_body(instance_body::in,
+:- pred expand_bang_state_pairs_in_terms(list(prog_term)::in,
+    list(prog_term)::out) is det.
+:- pred expand_bang_state_pairs_in_instance_body(instance_body::in,
     instance_body::out) is det.
 
 %-----------------------------------------------------------------------------%
@@ -64,7 +65,7 @@
     % If the head contains any references to !.S or !:S or both,
     % make state variable S known in the body of the clause.
     % (The head should not contain any references to !S; those should
-    % have been expanded out by calling expand_bang_states BEFORE calling
+    % have been expanded out by calling expand_bang_state_pairs BEFORE calling
     % this predicate.)
     %
     % Given the original list of args, we return a version in which state
@@ -210,7 +211,7 @@
 
     % Given a list of argument terms, substitute !.X and !:X with the
     % corresponding state variable mappings. Any !X should already have been
-    % expanded into !.X, !:X via a call to expand_bang_states.
+    % expanded into !.X, !:X via a call to expand_bang_state_pairs.
     %
 :- pred substitute_state_var_mappings(list(prog_term)::in,
     list(prog_term)::out, prog_varset::in, prog_varset::out,
@@ -254,18 +255,24 @@
 
 %-----------------------------------------------------------------------------%
 
-    % Does the given argument list have an illegal result term?
+    % Does the given argument list have a function result term
+    % that tries to use state var notation to refer to *two* terms?
+    %
+    % If yes, return the state variable involved, and the context of the
+    % reference.
     %
 :- pred illegal_state_var_func_result(pred_or_func::in, list(prog_term)::in,
-    svar::out) is semidet.
+    svar::out, prog_context::out) is semidet.
 
-    % Does the given lambda argument list have an illegal element?
-    % We currently do not allow !X to appear as a lambda head argument, though
-    % we might later extend the syntax still further to accommodate this
-    % using syntax such as !IO::(di, uo).
+    % Does the given term have the form a !X, i.e. does it represent
+    % *two* arguments? This is not acceptable in some contexts, such as
+    % function results and lambda expression arguments.
     %
-:- pred lambda_args_contain_bang_state_var(list(prog_term)::in, prog_var::out)
-    is semidet.
+    % If yes, return the state variable involved, and the context of the
+    % reference.
+    %
+:- pred is_term_a_bang_state_pair(prog_term::in,
+    svar::out, prog_context::out) is semidet.
 
 %-----------------------------------------------------------------------------%
 
@@ -279,19 +286,23 @@
 :- pred report_illegal_bang_svar_lambda_arg(prog_context::in, prog_varset::in,
     svar::in, list(error_spec)::in, list(error_spec)::out) is det.
 
+:- pred report_svar_unify_error(prog_context::in, svar::in,
+    prog_varset::in, prog_varset::out, svar_state::in, svar_state::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module hlds.make_goal.
 :- import_module libs.options.
 :- import_module mdbcomp.goal_path.
 :- import_module parse_tree.prog_util.
 
 :- import_module assoc_list.
-:- import_module char.
+:- import_module bool.
 :- import_module counter.
-:- import_module int.
 :- import_module io.
 :- import_module pair.
 :- import_module require.
@@ -357,8 +368,7 @@
 :- type svar_store
     --->    svar_store(
                 store_next_goal_id  ::  counter,
-                store_final_remap   ::  map(goal_id,
-                                            assoc_list(prog_var, prog_var)),
+                store_final_remap   ::  incremental_rename_map,
                 store_specs         ::  list(error_spec)
             ).
 
@@ -399,67 +409,69 @@ new_state_var_instance(StateVar, NameSource, Var, !VarSet) :-
 % Expand !S into !.S, !:S pairs.
 %
 
-expand_bang_states([], []).
-expand_bang_states([HeadArg0 | TailArgs0], Args) :-
-    expand_bang_states(TailArgs0, TailArgs),
+expand_bang_state_pairs_in_terms([], []).
+expand_bang_state_pairs_in_terms([HeadArg0 | TailArgs0], Args) :-
+    expand_bang_state_pairs_in_terms(TailArgs0, TailArgs),
     (
         HeadArg0 = variable(_, _),
         Args = [HeadArg0 | TailArgs]
     ;
         HeadArg0 = functor(Const, FunctorArgs, Ctxt),
-        (
+        ( if
             Const = atom("!"),
             FunctorArgs = [variable(_StateVar, _)]
-        ->
+        then
             HeadArg1 = functor(atom("!."), FunctorArgs, Ctxt),
             HeadArg2 = functor(atom("!:"), FunctorArgs, Ctxt),
             Args = [HeadArg1, HeadArg2 | TailArgs]
-        ;
+        else
             Args = [HeadArg0 | TailArgs]
         )
     ).
 
-expand_bang_states_instance_body(InstanceBody0, InstanceBody) :-
+expand_bang_state_pairs_in_instance_body(InstanceBody0, InstanceBody) :-
     (
         InstanceBody0 = instance_body_abstract,
         InstanceBody = instance_body_abstract
     ;
         InstanceBody0 = instance_body_concrete(Methods0),
-        list.map(expand_bang_states_method, Methods0, Methods),
+        list.map(expand_bang_state_pairs_in_method, Methods0, Methods),
         InstanceBody = instance_body_concrete(Methods)
     ).
 
-:- pred expand_bang_states_method(instance_method::in, instance_method::out)
-    is det.
+:- pred expand_bang_state_pairs_in_method(instance_method::in,
+    instance_method::out) is det.
 
-expand_bang_states_method(IM0, IM) :-
+expand_bang_state_pairs_in_method(IM0, IM) :-
     IM0 = instance_method(PredOrFunc, Method, ProcDef0, Arity0, Ctxt),
     (
         ProcDef0 = instance_proc_def_name(_),
         IM = IM0
     ;
         ProcDef0 = instance_proc_def_clauses(ItemClauses0),
-        list.map(expand_bang_states_clause, ItemClauses0, ItemClauses),
-        % Note that the condition should always succeed...
-        ( ItemClauses = [ItemClause | _] ->
+        list.map(expand_bang_state_pairs_in_clause, ItemClauses0, ItemClauses),
+        % Note that ItemClauses should never be empty...
+        (
+            ItemClauses = [ItemClause | _],
             Args = ItemClause ^ cl_head_args,
             adjust_func_arity(PredOrFunc, Arity, list.length(Args))
         ;
+            ItemClauses = [],
             Arity = Arity0
         ),
         ProcDef = instance_proc_def_clauses(ItemClauses),
         IM  = instance_method(PredOrFunc, Method, ProcDef, Arity, Ctxt)
     ).
 
-:- pred expand_bang_states_clause(item_clause_info::in, item_clause_info::out)
-    is det.
+:- pred expand_bang_state_pairs_in_clause(item_clause_info::in,
+    item_clause_info::out) is det.
 
-expand_bang_states_clause(ItemClause0, ItemClause) :-
-    ItemClause0 = item_clause_info(Origin, VarSet, PredOrFunc, SymName,
-        Args0, Body, Context, SeqNum),
-    expand_bang_states(Args0, Args),
-    ItemClause = item_clause_info(Origin, VarSet, PredOrFunc, SymName,
-        Args, Body, Context, SeqNum).
+expand_bang_state_pairs_in_clause(ItemClause0, ItemClause) :-
+    ItemClause0 = item_clause_info(SymName, PredOrFunc, Args0, Origin, VarSet,
+        Body, Context, SeqNum),
+    expand_bang_state_pairs_in_terms(Args0, Args),
+    ItemClause = item_clause_info(SymName, PredOrFunc, Args, Origin, VarSet,
+        Body, Context, SeqNum).
 
 %-----------------------------------------------------------------------------%
 %
@@ -496,23 +508,23 @@ svar_prepare_head_term(Term0, Term, !FinalMap, !State, !VarSet, !Specs) :-
         Term = Term0
     ;
         Term0 = functor(Functor, SubTerms0, Context),
-        (
+        ( if
             Functor = atom("!."),
             SubTerms0 = [variable(StateVar, _)]
-        ->
+        then
             !.State = svar_state(StatusMap0),
-            ( map.search(StatusMap0, StateVar, OldStatus) ->
+            ( if map.search(StatusMap0, StateVar, OldStatus) then
                 (
                     OldStatus = status_unknown,
                     % !:S happened to precede !.S in the head, which is ok.
                     new_state_var_instance(StateVar, name_initial, Var,
                         !VarSet),
-                    Term = variable(Var, context_init),
+                    Term = variable(Var, Context),
                     Status = status_known(Var),
                     map.det_update(StateVar, Status, StatusMap0, StatusMap)
                 ;
                     OldStatus = status_known(Var),
-                    Term = variable(Var, context_init),
+                    Term = variable(Var, Context),
                     StatusMap = StatusMap0
                 ;
                     OldStatus = status_unknown_updated(_),
@@ -528,27 +540,27 @@ svar_prepare_head_term(Term0, Term, !FinalMap, !State, !VarSet, !Specs) :-
                     % and the lambda expression itself also has !.StateVar.
                     new_state_var_instance(StateVar, name_initial, Var,
                         !VarSet),
-                    Term = variable(Var, context_init),
+                    Term = variable(Var, Context),
                     Status = status_known(Var),
                     map.det_update(StateVar, Status, StatusMap0, StatusMap)
                 )
-            ;
+            else
                 new_state_var_instance(StateVar, name_initial, Var, !VarSet),
-                Term = variable(Var, context_init),
+                Term = variable(Var, Context),
                 Status = status_known(Var),
                 map.det_insert(StateVar, Status, StatusMap0, StatusMap)
             ),
             !:State = svar_state(StatusMap)
-        ;
+        else if
             Functor = atom("!:"),
             SubTerms0 = [variable(StateVar, _)]
-        ->
+        then
             new_state_var_instance(StateVar, name_final, Var, !VarSet),
-            Term = variable(Var, context_init),
+            Term = variable(Var, Context),
             Status = status_unknown,
 
             !.State = svar_state(StatusMap0),
-            ( map.search(StatusMap0, StateVar, OldStatus) ->
+            ( if map.search(StatusMap0, StateVar, OldStatus) then
                 (
                     OldStatus = status_unknown,
                     % This is the second occurrence of !:StateVar.
@@ -572,19 +584,21 @@ svar_prepare_head_term(Term0, Term, !FinalMap, !State, !VarSet, !Specs) :-
                     % expression has a state variable named StateVar,
                     % which make_svars_read_only has given this status,
                     % and the lambda expression itself also has !:StateVar.
-                    StatusMap = StatusMap0
+                    map.det_update(StateVar, Status, StatusMap0, StatusMap)
                 )
-            ;
+            else
                 map.det_insert(StateVar, Status, StatusMap0, StatusMap)
             ),
             !:State = svar_state(StatusMap),
-            ( map.search(!.FinalMap, StateVar, _) ->
+            map.search_insert(StateVar, Var, MaybeOldVar, !FinalMap),
+            (
+                MaybeOldVar = yes(_),
                 report_repeated_head_state_var(Context, !.VarSet, StateVar,
                     !Specs)
             ;
-                map.det_insert(StateVar, Var, !FinalMap)
+                MaybeOldVar = no
             )
-        ;
+        else
             svar_prepare_head_terms(SubTerms0, SubTerms,
                 !FinalMap, !State, !VarSet, !Specs),
             Term = functor(Functor, SubTerms, Context)
@@ -652,12 +666,12 @@ svar_finish_clause_body(Context, FinalMap, Goals0, Goal,
         InitialSVarState, FinalSVarState, !SVarStore),
     !.SVarStore = svar_store(_, DelayedRenamings, Specs),
     list.filter(severity_is_error, Specs, ErrorSpecs, WarningSpecs),
-    (
+    ( if
         map.is_empty(FinalMap),
         map.is_empty(DelayedRenamings)
-    ->
+    then
         Goal = Goal1
-    ;
+    else
         trace [compiletime(flag("state-var-lambda")), io(!IO)] (
             some [FinalList, DelayedList] (
                 map.to_assoc_list(FinalMap, FinalList),
@@ -706,7 +720,7 @@ svar_finish_body(Context, FinalMap, Goals0, Goal,
     Goal1 = hlds_goal(GoalExpr1, GoalInfo1),
     GoalId1 = goal_info_get_goal_id(GoalInfo1),
     !.Store = svar_store(NextGoalId1, DelayedRenamingMap1, Specs),
-    ( map.search(DelayedRenamingMap1, GoalId1, DelayedRenaming0) ->
+    ( if map.search(DelayedRenamingMap1, GoalId1, DelayedRenaming0) then
         trace [compiletime(flag("state-var-lambda")), io(!IO)] (
             io.write_string("\nfinishing body, ", !IO),
             io.write_string("attaching subn to existing goal_id ", !IO),
@@ -721,7 +735,7 @@ svar_finish_body(Context, FinalMap, Goals0, Goal,
         DelayedRenamingMap1, DelayedRenamingMap),
         NextGoalId = NextGoalId1,
         Goal = Goal1
-    ;
+    else
         (
             FinalSVarSubn = [],
             NextGoalId = NextGoalId1,
@@ -763,7 +777,7 @@ svar_find_final_renames_and_copy_goals([Head | Tail],
     map.lookup(FinalStatusMap, SVar, FinalStatus),
     (
         FinalStatus = status_known(LastVar),
-        ( FinalStatus = InitialStatus ->
+        ( if FinalStatus = InitialStatus then
             % The state variable was not updated by the body.
             % Leaving the unification between two headvars representing the
             % initial and final states to the done at the start of the clause
@@ -771,7 +785,7 @@ svar_find_final_renames_and_copy_goals([Head | Tail],
             % presence of unique modes.
             make_copy_goal(LastVar, FinalHeadVar, CopyGoal),
             !:CopyGoals = [CopyGoal | !.CopyGoals]
-        ;
+        else
             !:FinalSVarSubn = [LastVar - FinalHeadVar | !.FinalSVarSubn]
         )
     ;
@@ -845,10 +859,10 @@ svar_prepare_for_local_state_vars(Context, VarSet, StateVars,
 prepare_svars_for_scope(_Context, _VarSet, [], !StatusMap, !Specs).
 prepare_svars_for_scope(Context, VarSet, [SVar | SVars],
         !StatusMap, !Specs) :-
-    ( map.search(!.StatusMap, SVar, _OldStatus) ->
+    ( if map.search(!.StatusMap, SVar, _OldStatus) then
         report_state_var_shadow(Context, VarSet, SVar, !Specs),
         map.det_update(SVar, status_unknown, !StatusMap)
-    ;
+    else
         map.det_insert(SVar, status_unknown, !StatusMap)
     ),
     prepare_svars_for_scope(Context, VarSet, SVars, !StatusMap, !Specs).
@@ -884,13 +898,13 @@ svar_finish_local_state_vars(StateVars, StateBeforeOutside, StateAfterInside,
 finish_svars_for_scope([], _, !StatusMapAfterOutside).
 finish_svars_for_scope([SVar | SVars], StatusMapBeforeOutside,
         !StatusMapAfterOutside) :-
-    ( map.search(StatusMapBeforeOutside, SVar, BeforeOutsideStatus) ->
+    ( if map.search(StatusMapBeforeOutside, SVar, BeforeOutsideStatus) then
         % The state var was visible before the scope. The outside state var
         % was shadowed by a state var in the scope. Now that we are leaving
         % the scope, restore access to the outside state var. Due to the
         % shadowing, its status couldn't have changed inside the scope.
         map.det_update(SVar, BeforeOutsideStatus, !StatusMapAfterOutside)
-    ;
+    else
         % The state var introduced in the scope wasn't visible before it.
         map.det_remove(SVar, _, !StatusMapAfterOutside)
     ),
@@ -906,7 +920,7 @@ finish_svars_for_scope([SVar | SVars], StatusMapBeforeOutside,
 %   the final prog_var from one of the updated arms to represent the state var
 %   after the disjunction.
 %
-% - Pass two processes the arms to ensure that the picked prog_var represents
+% - Pass 2 processes the arms to ensure that the picked prog_var represents
 %   the final value of the state variable in all the arms. In arms that do not
 %   update the state variable, it introduces unifications to copy the initial
 %   value of the state var to be the final value. In arms that do update the
@@ -916,12 +930,12 @@ finish_svars_for_scope([SVar | SVars], StatusMapBeforeOutside,
 svar_finish_disjunction(_Context, DisjStates, Disjs, !VarSet,
         StateBefore, StateAfter, !Store) :-
     StateBefore = svar_state(StatusMapBefore),
-    ( map.is_empty(StatusMapBefore) ->
+    ( if map.is_empty(StatusMapBefore) then
         % Optimize the common case.
         get_disjuncts_with_empty_states(DisjStates, [], RevDisjs),
         list.reverse(RevDisjs, Disjs),
         StateAfter = StateBefore
-    ;
+    else
         map.to_sorted_assoc_list(StatusMapBefore, StatusListBefore),
         compute_status_after_arms(StatusListBefore, DisjStates,
             map.init, ChangedStatusMapAfter, StatusMapBefore, StatusMapAfter),
@@ -979,12 +993,12 @@ find_changes_in_arm_and_update_changed_status_map([Before | Befores],
         StatusMapAfterArm, !ChangedStatusMapAfter, !StatusMapAfter) :-
     Before = SVar - StatusBefore,
     map.lookup(StatusMapAfterArm, SVar, StatusAfter),
-    ( StatusBefore = StatusAfter ->
+    ( if StatusBefore = StatusAfter then
         true
-    ;
-        ( map.search(!.ChangedStatusMapAfter, SVar, _AlreadyUpdated) ->
+    else
+        ( if map.search(!.ChangedStatusMapAfter, SVar, _AlreadyUpdated) then
             true
-        ;
+        else
             map.det_insert(SVar, StatusAfter, !ChangedStatusMapAfter),
             map.det_update(SVar, StatusAfter, !StatusMapAfter)
         )
@@ -998,8 +1012,7 @@ find_changes_in_arm_and_update_changed_status_map([Before | Befores],
     map(svar, svar_status)::in, assoc_list(svar, svar_status)::in,
     prog_varset::in, list(hlds_goal)::in, list(hlds_goal)::out,
     counter::in, counter::out,
-    map(goal_id, assoc_list(prog_var, prog_var))::in,
-    map(goal_id, assoc_list(prog_var, prog_var))::out,
+    incremental_rename_map::in, incremental_rename_map::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
 merge_changes_made_by_arms([], _StatusMapBefore, _ChangedStatusListAfter,
@@ -1054,7 +1067,7 @@ handle_arm_updated_state_vars([Change | Changes], StatusMapBefore,
     Change = StateVar - AfterAllArmsStatus,
     map.lookup(StatusMapBefore, StateVar, BeforeStatus),
     map.lookup(StatusMapAfterArm, StateVar, AfterArmStatus),
-    ( AfterArmStatus = BeforeStatus ->
+    ( if AfterArmStatus = BeforeStatus then
         expect_not(unify(AfterArmStatus, AfterAllArmsStatus),
             $pred, "AfterArmStatus = AfterAllArmsStatus"),
         (
@@ -1098,16 +1111,16 @@ handle_arm_updated_state_vars([Change | Changes], StatusMapBefore,
             % the same as StatusBefore, which means we shouldn't get here.
             unexpected($module, $pred, "BeforeStatus is updated")
         )
-    ;
+    else
         (
             AfterArmStatus = status_known(AfterArmVar),
             (
                 AfterAllArmsStatus = status_known(AfterAllVar),
                 CopyGoals = CopyGoalsTail,
                 UninitVarNames = UninitVarNamesTail,
-                ( AfterArmVar = AfterAllVar ->
+                ( if AfterArmVar = AfterAllVar then
                     Renames = RenamesTail
-                ;
+                else
                     Renames = [AfterArmVar - AfterAllVar | RenamesTail]
                 )
             ;
@@ -1142,7 +1155,7 @@ make_copy_goal(FromVar, ToVar, CopyGoal) :-
     % feels free to schedule them in places where the unique mode analysis pass
     % does not like them; specifically, it can cause a di reference to a
     % variable to appear before a ui reference.
-    % 
+    %
     % The alternative is to add a builtin predicate to the standard library
     % that just does copying, and to make make_copy_goal construct a call to
     % that predicate. That predicate would need to be able to be called in
@@ -1157,13 +1170,12 @@ make_copy_goal(FromVar, ToVar, CopyGoal) :-
 
     create_pure_atomic_complicated_unification(ToVar, rhs_var(FromVar),
         term.context_init, umc_implicit("state variable"), [], CopyGoal0),
-    goal_add_feature(feature_dont_warn_singleton,
-        CopyGoal0, CopyGoal).
+    goal_add_feature(feature_dont_warn_singleton, CopyGoal0, CopyGoal).
 
 %-----------------------------------------------------------------------------%
 %
-% Handle if-then-else goals. The basic idea is the same as for
-% disjunctions, but we also have to handle three complications.
+% Handle if-then-else goals. The basic idea is the same as for disjunctions,
+% but we also have to handle three complications.
 %
 % First, the first disjunct consists of two parts: the condition and the then
 % part, with data flowing between them.
@@ -1273,7 +1285,7 @@ handle_state_vars_in_ite(LocKind, QuantStateVars, [SVar | SVars],
     map.lookup(StatusMapAfterThen, SVar, StatusAfterThen),
     map.lookup(StatusMapAfterElse, SVar, StatusAfterElse),
 
-    ( list.member(SVar, QuantStateVars) ->
+    ( if list.member(SVar, QuantStateVars) then
         expect(unify(StatusBefore, StatusAfterThen), $module,
             "state var shadowed in if-then-else is nevertheless updated"),
         % SVar is quantified in the if-then-else. That means that Cond and Then
@@ -1286,7 +1298,7 @@ handle_state_vars_in_ite(LocKind, QuantStateVars, [SVar | SVars],
             StatusBefore, StatusBefore, StatusAfterElse, StatusAfterITE,
             !VarSet, !NeckCopyGoals, !ThenEndCopyGoals, !ElseEndCopyGoals,
             !ThenRenames, !ElseRenames, !ThenMissingInits, !ElseMissingInits)
-    ;
+    else
         % If StatusBefore = status_known_ro(_, _, _), then we would expect
         % StatusBefore = StatusAfterCond
         % StatusBefore = StatusAfterThen
@@ -1353,14 +1365,14 @@ handle_state_var_in_ite(LocKind, SVar, StatusBefore,
         io.nl(!IO)
     ),
 
-    ( StatusAfterCond = StatusBefore ->
+    ( if StatusAfterCond = StatusBefore then
         % Cases 1-4.
-        ( StatusAfterThen = StatusAfterCond ->
+        ( if StatusAfterThen = StatusAfterCond then
             % Cases 1-2.
-            ( StatusAfterElse = StatusBefore ->
+            ( if StatusAfterElse = StatusBefore then
                 % Case 1.
                 StatusAfterITE = StatusBefore
-            ;
+            else
                 % Case 2.
                 (
                     StatusBefore = status_known(VarBefore),
@@ -1397,9 +1409,9 @@ handle_state_var_in_ite(LocKind, SVar, StatusBefore,
                     unexpected($module, $pred, "updated before (case 2)")
                 )
             )
-        ;
+        else
             % Cases 3-4.
-            ( StatusAfterElse = StatusBefore ->
+            ( if StatusAfterElse = StatusBefore then
                 % Case 3.
                 (
                     StatusBefore = status_known(VarBefore),
@@ -1435,7 +1447,7 @@ handle_state_var_in_ite(LocKind, SVar, StatusBefore,
                     % have just returned the new progvar for SVar.
                     unexpected($module, $pred, "updated before (case 3)")
                 )
-            ;
+            else
                 % Case 4.
                 VarAfterThen =
                     svar_get_current_progvar(LocKind, StatusAfterThen),
@@ -1445,11 +1457,11 @@ handle_state_var_in_ite(LocKind, SVar, StatusBefore,
                 StatusAfterITE = StatusAfterThen
             )
         )
-    ;
+    else
         % Cases 5-8.
-        ( StatusAfterThen = StatusAfterCond ->
+        ( if StatusAfterThen = StatusAfterCond then
             % Cases 5-6.
-            ( StatusAfterElse = StatusBefore ->
+            ( if StatusAfterElse = StatusBefore then
                 % Case 5.
                 (
                     StatusBefore = status_known(VarBefore),
@@ -1496,7 +1508,7 @@ handle_state_var_in_ite(LocKind, SVar, StatusBefore,
                     % have just returned the new progvar for SVar.
                     unexpected($module, $pred, "updated before (case 5)")
                 )
-            ;
+            else
                 % Case 6.
                 VarAfterCond =
                     svar_get_current_progvar(LocKind, StatusAfterCond),
@@ -1506,9 +1518,9 @@ handle_state_var_in_ite(LocKind, SVar, StatusBefore,
                 !:NeckCopyGoals = [CopyGoal | !.NeckCopyGoals],
                 StatusAfterITE = StatusAfterElse
             )
-        ;
+        else
             % Cases 7-8.
-            ( StatusAfterElse = StatusBefore ->
+            ( if StatusAfterElse = StatusBefore then
                 % Case 7.
                 (
                     StatusBefore = status_known(VarBefore),
@@ -1545,7 +1557,7 @@ handle_state_var_in_ite(LocKind, SVar, StatusBefore,
                     % for SVar.
                     unexpected($module, $pred, "updated before (case 7)")
                 )
-            ;
+            else
                 % Case 8.
                 VarAfterThen =
                     svar_get_current_progvar(LocKind, StatusAfterThen),
@@ -1574,7 +1586,7 @@ handle_state_var_in_ite(LocKind, SVar, StatusBefore,
 svar_start_outer_atomic_scope(Context, OuterStateVar, OuterDIVar, OuterUOVar,
         OuterScopeInfo, !State, !VarSet, !Specs) :-
     StatusMap0 = !.State ^ state_status_map,
-    ( map.remove(OuterStateVar, BeforeStatus, StatusMap0, StatusMap) ->
+    ( if map.remove(OuterStateVar, BeforeStatus, StatusMap0, StatusMap) then
         !State ^ state_status_map := StatusMap,
         (
             BeforeStatus = status_unknown,
@@ -1611,7 +1623,7 @@ svar_start_outer_atomic_scope(Context, OuterStateVar, OuterDIVar, OuterUOVar,
             % middle of processing an atomic goal.
             unexpected($module, $pred, "status updated")
         )
-    ;
+    else
         report_non_visible_state_var("", Context, !.VarSet, OuterStateVar,
             !Specs),
         new_state_var_instance(OuterStateVar, name_middle, OuterDIVar,
@@ -1681,20 +1693,20 @@ substitute_state_var_mappings([Arg0 | Args0], [Arg | Args], !VarSet, !State,
     substitute_state_var_mappings(Args0, Args, !VarSet, !State, !Specs).
 
 substitute_state_var_mapping(Arg0, Arg, !VarSet, !State, !Specs) :-
-    ( Arg0 = functor(atom("!."), [variable(StateVar, _)], Context) ->
+    ( if Arg0 = functor(atom("!."), [variable(StateVar, _)], Context) then
         lookup_dot_state_var(Context, StateVar, Var, !VarSet, !State, !Specs),
         Arg = variable(Var, context_init)
-    ; Arg0 = functor(atom("!:"), [variable(StateVar, _)], Context) ->
+    else if Arg0 = functor(atom("!:"), [variable(StateVar, _)], Context) then
         lookup_colon_state_var(Context, StateVar, Var, !VarSet, !State,
             !Specs),
         Arg = variable(Var, context_init)
-    ;
+    else
         Arg = Arg0
     ).
 
 lookup_dot_state_var(Context, StateVar, Var, !VarSet, !State, !Specs) :-
     StatusMap0 = !.State ^ state_status_map,
-    ( map.search(StatusMap0, StateVar, Status) ->
+    ( if map.search(StatusMap0, StateVar, Status) then
         (
             Status = status_unknown,
             report_uninitialized_state_var(Context, !.VarSet, StateVar,
@@ -1719,15 +1731,14 @@ lookup_dot_state_var(Context, StateVar, Var, !VarSet, !State, !Specs) :-
             ; Status = status_known_updated(Var, _)
             )
         )
-    ;
-        report_non_visible_state_var(".", Context, !.VarSet, StateVar,
-            !Specs),
+    else
+        report_non_visible_state_var(".", Context, !.VarSet, StateVar, !Specs),
         Var = StateVar
     ).
 
 lookup_colon_state_var(Context, StateVar, Var, !VarSet, !State, !Specs) :-
     StatusMap0 = !.State ^ state_status_map,
-    ( map.search(StatusMap0, StateVar, Status) ->
+    ( if map.search(StatusMap0, StateVar, Status) then
         (
             Status = status_unknown,
             new_state_var_instance(StateVar, name_middle, Var, !VarSet),
@@ -1758,7 +1769,7 @@ lookup_colon_state_var(Context, StateVar, Var, !VarSet, !State, !Specs) :-
         ;
             Status = status_unknown_updated(Var)
         )
-    ;
+    else
         report_non_visible_state_var(":", Context, !.VarSet, StateVar, !Specs),
         % We could make StateVar known to avoid duplicate reports.
         % new_state_var_instance(StateVar, name_initial, Var, !VarSet),
@@ -1827,60 +1838,58 @@ svar_goal_to_conj_list(Goal, Conjuncts, !Store) :-
     % The code here is the same as in svar_goal_to_conj_list_internal,
     % modulo the differences in the argument list.
     Goal = hlds_goal(GoalExpr, GoalInfo),
-    ( GoalExpr = conj(plain_conj, Conjuncts0) ->
+    ( if GoalExpr = conj(plain_conj, Conjuncts0) then
         !.Store = svar_store(NextGoalId0, DelayedRenamingMap0, Specs),
         GoalId = goal_info_get_goal_id(GoalInfo),
-        ( map.search(DelayedRenamingMap0, GoalId, GoalDelayedRenaming) ->
+        ( if map.search(DelayedRenamingMap0, GoalId, GoalDelayedRenaming) then
             list.map_foldl2(
                 add_conjunct_delayed_renames(GoalDelayedRenaming),
                     Conjuncts0, Conjuncts, NextGoalId0, NextGoalId,
                     DelayedRenamingMap0, DelayedRenamingMap),
             !:Store = svar_store(NextGoalId, DelayedRenamingMap, Specs)
-        ;
+        else
             Conjuncts = Conjuncts0
         )
-    ;
+    else
         Conjuncts = [Goal]
     ).
 
 :- pred svar_goal_to_conj_list_internal(hlds_goal::in, list(hlds_goal)::out,
     counter::in, counter::out,
-    map(goal_id, assoc_list(prog_var, prog_var))::in,
-    map(goal_id, assoc_list(prog_var, prog_var))::out) is det.
+    incremental_rename_map::in, incremental_rename_map::out) is det.
 
 svar_goal_to_conj_list_internal(Goal, Conjuncts,
         !NextGoalId, !DelayedRenamingMap) :-
     % The code here is the same as in svar_goal_to_conj_list,
     % modulo the differences in the argument list.
     Goal = hlds_goal(GoalExpr, GoalInfo),
-    ( GoalExpr = conj(plain_conj, Conjuncts0) ->
+    ( if GoalExpr = conj(plain_conj, Conjuncts0) then
         GoalId = goal_info_get_goal_id(GoalInfo),
-        ( map.search(!.DelayedRenamingMap, GoalId, GoalDelayedRenaming) ->
+        ( if map.search(!.DelayedRenamingMap, GoalId, GoalDelayedRenaming) then
             list.map_foldl2(
                 add_conjunct_delayed_renames(GoalDelayedRenaming),
                 Conjuncts0, Conjuncts, !NextGoalId, !DelayedRenamingMap)
-        ;
+        else
             Conjuncts = Conjuncts0
         )
-    ;
+    else
         Conjuncts = [Goal]
     ).
 
 :- pred add_conjunct_delayed_renames(assoc_list(prog_var, prog_var)::in,
     hlds_goal::in, hlds_goal::out, counter::in, counter::out,
-    map(goal_id, assoc_list(prog_var, prog_var))::in,
-    map(goal_id, assoc_list(prog_var, prog_var))::out) is det.
+    incremental_rename_map::in, incremental_rename_map::out) is det.
 
 add_conjunct_delayed_renames(DelayedRenamingToAdd, Goal0, Goal,
         !NextGoalId, !DelayedRenamingMap) :-
     Goal0 = hlds_goal(GoalExpr, GoalInfo0),
     GoalId0 = goal_info_get_goal_id(GoalInfo0),
-    ( map.search(!.DelayedRenamingMap, GoalId0, DelayedRenaming0) ->
+    ( if map.search(!.DelayedRenamingMap, GoalId0, DelayedRenaming0) then
         % The goal id must be valid.
         DelayedRenaming = DelayedRenamingToAdd ++ DelayedRenaming0,
         map.det_update(GoalId0, DelayedRenaming, !DelayedRenamingMap),
         Goal = Goal0
-    ;
+    else
         % The goal id must be invalid, since the only thing that attaches goal
         % ids to goals at this stage of the compilation process is this module,
         % and it attaches goal_ids to goals only if it also puts them the
@@ -1897,15 +1906,12 @@ add_conjunct_delayed_renames(DelayedRenamingToAdd, Goal0, Goal,
 % Test for various kinds of errors.
 %
 
-illegal_state_var_func_result(pf_function, Args, StateVar) :-
-    list.last(Args, functor(atom("!"), [variable(StateVar, _)], _Ctxt)).
+illegal_state_var_func_result(pf_function, ArgTerms, StateVar, Context) :-
+    list.last(ArgTerms, LastArgTerm),
+    is_term_a_bang_state_pair(LastArgTerm, StateVar, Context).
 
-lambda_args_contain_bang_state_var([Arg | Args], StateVar) :-
-    ( Arg = functor(atom("!"), [variable(StateVar0, _)], _) ->
-        StateVar = StateVar0
-    ;
-        lambda_args_contain_bang_state_var(Args, StateVar)
-    ).
+is_term_a_bang_state_pair(ArgTerm, StateVar, Context) :-
+    ArgTerm = functor(atom("!"), [variable(StateVar, Context)], _).
 
 %-----------------------------------------------------------------------------%
 %
@@ -1933,10 +1939,12 @@ ro_construct_name(roc_lambda) = "lambda expression".
 
 report_illegal_func_svar_result(Context, VarSet, StateVar, !Specs) :-
     Name = varset.lookup_name(VarSet, StateVar),
+    % While having !.Var appear as a function argument is quite ordinary,
+    % having it appear as a function *result* is not. We therefore do not
+    % suggest it as a likely correction.
     Pieces = [words("Error:"), fixed("!" ++ Name),
         words("cannot be a function result."), nl,
-        words("You probably meant"), fixed("!." ++ Name),
-        words("or"), fixed("!:" ++ Name), suffix("."), nl],
+        words("You probably meant"), fixed("!:" ++ Name), suffix("."), nl],
     Msg = simple_msg(Context, [always(Pieces)]),
     Spec = error_spec(severity_error, phase_parse_tree_to_hlds, [Msg]),
     !:Specs = [Spec | !.Specs].
@@ -2039,8 +2047,43 @@ report_missing_inits_in_disjunct(Context, NextStateVars, !Specs) :-
 
 %-----------------------------------------------------------------------------%
 
+report_svar_unify_error(Context, StateVar, !VarSet, !State, !Specs) :-
+    Name = varset.lookup_name(!.VarSet, StateVar),
+    Pieces = [words("Error:"), fixed("!" ++ Name),
+        words("cannot appear as a unification argument."), nl,
+        words("You probably meant"), fixed("!." ++ Name),
+        words("or"), fixed("!:" ++ Name), suffix(".")],
+    Msg = simple_msg(Context, [always(Pieces)]),
+    Spec = error_spec(severity_error, phase_parse_tree_to_hlds, [Msg]),
+    !:Specs = [Spec | !.Specs],
+    !.State = svar_state(StatusMap0),
+    % If StateVar was not known before, then this is the first occurrence
+    % of this state variable, and the user almost certainly intended it
+    % to define its initial value. Any messages from later goals complaining
+    % about the variable not being defined there would only be a distraction.
+    %
+    % Adding this dummy entry to the state, means we cannot generate valid
+    % HLDS goals, but the error reported just above ensures that we will
+    % throw away the HLDS goals we generate, so this is ok.
+    ( if
+        map.search(StatusMap0, StateVar, OldStatus),
+        OldStatus \= status_unknown
+    then
+        % The state variable is already known.
+        true
+    else
+        new_state_var_instance(StateVar, name_initial, Var, !VarSet),
+        Status = status_known(Var),
+        map.set(StateVar, Status, StatusMap0, StatusMap),
+        !:State = svar_state(StatusMap)
+    ).
+
+%-----------------------------------------------------------------------------%
+
 :- pred severity_is_error(error_spec::in) is semidet.
 
 severity_is_error(error_spec(severity_error, _, _)).
 
+%-----------------------------------------------------------------------------%
+:- end_module hlds.make_hlds.state_var.
 %-----------------------------------------------------------------------------%

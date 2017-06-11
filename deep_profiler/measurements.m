@@ -1,17 +1,17 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2001, 2004-2006, 2008-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Authors: conway, zs.
 %
 % This module defines the data structures that store deep profiling
 % measurements and the operations on them.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module measurements.
 
@@ -26,7 +26,7 @@
 :- import_module mdbcomp.feedback.automatic_parallelism.
 :- import_module measurement_units.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type own_prof_info.
 :- type inherit_prof_info.
@@ -87,7 +87,7 @@
     %
 :- func compute_is_active(own_prof_info) = is_active.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type proc_cost_csq.
 
@@ -117,7 +117,7 @@
     %
 :- func proc_cost_get_total(proc_cost_csq) = float.
 
-    % Retrive the number of calls made to this procedure.
+    % Retrieve the number of calls made to this procedure.
     %
 :- func proc_cost_get_calls_total(proc_cost_csq) = int.
 :- func proc_cost_get_calls_nonrec(proc_cost_csq) = int.
@@ -132,7 +132,7 @@
     %
 :- func cs_cost_get_percall(cs_cost_csq) = float.
 
-    % Retrive the number of calls made from this call site.
+    % Retrieve the number of calls made from this call site.
     %
 :- func cs_cost_get_calls(cs_cost_csq) = float.
 
@@ -143,7 +143,7 @@
 
 :- func cs_cost_per_proc_call(cs_cost_csq, proc_cost_csq) = cs_cost_csq.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % The cost of a goal.
     %
@@ -167,18 +167,18 @@
 
 :- func call_goal_cost(cs_cost_csq) = goal_cost_csq.
 
-    % add_goal_costs_seq(Earlier, Later) = Cost.
+    % add_goal_costs_seq(EarlierGoalCost, LaterGoalCost) = Cost.
     %
-    % Add goal costs that form a sequence with Earlier being the cost of goals
-    % earlier in the sequence and Later being the cost of goals later in the
-    % sequence. This operation is associative provided that the above
-    % condition is met.
+    % Compute the total cost of two goals executed one after the other,
+    % either because EarlierGoal and LaterGoal are in a conjunction,
+    % or because execution can backtrack from EarlierGoal to LaterGoal.
     %
 :- func add_goal_costs_seq(goal_cost_csq, goal_cost_csq) = goal_cost_csq.
 
-    % add_goal_costs_branch(TotalCalls, BranchA, BranchB) = Cost.
+    % add_goal_costs_branch(TotalCalls, EarlierBranchCost, LaterBranchCost)
+    %   = Cost.
     %
-    % Add the costs of goal accross the arms of a branch.
+    % Compute the total cost of two alternative branches of execution.
     %
 :- func add_goal_costs_branch(int, goal_cost_csq, goal_cost_csq) =
     goal_cost_csq.
@@ -191,7 +191,7 @@
 
 :- func goal_cost_change_calls(goal_cost_csq, int) = goal_cost_csq.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type recursion_depth.
 
@@ -205,7 +205,7 @@
 
 :- pred recursion_depth_is_base_case(recursion_depth::in) is semidet.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type static_coverage_info.
 
@@ -220,7 +220,7 @@
 :- func static_coverage_maybe_get_coverage_points(static_coverage_info) =
     maybe(array(int)).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % The amount of parallelism either available or exploited.
     %
@@ -257,7 +257,7 @@
 :- pred exceeded_desired_parallelism(float::in, parallelism_amount::in)
     is semidet.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Represent the metrics of part of a parallel execution.
     %
@@ -304,12 +304,12 @@
 :- func parallel_exec_metrics_get_num_calls(parallel_exec_metrics_incomplete)
     = int.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred weighted_average(list(float)::in, list(float)::in, float::out) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -320,7 +320,7 @@
 
 :- import_module array_util.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type own_prof_info
     --->    own_prof_all(
@@ -495,25 +495,25 @@ sum_inherit_infos(Inherits) =
 
 compress_profile(Exits, Fails, Redos, Excps, Quanta, CallSeqs, Allocs, Words)
         = PI :-
-    (
+    ( if
         Redos = 0,
         Excps = 0,
         Quanta = 0,
         Allocs = 0,
         Words = 0
-    ->
+    then
         PI = own_prof_fast_nomem_semi(Exits, Fails, CallSeqs)
-    ;
+    else if
         Fails = 0,
         Redos = 0,
         Excps = 0
-    ->
-        ( Quanta = 0 ->
+    then
+        ( if Quanta = 0 then
             PI = own_prof_fast_det(Exits, CallSeqs, Allocs, Words)
-        ;
+        else
             PI = own_prof_det(Exits, Quanta, CallSeqs, Allocs, Words)
         )
-    ;
+    else
         PI = own_prof_all(Exits, Fails, Redos, Excps, Quanta, CallSeqs,
             Allocs, Words)
     ).
@@ -522,41 +522,41 @@ compress_profile(PI0) = PI :-
     (
         PI0 = own_prof_all(Exits, Fails, Redos, Excps, Quanta, CallSeqs,
             Allocs, Words),
-        (
+        ( if
             Redos = 0,
             Excps = 0,
             Quanta = 0,
             Allocs = 0,
             Words = 0
-        ->
+        then
             PI = own_prof_fast_nomem_semi(Exits, Fails, CallSeqs)
-        ;
+        else if
             Fails = 0,
             Redos = 0,
             Excps = 0
-        ->
-            ( Quanta = 0 ->
+        then
+            ( if Quanta = 0 then
                 PI = own_prof_fast_det(Exits, CallSeqs, Allocs, Words)
-            ;
+            else
                 PI = own_prof_det(Exits, Quanta, CallSeqs, Allocs, Words)
             )
-        ;
+        else
             PI = PI0
         )
     ;
         PI0 = own_prof_det(Exits, Quanta, CallSeqs, Allocs, Words),
-        ( Allocs = 0, Words = 0 ->
+        ( if Allocs = 0, Words = 0 then
             PI = own_prof_fast_nomem_semi(Exits, 0, CallSeqs)
-        ; Quanta = 0 ->
+        else if Quanta = 0 then
             PI = own_prof_fast_det(Exits, CallSeqs, Allocs, Words)
-        ;
+        else
             PI = PI0
         )
     ;
         PI0 = own_prof_fast_det(Exits, CallSeqs, Allocs, Words),
-        ( Allocs = 0, Words = 0 ->
+        ( if Allocs = 0, Words = 0 then
             PI = own_prof_fast_nomem_semi(Exits, 0, CallSeqs)
-        ;
+        else
             PI = PI0
         )
     ;
@@ -564,7 +564,7 @@ compress_profile(PI0) = PI :-
         PI = PI0
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 decompress_profile(Own, Calls, Exits, Fails, Redos, Excps, Quanta, CallSeqs,
         Allocs, Words) :-
@@ -630,19 +630,19 @@ own_to_string(own_prof_fast_nomem_semi(Exits, Fails, CallSeqs)) =
     ")".
 
 compute_is_active(Own) = IsActive :-
-    (
+    ( if
         ( Own = own_prof_all(0, 0, 0, 0, _, _, _, _)
         ; Own = own_prof_det(0, _, _, _, _)
         ; Own = own_prof_fast_det(0, _, _, _)
         ; Own = own_prof_fast_nomem_semi(0, 0, _)
         )
-    ->
+    then
         IsActive = is_not_active
-    ;
+    else
         IsActive = is_active
     ).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type proc_cost_csq
     --->    proc_cost_csq(
@@ -669,11 +669,25 @@ compute_is_active(Own) = IsActive :-
                 cscc_csq_cost       :: cost
             ).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 build_proc_cost_csq(NonRecursiveCalls, RecursiveCalls, TotalCost) =
     proc_cost_csq(NonRecursiveCalls, RecursiveCalls,
         cost_total(float(TotalCost))).
+
+build_cs_cost_csq(Calls, TotalCost) =
+    cs_cost_csq(float(Calls), cost_total(TotalCost)).
+
+build_cs_cost_csq_percall(Calls, PercallCost) =
+    cs_cost_csq(Calls, cost_per_call(PercallCost)).
+
+zero_cs_cost =
+    % Build this using the percall structure so that if a percall cost is ever
+    % retrieved, we don't have to divide by zero. This is only a partial
+    % solution.
+    build_cs_cost_csq_percall(0.0, 0.0).
+
+%---------------------------------------------------------------------------%
 
 proc_cost_get_total(proc_cost_csq(NRCalls, RCalls, Cost)) =
     cost_get_total(float(NRCalls + RCalls), Cost).
@@ -685,19 +699,7 @@ proc_cost_get_calls_nonrec(proc_cost_csq(NRCalls, _, _)) = NRCalls.
 
 proc_cost_get_calls_rec(proc_cost_csq(_, RCalls, _)) = RCalls.
 
-%----------------------------------------------------------------------------%
-
-build_cs_cost_csq(Calls, TotalCost) =
-    cs_cost_csq(float(Calls), cost_total(TotalCost)).
-
-build_cs_cost_csq_percall(Calls, PercallCost) =
-    cs_cost_csq(Calls, cost_per_call(PercallCost)).
-
-zero_cs_cost =
-    % Build this using the percall structure so that if a percall cost is ever
-    % retrived we don't have to divide by zero. This is only a partial
-    % solution.
-    build_cs_cost_csq_percall(0.0, 0.0).
+%---------------------------------------------------------------------------%
 
 cs_cost_get_total(cs_cost_csq(Calls, Cost)) =
     cost_get_total(Calls, Cost).
@@ -707,13 +709,13 @@ cs_cost_get_percall(cs_cost_csq(Calls, Cost)) =
 
 cs_cost_get_calls(cs_cost_csq(Calls, _)) = Calls.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 cs_cost_to_proc_cost(cs_cost_csq(CSCalls, CSCost), TotalCalls,
         proc_cost_csq(NRCalls, RCalls, PCost)) :-
     NRCalls = round_to_int(CSCalls),
     RCalls = TotalCalls - round_to_int(CSCalls),
-    % The negative one represents the cost of the callsite itsself.
+    % The negative one represents the cost of the callsite itself.
     PCost = cost_total(cost_get_total(CSCalls, CSCost) - 1.0 * CSCalls).
 
 cs_cost_per_proc_call(cs_cost_csq(CSCalls0, CSCost0), ParentCost) =
@@ -722,7 +724,7 @@ cs_cost_per_proc_call(cs_cost_csq(CSCalls0, CSCost0), ParentCost) =
     CSCalls = CSCalls0 / float(TotalParentCalls),
     CSCost = CSCost0 / TotalParentCalls.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type goal_cost_csq
     --->    dead_goal
@@ -764,19 +766,19 @@ add_goal_costs_seq(non_trivial_goal(CostA, CallsA),
     CostTotal = cost_get_total(float(CallsA), CostA) +
         cost_get_total(float(CallsB), CostB),
     Cost = cost_total(CostTotal),
-    (
+    ( if
         Calls = 0,
         CostTotal \= 0.0
-    ->
+    then
         unexpected($module, $pred, "Calls = 0, Cost \\= 0")
-    ;
+    else
         true
     ).
 
 add_goal_costs_branch(TotalCalls, A, B) = R :-
-    ( TotalCalls = 0 ->
+    ( if TotalCalls = 0 then
         R = dead_goal
-    ;
+    else
         (
             A = dead_goal,
             CallsA = 0,
@@ -825,18 +827,18 @@ add_goal_costs_branch(TotalCalls, A, B) = R :-
 
 check_total_calls(CallsA, CallsB, TotalCalls) :-
     Calls = CallsA + CallsB,
-    ( unify(Calls, TotalCalls) ->
+    ( if unify(Calls, TotalCalls) then
         true
-    ;
+    else
         unexpected($module, $pred, "TotalCalls \\= CallsA + CallsB")
     ).
 
 goal_cost_get_percall(dead_goal) = 0.0.
 goal_cost_get_percall(trivial_goal(_)) = 0.0.
 goal_cost_get_percall(non_trivial_goal(Cost, Calls)) =
-    ( Calls = 0 ->
+    ( if Calls = 0 then
         0.0
-    ;
+    else
         cost_get_percall(float(Calls), Cost)
     ).
 
@@ -856,7 +858,7 @@ goal_cost_change_calls(non_trivial_goal(Cost0, Calls0), Calls) =
         non_trivial_goal(Cost, Calls) :-
     Cost = cost_per_call(cost_get_percall(float(Calls0), Cost0)).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type cost
     --->    cost_per_call(float)
@@ -895,7 +897,7 @@ sum_costs(CallsA, CostA, CallsB, CostB) = cost_total(Sum) :-
     CostTotalA = cost_get_total(CallsA, CostA),
     CostTotalB = cost_get_total(CallsB, CostB).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type recursion_depth
     --->    recursion_depth(float).
@@ -907,9 +909,9 @@ recursion_depth_to_int(D) =
     round_to_int(recursion_depth_to_float(D)).
 
 recursion_depth_descend(recursion_depth(D), recursion_depth(D - 1.0)) :-
-    ( D >= 0.5 ->
+    ( if D >= 0.5 then
         true
-    ;
+    else
         unexpected($module, $pred,
             format("Recursion depth will be less than zero: %f", [f(D - 1.0)]))
     ).
@@ -918,7 +920,7 @@ recursion_depth_is_base_case(recursion_depth(D)) :-
     D < 0.5,
     D >= -0.5.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type static_coverage_info == maybe(array(int)).
 
@@ -926,17 +928,17 @@ zero_static_coverage = no.
 
 add_coverage_arrays(Array, no, yes(Array)).
 add_coverage_arrays(NewArray, yes(!.Array), yes(!:Array)) :-
-    (
-        bounds(NewArray, Min, Max),
-        bounds(!.Array, Min, Max)
-    ->
+    ( if
+        array.bounds(NewArray, Min, Max),
+        array.bounds(!.Array, Min, Max)
+    then
         !:Array = copy(!.Array),
         array_foldl_from_0(
             (pred(Index::in, E::in, A0::array_di, A::array_uo) is det :-
-                lookup(A0, Index, Value),
-                set(Index, Value + E, A0, A)
+                array.lookup(A0, Index, Value),
+                array.set(Index, Value + E, A0, A)
             ), NewArray, !Array)
-    ;
+    else
         unexpected($module, $pred, "arrays' bounds do not match")
     ).
 
@@ -944,7 +946,7 @@ array_to_static_coverage(Array, yes(Array)).
 
 static_coverage_maybe_get_coverage_points(MaybeCoverage) = MaybeCoverage.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % This type can be represented in multiple ways. A single value expressing
     % the probable value, or a probable value and a measure of
@@ -970,10 +972,10 @@ static_coverage_maybe_get_coverage_points(MaybeCoverage) = MaybeCoverage.
 no_parallelism = parallelism_amount(1.0).
 
 some_parallelism(Num) = parallelism_amount(Num) :-
-    ( Num < 1.0 ->
+    ( if Num < 1.0 then
         unexpected($module, $pred,
             "Parallelism amount cannot ever be less than 1.0")
-    ;
+    else
         true
     ).
 
@@ -993,7 +995,7 @@ exceeded_desired_parallelism(DesiredParallelism, Parallelism) :-
     Parallelism = parallelism_amount(LikelyParallelism),
     DesiredParallelism < LikelyParallelism.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type parallel_exec_metrics_incomplete
     --->    pem_incomplete(
@@ -1046,8 +1048,8 @@ exceeded_desired_parallelism(DesiredParallelism, Parallelism) :-
                 % so it will usually be larger than time_right_seq.
                 pemi_time_right_par         :: float,
 
-                % THe dead time of this conjunct, This is the time that the
-                % contaxt will be blocked on futures. It does not include the
+                % The dead time of this conjunct, This is the time that the
+                % context will be blocked on futures. It does not include the
                 % spark delay because the contact may not exist for most of
                 % that time.
                 pemi_time_right_dead        :: float
@@ -1063,12 +1065,12 @@ init_parallel_exec_metrics_incomplete(Metrics0, TimeSignals, TimeWaits,
     ;
         MaybeInternal0 = no,
         Internal = pem_left_most(TimeBSeq, TimeBPar, TimeSignals),
-        (
+        ( if
             TimeBDead = 0.0,
             TimeWaits = 0.0
-        ->
+        then
             true
-        ;
+        else
             unexpected($module, $pred, "TimeWaits != 0 or TimeBDead != 0")
         )
     ),
@@ -1094,9 +1096,9 @@ finalise_parallel_exec_metrics(IncompleteMetrics) = Metrics :-
     NumConjuncts = parallel_exec_metrics_internal_get_num_conjs(Internal),
     InnerParTime = parallel_exec_metrics_internal_get_par_time(Internal,
         SparkDelay, NumConjuncts),
-    ( FirstConjDeadTime > 0.0 ->
+    ( if FirstConjDeadTime > 0.0 then
         FirstConjWakeupPenalty = ContextWakeupDelay
-    ;
+    else
         FirstConjWakeupPenalty = 0.0
     ),
     ParTime = InnerParTime + BeforeAndAfterTime + FirstConjWakeupPenalty,
@@ -1212,21 +1214,24 @@ pem_get_wait_costs(pem_additional(Left, _, WaitsR, _, _, _)) = Waits :-
     Waits = WaitsR + WaitsL,
     WaitsL = pem_get_wait_costs(Left).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 weighted_average(Weights, Values, Average) :-
-    list.foldl2_corresponding(
-        (pred(Value::in, Weight::in, Sum0::in, Sum::out,
-                WeightSum0::in, WeightSum::out) is det :-
-            Sum = Sum0 + (Value * Weight),
-            WeightSum = WeightSum0 + Weight
-        ), Values, Weights, 0.0, Total, 0.0, TotalWeight),
-    ( abs(TotalWeight) < epsilon ->
+    list.foldl2_corresponding(update_weighted_sum,
+        Weights, Values, 0.0, WeightedSum, 0.0, TotalWeight),
+    ( if abs(TotalWeight) < epsilon then
         Average = 0.0
-    ;
-        Average = Total / TotalWeight
+    else
+        Average = WeightedSum / TotalWeight
     ).
 
-%----------------------------------------------------------------------------%
+:- pred update_weighted_sum(float::in, float::in,
+    float::in, float::out, float::in, float::out) is det.
+
+update_weighted_sum(Weight, Value, !WeightedSum, !TotalWeight) :-
+    !:WeightedSum = !.WeightedSum + (Weight * Value),
+    !:TotalWeight = !.TotalWeight + Weight.
+
+%---------------------------------------------------------------------------%
 :- end_module measurements.
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

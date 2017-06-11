@@ -1,4 +1,5 @@
 % vim: ts=4 sw=4 et ft=mercury
+%
 % This test case ensures that lco.m handles from ground term scopes properly
 % such as the one that is created for the construction of the terms in the
 % base case of list_data_term.
@@ -8,13 +9,6 @@
 :- interface.
 
 :- import_module list.
-
-:- func list_data_term(list(data_term)) = data_term.
-
-:- implementation.
-
-:- import_module string.
-:- import_module int.
 
 :- type data_term == mer_term(literal).
 
@@ -29,6 +23,9 @@
     --->    string(string)
     ;       int(int).
 
-list_data_term([]) = functor(["list", "[]"], []).
-list_data_term([H | T]) = functor(["list", "[|]"], [H, list_data_term(T)]).
+:- func list_data_term(list(data_term)) = data_term.
 
+:- implementation.
+
+list_data_term([]) = functor(["list", "[]"], []).
+list_data_term([H | T]) = functor(["list", "[ | ]"], [H, list_data_term(T)]).

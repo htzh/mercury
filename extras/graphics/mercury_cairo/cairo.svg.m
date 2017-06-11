@@ -2,12 +2,13 @@
 % vim: ft=mercury ts=4 sw=4 et
 %---------------------------------------------------------------------------%
 % Copyright (C) 2010 The University of Melbourne.
+% Copyright (C) 2015-2017 The Mercury team.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %-----------------------------------------------------------------------------%
 %
 % Author: Julien Fischer <juliensf@csse.unimelb.edu.au>
-% 
+%
 % This module provides SVG surfaces, which allow rendering to SVG documents.
 %
 %---------------------------------------------------------------------------%
@@ -20,7 +21,7 @@
 :- type svg_surface.
 
 :- instance surface(svg_surface).
-    
+
     % The version number of the SVG specification that a generated SVG file
     % will conform to.
     %
@@ -42,7 +43,7 @@
     % to be written to FileName.
     %
 :- pred create_surface(string::in, int::in, int::in, svg_surface::out,
-	io::di, io::uo) is det.
+    io::di, io::uo) is det.
 
 % restrict_to_version
 % get_versions
@@ -58,12 +59,18 @@
 
 #if defined(CAIRO_HAS_SVG_SURFACE)
   #include <cairo-svg.h>
+#else
+  /* These are unlikely to change. */
+  enum {
+    CAIRO_SVG_VERSION_1_1,
+    CAIRO_SVG_VERSION_1_2
+  };
 #endif
 
 ").
 
 :- pragma foreign_type("C", svg_surface, "MCAIRO_surface *",
-	[can_pass_as_mercury_type]).
+    [can_pass_as_mercury_type]).
 
 :- instance surface(svg_surface) where [].
 
@@ -83,88 +90,54 @@
 #else
     SUCCESS_INDICATOR = MR_FALSE;
 #endif
-"). 
+").
 
 %---------------------------------------------------------------------------%
 %
 % SVG surface creation
 %
 
-:- type maybe_svg_surface
-    --->    svg_surface_ok(svg_surface)
-    ;       svg_surface_error(cairo.status)
-    ;       svg_surface_unsupported.
-
-:- pragma foreign_export("C", make_svg_surface_ok(in) = out,
-    "MCAIRO_svg_surface_ok").
-:- func make_svg_surface_ok(svg_surface) = maybe_svg_surface.
-
-make_svg_surface_ok(Surface) = svg_surface_ok(Surface).
-
-:- pragma foreign_export("C", make_svg_surface_error(in) = out,
-    "MCAIRO_svg_surface_error").
-:- func make_svg_surface_error(cairo.status) = maybe_svg_surface.
-
-make_svg_surface_error(Status) = svg_surface_error(Status).
-
-:- pragma foreign_export("C", make_svg_surface_unsupported = out,
-    "MCAIRO_svg_surface_usupported").
-:- func make_svg_surface_unsupported = maybe_svg_surface.
-
-make_svg_surface_unsupported = svg_surface_unsupported.
-
-create_surface(FileName, Height, Width, Surface, !IO) :-
-    create_surface_2(FileName, Height, Width, MaybeSurface, !IO),
+create_surface(FileName, Width, Height, Surface, !IO) :-
+    create_surface_2(FileName, Width, Height, Supported, Status, Surface, !IO),
     (
-        MaybeSurface = svg_surface_ok(Surface)
+        Supported = yes,
+        ( if Status = status_success then
+            true
+        else
+            throw(cairo.error("svg.create_surface/6", Status))
+        )
     ;
-        MaybeSurface = svg_surface_error(ErrorStatus),
-        throw(cairo.error("svg.create_surface/6", ErrorStatus))
-    ;
-        MaybeSurface = svg_surface_unsupported,
+        Supported = no,
         throw(cairo.unsupported_surface_error("SVG"))
-    ).    
+    ).
 
-:- pred create_surface_2(string::in, int::in, int::in, maybe_svg_surface::out,
-	io::di, io::uo) is det.
+:- pred create_surface_2(string::in, int::in, int::in, bool::out,
+    cairo.status::out, svg_surface::out, io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    create_surface_2(FileName::in, H::in, W::in, MaybeSurface::out,
-        _IO0::di, _IO::uo),
+    create_surface_2(FileName::in, W::in, H::in,
+        Supported::out, Status::out, Surface::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
 #if defined(CAIRO_HAS_SVG_SURFACE)
 
-    MCAIRO_surface      *surface;
-    cairo_surface_t		*raw_surface;
-    cairo_status_t      status;
+    cairo_surface_t     *raw_surface;
 
-    raw_surface = cairo_svg_surface_create(FileName, (int)H, (int)W);
-    status = cairo_surface_status(raw_surface);
+    Supported = MR_YES;
+    raw_surface = cairo_svg_surface_create(FileName, (int)W, (int)H);
+    Status = cairo_surface_status(raw_surface);
 
-    switch (status) {
-        case CAIRO_STATUS_SUCCESS:
-            surface = MR_GC_NEW(MCAIRO_surface);
-            surface->mcairo_raw_surface = raw_surface;
-            MR_GC_register_finalizer(surface, MCAIRO_finalize_surface, 0);
-            MaybeSurface = MCAIRO_svg_surface_ok(surface);
-            break;
-        
-        case CAIRO_STATUS_NULL_POINTER:
-        case CAIRO_STATUS_NO_MEMORY:
-        case CAIRO_STATUS_READ_ERROR:
-        case CAIRO_STATUS_INVALID_CONTENT:
-        case CAIRO_STATUS_INVALID_FORMAT:
-        case CAIRO_STATUS_INVALID_VISUAL:
-            MaybeSurface = MCAIRO_svg_surface_error(status);
-            break;
-        
-        default:
-            MR_external_fatal_error(\"Mercury cairo\",
-                \"unknown SVG surface status\");
+    if (Status == CAIRO_STATUS_SUCCESS) {
+        Surface = MR_GC_NEW(MCAIRO_surface);
+        Surface->mcairo_raw_surface = raw_surface;
+        MR_GC_register_finalizer(Surface, MCAIRO_finalize_surface, 0);
+    } else {
+        Surface = NULL;
     }
 #else
-    MaybeSurface = MCAIRO_svg_surface_unsupported();
+    Supported = MR_NO;
+    Status = CAIRO_STATUS_SUCCESS;
+    Surface = NULL;
 #endif
 
 ").

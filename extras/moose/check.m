@@ -49,7 +49,7 @@
 :- mode check_inf_derivations(in, in, out) is det.
 
 	% write an error message to stderr.
-:- pred write_error(check.error, io.state, io.state).
+:- pred write_error(check.error, io, io).
 :- mode write_error(in, di, uo) is det.
 
 %------------------------------------------------------------------------------%
@@ -300,8 +300,7 @@ nonterminals(action(_), []).
 
 %------------------------------------------------------------------------------%
 
-:- pred id(nonterminal, name, arity) is det.
-:- mode id(in, out, out) is det.
+:- pred id(nonterminal::in, name::out, arity::out) is det.
 
 id(Name/Arity, Name, Arity).
 id(start, _, _) :-

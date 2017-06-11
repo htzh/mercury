@@ -20,9 +20,12 @@
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_rtti.
-:- import_module parse_tree.prog_data.
-:- import_module parse_tree.error_util.
+:- import_module hlds.vartypes.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module parse_tree.
+:- import_module parse_tree.error_util.
+:- import_module parse_tree.prog_data.
 
 :- import_module bool.
 :- import_module list.
@@ -44,15 +47,17 @@
                 % The varset describing the clauses.
                 cli_varset                  :: prog_varset,
 
-                % Variable types from explicit qualifications.
-                cli_explicit_vartypes       :: vartypes,
-
                 % Map from variable name to type variable for the type
                 % variables occurring in the argument types. This is used
                 % to process explicit qualifications.
                 cli_tvar_name_map           :: tvar_name_map,
 
-                % Variable types inferred by typecheck.m.
+                % This partial map holds the types specified by any explicit
+                % type qualifiers in the clauses.
+                cli_explicit_vartypes       :: vartypes,
+
+                % This map contains the types of all the variables, as inferred
+                % by typecheck.m.
                 cli_vartypes                :: vartypes,
 
                 % The head variables.
@@ -67,8 +72,13 @@
                 % This field is computed by polymorphism.m.
                 cli_rtti_varmaps            :: rtti_varmaps,
 
-                % Do we have foreign language clauses?
-                cli_have_foreign_clauses    :: bool
+                % Does this predicate/function have foreign language clauses?
+                cli_have_foreign_clauses    :: bool,
+
+                % Did this predicate/function have clauses with syntax errors
+                % in their bodies (so we could know, despite the error, that
+                % the clause was for them)?
+                cli_had_syntax_errors       :: bool
         ).
 
 :- pred clauses_info_init(pred_or_func::in, int::in, clause_item_numbers::in,
@@ -76,6 +86,43 @@
 
 :- pred clauses_info_init_for_assertion(prog_vars::in, clauses_info::out)
     is det.
+
+:- pred clauses_info_get_varset(clauses_info::in, prog_varset::out) is det.
+:- pred clauses_info_get_tvar_name_map(clauses_info::in, tvar_name_map::out)
+    is det.
+:- pred clauses_info_get_explicit_vartypes(clauses_info::in, vartypes::out)
+    is det.
+:- pred clauses_info_get_vartypes(clauses_info::in, vartypes::out) is det.
+:- pred clauses_info_get_headvars(clauses_info::in,
+    proc_arg_vector(prog_var)::out) is det.
+:- pred clauses_info_get_clauses_rep(clauses_info::in, clauses_rep::out,
+    clause_item_numbers::out) is det.
+:- pred clauses_info_get_rtti_varmaps(clauses_info::in, rtti_varmaps::out)
+    is det.
+:- pred clauses_info_get_have_foreign_clauses(clauses_info::in, bool::out)
+    is det.
+:- pred clauses_info_get_had_syntax_errors(clauses_info::in, bool::out) is det.
+
+:- pred clauses_info_set_varset(prog_varset::in,
+    clauses_info::in, clauses_info::out) is det.
+:- pred clauses_info_set_tvar_name_map(tvar_name_map::in,
+    clauses_info::in, clauses_info::out) is det.
+:- pred clauses_info_set_explicit_vartypes(vartypes::in,
+    clauses_info::in, clauses_info::out) is det.
+:- pred clauses_info_set_vartypes(vartypes::in,
+    clauses_info::in, clauses_info::out) is det.
+:- pred clauses_info_set_headvars(proc_arg_vector(prog_var)::in,
+    clauses_info::in, clauses_info::out) is det.
+:- pred clauses_info_set_clauses_rep(clauses_rep::in, clause_item_numbers::in,
+    clauses_info::in, clauses_info::out) is det.
+:- pred clauses_info_set_rtti_varmaps(rtti_varmaps::in,
+    clauses_info::in, clauses_info::out) is det.
+:- pred clauses_info_set_have_foreign_clauses(bool::in,
+    clauses_info::in, clauses_info::out) is det.
+:- pred clauses_info_set_had_syntax_errors(bool::in,
+    clauses_info::in, clauses_info::out) is det.
+
+%-----------------------------------------------------------------------------%
 
 :- type clauses_rep.
 
@@ -94,76 +141,69 @@
     %
 :- pred add_clause(clause::in, clauses_rep::in, clauses_rep::out) is det.
 
-    % Get the list of clauses in the given clauses_rep in whatever order
-    % happens to be efficient.
-    %
-:- pred get_clause_list_any_order(clauses_rep::in, list(clause)::out) is det.
-
     % Get the list of clauses in the given clauses_rep in program order.
     %
-:- pred get_clause_list(clauses_rep::in, list(clause)::out) is det.
+    % There are three variants of this predicate. The reason why a simple
+    % getter predicate is not good enough is the combination of these
+    % circumstances.
+    %
+    % - We need to know the order of the clauses in the code.
+    % - When we add a new clause, we need to add it at the end.
+    %   This is best done by either keeping the clauses in reversed order
+    %   (which is what we used to do) or keeping them in a cord (which is
+    %   what we do now). Using a plain list in forward order would make
+    %   require O(N^2) operations to add N clauses to the list.
+    % - When users want to get the clause list, they want it in forward order.
+    %   With either the reversed list or cord representations, this requires
+    %   a representation change: re-reversing the list, or flattening the cord.
+    %   In both cases, the cost of this is O(N) for N clauses.
+    % - If the compiler generates a sequence of requests to get the clause
+    %   list, we would perform this representation change over and over again.
+    %
+    % The first variant, get_clause_list, avoids the need for this repetition
+    % by storing the result of the representation change back in the
+    % clause_rep. Flattening an already-flat cord is an O(1) operation,
+    % so repeatedly calling get_clause_list on the same clause_rep
+    % is not a performance problem.
+    %
+    % The second variant, get_clause_list_for_replacement, is for use
+    % in situations where the clause list is about to be replaced,
+    % usually by a modified version of itself. In such cases, the cost
+    % of future operations on *this* version of the clauses_rep is moot.
+    %
+    % The third variant is for places in the compiler that neither replace
+    % the clause list nor update the clauses_rep, or its containing
+    % clause_info. This is less than ideal from a performance viewpoint,
+    % but it is ok for experimental features whose performance doesn't (yet)
+    % matter. The name get_clause_list_maybe_repeated is there to remind
+    % programmers who call it about the performance problem with repeated
+    % representation changes, to act as incentive to switch to one of the
+    % previous two versions.
+    %
+:- pred get_clause_list(list(clause)::out,
+    clauses_rep::in, clauses_rep::out) is det.
+:- pred get_clause_list_for_replacement(clauses_rep::in, list(clause)::out)
+    is det.
+:- pred get_clause_list_maybe_repeated(clauses_rep::in, list(clause)::out)
+    is det.
+
+:- pred get_first_clause(clauses_rep::in, clause::out) is semidet.
 
     % Set the list of clauses to the one given.
     %
 :- pred set_clause_list(list(clause)::in, clauses_rep::out) is det.
 
-:- pred clauses_info_get_varset(clauses_info::in, prog_varset::out) is det.
-
-    % This partial map holds the types specified by any explicit
-    % type qualifiers in the clauses.
-    %
-:- pred clauses_info_get_explicit_vartypes(clauses_info::in, vartypes::out)
-    is det.
-
-    % This map contains the types of all the variables, as inferred
-    % by typecheck.m.
-    %
-:- pred clauses_info_get_vartypes(clauses_info::in, vartypes::out) is det.
-
-:- pred clauses_info_get_rtti_varmaps(clauses_info::in, rtti_varmaps::out)
-    is det.
-
-:- pred clauses_info_get_headvars(clauses_info::in,
-    proc_arg_vector(prog_var)::out) is det.
-
     % Return the headvars as a list rather than as a proc_arg_vector.
-    % New code should avoid using this and should instead be written to
+    % New code should avoid using this, and should instead be written to
     % work with the arg_vector structure directly.
     %
 :- pred clauses_info_get_headvar_list(clauses_info::in, list(prog_var)::out)
     is det.
 
-:- pred clauses_info_get_clauses_rep(clauses_info::in, clauses_rep::out,
-    clause_item_numbers::out) is det.
-
     % Return the list of clauses in program order, and if necessary update
     % the cache of this info in the clauses_info.
     %
 :- pred clauses_info_clauses(list(clause)::out, clause_item_numbers::out,
-    clauses_info::in, clauses_info::out) is det.
-
-:- pred clauses_info_set_headvars(proc_arg_vector(prog_var)::in,
-    clauses_info::in, clauses_info::out) is det.
-
-:- pred clauses_info_set_clauses_rep(clauses_rep::in, clause_item_numbers::in,
-    clauses_info::in, clauses_info::out) is det.
-
-:- pred clauses_info_set_varset(prog_varset::in,
-    clauses_info::in, clauses_info::out) is det.
-
-    % This partial map holds the types specified by any explicit
-    % type qualifiers in the clauses.
-    %
-:- pred clauses_info_set_explicit_vartypes(vartypes::in,
-    clauses_info::in, clauses_info::out) is det.
-
-    % This map contains the types of all the variables, as inferred
-    % by typecheck.m.
-    %
-:- pred clauses_info_set_vartypes(vartypes::in,
-    clauses_info::in, clauses_info::out) is det.
-
-:- pred clauses_info_set_rtti_varmaps(rtti_varmaps::in,
     clauses_info::in, clauses_info::out) is det.
 
 :- type clause
@@ -204,8 +244,18 @@
     % We want to know whether the clauses of each predicate (which may include
     % pragma foreign_procs) are contiguous in the source code or not.
     %
-    % To this end, we record the item numbers of all the clauses of the
-
+    % To this end, we record the item numbers of
+    %
+    % - all the clauses of the predicate, and
+    % - all the clauses and foreign_procs of the predicate.
+    %
+    % We store each set of numbers as a sorted list of item number regions,
+    % with every item number between the lower and upper item numbers in
+    % a region belonging to the predicate. Besides making it trivial to see
+    % whether a predicate's clauses (or clauses and foreign_procs) are
+    % contiguous or not, this compression also allows us to handle predicates
+    % with large numbers of clauses in a small amount of memory,
+    %
 :- type clause_item_numbers.
 
 :- type clause_item_number_region
@@ -219,6 +269,9 @@
 :- type clause_item_number_types
     --->    only_clauses
     ;       clauses_and_foreign_procs.
+
+:- pred clause_item_number_regions(clause_item_numbers::in,
+    clause_item_number_types::in, list(clause_item_number_region)::out) is det.
 
 :- pred clauses_are_non_contiguous(clause_item_numbers::in,
     clause_item_number_types::in,
@@ -243,10 +296,10 @@
 
 :- import_module parse_tree.prog_util.
 
+:- import_module cord.
 :- import_module int.
 :- import_module map.
 :- import_module require.
-:- import_module term.
 :- import_module varset.
 
 :- type clause_item_numbers
@@ -263,6 +316,21 @@
 
 init_clause_item_numbers_user = user_clauses([], []).
 init_clause_item_numbers_comp_gen = comp_gen_clauses.
+
+clause_item_number_regions(ClauseItemNumbers, Type, Regions) :-
+    (
+        ClauseItemNumbers = comp_gen_clauses,
+        Regions = []
+    ;
+        ClauseItemNumbers = user_clauses(MercuryRegions, BothRegions),
+        (
+            Type = only_clauses,
+            Regions = MercuryRegions
+        ;
+            Type = clauses_and_foreign_procs,
+            Regions = BothRegions
+        )
+    ).
 
 clauses_are_non_contiguous(ClauseItemNumbers, Type, FirstRegion, SecondRegion,
         LaterRegions) :-
@@ -333,24 +401,24 @@ add_clause_item_number_regions(ItemNum, Context, !Regions) :-
         !.Regions = [FirstRegion0 | LaterRegions0],
         FirstRegion0 = clause_item_number_region(
             LowerNum0, UpperNum0, LowerContext0, UpperContext0),
-        ( ItemNum < LowerNum0 - 1 ->
+        ( if ItemNum < LowerNum0 - 1 then
             NewRegion = clause_item_number_region(ItemNum, ItemNum,
                 Context, Context),
             !:Regions = [NewRegion, FirstRegion0 | LaterRegions0]
-        ; ItemNum = LowerNum0 - 1 ->
+        else if ItemNum = LowerNum0 - 1 then
             FirstRegion = clause_item_number_region(ItemNum, UpperNum0,
                 Context, UpperContext0),
             !:Regions = [FirstRegion | LaterRegions0]
-        ; ItemNum =< UpperNum0 ->
+        else if ItemNum =< UpperNum0 then
             unexpected($module, $pred, "duplicate item number")
-        ; ItemNum = UpperNum0 + 1 ->
+        else if ItemNum = UpperNum0 + 1 then
             FirstRegion = clause_item_number_region(LowerNum0, ItemNum,
                 LowerContext0, Context),
             !:Regions = [FirstRegion | LaterRegions0]
-        ;
+        else
             add_clause_item_number_regions(ItemNum, Context,
                 LaterRegions0, LaterRegions1),
-            % See if need to merge FirstRegion0 with the first region
+            % See if we need to merge FirstRegion0 with the first region
             % of LaterRegions1.
             (
                 LaterRegions1 = [],
@@ -359,12 +427,12 @@ add_clause_item_number_regions(ItemNum, Context, !Regions) :-
                 LaterRegions1 = [FirstLaterRegion1 | LaterLaterRegions1],
                 FirstLaterRegion1 = clause_item_number_region(
                     LowerNum1, UpperNum1, _LowerContext1, UpperContext1),
-                ( UpperNum0 + 1 = LowerNum1 ->
+                ( if UpperNum0 + 1 = LowerNum1 then
                     FirstRegion =
                         clause_item_number_region(LowerNum0, UpperNum1,
                             LowerContext0, UpperContext1),
                     !:Regions = [FirstRegion | LaterLaterRegions1]
-                ;
+                else
                     !:Regions = [FirstRegion0, FirstLaterRegion1
                         | LaterLaterRegions1]
                 )
@@ -375,16 +443,18 @@ add_clause_item_number_regions(ItemNum, Context, !Regions) :-
 %-----------------------------------------------------------------------------%
 
 clauses_info_init(PredOrFunc, Arity, ItemNumbers, ClausesInfo) :-
-    init_vartypes(VarTypes),
-    map.init(TVarNameMap),
     varset.init(VarSet0),
     make_n_fresh_vars("HeadVar__", Arity, HeadVars, VarSet0, VarSet),
+    init_vartypes(VarTypes),
+    map.init(TVarNameMap),
     HeadVarVec = proc_arg_vector_init(PredOrFunc, HeadVars),
+    set_clause_list([], ClausesRep),
     rtti_varmaps_init(RttiVarMaps),
     HasForeignClauses = no,
-    set_clause_list([], ClausesRep),
-    ClausesInfo = clauses_info(VarSet, VarTypes, TVarNameMap, VarTypes,
-        HeadVarVec, ClausesRep, ItemNumbers, RttiVarMaps, HasForeignClauses).
+    HadSyntaxError = no,
+    ClausesInfo = clauses_info(VarSet, TVarNameMap, VarTypes, VarTypes,
+        HeadVarVec, ClausesRep, ItemNumbers, RttiVarMaps,
+        HasForeignClauses, HadSyntaxError).
 
 clauses_info_init_for_assertion(HeadVars, ClausesInfo) :-
     varset.init(VarSet),
@@ -394,23 +464,28 @@ clauses_info_init_for_assertion(HeadVars, ClausesInfo) :-
     % functions.
     HeadVarVec = proc_arg_vector_init(pf_predicate, HeadVars),
     set_clause_list([], ClausesRep),
+    ItemNumbers = init_clause_item_numbers_comp_gen,
     rtti_varmaps_init(RttiVarMaps),
     HasForeignClauses = no,
-    ClausesInfo = clauses_info(VarSet, VarTypes, TVarNameMap, VarTypes,
-        HeadVarVec, ClausesRep, init_clause_item_numbers_comp_gen,
-        RttiVarMaps, HasForeignClauses).
+    HadSyntaxError = no,
+    ClausesInfo = clauses_info(VarSet, TVarNameMap, VarTypes, VarTypes,
+        HeadVarVec, ClausesRep, ItemNumbers, RttiVarMaps,
+        HasForeignClauses, HadSyntaxError).
 
 clauses_info_get_varset(CI, CI ^ cli_varset).
+clauses_info_get_tvar_name_map(CI, CI ^ cli_tvar_name_map).
 clauses_info_get_explicit_vartypes(CI, CI ^ cli_explicit_vartypes).
 clauses_info_get_vartypes(CI, CI ^ cli_vartypes).
 clauses_info_get_headvars(CI, CI ^ cli_headvars).
-clauses_info_get_headvar_list(CI, List) :-
-    List = proc_arg_vector_to_list(CI ^ cli_headvars).
 clauses_info_get_clauses_rep(CI, CI ^ cli_rep, CI ^ cli_item_numbers).
 clauses_info_get_rtti_varmaps(CI, CI ^ cli_rtti_varmaps).
+clauses_info_get_have_foreign_clauses(CI, CI ^ cli_have_foreign_clauses).
+clauses_info_get_had_syntax_errors(CI, CI ^ cli_had_syntax_errors).
 
 clauses_info_set_varset(X, !CI) :-
     !CI ^ cli_varset := X.
+clauses_info_set_tvar_name_map(X, !CI) :-
+    !CI ^ cli_tvar_name_map := X.
 clauses_info_set_explicit_vartypes(X, !CI) :-
     !CI ^ cli_explicit_vartypes := X.
 clauses_info_set_vartypes(X, !CI) :-
@@ -422,111 +497,68 @@ clauses_info_set_clauses_rep(X, Y, !CI) :-
     !CI ^ cli_item_numbers := Y.
 clauses_info_set_rtti_varmaps(X, !CI) :-
     !CI ^ cli_rtti_varmaps := X.
+clauses_info_set_have_foreign_clauses(X, !CI) :-
+    !CI ^ cli_have_foreign_clauses := X.
+clauses_info_set_had_syntax_errors(X, !CI) :-
+    !CI ^ cli_had_syntax_errors := X.
 
-    % In each of the alternatives below, the num field gives the number of
-    % clauses. In the forw_list and both_forw fields, the clauses are in
-    % program order. In the rev_list and both_rev fields, the clauses are in
-    % reverse program order. It is an invariant that
-    %
-    %   list.reverse(Rep ^ both_rev, Rep ^ both_forw)
-    %
-    % holds.
+%-----------------------------------------------------------------------------%
+
+clauses_info_get_headvar_list(CI, HeadVarList) :-
+    clauses_info_get_headvars(CI, HeadVars),
+    HeadVarList = proc_arg_vector_to_list(HeadVars).
+
 :- type clauses_rep
-    --->    cr_rev(
-                rev_num     :: int,
-                rev_list    :: list(clause)
-            )
-    ;       cr_forw(
-                forw_num    :: int,
-                forw_list   :: list(clause)
-            )
-    ;       cr_both(
-                both_num    :: int,
-                both_rev    :: list(clause),
-                both_forw   :: list(clause)
+    --->    clauses_rep(
+                cr_num_clauses      :: int,
+                cr_clauses_cord     :: cord(clause)
             ).
 
-init_clauses_rep = cr_forw(0, []).
+init_clauses_rep = clauses_rep(0, cord.init).
 
 clause_list_is_empty(ClausesRep) = IsEmpty :-
-    (
-        ClausesRep = cr_rev(_, List)
-    ;
-        ClausesRep = cr_forw(_, List)
-    ;
-        ClausesRep = cr_both(_, List, _)
-    ),
-    (
-        List = [],
+    ClausesRep = clauses_rep(_, ClausesCord),
+    ( if cord.is_empty(ClausesCord) then
         IsEmpty = yes
-    ;
-        List = [_ | _],
+    else
         IsEmpty = no
     ).
 
 num_clauses_in_clauses_rep(ClausesRep) = NumClauses :-
-    (
-        ClausesRep = cr_rev(NumClauses, _)
-    ;
-        ClausesRep = cr_forw(NumClauses, _)
-    ;
-        ClausesRep = cr_both(NumClauses, _, _)
-    ).
+    ClausesRep = clauses_rep(NumClauses, _).
 
-get_clause_list_any_order(ClausesRep, Clauses) :-
-    (
-        ClausesRep = cr_rev(_, Clauses)
-    ;
-        ClausesRep = cr_forw(_, Clauses)
-    ;
-        ClausesRep = cr_both(_, _, Clauses)
-    ).
+get_clause_list(Clauses, ClausesRep0, ClausesRep) :-
+    ClausesRep0 = clauses_rep(NumClauses, ClausesCord0),
+    Clauses = cord.list(ClausesCord0),
+    ClausesCord = cord.from_list(Clauses),
+    ClausesRep = clauses_rep(NumClauses, ClausesCord).
 
-get_clause_list(ClausesRep, Clauses) :-
-    (
-        ClausesRep = cr_rev(_, RevClauses),
-        list.reverse(RevClauses, Clauses)
-    ;
-        ClausesRep = cr_forw(_, Clauses)
-    ;
-        ClausesRep = cr_both(_, _, Clauses)
-    ).
+get_clause_list_for_replacement(ClausesRep, Clauses) :-
+    ClausesRep = clauses_rep(_NumClauses, ClausesCord),
+    Clauses = cord.list(ClausesCord).
 
-set_clause_list(Clauses, cr_forw(list.length(Clauses), Clauses)).
+get_clause_list_maybe_repeated(ClausesRep, Clauses) :-
+    ClausesRep = clauses_rep(_NumClauses, ClausesCord),
+    Clauses = cord.list(ClausesCord).
+
+get_first_clause(ClausesRep, FirstClause) :-
+    ClausesRep = clauses_rep(_NumClauses, ClausesCord),
+    cord.get_first(ClausesCord, FirstClause).
+
+set_clause_list(Clauses, ClausesRep) :-
+    ClausesRep = clauses_rep(list.length(Clauses), cord.from_list(Clauses)).
 
 clauses_info_clauses(Clauses, ItemNumbers, !CI) :-
-    ClausesRep = !.CI ^ cli_rep,
     ItemNumbers = !.CI ^ cli_item_numbers,
-    (
-        ClausesRep = cr_rev(NumClauses, RevClauses),
-        list.reverse(RevClauses, Clauses),
-        !CI ^ cli_rep := cr_both(NumClauses, RevClauses, Clauses)
-    ;
-        ClausesRep = cr_forw(_, Clauses)
-    ;
-        ClausesRep = cr_both(_, _, Clauses)
-    ).
+    ClausesRep0 = !.CI ^ cli_rep,
+    get_clause_list(Clauses, ClausesRep0, ClausesRep),
+    !CI ^ cli_rep := ClausesRep.
 
 add_clause(Clause, !ClausesRep) :-
-    % We keep the clause list in reverse order, to make it possible
-    % to add other clauses without quadratic behavior.
-    (
-        !.ClausesRep = cr_rev(NumClauses0, RevClauses0),
-        NumClauses = NumClauses0 + 1,
-        RevClauses = [Clause | RevClauses0],
-        !:ClausesRep = cr_rev(NumClauses, RevClauses)
-    ;
-        !.ClausesRep = cr_forw(NumClauses0, Clauses0),
-        NumClauses = NumClauses0 + 1,
-        list.reverse(Clauses0, RevClauses0),
-        RevClauses = [Clause | RevClauses0],
-        !:ClausesRep = cr_rev(NumClauses, RevClauses)
-    ;
-        !.ClausesRep = cr_both(NumClauses0, RevClauses0, _),
-        NumClauses = NumClauses0 + 1,
-        RevClauses = [Clause | RevClauses0],
-        !:ClausesRep = cr_rev(NumClauses, RevClauses)
-    ).
+    !.ClausesRep = clauses_rep(NumClauses0, ClausesCord0),
+    NumClauses = NumClauses0 + 1,
+    ClausesCord = cord.snoc(ClausesCord0, Clause),
+    !:ClausesRep = clauses_rep(NumClauses, ClausesCord).
 
 %-----------------------------------------------------------------------------%
 :- end_module hlds.hlds_clauses.

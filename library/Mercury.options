@@ -19,8 +19,7 @@ MCFLAGS-set_ordlist += $(TYPE_SPEC_FLAGS)
 MCFLAGS-lexer += --optimize-constructor-last-call
 
 MCFLAGS-sparse_bitset += --use-atomic-cells --optimize-constant-propagation
-MCFLAGS-tree_bitset += --use-atomic-cells --optimize-constant-propagation \
-	--trace-flag tree-bitset-checks
+MCFLAGS-tree_bitset += --use-atomic-cells --optimize-constant-propagation
 
 # Speed up structure sharing analysis.
 MCFLAGS-set_ctree234 += --structure-sharing-widening 1
@@ -51,6 +50,7 @@ MGNUCFLAGS-io  += --no-ansi
 # varset.trans_opt includes the relevant part of string.opt.
 MCFLAGS-io     += --no-warn-unknown-format-calls
 MCFLAGS-stream += --no-warn-unknown-format-calls
+MCFLAGS-stream.string_writer += --no-warn-unknown-format-calls
 MCFLAGS-string += --no-warn-unknown-format-calls
 
 MCFLAGS-erlang_builtin += --no-warn-nothing-exported

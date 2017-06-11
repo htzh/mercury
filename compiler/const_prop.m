@@ -13,61 +13,59 @@
 % routines at compile time, transforming them to simpler goals such as
 % construction unifications.
 %
-% XXX We should check for overflow.  This is particularly important when
-% cross-compiling, since the overflow behaviour of the host machine might not
-% be the same as that of the target machine, e.g. if they have different word
-% sizes.
-%
 %---------------------------------------------------------------------------%
 
 :- module transform_hlds.const_prop.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
-:- import_module hlds.hlds_module.
 :- import_module hlds.instmap.
+:- import_module hlds.vartypes.
+:- import_module libs.
+:- import_module libs.globals.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
 
 %---------------------------------------------------------------------------%
 
-    % evaluate_call(ModuleName, PredName, Args, VarTypes, Instmap, ModuleInfo,
-    %   GoalExpr, !GoalInfo):
+    % evaluate_call(Globals, VarTypes, Instmap,
+    %   ModuleName, ProcName, ModeNum, Args, GoalExpr, !GoalInfo):
     %
-    % This attempts to evaluate a call to the specified procedure with the
-    % specified arguments. If the call can be statically evaluated, or
-    % simplified, evaluate_builtin will succeed, returning the new goal
-    % in GoalExpr (and updating GoalInfo). Otherwise it fails.
+    % Try to statically evaluate a call to ModuleName.ProcName(Args)
+    % (which may be a call to a predicate or a function) in the mode ModeNum.
+    % If the attempt succeeds, return in GoalExpr and the updated GoalInfo
+    % a goal that binds the output variables of the call to their statically
+    % known values. If the attempt fails, fail.
     %
-:- pred evaluate_call(string::in, string::in, int::in, list(prog_var)::in,
-    vartypes::in, instmap::in, module_info::in, hlds_goal_expr::out,
-    hlds_goal_info::in, hlds_goal_info::out) is semidet.
+:- pred evaluate_call(globals::in, vartypes::in, instmap::in,
+    string::in, string::in, int::in, list(prog_var)::in,
+    hlds_goal_expr::out, hlds_goal_info::in, hlds_goal_info::out) is semidet.
 
 %---------------------------------------------------------------------------%
 %---------------------------------------------------------------------------%
 
 :- implementation.
 
-:- import_module hlds.hlds_goal.
-:- import_module hlds.instmap.
-:- import_module libs.globals.
+:- import_module hlds.make_goal.
+:- import_module libs.int_emu.
 :- import_module libs.options.
-:- import_module parse_tree.prog_data.
+:- import_module libs.uint_emu.
 
 :- import_module bool.
 :- import_module float.
 :- import_module int.
-:- import_module list.
-:- import_module map.
 :- import_module maybe.
 :- import_module pair.
 :- import_module string.
+:- import_module uint.
 
 %---------------------------------------------------------------------------%
 
-    % This type groups the information from the HLDS about a procedure call
-    % argument.
+    % This type groups together all the information we need from the HLDS
+    % about a procedure call argument.
     %
 :- type arg_hlds_info
     --->    arg_hlds_info(
@@ -76,36 +74,34 @@
                 arg_inst    :: mer_inst
             ).
 
-evaluate_call(ModuleName, PredName, ProcIdInt, Args, VarTypes, InstMap,
-        ModuleInfo, GoalExpr, !GoalInfo) :-
-    module_info_get_globals(ModuleInfo, Globals),
-    globals.lookup_bool_option(Globals, cross_compiling, CrossCompiling),
+evaluate_call(Globals, VarTypes, InstMap,
+        ModuleName, ProcName, ModeNum, Args, GoalExpr, !GoalInfo) :-
     LookupArgs = (func(Var) = arg_hlds_info(Var, Type, Inst) :-
         instmap_lookup_var(InstMap, Var, Inst),
         lookup_var_type(VarTypes, Var, Type)
     ),
     ArgHldsInfos = list.map(LookupArgs, Args),
-    evaluate_call_2(ModuleName, PredName, ProcIdInt, ArgHldsInfos,
-       CrossCompiling, GoalExpr, !GoalInfo).
+    evaluate_call_2(Globals, ModuleName, ProcName, ModeNum, ArgHldsInfos,
+       GoalExpr, !GoalInfo).
 
-:- pred evaluate_call_2(string::in, string::in, int::in,
-    list(arg_hlds_info)::in, bool::in, hlds_goal_expr::out,
+:- pred evaluate_call_2(globals::in, string::in, string::in, int::in,
+    list(arg_hlds_info)::in, hlds_goal_expr::out,
     hlds_goal_info::in, hlds_goal_info::out) is semidet.
 
-evaluate_call_2(ModuleName, Pred, ModeNum, Args, CrossCompiling, GoalExpr,
+evaluate_call_2(Globals, ModuleName, Pred, ModeNum, Args, GoalExpr,
         !GoalInfo) :-
-    (
-        evaluate_det_call(ModuleName, Pred, ModeNum, CrossCompiling,
+    ( if
+        evaluate_det_call(Globals, ModuleName, Pred, ModeNum,
             Args, OutputArg, Cons)
-    ->
+    then
         make_construction_goal(OutputArg, Cons, GoalExpr, !GoalInfo)
-    ;
+    else if
         evaluate_test(ModuleName, Pred, ModeNum, Args, Succeeded)
-    ->
+    then
         make_true_or_fail(Succeeded, GoalExpr)
-    ;
+    else if
         evaluate_semidet_call(ModuleName, Pred, ModeNum, Args, Result)
-    ->
+    then
         (
             Result = yes(OutputArg - const(Cons)),
             make_construction_goal(OutputArg, Cons, GoalExpr, !GoalInfo)
@@ -114,91 +110,126 @@ evaluate_call_2(ModuleName, Pred, ModeNum, Args, CrossCompiling, GoalExpr,
             make_assignment_goal(OutputArg, InputArg, GoalExpr, !GoalInfo)
         ;
             Result = no,
-            make_true_or_fail(no, GoalExpr)
+            GoalExpr = fail_goal_expr
         )
-    ;
+    else
         fail
     ).
 
 %---------------------------------------------------------------------------%
 
-    % evaluate_det_call(ModuleName, ProcName, ModeNum, CrossCompiling,
-    %   Args, OutputArg, OutputArgVal):
+    % evaluate_det_call(Globals, ModuleName, ProcName, ModeNum, Args,
+    %   OutputArg, OutputArgVal):
     %
     % This attempts to evaluate a call to
     %   ModuleName.ProcName(Args)
-    % whose mode is specified by ModeNum.
+    % in mode ModeNum.
     %
     % If the call is a det call with one output that can be statically
     % evaluated, evaluate_det_call succeeds with OutputArg being whichever of
     % Args is output, and with OutputArgVal being the computed value of
     % OutputArg. Otherwise it fails.
     %
-:- pred evaluate_det_call(string::in, string::in, int::in, bool::in,
+:- pred evaluate_det_call(globals::in, string::in, string::in, int::in,
     list(arg_hlds_info)::in, arg_hlds_info::out, cons_id::out) is semidet.
 
-evaluate_det_call(ModuleName, ProcName, ModeNum, CrossCompiling, Args,
+evaluate_det_call(Globals, ModuleName, ProcName, ModeNum, Args,
         OutputArg, OutputArgVal) :-
+    % Note that many of these functions have predicate versions as well.
+    % In every one of those cases, the code we use to evaluate the function
+    % version will also evaluate the predicate version, because all the
+    % library predicates we evaluate here the same argument sequence for
+    % the two versions once the function return values have been put
+    % at the end of the argument list. (If the argument orders were different
+    % between the two versions for some predicates, we could still evaluate
+    % both; we would just need our caller to pass us a pred_or_func
+    % indication.)
     (
         Args = [X],
         % Constant functions.
         (
             ModuleName = "int",
-            evaluate_det_call_int_1(ProcName, ModeNum, CrossCompiling,
-                X, OutputArg, OutputArgVal)
+            evaluate_det_call_int_1(Globals, ProcName, ModeNum, X,
+                OutputArg, OutputArgVal)
+        ;
+            ModuleName = "uint",
+            evaluate_det_call_uint_1(Globals, ProcName, ModeNum, X,
+                OutputArg, OutputArgVal)
         )
     ;
         Args = [X, Y],
         % Unary functions.
         (
             ModuleName = "int",
-            evaluate_det_call_int_2(ProcName, ModeNum, CrossCompiling,
-                X, Y, OutputArg, OutputArgVal)
+            evaluate_det_call_int_2(Globals, ProcName, ModeNum, X, Y,
+                OutputArg, OutputArgVal)
+        ;
+            ModuleName = "uint",
+            evaluate_det_call_uint_2(Globals, ProcName, ModeNum, X, Y,
+                OutputArg, OutputArgVal)
         ;
             ModuleName = "float",
-            evaluate_det_call_float_2(ProcName, ModeNum, CrossCompiling,
-                X, Y, OutputArg, OutputArgVal)
+            evaluate_det_call_float_2(Globals, ProcName, ModeNum, X, Y,
+                OutputArg, OutputArgVal)
         ;
             ModuleName = "string",
-            evaluate_det_call_string_2(ProcName, ModeNum, CrossCompiling,
-                X, Y, OutputArg, OutputArgVal)
+            evaluate_det_call_string_2(Globals, ProcName, ModeNum, X, Y,
+                OutputArg, OutputArgVal)
         )
     ;
         Args = [X, Y, Z],
         % Binary functions.
         (
             ModuleName = "int",
-            evaluate_det_call_int_3(ProcName, ModeNum, CrossCompiling,
-                X, Y, Z, OutputArg, OutputArgVal)
+            evaluate_det_call_int_3(Globals, ProcName, ModeNum, X, Y, Z,
+                OutputArg, OutputArgVal)
+        ;
+            ModuleName = "uint",
+            evaluate_det_call_uint_3(Globals, ProcName, ModeNum, X, Y ,Z,
+                OutputArg, OutputArgVal)
         ;
             ModuleName = "float",
-            evaluate_det_call_float_3(ProcName, ModeNum, CrossCompiling,
-                X, Y, Z, OutputArg, OutputArgVal)
+            evaluate_det_call_float_3(Globals, ProcName, ModeNum, X, Y, Z,
+                OutputArg, OutputArgVal)
         ;
             ModuleName = "string",
-            evaluate_det_call_string_3(ProcName, ModeNum, CrossCompiling,
-                X, Y, Z, OutputArg, OutputArgVal)
+            evaluate_det_call_string_3(Globals, ProcName, ModeNum, X, Y, Z,
+                OutputArg, OutputArgVal)
         )
     ).
 
-:- pred evaluate_det_call_int_1(string::in, int::in, bool::in,
+:- pred evaluate_det_call_int_1(globals::in, string::in, int::in,
     arg_hlds_info::in, arg_hlds_info::out, cons_id::out) is semidet.
 
-evaluate_det_call_int_1(ProcName, ModeNum, CrossCompiling, X,
+evaluate_det_call_int_1(Globals, ProcName, ModeNum, X,
         OutputArg, int_const(OutputArgVal)) :-
     (
         ProcName = "bits_per_int",
         ModeNum = 0,
-        CrossCompiling = no,
         OutputArg = X,
-        OutputArgVal = int.bits_per_int
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        target_bits_per_int(Globals, bits_per_int(OutputArgVal))
     ).
 
-:- pred evaluate_det_call_int_2(string::in, int::in, bool::in,
+:- pred evaluate_det_call_uint_1(globals::in, string::in, int::in,
+    arg_hlds_info::in, arg_hlds_info::out, cons_id::out) is semidet.
+
+evaluate_det_call_uint_1(Globals, ProcName, ModeNum, X, OutputArg, ConsId) :-
+    (
+        ProcName = "bits_per_uint",
+        ModeNum = 0,
+        OutputArg = X,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        target_bits_per_uint(Globals, bits_per_uint(OutputArgVal)),
+        % NOTE: this returns an int not a uint.
+        ConsId = int_const(OutputArgVal)
+    ).
+
+:- pred evaluate_det_call_int_2(globals::in, string::in, int::in,
     arg_hlds_info::in, arg_hlds_info::in, arg_hlds_info::out, cons_id::out)
     is semidet.
 
-evaluate_det_call_int_2(ProcName, ModeNum, CrossCompiling, X, Y,
+evaluate_det_call_int_2(Globals, ProcName, ModeNum, X, Y,
         OutputArg, int_const(OutputArgVal)) :-
     (
         ProcName = "+",
@@ -211,7 +242,9 @@ evaluate_det_call_int_2(ProcName, ModeNum, CrossCompiling, X, Y,
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         OutputArg = Y,
-        OutputArgVal = -XVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.minus(BitsPerInt, 0, XVal, OutputArgVal)
     ;
         ProcName = "\\",
         ModeNum = 0,
@@ -221,38 +254,57 @@ evaluate_det_call_int_2(ProcName, ModeNum, CrossCompiling, X, Y,
     ;
         ProcName = "floor_to_multiple_of_bits_per_int",
         ModeNum = 0,
-        CrossCompiling = no,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         OutputArg = Y,
-        OutputArgVal = int.floor_to_multiple_of_bits_per_int(XVal)
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.floor_to_multiple_of_bits_per_int(XVal, BitsPerInt,
+            OutputArgVal)
     ;
         ProcName = "quot_bits_per_int",
         ModeNum = 0,
-        CrossCompiling = no,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         OutputArg = Y,
-        OutputArgVal = int.quot_bits_per_int(XVal)
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.quot_bits_per_int(XVal, BitsPerInt, OutputArgVal)
     ;
         ProcName = "times_bits_per_int",
         ModeNum = 0,
-        CrossCompiling = no,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         OutputArg = Y,
-        OutputArgVal = int.times_bits_per_int(XVal)
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.times_bits_per_int(XVal, BitsPerInt, OutputArgVal)
     ;
         ProcName = "rem_bits_per_int",
         ModeNum = 0,
-        CrossCompiling = no,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         OutputArg = Y,
-        OutputArgVal = int.rem_bits_per_int(XVal)
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.rem_bits_per_int(XVal, BitsPerInt, OutputArgVal)
     ).
 
-:- pred evaluate_det_call_float_2(string::in, int::in, bool::in,
+:- pred evaluate_det_call_uint_2(globals::in, string::in, int::in,
     arg_hlds_info::in, arg_hlds_info::in, arg_hlds_info::out, cons_id::out)
     is semidet.
 
-evaluate_det_call_float_2(ProcName, ModeNum, _CrossCompiling, X, Y,
+evaluate_det_call_uint_2(_Globals, ProcName, ModeNum, X, Y,
+        OutputArg, uint_const(OutputArgVal)) :-
+    (
+        ProcName = "\\",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        OutputArg = Y,
+        OutputArgVal = \ XVal
+    ).
+
+:- pred evaluate_det_call_float_2(globals::in, string::in, int::in,
+    arg_hlds_info::in, arg_hlds_info::in, arg_hlds_info::out, cons_id::out)
+    is semidet.
+
+evaluate_det_call_float_2(_Globals, ProcName, ModeNum, X, Y,
         OutputArg, float_const(OutputArgVal)) :-
     (
         ProcName = "+",
@@ -267,12 +319,12 @@ evaluate_det_call_float_2(ProcName, ModeNum, _CrossCompiling, X, Y,
         OutputArg = Y,
         OutputArgVal = -XVal
     ).
-            
-:- pred evaluate_det_call_string_2(string::in, int::in, bool::in,
+
+:- pred evaluate_det_call_string_2(globals::in, string::in, int::in,
     arg_hlds_info::in, arg_hlds_info::in, arg_hlds_info::out,
     cons_id::out) is semidet.
 
-evaluate_det_call_string_2(ProcName, ModeNum, _CrossCompiling, X, Y,
+evaluate_det_call_string_2(_Globals, ProcName, ModeNum, X, Y,
         OutputArg, OutputArgVal) :-
     ProcName = "count_codepoints",
     ModeNum = 0,
@@ -280,12 +332,12 @@ evaluate_det_call_string_2(ProcName, ModeNum, _CrossCompiling, X, Y,
     OutputArg = Y,
     CodePointCountX = string.count_codepoints(XVal),
     OutputArgVal = int_const(CodePointCountX).
-        
-:- pred evaluate_det_call_int_3(string::in, int::in, bool::in,
+
+:- pred evaluate_det_call_int_3(globals::in, string::in, int::in,
     arg_hlds_info::in, arg_hlds_info::in, arg_hlds_info::in,
     arg_hlds_info::out, cons_id::out) is semidet.
 
-evaluate_det_call_int_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
+evaluate_det_call_int_3(Globals, ProcName, ModeNum, X, Y, Z,
         OutputArg, int_const(OutputArgVal)) :-
     (
         ProcName = "plus",
@@ -293,70 +345,90 @@ evaluate_det_call_int_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = XVal + YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.plus(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "+",
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = XVal + YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.plus(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "+",
         ModeNum = 1,
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         Z ^ arg_inst = bound(_, _, [bound_functor(int_const(ZVal), [])]),
         OutputArg = X,
-        OutputArgVal = ZVal - YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.minus(BitsPerInt, ZVal, YVal, OutputArgVal)
     ;
         ProcName = "+",
         ModeNum = 2,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Z ^ arg_inst = bound(_, _, [bound_functor(int_const(ZVal), [])]),
         OutputArg = Y,
-        OutputArgVal = ZVal - XVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.minus(BitsPerInt, ZVal, XVal, OutputArgVal)
     ;
         ProcName = "minus",
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = XVal - YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.minus(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "-",
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = XVal - YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.minus(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "-",
         ModeNum = 1,
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         Z ^ arg_inst = bound(_, _, [bound_functor(int_const(ZVal), [])]),
         OutputArg = X,
-        OutputArgVal = YVal + ZVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.plus(BitsPerInt, YVal, ZVal, OutputArgVal)
     ;
         ProcName = "-",
         ModeNum = 2,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Z ^ arg_inst = bound(_, _, [bound_functor(int_const(ZVal), [])]),
         OutputArg = Y,
-        OutputArgVal = XVal - ZVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.minus(BitsPerInt, XVal, ZVal, OutputArgVal)
     ;
         ProcName = "times",
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = XVal * YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.times(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "*",
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = XVal * YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.times(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "unchecked_quotient",
         ModeNum = 0,
@@ -364,7 +436,9 @@ evaluate_det_call_int_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         YVal \= 0,
         OutputArg = Z,
-        OutputArgVal = unchecked_quotient(XVal, YVal)
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.unchecked_quotient(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "//",
         ModeNum = 0,
@@ -372,7 +446,9 @@ evaluate_det_call_int_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         YVal \= 0,
         OutputArg = Z,
-        OutputArgVal = XVal // YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.quotient(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "mod",
         ModeNum = 0,
@@ -380,7 +456,9 @@ evaluate_det_call_int_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         YVal \= 0,
         OutputArg = Z,
-        OutputArgVal = XVal mod YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.mod(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "rem",
         ModeNum = 0,
@@ -388,7 +466,9 @@ evaluate_det_call_int_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         YVal \= 0,
         OutputArg = Z,
-        OutputArgVal = XVal rem YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.rem(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "unchecked_rem",
         ModeNum = 0,
@@ -396,35 +476,45 @@ evaluate_det_call_int_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         YVal \= 0,
         OutputArg = Z,
-        OutputArgVal = unchecked_rem(XVal, YVal)
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.unchecked_rem(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "unchecked_left_shift",
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = unchecked_left_shift(XVal, YVal)
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.unchecked_left_shift(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "<<",
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = XVal << YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.left_shift(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "unchecked_right_shift",
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = unchecked_right_shift(XVal, YVal)
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.unchecked_right_shift(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = ">>",
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
         OutputArg = Z,
-        OutputArgVal = XVal >> YVal
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        int_emu.target_bits_per_int(Globals, BitsPerInt),
+        int_emu.right_shift(BitsPerInt, XVal, YVal, OutputArgVal)
     ;
         ProcName = "/\\",
         ModeNum = 0,
@@ -448,11 +538,179 @@ evaluate_det_call_int_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
         OutputArgVal = xor(XVal, YVal)
     ).
 
-:- pred evaluate_det_call_float_3(string::in, int::in, bool::in,
+:- pred evaluate_det_call_uint_3(globals::in, string::in, int::in,
     arg_hlds_info::in, arg_hlds_info::in, arg_hlds_info::in,
     arg_hlds_info::out, cons_id::out) is semidet.
 
-evaluate_det_call_float_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
+evaluate_det_call_uint_3(Globals, ProcName, ModeNum, X, Y, Z,
+        OutputArg, uint_const(OutputArgVal)) :-
+    (
+        ProcName = "+",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.plus(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "+",
+        ModeNum = 1,
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        Z ^ arg_inst = bound(_, _, [bound_functor(uint_const(ZVal), [])]),
+        OutputArg = X,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.minus(BitsPerUInt, ZVal, YVal, OutputArgVal)
+    ;
+        ProcName = "+",
+        ModeNum = 2,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Z ^ arg_inst = bound(_, _, [bound_functor(uint_const(ZVal), [])]),
+        OutputArg = Y,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.minus(BitsPerUInt, ZVal, XVal, OutputArgVal)
+    ;
+        ProcName = "-",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.minus(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "-",
+        ModeNum = 1,
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        Z ^ arg_inst = bound(_, _, [bound_functor(uint_const(ZVal), [])]),
+        OutputArg = X,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.plus(BitsPerUInt, YVal, ZVal, OutputArgVal)
+    ;
+        ProcName = "-",
+        ModeNum = 2,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Z ^ arg_inst = bound(_, _, [bound_functor(uint_const(ZVal), [])]),
+        OutputArg = Y,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.minus(BitsPerUInt, XVal, ZVal, OutputArgVal)
+    ;
+        ProcName = "*",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.times(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "//",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        YVal \= cast_from_int(0),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.quotient(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "mod",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        YVal \= cast_from_int(0),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.mod(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "rem",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        YVal \= cast_from_int(0),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.rem(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "unchecked_rem",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        YVal \= cast_from_int(0),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.unchecked_rem(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "unchecked_left_shift",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.unchecked_left_shift(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "<<",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.left_shift(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "unchecked_right_shift",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.unchecked_right_shift(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = ">>",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
+        OutputArg = Z,
+        globals.lookup_bool_option(Globals, pregenerated_dist, no),
+        uint_emu.target_bits_per_uint(Globals, BitsPerUInt),
+        uint_emu.right_shift(BitsPerUInt, XVal, YVal, OutputArgVal)
+    ;
+        ProcName = "/\\",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        OutputArg = Z,
+        OutputArgVal = XVal /\ YVal
+    ;
+        ProcName = "\\/",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        OutputArg = Z,
+        OutputArgVal = XVal \/ YVal
+    ;
+        ProcName = "xor",
+        ModeNum = 0,
+        X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+        Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+        OutputArg = Z,
+        OutputArgVal = xor(XVal, YVal)
+    ).
+
+:- pred evaluate_det_call_float_3(globals::in, string::in, int::in,
+    arg_hlds_info::in, arg_hlds_info::in, arg_hlds_info::in,
+    arg_hlds_info::out, cons_id::out) is semidet.
+
+evaluate_det_call_float_3(_Globals, ProcName, ModeNum, X, Y, Z,
         OutputArg, float_const(OutputArgVal)) :-
     (
         ProcName = "+",
@@ -493,19 +751,17 @@ evaluate_det_call_float_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
         OutputArgVal = unchecked_quotient(XVal, YVal)
     ).
 
-:- pred evaluate_det_call_string_3(string::in, int::in, bool::in,
+:- pred evaluate_det_call_string_3(globals::in, string::in, int::in,
     arg_hlds_info::in, arg_hlds_info::in, arg_hlds_info::in,
     arg_hlds_info::out, cons_id::out) is semidet.
 
-evaluate_det_call_string_3(ProcName, ModeNum, _CrossCompiling, X, Y, Z,
+evaluate_det_call_string_3(_Globals, ProcName, ModeNum, X, Y, Z,
         OutputArg, string_const(OutputArgVal)) :-
     (
         ( ProcName = "++"
         ; ProcName = "append"
         ),
-        % We can only do the append if Z is free (this allows us to ignore
-        % the mode number and pick up both the predicate and function versions
-        % of append).
+        % We can only do the append if Z is free.
         ModeNum = 0,
         X ^ arg_inst = bound(_, _, [bound_functor(string_const(XVal), [])]),
         Y ^ arg_inst = bound(_, _, [bound_functor(string_const(YVal), [])]),
@@ -536,36 +792,75 @@ evaluate_test("int", "<", 0, Args, Result) :-
     Args = [X, Y],
     X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
     Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
-    ( XVal < YVal ->
+    ( if XVal < YVal then
         Result = yes
-    ;
+    else
         Result = no
     ).
 evaluate_test("int", "=<", 0, Args, Result) :-
     Args = [X, Y],
     X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
     Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
-    ( XVal =< YVal ->
+    ( if XVal =< YVal then
         Result = yes
-    ;
+    else
         Result = no
     ).
 evaluate_test("int", ">", 0, Args, Result) :-
     Args = [X, Y],
     X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
     Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
-    ( XVal > YVal ->
+    ( if XVal > YVal then
         Result = yes
-    ;
+    else
         Result = no
     ).
 evaluate_test("int", ">=", 0, Args, Result) :-
     Args = [X, Y],
     X ^ arg_inst = bound(_, _, [bound_functor(int_const(XVal), [])]),
     Y ^ arg_inst = bound(_, _, [bound_functor(int_const(YVal), [])]),
-    ( XVal >= YVal ->
+    ( if XVal >= YVal then
         Result = yes
-    ;
+    else
+        Result = no
+    ).
+
+    % Unsigned integer comparisons.
+
+evaluate_test("uint", "<", 0, Args, Result) :-
+    Args = [X, Y],
+    X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+    Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+    ( if XVal < YVal then
+        Result = yes
+    else
+        Result = no
+    ).
+evaluate_test("uint", "=<", 0, Args, Result) :-
+    Args = [X, Y],
+    X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+    Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+    ( if XVal =< YVal then
+        Result = yes
+    else
+        Result = no
+    ).
+evaluate_test("uint", ">", 0, Args, Result) :-
+    Args = [X, Y],
+    X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+    Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+    ( if XVal > YVal then
+        Result = yes
+    else
+        Result = no
+    ).
+evaluate_test("uint", ">=", 0, Args, Result) :-
+    Args = [X, Y],
+    X ^ arg_inst = bound(_, _, [bound_functor(uint_const(XVal), [])]),
+    Y ^ arg_inst = bound(_, _, [bound_functor(uint_const(YVal), [])]),
+    ( if XVal >= YVal then
+        Result = yes
+    else
         Result = no
     ).
 
@@ -575,36 +870,36 @@ evaluate_test("float", "<", 0, Args, Result) :-
     Args = [X, Y],
     X ^ arg_inst = bound(_, _, [bound_functor(float_const(XVal), [])]),
     Y ^ arg_inst = bound(_, _, [bound_functor(float_const(YVal), [])]),
-    ( XVal < YVal ->
+    ( if XVal < YVal then
         Result = yes
-    ;
+    else
         Result = no
     ).
 evaluate_test("float", "=<", 0, Args, Result) :-
     Args = [X, Y],
     X ^ arg_inst = bound(_, _, [bound_functor(float_const(XVal), [])]),
     Y ^ arg_inst = bound(_, _, [bound_functor(float_const(YVal), [])]),
-    ( XVal =< YVal ->
+    ( if XVal =< YVal then
         Result = yes
-    ;
+    else
         Result = no
     ).
 evaluate_test("float", ">", 0, Args, Result) :-
     Args = [X, Y],
     X ^ arg_inst = bound(_, _, [bound_functor(float_const(XVal), [])]),
     Y ^ arg_inst = bound(_, _, [bound_functor(float_const(YVal), [])]),
-    ( XVal > YVal ->
+    ( if XVal > YVal then
         Result = yes
-    ;
+    else
         Result = no
     ).
 evaluate_test("float", ">=", 0, Args, Result) :-
     Args = [X, Y],
     X ^ arg_inst = bound(_, _, [bound_functor(float_const(XVal), [])]),
     Y ^ arg_inst = bound(_, _, [bound_functor(float_const(YVal), [])]),
-    ( XVal >= YVal ->
+    ( if XVal >= YVal then
         Result = yes
-    ;
+    else
         Result = no
     ).
 evaluate_test("private_builtin", "typed_unify", Mode, Args, Result) :-
@@ -626,7 +921,7 @@ evaluate_test("private_builtin", "typed_unify", Mode, Args, Result) :-
     %
     % This attempts to evaluate a call to
     %   ModuleName.ProcName(Args)
-    % whose mode is specified by ModeNum.
+    % in mode ModeNum.
     %
     % If the call is a semidet call with one output that can be statically
     % evaluated, evaluate_semidet_call succeeds with Result being "no"
@@ -677,26 +972,29 @@ evaluate_semidet_call("private_builtin", "typed_unify", Mode, Args, Result) :-
 :- pred eval_unify(arg_hlds_info::in, arg_hlds_info::in, bool::out) is semidet.
 
 eval_unify(X, Y, Result) :-
-    (
+    ( if
         X ^ arg_var = Y ^ arg_var
-    ->
+    then
         Result = yes
-    ;
+    else if
         X ^ arg_inst = bound(_, _, [bound_functor(XCtor, XArgVars)]),
         Y ^ arg_inst = bound(_, _, [bound_functor(YCtor, YArgVars)])
-    ->
-        ( XCtor = YCtor, XArgVars = YArgVars ->
+    then
+        ( if
+            XCtor = YCtor,
+            XArgVars = YArgVars
+        then
             Result = yes
-        ;
+        else if
             ( XCtor \= YCtor
             ; length(XArgVars) \= length(YArgVars) `with_type` int
             )
-        ->
+        then
             Result = no
-        ;
+        else
             fail
         )
-    ;
+    else
         fail
     ).
 
@@ -716,8 +1014,8 @@ make_assignment_goal(OutputArg, InputArg, Goal, !GoalInfo) :-
 :- pred make_construction_goal(arg_hlds_info::in, cons_id::in,
     hlds_goal_expr::out, hlds_goal_info::in, hlds_goal_info::out) is det.
 
-make_construction_goal(OutputArg, Cons, Goal, !GoalInfo) :-
-    make_construction(OutputArg, Cons, Goal),
+make_construction_goal(OutputArg, Cons, GoalExpr, !GoalInfo) :-
+    make_construction_goal_expr(OutputArg, Cons, GoalExpr),
     Delta0 = goal_info_get_instmap_delta(!.GoalInfo),
     Inst = bound(unique, inst_test_results_fgtc, [bound_functor(Cons, [])]),
     instmap_delta_set_var(OutputArg ^ arg_var, Inst, Delta0, Delta),
@@ -731,21 +1029,25 @@ make_assignment(OutputArg, InputArg, Goal) :-
     OutVar = OutputArg ^ arg_var,
     InVar = InputArg ^ arg_var,
     Inst = InputArg ^ arg_inst,
-    OutputArgMode = (free -> Inst),
-    InputArgMode = (Inst -> Inst),
-    UniMode = OutputArgMode - InputArgMode,
+    OutputArgMode = from_to_insts(free, Inst),
+    InputArgMode = from_to_insts(Inst, Inst),
+    UnifyMode = unify_modes_lhs_rhs(OutputArgMode, InputArgMode),
     Context = unify_context(umc_explicit, []),
-    Goal = unify(OutVar, rhs_var(InVar), UniMode, assign(OutVar, InVar),
+    Goal = unify(OutVar, rhs_var(InVar), UnifyMode, assign(OutVar, InVar),
         Context).
 
     % recompute_instmap_delta is run by simplify.m if anything changes,
     % so the insts are not important here.
     %
-:- pred make_construction(arg_hlds_info::in, cons_id::in, hlds_goal_expr::out)
-    is det.
+:- pred make_construction_goal_expr(arg_hlds_info::in, cons_id::in,
+    hlds_goal_expr::out) is det.
 
-make_construction(Arg, ConsId, GoalExpr) :-
-    make_const_construction(Arg ^ arg_var, ConsId, hlds_goal(GoalExpr, _)).
+make_construction_goal_expr(Arg, ConsId, GoalExpr) :-
+    make_const_construction(Arg ^ arg_var, ConsId, Goal),
+    % We ignore the generic goal info returned by make_const_construction;
+    % our caller will construct a goal info that is specialized to the
+    % call being replaced.
+    Goal = hlds_goal(GoalExpr, _).
 
 %---------------------------------------------------------------------------%
 

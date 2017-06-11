@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2001, 2004-2006, 2008-2009 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: exclude.m.
 % Author: zs.
@@ -38,7 +38,7 @@
 % following the ancestors of the supplied call_site_dynamic_ptr until it
 % arrives at a procedure which is not excluded.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module exclude.
 :- interface.
@@ -49,7 +49,7 @@
 :- import_module map.
 :- import_module maybe.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type exclude_file
     --->    exclude_file(
@@ -75,8 +75,8 @@
 :- func apply_contour_exclusion(deep, excluded_modules, call_site_dynamic_ptr)
     = call_site_dynamic_ptr.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -86,7 +86,7 @@
 :- import_module set.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type excluded_modules == set(exclude_spec).
 
@@ -104,7 +104,7 @@
             % Exclude all procedures in the named module, except those
             % which are exported from the module.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 read_exclude_file(FileName, ModuleDataMap, ExcludeFile, !IO) :-
     io.open_input(FileName, MaybeStream, !IO),
@@ -136,12 +136,12 @@ read_exclude_lines(FileName, InputStream, RevSpecs0, Res, !IO) :-
     io.read_line_as_string(InputStream, Res0, !IO),
     (
         Res0 = ok(Line0),
-        ( string.remove_suffix(Line0, "\n", LinePrime) ->
+        ( if string.remove_suffix(Line0, "\n", LinePrime) then
             Line = LinePrime
-        ;
+        else
             Line = Line0
         ),
-        (
+        ( if
             Words = string.words_separator(char.is_whitespace, Line),
             Words = [Scope, ModuleName],
             (
@@ -151,11 +151,11 @@ read_exclude_lines(FileName, InputStream, RevSpecs0, Res, !IO) :-
                 Scope = "internal",
                 ExclType = exclude_internal_procedures
             )
-        ->
+        then
             Spec = exclude_spec(ModuleName, ExclType),
             RevSpecs1 = [Spec | RevSpecs0],
             read_exclude_lines(FileName, InputStream, RevSpecs1, Res, !IO)
-        ;
+        else
             Msg = string.format("file %s contains badly formatted line: %s",
                 [s(FileName), s(Line)]),
             Res = error(Msg)
@@ -216,17 +216,17 @@ has_valid_module_name(ModuleDataMap, Spec) :-
 
 spec_to_module_name(exclude_spec(ModuleName, _)) = ModuleName.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 apply_contour_exclusion(Deep, ExcludedSpecs, CSDPtr0) = CSDPtr :-
-    ( valid_call_site_dynamic_ptr(Deep, CSDPtr0) ->
+    ( if valid_call_site_dynamic_ptr(Deep, CSDPtr0) then
         deep_lookup_call_site_dynamics(Deep, CSDPtr0, CSD),
         PDPtr = CSD ^ csd_caller,
         deep_lookup_proc_dynamics(Deep, PDPtr, PD),
         PSPtr = PD ^ pd_proc_static,
         deep_lookup_proc_statics(Deep, PSPtr, PS),
         ModuleName = PS ^ ps_decl_module,
-        (
+        ( if
             set.member(ExclSpec, ExcludedSpecs),
             ExclSpec = exclude_spec(ModuleName, ExclType),
             (
@@ -235,17 +235,17 @@ apply_contour_exclusion(Deep, ExcludedSpecs, CSDPtr0) = CSDPtr :-
                 ExclType = exclude_internal_procedures,
                 PS ^ ps_in_interface = no
             )
-        ->
+        then
             deep_lookup_clique_index(Deep, PDPtr, CliquePtr),
             deep_lookup_clique_parents(Deep, CliquePtr, EntryCSDPtr),
             CSDPtr = apply_contour_exclusion(Deep, ExcludedSpecs, EntryCSDPtr)
-        ;
+        else
             CSDPtr = CSDPtr0
         )
-    ;
+    else
         CSDPtr = CSDPtr0
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module exclude.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

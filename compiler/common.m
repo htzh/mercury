@@ -2,36 +2,99 @@
 % vim: ft=mercury ts=4 sw=4 et
 %---------------------------------------------------------------------------%
 % Copyright (C) 1995-2012 The University of Melbourne.
+% Copyright (C) 2015 The Mercury team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %---------------------------------------------------------------------------%
 %
 % File: common.m.
 % Original author: squirrel (Jane Anna Langley).
-% Some bugs fixed by fjh.
-% Extensive revision by zs.
-% More revision by stayl.
+% Other authors: fjh, zs, stayl.
 %
-% This module attempts to optimise out instances where a variable is
-% decomposed and then soon after reconstructed from the parts. If possible we
-% would like to "short-circuit" this process.  It also optimizes
-% deconstructions of known cells, replacing them with assignments to the
-% arguments where this is guaranteed to not increase the number of stack slots
-% required by the goal.  Repeated calls to predicates with the same input
-% arguments are replaced by assignments and warnings are returned.
+% The main task of this module is to look for conjoined goals that involve
+% the same structure (the "common" structure the module is named after),
+% and to optimize those goals. The reason why we created this module was
+% code like this:
+%
+%   X => f(A, B, C),
+%   ...
+%   Y <= f(A, B, C)
+%
+% This module replaces this code with
+%
+%   X => f(A, B, C),
+%   ...
+%   Y := X
+%
+% since this allocates less memory on the heap.
+%
+% We want to perform this optimization even if the deconstruction of X and
+% the construction of Y are not in the same conjunction, but are nevertheless
+% conjoined (e.g. because the construction of Y is inside an if-then-else
+% or a disjunction that is inside the conjunction containing the deconstruction
+% of X). We also want to do it if the two argument lists are not equal
+% syntactically, but instead look like this:
+%
+%   X => f(A, B, C1),
+%   ...
+%   C2 := C1
+%   ...
+%   Y <= f(A, B, C2)
+%
+% We therefore have to keep track of pretty much all unifications in the body
+% of the procedure being optimized. Since we have this information laying
+% around anyway, we also use to for two other purposes. The first is
+% to eliminate unnecessary tests of function symbols, replacing
+%
+%   X => f(A1, B1, C1),
+%   ...
+%   X => f(A2, B2, C2)
+%
+% with
+%
+%   X => f(A1, B1, C1),
+%   ...
+%   A2 := A1,
+%   B2 := B1,
+%   C2 := C1
+%
+% provided that this does not increase the number of variables that
+% have to be saved across calls and other stack flushes.
+%
+% The other is to detect and optimize duplicate calls, replacing
+%
+%   p(InA, InB, OutC1, OutD1),
+%   ...
+%   p(InA, InB, OutC2, OutD2)
+%
+% with
+%
+%   p(InA, InB, OutC1, OutD1),
+%   ...
+%   OutC2 := OutC1,
+%   OutD2 := OutD1
+%
+% Since the author probably did not mean to write duplicate calls, we also
+% generate a warning for such code, if the option asking for such warnings
+% is set.
 %
 % IMPORTANT: This module does a small subset of the job of compile-time
 % garbage collection, but it does so without paying attention to uniqueness
-% information, since the compiler does not yet have such information.  Once we
-% implement ctgc, the assumptions made by this module will have to be
-% revisited.
+% information, since the compiler does not yet have such information.
+% Once we implement ctgc, the assumptions made by this module
+% will have to be revisited.
+%
+% NOTE: There is another compiler module, cse_detection.m, that looks for
+% unifications involving common structures in *disjoined*, not *conjoined*
+% goals. Its purpose is not optimization, but the generation of more precise
+% determinism information.
 %
 %---------------------------------------------------------------------------%
 
-:- module check_hlds.common.
+:- module check_hlds.simplify.common.
 :- interface.
 
-:- import_module check_hlds.simplify.
+:- import_module check_hlds.simplify.simplify_info.
 :- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
@@ -39,44 +102,51 @@
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
+:- import_module maybe.
 
 %---------------------------------------------------------------------------%
 
-    % If we find a deconstruction or a construction we cannot optimize, record
-    % the details of the memory cell in CommonInfo.
-    %
     % If we find a construction that constructs a cell identical to one we
     % have seen before, replace the construction with an assignment from the
-    % variable unified with that cell.
+    % variable that already holds that cell.
+    %
+    % If we find a deconstruction or a construction we cannot optimize, record
+    % the details of the memory cell in the updated common_info.
     %
 :- pred common_optimise_unification(unification::in, unify_mode::in,
     hlds_goal_expr::in, hlds_goal_expr::out,
     hlds_goal_info::in, hlds_goal_info::out,
+    common_info::in, common_info::out,
     simplify_info::in, simplify_info::out) is det.
 
-    % Check whether this call has been seen before and is replaceable, if
-    % so produce assignment unification for the non-local output variables,
-    % and give a warning.
-    % A call is considered replaceable if it has no uniquely moded outputs
-    % and no destructive inputs.
-    % It is the caller's responsibility to check that the call is pure.
+    % Check whether this call has been seen before and is replaceable.
+    % If it is, generate assignment unifications for the nonlocal output
+    % variables (to remove the redundant call), and a warning (since the
+    % programmer probably did not mean to write a redundant call).
+    %
+    % A call is considered replaceable if it is pure, and it has neither
+    % destructive inputs nor uniquely moded outputs.
     %
 :- pred common_optimise_call(pred_id::in, proc_id::in, list(prog_var)::in,
-    hlds_goal_info::in, hlds_goal_expr::in, hlds_goal_expr::out,
+    purity::in, hlds_goal_info::in,
+    hlds_goal_expr::in, maybe(hlds_goal_expr)::out,
+    common_info::in, common_info::out,
     simplify_info::in, simplify_info::out) is det.
 
 :- pred common_optimise_higher_order_call(prog_var::in, list(prog_var)::in,
-    list(mer_mode)::in, determinism::in, hlds_goal_info::in,
-    hlds_goal_expr::in, hlds_goal_expr::out,
+    list(mer_mode)::in, determinism::in, purity::in, hlds_goal_info::in,
+    hlds_goal_expr::in, maybe(hlds_goal_expr)::out,
+    common_info::in, common_info::out,
     simplify_info::in, simplify_info::out) is det.
 
-    % Succeeds if the two variables are equivalent according to the specified
-    % equivalence class.
+    % Succeeds if the two variables are equivalent according to the
+    % information in the specified common_info.
     %
 :- pred common_vars_are_equivalent(prog_var::in, prog_var::in,
     common_info::in) is semidet.
 
-    % Assorted stuff used here that simplify.m doesn't need to know about.
+    % Assorted stuff used here that the rest of the simplify package
+    % does not need to know about.
     %
 :- type common_info.
 :- func common_info_init = common_info.
@@ -92,10 +162,12 @@
 
 :- import_module check_hlds.det_report.
 :- import_module check_hlds.inst_match.
+:- import_module check_hlds.inst_test.
 :- import_module check_hlds.mode_util.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_rtti.
 :- import_module hlds.instmap.
+:- import_module hlds.vartypes.
 :- import_module libs.
 :- import_module libs.options.
 :- import_module parse_tree.error_util.
@@ -107,22 +179,20 @@
 :- import_module bool.
 :- import_module eqvclass.
 :- import_module map.
-:- import_module maybe.
 :- import_module pair.
 :- import_module require.
-:- import_module set.
 :- import_module term.
 
 %---------------------------------------------------------------------------%
 
     % The var_eqv field records information about which sets of variables are
-    % known to be equivalent, usually because they have been unified.  This is
+    % known to be equivalent, usually because they have been unified. This is
     % useful when eliminating duplicate unifications and when eliminating
     % duplicate calls.
     %
     % The all_structs and since_call_structs fields record information about
     % the memory cells available for reuse. The all_structs field has info
-    % about all the cells available at the current program point.  The
+    % about all the cells available at the current program point. The
     % since_call_structs field contains info about the subset of these cells
     % that have been seen since the last stack flush, which is usually a call.
     %
@@ -174,10 +244,10 @@
     % A struct_map maps a principal type constructor and a cons_id of that
     % type to information about cells involving that cons_id.
     %
-    % The reason why we need the principal type constructors is that two
-    % syntactically identical structures have compatible representations if and
-    % only if their principal type constructors are the same.  For example, if
-    % we have:
+    % The reason why we need the principal type constructors is that
+    % two syntactically identical structures are guaranteed to have
+    % compatible representations if and ONLY if their principal type
+    % constructors are the same. For example, if we have:
     %
     %   :- type maybe_err(T) ---> ok(T) ; err(string).
     %
@@ -186,17 +256,17 @@
     %
     % then we want to reuse the `err(X)' in the first arg rather than
     % constructing a new copy of it for the second arg.
-    % The two occurrences of `err(X)' have types `maybe_err(int)'
-    % and `maybe(float)', but we know that they have the same
-    % representation.
+    % The two occurrences of `err(X)' have types `maybe_err(int)' and
+    % `maybe(float)', but we know that they have the same representation.
     %
-    % We put the cons_id first in the pair because there are more cons_ids
-    % than type constructors, and hence comparisons involving cons_ids are
-    % more likely to fail. This should ensure that failed comparisons in map
-    % searches fail as soon as possible.
+    % Instead of a simple map whose keys are <type_ctor, cons_id> pairs,
+    % we use a two-stage map, with the keys being type_ctors in the first stage
+    % and cons_ids in the second. Having two stages makes the comparisons
+    % cheaper, and we put the type_ctors first to avoid mixing together
+    % cons_ids from different type constructors.
 
-:- type cons_id_map  ==  map(cons_id, structures).
-:- type struct_map  ==  map(type_ctor, cons_id_map).
+:- type struct_map == map(type_ctor, cons_id_map).
+:- type cons_id_map == map(cons_id, structures).
 
     % Given a unification X = f(Y1, ... Yn), we record its availability for
     % reuse by creating structure(X, [Y1, ... Yn]), and putting it at the
@@ -206,7 +276,7 @@
 :- type structure
     --->    structure(prog_var, list(prog_var)).
 
-:- type seen_calls  ==  map(seen_call_id, list(call_args)).
+:- type seen_calls == map(seen_call_id, list(call_args)).
 
 :- type call_args
     --->    call_args(
@@ -235,63 +305,55 @@ common_info_clear_structs(!Info) :-
 
 %---------------------------------------------------------------------------%
 
-common_optimise_unification(Unification0, Mode,
-        GoalExpr0, GoalExpr, GoalInfo0, GoalInfo, !Info) :-
+common_optimise_unification(Unification0, Mode, !GoalExpr, !GoalInfo,
+        !Common, !Info) :-
     (
         Unification0 = construct(Var, ConsId, ArgVars, _, _, _, SubInfo),
-        (
+        ( if
             SubInfo = construct_sub_info(MaybeTakeAddr, _),
             MaybeTakeAddr = yes(_)
-        ->
-            GoalExpr = GoalExpr0,
-            GoalInfo = GoalInfo0
-        ;
+        then
+            true
+        else
             common_optimise_construct(Var, ConsId, ArgVars, Mode,
-                GoalExpr0, GoalExpr, GoalInfo0, GoalInfo, !Info)
+                !GoalExpr, !GoalInfo, !Common, !Info)
         )
     ;
-        Unification0 = deconstruct(Var, ConsId, ArgVars, UniModes, CanFail, _),
-        common_optimise_deconstruct(Var, ConsId, ArgVars, UniModes, CanFail,
-            Mode, GoalExpr0, GoalExpr, GoalInfo0, GoalInfo, !Info)
+        Unification0 = deconstruct(Var, ConsId, ArgVars, ArgModes, CanFail, _),
+        common_optimise_deconstruct(Var, ConsId, ArgVars, ArgModes, CanFail,
+            Mode, !GoalExpr, !GoalInfo, !Common, !Info)
     ;
-        Unification0 = assign(Var1, Var2),
-        record_equivalence(Var1, Var2, !Info),
-        GoalExpr = GoalExpr0,
-        GoalInfo = GoalInfo0
+        ( Unification0 = assign(Var1, Var2)
+        ; Unification0 = simple_test(Var1, Var2)
+        ),
+        record_equivalence(Var1, Var2, !Common)
     ;
-        Unification0 = simple_test(Var1, Var2),
-        record_equivalence(Var1, Var2, !Info),
-        GoalExpr = GoalExpr0,
-        GoalInfo = GoalInfo0
-    ;
-        Unification0 = complicated_unify(_, _, _),
-        GoalExpr = GoalExpr0,
-        GoalInfo = GoalInfo0
+        Unification0 = complicated_unify(_, _, _)
     ).
 
 :- pred common_optimise_construct(prog_var::in, cons_id::in,
     list(prog_var)::in, unify_mode::in,
     hlds_goal_expr::in, hlds_goal_expr::out,
     hlds_goal_info::in, hlds_goal_info::out,
+    common_info::in, common_info::out,
     simplify_info::in, simplify_info::out) is det.
 
-common_optimise_construct(Var, ConsId, ArgVars, Mode, GoalExpr0, GoalExpr,
-        GoalInfo0, GoalInfo, !Info) :-
-    Mode = LVarMode - _,
+common_optimise_construct(Var, ConsId, ArgVars, UnifyMode, GoalExpr0, GoalExpr,
+        GoalInfo0, GoalInfo, !Common, !Info) :-
+    UnifyMode = unify_modes_lhs_rhs(LVarMode, _RVarMode),
     simplify_info_get_module_info(!.Info, ModuleInfo),
-    mode_get_insts(ModuleInfo, LVarMode, _, Inst),
+    LVarMode = from_to_insts(_, LVarFinalInst),
     % Don't optimise partially instantiated construction unifications,
     % because it would be tricky to work out how to mode the replacement
     % assignment unifications. In the vast majority of cases, the variable
     % is ground.
-    ( inst_is_ground(ModuleInfo, Inst) ->
+    ( if inst_is_ground(ModuleInfo, LVarFinalInst) then
         TypeCtor = lookup_var_type_ctor(!.Info, Var),
-        simplify_info_get_common_info(!.Info, CommonInfo0),
-        VarEqv0 = CommonInfo0 ^ var_eqv,
+        VarEqv0 = !.Common ^ var_eqv,
         list.map_foldl(eqvclass.ensure_element_partition_id,
             ArgVars, ArgVarIds, VarEqv0, VarEqv1),
-        AllStructMap0 = CommonInfo0 ^ all_structs,
-        (
+        AllStructMap0 = !.Common ^ all_structs,
+        ( if
             % generate_assign assumes that the output variable
             % is in the instmap_delta, which will not be true if the
             % variable is local to the unification. The optimization
@@ -303,95 +365,95 @@ common_optimise_construct(Var, ConsId, ArgVars, Mode, GoalExpr0, GoalExpr,
             map.search(ConsIdMap0, ConsId, Structs),
             find_matching_cell_construct(Structs, VarEqv1, ArgVarIds,
                 OldStruct)
-        ->
+        then
             OldStruct = structure(OldVar, _),
             eqvclass.ensure_equivalence(Var, OldVar, VarEqv1, VarEqv),
-            CommonInfo = CommonInfo0 ^ var_eqv := VarEqv,
-            simplify_info_set_common_info(CommonInfo, !Info),
+            !Common ^ var_eqv := VarEqv,
             (
                 ArgVars = [],
-                % Constants don't use memory, so there's no point in
+                % Constants don't use memory, so there is no point in
                 % optimizing away their construction; in fact, doing so
                 % could cause more stack usage.
                 GoalExpr = GoalExpr0,
                 GoalInfo = GoalInfo0
             ;
                 ArgVars = [_ | _],
-                UniMode = ((free - Inst) -> (Inst - Inst)),
-                generate_assign(Var, OldVar, UniMode, GoalInfo0,
-                    GoalExpr, GoalInfo, !Info),
-                simplify_info_set_requantify(!Info),
+                VarFromToInsts = from_to_insts(LVarFinalInst, LVarFinalInst),
+                generate_assign(Var, OldVar, VarFromToInsts, GoalInfo0,
+                    GoalExpr, GoalInfo, !Common, !Info),
+                simplify_info_set_should_requantify(!Info),
                 goal_cost(hlds_goal(GoalExpr0, GoalInfo0), Cost),
                 simplify_info_incr_cost_delta(Cost, !Info)
             )
-        ;
+        else
             GoalExpr = GoalExpr0,
             GoalInfo = GoalInfo0,
             Struct = structure(Var, ArgVars),
-            record_cell_in_maps(TypeCtor, ConsId, Struct, VarEqv1, !Info)
+            record_cell_in_maps(TypeCtor, ConsId, Struct, VarEqv1, !Common)
         )
-    ;
+    else
         GoalExpr = GoalExpr0,
         GoalInfo = GoalInfo0
     ).
 
 :- pred common_optimise_deconstruct(prog_var::in, cons_id::in,
-    list(prog_var)::in, list(uni_mode)::in, can_fail::in, unify_mode::in,
+    list(prog_var)::in, list(unify_mode)::in, can_fail::in, unify_mode::in,
     hlds_goal_expr::in, hlds_goal_expr::out,
     hlds_goal_info::in, hlds_goal_info::out,
+    common_info::in, common_info::out,
     simplify_info::in, simplify_info::out) is det.
 
-common_optimise_deconstruct(Var, ConsId, ArgVars, UniModes, CanFail, Mode,
-        GoalExpr0, GoalExpr, GoalInfo0, GoalInfo, !Info) :-
+common_optimise_deconstruct(Var, ConsId, ArgVars, ArgModes, CanFail, UnifyMode,
+        GoalExpr0, GoalExpr, GoalInfo0, GoalInfo, !Common, !Info) :-
     simplify_info_get_module_info(!.Info, ModuleInfo),
-    (
+    ( if
         % Don't optimise partially instantiated deconstruction unifications,
         % because it would be tricky to work out how to mode the replacement
         % assignment unifications. In the vast majority of cases, the variable
         % is ground.
-        Mode = LVarMode - _,
-        mode_get_insts(ModuleInfo, LVarMode, Inst0, _),
-        \+ inst_is_ground(ModuleInfo, Inst0)
-    ->
+        UnifyMode = unify_modes_lhs_rhs(LVarMode, _RVarMode),
+        LVarMode = from_to_insts(LVarInitInst, _),
+        not inst_is_ground(ModuleInfo, LVarInitInst)
+    then
         GoalExpr = GoalExpr0
-    ;
+    else
         TypeCtor = lookup_var_type_ctor(!.Info, Var),
-        simplify_info_get_common_info(!.Info, CommonInfo0),
-        VarEqv0 = CommonInfo0 ^ var_eqv,
+        VarEqv0 = !.Common ^ var_eqv,
         eqvclass.ensure_element_partition_id(Var, VarId, VarEqv0, VarEqv1),
-        SinceCallStructMap0 = CommonInfo0 ^ since_call_structs,
-        (
+        SinceCallStructMap0 = !.Common ^ since_call_structs,
+        ( if
             % Do not delete deconstruction unifications inserted by
             % stack_opt.m or tupling.m, which have done a more comprehensive
             % cost analysis than common.m can do.
-            \+ goal_info_has_feature(GoalInfo, feature_stack_opt),
-            \+ goal_info_has_feature(GoalInfo, feature_tuple_opt),
+            not goal_info_has_feature(GoalInfo, feature_stack_opt),
+            not goal_info_has_feature(GoalInfo, feature_tuple_opt),
 
             map.search(SinceCallStructMap0, TypeCtor, ConsIdMap0),
             map.search(ConsIdMap0, ConsId, Structs),
             find_matching_cell_deconstruct(Structs, VarEqv1, VarId, OldStruct)
-        ->
+        then
             OldStruct = structure(_, OldArgVars),
             eqvclass.ensure_corresponding_equivalences(ArgVars,
                 OldArgVars, VarEqv1, VarEqv),
-            CommonInfo = CommonInfo0 ^ var_eqv := VarEqv,
-            simplify_info_set_common_info(CommonInfo, !Info),
+            !Common ^ var_eqv := VarEqv,
+            RHSFromToInsts = list.map(unify_modes_to_rhs_from_to_insts,
+                ArgModes),
             create_output_unifications(GoalInfo0, ArgVars, OldArgVars,
-                UniModes, Goals, !Info),
+                RHSFromToInsts, Goals, !Common, !Info),
             GoalExpr = conj(plain_conj, Goals),
             goal_cost(hlds_goal(GoalExpr0, GoalInfo0), Cost),
             simplify_info_incr_cost_delta(Cost, !Info),
-            simplify_info_set_requantify(!Info),
+            simplify_info_set_should_requantify(!Info),
             (
                 CanFail = can_fail,
-                simplify_info_set_rerun_det(!Info)
+                simplify_info_set_should_rerun_det(!Info)
             ;
                 CanFail = cannot_fail
             )
-        ;
+        else
             GoalExpr = GoalExpr0,
             Struct = structure(Var, ArgVars),
-            record_cell_in_maps(TypeCtor, ConsId, Struct, VarEqv1, !Info)
+            record_cell_in_maps(TypeCtor, ConsId, Struct, VarEqv1, !Common)
         )
     ),
     GoalInfo = GoalInfo0.
@@ -412,9 +474,9 @@ lookup_var_type_ctor(Info, Var) = TypeCtor :-
 
 find_matching_cell_construct([Struct | Structs], VarEqv, ArgVarIds, Match) :-
     Struct = structure(_Var, Vars),
-    ( ids_vars_match(ArgVarIds, Vars, VarEqv) ->
+    ( if ids_vars_match(ArgVarIds, Vars, VarEqv) then
         Match = Struct
-    ;
+    else
         find_matching_cell_construct(Structs, VarEqv, ArgVarIds, Match)
     ).
 
@@ -423,9 +485,9 @@ find_matching_cell_construct([Struct | Structs], VarEqv, ArgVarIds, Match) :-
 
 find_matching_cell_deconstruct([Struct | Structs], VarEqv, VarId, Match) :-
     Struct = structure(Var, _Vars),
-    ( id_var_match(VarId, Var, VarEqv) ->
+    ( if id_var_match(VarId, Var, VarEqv) then
         Match = Struct
-    ;
+    else
         find_matching_cell_deconstruct(Structs, VarEqv, VarId, Match)
     ).
 
@@ -448,36 +510,32 @@ id_var_match(Id, Var, VarEqv) :-
 %---------------------------------------------------------------------------%
 
 :- pred record_cell_in_maps(type_ctor::in, cons_id::in, structure::in,
-    eqvclass(prog_var)::in, simplify_info::in, simplify_info::out) is det.
+    eqvclass(prog_var)::in, common_info::in, common_info::out) is det.
 
-record_cell_in_maps(TypeCtor, ConsId, Struct, VarEqv, !Info) :-
-    some [!CommonInfo] (
-        simplify_info_get_common_info(!.Info, !:CommonInfo),
-        AllStructMap0 = !.CommonInfo ^ all_structs,
-        SinceCallStructMap0 = !.CommonInfo ^ since_call_structs,
-        do_record_cell_in_struct_map(TypeCtor, ConsId, Struct,
-            AllStructMap0, AllStructMap),
-        do_record_cell_in_struct_map(TypeCtor, ConsId, Struct,
-            SinceCallStructMap0, SinceCallStructMap),
-        !CommonInfo ^ var_eqv := VarEqv,
-        !CommonInfo ^ all_structs := AllStructMap,
-        !CommonInfo ^ since_call_structs := SinceCallStructMap,
-        simplify_info_set_common_info(!.CommonInfo, !Info)
-    ).
+record_cell_in_maps(TypeCtor, ConsId, Struct, VarEqv, !Common) :-
+    AllStructMap0 = !.Common ^ all_structs,
+    SinceCallStructMap0 = !.Common ^ since_call_structs,
+    do_record_cell_in_struct_map(TypeCtor, ConsId, Struct,
+        AllStructMap0, AllStructMap),
+    do_record_cell_in_struct_map(TypeCtor, ConsId, Struct,
+        SinceCallStructMap0, SinceCallStructMap),
+    !Common ^ var_eqv := VarEqv,
+    !Common ^ all_structs := AllStructMap,
+    !Common ^ since_call_structs := SinceCallStructMap.
 
 :- pred do_record_cell_in_struct_map(type_ctor::in, cons_id::in,
     structure::in, struct_map::in, struct_map::out) is det.
 
 do_record_cell_in_struct_map(TypeCtor, ConsId, Struct, !StructMap) :-
-    ( map.search(!.StructMap, TypeCtor, ConsIdMap0) ->
-        ( map.search(ConsIdMap0, ConsId, Structs0) ->
+    ( if map.search(!.StructMap, TypeCtor, ConsIdMap0) then
+        ( if map.search(ConsIdMap0, ConsId, Structs0) then
             Structs = [Struct | Structs0],
             map.det_update(ConsId, Structs, ConsIdMap0, ConsIdMap)
-        ;
+        else
             map.det_insert(ConsId, [Struct], ConsIdMap0, ConsIdMap)
         ),
         map.det_update(TypeCtor, ConsIdMap, !StructMap)
-    ;
+    else
         ConsIdMap = map.singleton(ConsId, [Struct]),
         map.det_insert(TypeCtor, ConsIdMap, !StructMap)
     ).
@@ -485,21 +543,20 @@ do_record_cell_in_struct_map(TypeCtor, ConsId, Struct, !StructMap) :-
 %---------------------------------------------------------------------------%
 
 :- pred record_equivalence(prog_var::in, prog_var::in,
-    simplify_info::in, simplify_info::out) is det.
+    common_info::in, common_info::out) is det.
 
-record_equivalence(Var1, Var2, !Info) :-
-    simplify_info_get_common_info(!.Info, CommonInfo0),
-    VarEqv0 = CommonInfo0 ^ var_eqv,
-    eqvclass.ensure_equivalence(Var1, Var2, VarEqv0, VarEqv),
-    CommonInfo = CommonInfo0 ^ var_eqv := VarEqv,
-    simplify_info_set_common_info(CommonInfo, !Info).
+record_equivalence(VarA, VarB, !Common) :-
+    VarEqv0 = !.Common ^ var_eqv,
+    eqvclass.ensure_equivalence(VarA, VarB, VarEqv0, VarEqv),
+    !Common ^ var_eqv := VarEqv.
 
 %---------------------------------------------------------------------------%
 %---------------------------------------------------------------------------%
 
-common_optimise_call(PredId, ProcId, Args, GoalInfo, GoalExpr0, GoalExpr,
-        !Info) :-
-    (
+common_optimise_call(PredId, ProcId, Args, Purity, GoalInfo,
+        GoalExpr0, MaybeAssignsGoalExpr, !Common, !Info) :-
+    ( if
+        Purity = purity_pure,
         Det = goal_info_get_determinism(GoalInfo),
         check_call_detism(Det),
         simplify_info_get_var_types(!.Info, VarTypes),
@@ -508,26 +565,29 @@ common_optimise_call(PredId, ProcId, Args, GoalInfo, GoalExpr0, GoalExpr,
         proc_info_get_argmodes(ProcInfo, ArgModes),
         partition_call_args(VarTypes, ModuleInfo, ArgModes, Args,
             InputArgs, OutputArgs, OutputModes)
-    ->
+    then
         common_optimise_call_2(seen_call(PredId, ProcId), InputArgs,
-            OutputArgs, OutputModes, GoalInfo, GoalExpr0, GoalExpr, !Info)
-    ;
-        GoalExpr = GoalExpr0
+            OutputArgs, OutputModes, GoalInfo,
+            GoalExpr0, MaybeAssignsGoalExpr, !Common, !Info)
+    else
+        MaybeAssignsGoalExpr = no
     ).
 
-common_optimise_higher_order_call(Closure, Args, Modes, Det, GoalInfo,
-        GoalExpr0, GoalExpr, !Info) :-
-    (
+common_optimise_higher_order_call(Closure, Args, Modes, Det, Purity, GoalInfo,
+        GoalExpr0, MaybeAssignsGoalExpr, !Common, !Info) :-
+    ( if
+        Purity = purity_pure,
         check_call_detism(Det),
         simplify_info_get_var_types(!.Info, VarTypes),
         simplify_info_get_module_info(!.Info, ModuleInfo),
         partition_call_args(VarTypes, ModuleInfo, Modes, Args,
             InputArgs, OutputArgs, OutputModes)
-    ->
+    then
         common_optimise_call_2(higher_order_call, [Closure | InputArgs],
-            OutputArgs, OutputModes, GoalInfo, GoalExpr0, GoalExpr, !Info)
-    ;
-        GoalExpr = GoalExpr0
+            OutputArgs, OutputModes, GoalInfo,
+            GoalExpr0, MaybeAssignsGoalExpr, !Common, !Info)
+    else
+        MaybeAssignsGoalExpr = no
     ).
 
 :- pred check_call_detism(determinism::in) is semidet.
@@ -541,26 +601,31 @@ check_call_detism(Det) :-
 
 :- pred common_optimise_call_2(seen_call_id::in, list(prog_var)::in,
     list(prog_var)::in, list(mer_mode)::in, hlds_goal_info::in,
-    hlds_goal_expr::in, hlds_goal_expr::out,
+    hlds_goal_expr::in, maybe(hlds_goal_expr)::out,
+    common_info::in, common_info::out,
     simplify_info::in, simplify_info::out) is det.
 
 common_optimise_call_2(SeenCall, InputArgs, OutputArgs, Modes, GoalInfo,
-        GoalExpr0, GoalExpr, !Info) :-
-    simplify_info_get_common_info(!.Info, CommonInfo0),
-    Eqv0 = CommonInfo0 ^ var_eqv,
-    SeenCalls0 = CommonInfo0 ^ seen_calls,
-    ( map.search(SeenCalls0, SeenCall, SeenCallsList0) ->
-        (
+        GoalExpr0, MaybeAssignsGoalExpr, Common0, Common, !Info) :-
+    Eqv0 = Common0 ^ var_eqv,
+    SeenCalls0 = Common0 ^ seen_calls,
+    ( if map.search(SeenCalls0, SeenCall, SeenCallsList0) then
+        ( if
             find_previous_call(SeenCallsList0, InputArgs, Eqv0,
                 OutputArgs2, PrevContext)
-        ->
+        then
             simplify_info_get_module_info(!.Info, ModuleInfo),
-            modes_to_uni_modes(ModuleInfo, Modes, Modes, UniModes),
+            list.map(mode_get_from_to_insts(ModuleInfo), Modes, FromToInsts),
             create_output_unifications(GoalInfo, OutputArgs, OutputArgs2,
-                UniModes, Goals, !Info),
-            GoalExpr = conj(plain_conj, Goals),
+                FromToInsts, AssignGoals, Common0, Common, !Info),
+            ( if AssignGoals = [hlds_goal(OnlyGoalExpr, _OnlyGoalInfo)] then
+                AssignsGoalExpr = OnlyGoalExpr
+            else
+                AssignsGoalExpr = conj(plain_conj, AssignGoals)
+            ),
+            MaybeAssignsGoalExpr = yes(AssignsGoalExpr),
             simplify_info_get_var_types(!.Info, VarTypes),
-            (
+            ( if
                 simplify_do_warn_duplicate_calls(!.Info),
                 % Don't warn for cases such as:
                 % set.init(Set1 : set(int)),
@@ -568,7 +633,7 @@ common_optimise_call_2(SeenCall, InputArgs, OutputArgs, Modes, GoalInfo,
                 lookup_var_types(VarTypes, OutputArgs, OutputArgTypes1),
                 lookup_var_types(VarTypes, OutputArgs2, OutputArgTypes2),
                 types_match_exactly_list(OutputArgTypes1, OutputArgTypes2)
-            ->
+            then
                 Context = goal_info_get_context(GoalInfo),
                 CallPieces = det_report_seen_call_id(ModuleInfo, SeenCall),
                 CurPieces = [words("Warning: redundant") | CallPieces]
@@ -585,14 +650,13 @@ common_optimise_call_2(SeenCall, InputArgs, OutputArgs, Modes, GoalInfo,
                         [always(PrevPieces)])]),
                 Spec = error_spec(Severity, phase_simplify(report_in_any_mode),
                     [Msg, PrevMsg]),
-                simplify_info_add_error_spec(Spec, !Info)
-            ;
+                simplify_info_add_message(Spec, !Info)
+            else
                 true
             ),
-            CommonInfo = CommonInfo0,
             goal_cost(hlds_goal(GoalExpr0, GoalInfo), Cost),
             simplify_info_incr_cost_delta(Cost, !Info),
-            simplify_info_set_requantify(!Info),
+            simplify_info_set_should_requantify(!Info),
             Detism0 = goal_info_get_determinism(GoalInfo),
             (
                 Detism0 = detism_det
@@ -605,24 +669,23 @@ common_optimise_call_2(SeenCall, InputArgs, OutputArgs, Modes, GoalInfo,
                 ; Detism0 = detism_cc_non
                 ; Detism0 = detism_cc_multi
                 ),
-                simplify_info_set_rerun_det(!Info)
+                simplify_info_set_should_rerun_det(!Info)
             )
-        ;
+        else
             Context = goal_info_get_context(GoalInfo),
             ThisCall = call_args(Context, InputArgs, OutputArgs),
             map.det_update(SeenCall, [ThisCall | SeenCallsList0],
                 SeenCalls0, SeenCalls),
-            CommonInfo = CommonInfo0 ^ seen_calls := SeenCalls,
-            GoalExpr = GoalExpr0
+            Common = Common0 ^ seen_calls := SeenCalls,
+            MaybeAssignsGoalExpr = no
         )
-    ;
+    else
         Context = goal_info_get_context(GoalInfo),
         ThisCall = call_args(Context, InputArgs, OutputArgs),
         map.det_insert(SeenCall, [ThisCall], SeenCalls0, SeenCalls),
-        CommonInfo = CommonInfo0 ^ seen_calls := SeenCalls,
-        GoalExpr = GoalExpr0
-    ),
-    simplify_info_set_common_info(CommonInfo, !Info).
+        Common = Common0 ^ seen_calls := SeenCalls,
+        MaybeAssignsGoalExpr = no
+    ).
 
 %---------------------------------------------------------------------------%
 
@@ -645,11 +708,11 @@ partition_call_args(VarTypes, ModuleInfo, [ArgMode | ArgModes],
         InputArgs1, OutputArgs1, OutputModes1),
     mode_get_insts(ModuleInfo, ArgMode, InitialInst, FinalInst),
     lookup_var_type(VarTypes, Arg, Type),
-    ( inst_matches_binding(InitialInst, FinalInst, Type, ModuleInfo) ->
+    ( if inst_matches_binding(InitialInst, FinalInst, Type, ModuleInfo) then
         InputArgs = [Arg | InputArgs1],
         OutputArgs = OutputArgs1,
         OutputModes = OutputModes1
-    ;
+    else
         % Calls with partly unique outputs cannot be replaced,
         % since a unique copy of the outputs must be produced.
         inst_is_not_partly_unique(ModuleInfo, FinalInst),
@@ -679,9 +742,9 @@ partition_call_args(VarTypes, ModuleInfo, [ArgMode | ArgModes],
 find_previous_call([SeenCall | SeenCalls], InputArgs, Eqv, OutputArgs,
         PrevContext) :-
     SeenCall = call_args(PrevContext, InputArgs1, OutputArgs1),
-    ( common_var_lists_are_equiv(InputArgs, InputArgs1, Eqv) ->
+    ( if common_var_lists_are_equiv(InputArgs, InputArgs1, Eqv) then
         OutputArgs = OutputArgs1
-    ;
+    else
         find_previous_call(SeenCalls, InputArgs, Eqv, OutputArgs, PrevContext)
     ).
 
@@ -722,86 +785,93 @@ common_vars_are_equiv(X, Y, VarEqv) :-
     % corresponding var in OldOutputArgs. This needs to be done even if
     % OutputArg is not a nonlocal in the original goal, because later goals
     % in the conjunction may match against the cell and need all the output
-    % arguments. The unneeded assignments will be removed later.
+    % arguments. Any unneeded assignments will be removed later.
     %
 :- pred create_output_unifications(hlds_goal_info::in, list(prog_var)::in,
-    list(prog_var)::in, list(uni_mode)::in, list(hlds_goal)::out,
+    list(prog_var)::in, list(from_to_insts)::in, list(hlds_goal)::out,
+    common_info::in, common_info::out,
     simplify_info::in, simplify_info::out) is det.
 
-create_output_unifications(OldGoalInfo, OutputArgs, OldOutputArgs, UniModes,
-        Goals, !Info) :-
-    (
-        OutputArgs = [OutputArg | OutputArgsTail],
-        OldOutputArgs = [OldOutputArg | OldOutputArgsTail],
-        UniModes = [UniMode | UniModesTail]
-    ->
-        (
+create_output_unifications(OldGoalInfo, OutputArgs, OldOutputArgs, FromToInsts,
+        AssignGoals, !Common, !Info) :-
+    ( if
+        OutputArgs = [HeadOutputArg | TailOutputArgs],
+        OldOutputArgs = [HeadOldOutputArg | TailOldOutputArgs],
+        FromToInsts = [HeadFromToInsts | TailFromToInsts]
+    then
+        ( if HeadOutputArg = HeadOldOutputArg then
             % This can happen if the first cell was created
             % with a partially instantiated deconstruction.
-            OutputArg \= OldOutputArg
-        ->
-            generate_assign(OutputArg, OldOutputArg, UniMode, OldGoalInfo,
-                GoalExpr, GoalInfo, !Info),
-            Goal = hlds_goal(GoalExpr, GoalInfo),
             create_output_unifications(OldGoalInfo,
-                OutputArgsTail, OldOutputArgsTail, UniModesTail,
-                GoalsTail, !Info),
-            Goals = [Goal | GoalsTail]
-        ;
+                TailOutputArgs, TailOldOutputArgs, TailFromToInsts,
+                AssignGoals, !Common, !Info)
+        else
+            generate_assign(HeadOutputArg, HeadOldOutputArg, HeadFromToInsts,
+                OldGoalInfo, HeadAssignGoalExpr, HeadAssignGoalInfo,
+                !Common, !Info),
+            HeadAssignGoal = hlds_goal(HeadAssignGoalExpr, HeadAssignGoalInfo),
             create_output_unifications(OldGoalInfo,
-                OutputArgsTail, OldOutputArgsTail, UniModesTail, Goals, !Info)
+                TailOutputArgs, TailOldOutputArgs, TailFromToInsts,
+                TailAssignGoals, !Common, !Info),
+            AssignGoals = [HeadAssignGoal | TailAssignGoals]
         )
-    ;
+    else if
         OutputArgs = [],
         OldOutputArgs = [],
-        UniModes = []
-    ->
-        Goals = []
-    ;
+        FromToInsts = []
+    then
+        AssignGoals = []
+    else
         unexpected($module, $pred, "mode mismatch")
     ).
 
 %---------------------------------------------------------------------------%
 
-:- pred generate_assign(prog_var::in, prog_var::in, uni_mode::in,
+:- pred generate_assign(prog_var::in, prog_var::in, from_to_insts::in,
     hlds_goal_info::in, hlds_goal_expr::out, hlds_goal_info::out,
+    common_info::in, common_info::out,
     simplify_info::in, simplify_info::out) is det.
 
-generate_assign(ToVar, FromVar, UniMode, OldGoalInfo, GoalExpr, GoalInfo,
-        !Info) :-
+generate_assign(ToVar, FromVar, ToVarMode, OldGoalInfo, GoalExpr, GoalInfo,
+        !Common, !Info) :-
     apply_induced_substitutions(ToVar, FromVar, !Info),
     simplify_info_get_var_types(!.Info, VarTypes),
     lookup_var_type(VarTypes, ToVar, ToVarType),
     lookup_var_type(VarTypes, FromVar, FromVarType),
 
     set_of_var.list_to_set([ToVar, FromVar], NonLocals),
-    UniMode = ((_ - ToVarInst0) -> (_ - ToVarInst)),
-    ( types_match_exactly(ToVarType, FromVarType) ->
-        UnifyMode = (ToVarInst0 -> ToVarInst) - (ToVarInst -> ToVarInst),
+    ToVarMode = from_to_insts(ToVarInit, ToVarFinal),
+    ( if types_match_exactly(ToVarType, FromVarType) then
+        UnifyMode = unify_modes_lhs_rhs(
+            from_to_insts(ToVarInit, ToVarFinal),
+            from_to_insts(ToVarFinal, ToVarFinal)),
         UnifyContext = unify_context(umc_explicit, []),
         GoalExpr = unify(ToVar, rhs_var(FromVar), UnifyMode,
             assign(ToVar, FromVar), UnifyContext)
-    ;
+    else
         % If the cells we are optimizing don't have exactly the same type,
         % we insert explicit type casts to ensure type correctness.
         % This avoids problems with HLDS optimizations such as inlining
         % which expect the HLDS to be well-typed. Unfortunately, this loses
         % information for other optimizations, since the cast hides the
         % equivalence of the input and output.
-        Modes = [(ToVarInst -> ToVarInst), (free -> ToVarInst)],
+        Modes =
+            [from_to_mode(ToVarFinal, ToVarFinal),
+            from_to_mode(free, ToVarFinal)],
         GoalExpr = generic_call(cast(unsafe_type_cast), [FromVar, ToVar],
             Modes, arg_reg_types_unset, detism_det)
     ),
 
     % `ToVar' may not appear in the original instmap_delta, so we can't just
     % use instmap_delta_restrict on the original instmap_delta here.
-    InstMapDelta = instmap_delta_from_assoc_list([ToVar - ToVarInst]),
+    InstMapDelta = instmap_delta_from_assoc_list([ToVar - ToVarFinal]),
 
     goal_info_init(NonLocals, InstMapDelta, detism_det, purity_pure,
         GoalInfo0),
     Context = goal_info_get_context(OldGoalInfo),
     goal_info_set_context(Context, GoalInfo0, GoalInfo),
-    record_equivalence(ToVar, FromVar, !Info).
+
+    record_equivalence(ToVar, FromVar, !Common).
 
 :- pred types_match_exactly(mer_type::in, mer_type::in) is semidet.
 
@@ -809,17 +879,9 @@ types_match_exactly(type_variable(TVar, _), type_variable(TVar, _)).
 types_match_exactly(defined_type(Name, As, _), defined_type(Name, Bs, _)) :-
     types_match_exactly_list(As, Bs).
 types_match_exactly(builtin_type(BuiltinType), builtin_type(BuiltinType)).
-types_match_exactly(higher_order_type(As, AR, P, E),
-        higher_order_type(Bs, BR, P, E)) :-
-    types_match_exactly_list(As, Bs),
-    (
-        AR = yes(A),
-        BR = yes(B),
-        types_match_exactly(A, B)
-    ;
-        AR = no,
-        BR = no
-    ).
+types_match_exactly(higher_order_type(PorF, As, H, P, E),
+        higher_order_type(PorF, Bs, H, P, E)) :-
+    types_match_exactly_list(As, Bs).
 types_match_exactly(tuple_type(As, _), tuple_type(Bs, _)) :-
     types_match_exactly_list(As, Bs).
 types_match_exactly(apply_n_type(TVar, As, _), apply_n_type(TVar, Bs, _)) :-
@@ -838,19 +900,19 @@ types_match_exactly_list([Type1 | Types1], [Type2 | Types2]) :-
 %---------------------------------------------------------------------------%
 
     % Two existentially quantified type variables may become aliased if two
-    % calls or two deconstructions are merged together.  We detect this
+    % calls or two deconstructions are merged together. We detect this
     % situation here and apply the appropriate tsubst to the vartypes and
-    % rtti_varmaps.  This allows us to avoid an unsafe cast, and also may
+    % rtti_varmaps. This allows us to avoid an unsafe cast, and also may
     % allow more opportunities for simplification.
     %
     % If we do need to apply a type substitution, then we also apply the
-    % substituion ToVar -> FromVar to the RttiVarMaps, then duplicate
-    % FromVar's information for ToVar.  This ensures we always refer to the
+    % substitution ToVar -> FromVar to the RttiVarMaps, then duplicate
+    % FromVar's information for ToVar. This ensures we always refer to the
     % "original" variables, not the copies created by generate_assign.
     %
     % Note that this relies on the assignments for type_infos and
     % typeclass_infos to be generated before other arguments with these
-    % existential types are processed.  In other words, the arguments of
+    % existential types are processed. In other words, the arguments of
     % calls and deconstructions must be processed in left to right order.
     %
 :- pred apply_induced_substitutions(prog_var::in, prog_var::in,
@@ -860,16 +922,16 @@ apply_induced_substitutions(ToVar, FromVar, !Info) :-
     simplify_info_get_rtti_varmaps(!.Info, RttiVarMaps0),
     rtti_varmaps_var_info(RttiVarMaps0, FromVar, FromVarRttiInfo),
     rtti_varmaps_var_info(RttiVarMaps0, ToVar, ToVarRttiInfo),
-    ( calculate_induced_tsubst(ToVarRttiInfo, FromVarRttiInfo, TSubst) ->
-        ( map.is_empty(TSubst) ->
+    ( if calculate_induced_tsubst(ToVarRttiInfo, FromVarRttiInfo, TSubst) then
+        ( if map.is_empty(TSubst) then
             true
-        ;
+        else
             simplify_info_apply_substitutions_and_duplicate(ToVar, FromVar,
                 TSubst, !Info)
         )
-    ;
+    else
         % Update the rtti_varmaps with new information if only one of the
-        % variables has rtti_var_info recorded.  This can happen if a new
+        % variables has rtti_var_info recorded. This can happen if a new
         % variable has been introduced, eg in quantification, without
         % being recorded in the rtti_varmaps.
         (
@@ -899,7 +961,7 @@ apply_induced_substitutions(ToVar, FromVar, !Info) :-
     ).
 
     % Calculate the induced substitution by unifying the types or constraints,
-    % if they exist.  Fail if given non-matching rtti_var_infos.
+    % if they exist. Fail if given non-matching rtti_var_infos.
     %
 :- pred calculate_induced_tsubst(rtti_var_info::in, rtti_var_info::in,
     tsubst::out) is semidet.
@@ -908,7 +970,7 @@ calculate_induced_tsubst(ToVarRttiInfo, FromVarRttiInfo, TSubst) :-
     (
         FromVarRttiInfo = type_info_var(FromVarTypeInfoType),
         ToVarRttiInfo = type_info_var(ToVarTypeInfoType),
-        type_list_subsumes([ToVarTypeInfoType], [FromVarTypeInfoType], TSubst)
+        type_subsumes(ToVarTypeInfoType, FromVarTypeInfoType, TSubst)
     ;
         FromVarRttiInfo = typeclass_info_var(FromVarConstraint),
         ToVarRttiInfo = typeclass_info_var(ToVarConstraint),
@@ -922,5 +984,5 @@ calculate_induced_tsubst(ToVarRttiInfo, FromVarRttiInfo, TSubst) :-
     ).
 
 %---------------------------------------------------------------------------%
-:- end_module check_hlds.common.
+:- end_module check_hlds.simplify.common.
 %---------------------------------------------------------------------------%

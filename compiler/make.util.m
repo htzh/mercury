@@ -45,8 +45,8 @@
 :- inst foldl3_pred_with_status ==
     (pred(in, in, out, in, out, in, out, di, uo) is det).
 
-    % foldl3_maybe_stop_at_error(KeepGoing, P, Globals, List, Succeeded, !Acc,
-    %   !Info).
+    % foldl3_maybe_stop_at_error(KeepGoing, P, Globals, List, Succeeded,
+    %   !Acc, !Info).
     %
 :- pred foldl3_maybe_stop_at_error(bool::in,
     foldl3_pred_with_status(T, Acc, Info, IO)::in(foldl3_pred_with_status),
@@ -58,11 +58,11 @@
     % foldl2_maybe_stop_at_error_maybe_parallel(KeepGoing, P, Globals,
     %   List, Succeeded, !Info, !IO).
     %
-    % Like foldl2_maybe_stop_at_error, but if parallel make is enabled, it
-    % tries to perform a first pass that overlaps execution of P(elem) in
-    % separate threads or processes.  Updates to !Info in the first pass are
-    % ignored.  If the first pass succeeds, a second sequential pass is made in
-    % which updates !Info are kept.  Hence it must be safe to execute P(elem)
+    % Like foldl2_maybe_stop_at_error, but if parallel make is enabled,
+    % it tries to perform a first pass that overlaps execution of P(elem)
+    % in separate threads or processes. Updates to !Info in the first pass are
+    % ignored. If the first pass succeeds, a second sequential pass is made in
+    % which updates !Info are kept. Hence it must be safe to execute P(elem)
     % concurrently, in any order, and multiple times.
     %
 :- pred foldl2_maybe_stop_at_error_maybe_parallel(bool::in,
@@ -99,7 +99,8 @@
     % option list.
     %
 :- pred build_with_module_options_args(globals::in, module_name::in,
-    list(string)::in, options_variables::in, list(string)::in, list(string)::in,
+    list(string)::in, options_variables::in,
+    list(string)::in, list(string)::in,
     build(list(string), Info1, Info2)::in(build),
     bool::out, Info1::in, maybe(Info2)::out, io::di, io::uo) is det.
 
@@ -134,7 +135,7 @@
 
 %-----------------------------------------------------------------------------%
 %
-% Timestamp handling
+% Timestamp handling.
 %
 
     % Find the timestamp updated when a target is produced.
@@ -183,7 +184,7 @@
 
 %-----------------------------------------------------------------------------%
 %
-% Remove file a file, deleting the cached timestamp
+% Remove file a file, deleting the cached timestamp.
 % The removal is reported to the user if the given boolean option is set.
 % In general the option given should be `--very-verbose' when making a
 % `.clean' or `.realclean target', and `--verbose-make' when cleaning
@@ -228,16 +229,16 @@
 :- pred linked_target_file_name(globals::in, module_name::in,
     linked_target_type::in, file_name::out, io::di, io::uo) is det.
 
-    % Find the extension for the timestamp file for the
-    % given target type, if one exists.
+    % Find the extension for the timestamp file for the given target type,
+    % if one exists.
     %
-:- func timestamp_extension(globals, module_target_type) = string is semidet.
+:- pred timestamp_extension(module_target_type::in, string::out) is semidet.
 
 :- pred target_is_grade_or_arch_dependent(module_target_type::in) is semidet.
 
 %-----------------------------------------------------------------------------%
 %
-% Debugging, verbose and error messages
+% Debugging, verbose messages, and error messages.
 %
 
     % A lock to prevent interleaved output to standard output from parallel
@@ -248,19 +249,19 @@
     % Apply the given predicate if `--debug-make' is set.
     % XXX Do we need this, now that we have trace goals?
     %
-:- pred debug_msg(globals::in, pred(io, io)::(pred(di, uo) is det),
+:- pred debug_make_msg(globals::in, pred(io, io)::(pred(di, uo) is det),
     io::di, io::uo) is det.
 
     % Apply the given predicate if `--verbose-make' is set.
     % XXX Do we need this, now that we have trace goals?
     %
-:- pred verbose_msg(globals::in, pred(io, io)::(pred(di, uo) is det),
+:- pred verbose_make_msg(globals::in, pred(io, io)::(pred(di, uo) is det),
     io::di, io::uo) is det.
 
     % Apply the given predicate if the given boolean option is set to `yes'.
     % XXX Do we need this, now that we have trace goals?
     %
-:- pred verbose_msg_option(globals::in, option::in,
+:- pred verbose_make_msg_option(globals::in, option::in,
     pred(io, io)::(pred(di, uo) is det), io::di, io::uo) is det.
 
     % Write a debugging message relating to a given target file.
@@ -314,22 +315,22 @@
     pair(module_name, target_type)::in,
     make_info::in, make_info::out, io::di, io::uo) is det.
 
-    % Write a message "Made symlink/copy of <filename>" if
-    % `--verbose-make' is set.
+    % Write a message "Made symlink/copy of <filename>"
+    % if `--verbose-make' is set.
     %
 :- pred maybe_symlink_or_copy_linked_target_message(globals::in,
     pair(module_name, target_type)::in, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %
-% Timing
+% Timing.
 %
 
 :- pred get_real_milliseconds(int::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %
-% Hash functions
+% Hash functions.
 %
 
 :- pred module_name_hash(module_name::in, int::out) is det.
@@ -353,6 +354,7 @@
 :- import_module char.
 :- import_module dir.
 :- import_module getopt_io.
+:- import_module int.
 :- import_module maybe.
 :- import_module require.
 :- import_module set.
@@ -374,15 +376,15 @@ foldl2_maybe_stop_at_error_2(_KeepGoing, _P, _Globals, [], !Success,
 foldl2_maybe_stop_at_error_2(KeepGoing, P, Globals, [T | Ts], !Success,
         !Info, !IO) :-
     P(Globals, T, NewSuccess, !Info, !IO),
-    (
+    ( if
         ( NewSuccess = yes
         ; KeepGoing = yes
         )
-    ->
+    then
         !:Success = !.Success `and` NewSuccess,
         foldl2_maybe_stop_at_error_2(KeepGoing, P, Globals, Ts, !Success,
             !Info, !IO)
-    ;
+    else
         !:Success = no
     ).
 
@@ -401,15 +403,15 @@ foldl3_maybe_stop_at_error_2(_KeepGoing, _P, _Globals, [],
 foldl3_maybe_stop_at_error_2(KeepGoing, P, Globals, [T | Ts],
         !Success, !Acc, !Info, !IO) :-
     P(Globals, T, NewSuccess, !Acc, !Info, !IO),
-    (
+    ( if
         ( NewSuccess = yes
         ; KeepGoing = yes
         )
-    ->
+    then
         !:Success = !.Success `and` NewSuccess,
-        foldl3_maybe_stop_at_error_2(KeepGoing, P, Globals, Ts, !Success, !Acc,
-            !Info, !IO)
-    ;
+        foldl3_maybe_stop_at_error_2(KeepGoing, P, Globals, Ts,
+            !Success, !Acc, !Info, !IO)
+    else
         !:Success = no
     ).
 
@@ -421,11 +423,11 @@ foldl3_maybe_stop_at_error_2(KeepGoing, P, Globals, [T | Ts],
 foldl2_maybe_stop_at_error_maybe_parallel(KeepGoing, MakeTarget, Globals,
         Targets, Success, !Info, !IO) :-
     globals.lookup_int_option(Globals, jobs, Jobs),
-    (
+    ( if
         Jobs > 1,
         process_util.can_fork,
         have_job_ctl_ipc
-    ->
+    then
         % First pass.
         foldl2_maybe_stop_at_error_parallel_processes(KeepGoing, Jobs,
             MakeTarget, Globals, Targets, Success0, !Info, !IO),
@@ -441,7 +443,7 @@ foldl2_maybe_stop_at_error_maybe_parallel(KeepGoing, MakeTarget, Globals,
             Success0 = no,
             Success = no
         )
-    ;
+    else
         foldl2_maybe_stop_at_error(KeepGoing, MakeTarget, Globals,
             Targets, Success, !Info, !IO)
     ).
@@ -510,7 +512,7 @@ child_worker(Globals, KeepGoing, MakeTarget, Targets, JobCtl, Info0, Success,
 worker_loop(Globals, KeepGoing, MakeTarget, Targets, JobCtl, !Success,
         !Info, !IO) :-
     accept_task(JobCtl, TaskNumber, !IO),
-    ( TaskNumber >= 0 ->
+    ( if TaskNumber >= 0 then
         Target = list.det_index0(Targets, TaskNumber),
         MakeTarget(Globals, Target, TargetSuccess, !Info, !IO),
         (
@@ -523,7 +525,7 @@ worker_loop(Globals, KeepGoing, MakeTarget, Targets, JobCtl, !Success,
         ),
         worker_loop(Globals, KeepGoing, MakeTarget, Targets, JobCtl, !Success,
             !Info, !IO)
-    ;
+    else
         % No more tasks.
         true
     ).
@@ -540,18 +542,18 @@ worker_loop_signal_cleanup(JobCtl, Pids, !Info, !IO) :-
 
 reap_worker_process(Pid, !Success, !IO) :-
     wait_pid(Pid, Status, !IO),
-    (
+    ( if
         !.Success = yes,
         Status = ok(exited(0))
-    ->
+    then
         true
-    ;
+    else
         !:Success = no
     ).
 
 %-----------------------------------------------------------------------------%
 %
-% Shared memory IPC for parallel workers
+% Shared memory IPC for parallel workers.
 %
 
 :- pragma foreign_decl("C", "
@@ -571,11 +573,13 @@ typedef struct MC_JobCtl MC_JobCtl;
 
 #ifdef MAP_ANONYMOUS
   /*
-  ** Darwin 5.x doesn't implement unnamed POSIX semaphores nor process-shared
-  ** POSIX mutexes; the functions fail when you try to create them.
-  ** System V semaphores do work however.
+  ** Darwin 5.x and FreeBSD do not implement process-shared POSIX mutexes.
+  ** Use System V semaphores instead. As System V semaphores seem to be more
+  ** widely supported we may consider using them exclusively or in preference
+  ** to POSIX mutexes in the future.
   */
-  #if !defined(__APPLE__) && defined(MR_HAVE_PTHREAD_H) && \
+  #if !defined(__APPLE__) && !defined(__FreeBSD__) && \
+        defined(MR_HAVE_PTHREAD_H) && \
         defined(MR_HAVE_PTHREAD_MUTEXATTR_SETPSHARED)
     #include <pthread.h>
 
@@ -1008,9 +1012,9 @@ build_with_module_options(Globals, ModuleName, ExtraOptions, Build, Succeeded,
         MaybeInfo = no
     ).
 
-build_with_module_options_args(Globals, ModuleName, DetectedGradeFlags,
-        OptionVariables, OptionArgs, ExtraOptions, Build, Succeeded,
-        !Info, !IO) :-
+build_with_module_options_args(Globals, ModuleName,
+        DetectedGradeFlags, OptionVariables, OptionArgs, ExtraOptions,
+        Build, Succeeded, !Info, !IO) :-
     build_with_module_options_args_invoked(Globals, no, ModuleName,
         DetectedGradeFlags, OptionVariables, OptionArgs, ExtraOptions,
         Build, Succeeded, !Info, !IO).
@@ -1050,15 +1054,15 @@ build_with_module_options_args_invoked(Globals, InvokedByMmcMake, ModuleName,
 
         AllOptionArgs = InvokedByMake ++ DetectedGradeFlags ++
             ModuleOptionArgs ++ OptionArgs ++ ExtraOptions ++ UseSubdirs,
-        handle_given_options(AllOptionArgs, _, _, _,
-            OptionsErrors, BuildGlobals, !IO),
+        handle_given_options(AllOptionArgs, _, _,
+            OptionSpecs, BuildGlobals, !IO),
         (
-            OptionsErrors = [_ | _],
+            OptionSpecs = [_ | _],
             Succeeded = no,
             MaybeInfo = no,
-            usage_errors(OptionsErrors, !IO)
+            usage_errors(BuildGlobals, OptionSpecs, !IO)
         ;
-            OptionsErrors = [],
+            OptionSpecs = [],
             Build(BuildGlobals, AllOptionArgs, Succeeded, Info0, Info, !IO),
             MaybeInfo = yes(Info)
         )
@@ -1068,17 +1072,15 @@ redirect_output(_ModuleName, MaybeErrorStream, !Info, !IO) :-
     % Write the output to a temporary file first, so it's easy to just print
     % the part of the error file that relates to the current command. It will
     % be appended to the error file later.
-
-    io.make_temp(ErrorFileName, !IO),
-    io.open_output(ErrorFileName, ErrorFileRes, !IO),
+    open_temp_output(ErrorFileResult, !IO),
     (
-        ErrorFileRes = ok(ErrorOutputStream),
+        ErrorFileResult = ok({_ErrorFileName, ErrorOutputStream}),
         MaybeErrorStream = yes(ErrorOutputStream)
     ;
-        ErrorFileRes = error(IOError),
+        ErrorFileResult = error(ErrorMessage),
         MaybeErrorStream = no,
         with_locked_stdout(!.Info,
-            write_error_opening_output(ErrorFileName, IOError), !IO)
+            write_error_creating_temp_file(ErrorMessage), !IO)
     ).
 
 unredirect_output(Globals, ModuleName, ErrorOutputStream, !Info, !IO) :-
@@ -1090,9 +1092,9 @@ unredirect_output(Globals, ModuleName, ErrorOutputStream, !Info, !IO) :-
         TmpErrorInputRes = ok(TmpErrorInputStream),
         module_name_to_file_name(Globals, ModuleName, ".err", do_create_dirs,
             ErrorFileName, !IO),
-        ( set.member(ModuleName, !.Info ^ error_file_modules) ->
+        ( if set.member(ModuleName, !.Info ^ error_file_modules) then
             io.open_append(ErrorFileName, ErrorFileRes, !IO)
-        ;
+        else
             io.open_output(ErrorFileName, ErrorFileRes, !IO)
         ),
         (
@@ -1144,14 +1146,14 @@ make_write_error_streams(FileName, InputStream, FullOutputStream,
 make_write_error_char(FullOutputStream, PartialOutputStream, Char,
         !LinesRemaining, !IO) :-
     io.write_char(FullOutputStream, Char, !IO),
-    ( !.LinesRemaining > 0 ->
+    ( if !.LinesRemaining > 0 then
         io.write_char(PartialOutputStream, Char, !IO),
-        ( Char = '\n' ->
+        ( if Char = '\n' then
             !:LinesRemaining = !.LinesRemaining - 1
-        ;
+        else
             true
         )
-    ; !.LinesRemaining = 0 ->
+    else if !.LinesRemaining = 0 then
         io.output_stream_name(FullOutputStream, FullOutputFileName, !IO),
         io.write_string(PartialOutputStream, "... error log truncated, see `",
             !IO),
@@ -1159,7 +1161,7 @@ make_write_error_char(FullOutputStream, PartialOutputStream, Char,
         io.write_string(PartialOutputStream, "' for the complete log.\n", !IO),
         % Only write the above message once.
         !:LinesRemaining = -1
-    ;
+    else
         true
     ).
 
@@ -1177,14 +1179,20 @@ write_error_opening_file(FileName, Error, !IO) :-
     io.format("Error opening `%s': %s\n",
         [s(FileName), s(io.error_message(Error))], !IO).
 
+:- pred write_error_creating_temp_file(string::in, io::di, io::uo) is det.
+
+write_error_creating_temp_file(ErrorMessage, !IO) :-
+    io.write_string(ErrorMessage, !IO),
+    io.nl(!IO).
+
 %-----------------------------------------------------------------------------%
 
 get_timestamp_file_timestamp(Globals, target_file(ModuleName, FileType),
         MaybeTimestamp, !Info, !IO) :-
-    ( TimestampExt = timestamp_extension(Globals, FileType) ->
+    ( if timestamp_extension(FileType, TimestampExt) then
         module_name_to_file_name(Globals, ModuleName, TimestampExt,
             do_not_create_dirs, FileName, !IO)
-    ;
+    else
         module_target_to_file_name(Globals, ModuleName, FileType,
             do_not_create_dirs, FileName, !IO)
     ),
@@ -1211,17 +1219,17 @@ get_dependency_timestamp(Globals, DependencyFile, MaybeTimestamp, !Info,
         DependencyFile = dep_target(Target),
         get_target_timestamp(Globals, do_search, Target, MaybeTimestamp0,
             !Info, !IO),
-        (
+        ( if
             Target = target_file(_, module_target_c_header(header_mih)),
             MaybeTimestamp0 = ok(_)
-        ->
+        then
             % Don't rebuild the `.o' file if an irrelevant part of a
             % `.mih' file has changed. If a relevant part of a `.mih'
             % file changed, the interface files of the imported module
             % must have changed in a way that would force the `.c' and
             % `.o' files of the current module to be rebuilt.
             MaybeTimestamp = ok(oldest_timestamp)
-        ;
+        else
             MaybeTimestamp = MaybeTimestamp0
         )
     ).
@@ -1230,15 +1238,15 @@ get_target_timestamp(Globals, Search, TargetFile, MaybeTimestamp, !Info,
         !IO) :-
     TargetFile = target_file(_ModuleName, FileType),
     get_file_name(Globals, Search, TargetFile, FileName, !Info, !IO),
-    ( FileType = module_target_analysis_registry ->
+    ( if FileType = module_target_analysis_registry then
         get_target_timestamp_analysis_registry(Globals, Search, TargetFile,
             FileName, MaybeTimestamp, !Info, !IO)
-    ;
+    else
         get_target_timestamp_2(Globals, Search, TargetFile,
             FileName, MaybeTimestamp, !Info, !IO)
     ).
 
-    % Special treatment for `.analysis' files.  If the corresponding
+    % Special treatment for `.analysis' files. If the corresponding
     % `.analysis_status' file says the `.analysis' file is invalid then we
     % treat it as out of date.
     %
@@ -1249,9 +1257,9 @@ get_target_timestamp(Globals, Search, TargetFile, MaybeTimestamp, !Info,
 get_target_timestamp_analysis_registry(Globals, Search, TargetFile, FileName,
         MaybeTimestamp, !Info, !IO) :-
     TargetFile = target_file(ModuleName, _FileType),
-    ( MaybeTimestamp0 = !.Info ^ file_timestamps ^ elem(FileName) ->
+    ( if MaybeTimestamp0 = !.Info ^ file_timestamps ^ elem(FileName) then
         MaybeTimestamp = MaybeTimestamp0
-    ;
+    else
         do_read_module_overall_status(mmc, Globals, ModuleName, Status, !IO),
         (
             ( Status = optimal
@@ -1281,35 +1289,35 @@ get_target_timestamp_2(Globals, Search, TargetFile, FileName, MaybeTimestamp,
         SearchDirs = [dir.this_directory]
     ),
     get_file_timestamp(SearchDirs, FileName, MaybeTimestamp0, !Info, !IO),
-    (
+    ( if
         MaybeTimestamp0 = error(_),
         ( FileType = module_target_intermodule_interface
         ; FileType = module_target_analysis_registry
         )
-    ->
+    then
         % If a `.opt' file in another directory doesn't exist,
         % it just means that a library wasn't compiled with
         % `--intermodule-optimization'.
         % Similarly for `.analysis' files.
 
         get_module_dependencies(Globals, ModuleName, MaybeImports, !Info, !IO),
-        (
+        ( if
             MaybeImports = yes(Imports),
             Imports ^ mai_module_dir \= dir.this_directory
-        ->
+        then
             MaybeTimestamp = ok(oldest_timestamp),
             !:Info = !.Info ^ file_timestamps ^ elem(FileName)
                 := MaybeTimestamp
-        ;
+        else
             MaybeTimestamp = MaybeTimestamp0
         )
-    ;
+    else
         MaybeTimestamp = MaybeTimestamp0
     ).
 
 get_file_name(Globals, Search, TargetFile, FileName, !Info, !IO) :-
     TargetFile = target_file(ModuleName, FileType),
-    ( FileType = module_target_source ->
+    ( if FileType = module_target_source then
         % In some cases the module name won't match the file name
         % (module mdb.parse might be in parse.m or mdb.m), so we need to
         % look up the file name here.
@@ -1325,7 +1333,7 @@ get_file_name(Globals, Search, TargetFile, FileName, !Info, !IO) :-
             module_name_to_file_name(Globals, ModuleName, ".m",
                 do_not_create_dirs, FileName, !IO)
         )
-    ;
+    else
         MaybeExt = target_extension(Globals, FileType),
         (
             MaybeExt = yes(Ext),
@@ -1353,18 +1361,18 @@ get_file_name(Globals, Search, TargetFile, FileName, !Info, !IO) :-
 module_name_to_search_file_name_cache(Globals, ModuleName, Ext, FileName,
         !Info, !IO) :-
     Key = ModuleName - Ext,
-    ( map.search(!.Info ^ search_file_name_cache, Key, FileName0) ->
+    ( if map.search(!.Info ^ search_file_name_cache, Key, FileName0) then
         FileName = FileName0
-    ;
+    else
         module_name_to_search_file_name(Globals, ModuleName, Ext, FileName,
             !IO),
         !Info ^ search_file_name_cache ^ elem(Key) := FileName
     ).
 
 get_file_timestamp(SearchDirs, FileName, MaybeTimestamp, !Info, !IO) :-
-    ( MaybeTimestamp0 = !.Info ^ file_timestamps ^ elem(FileName) ->
+    ( if MaybeTimestamp0 = !.Info ^ file_timestamps ^ elem(FileName) then
         MaybeTimestamp = MaybeTimestamp0
-    ;
+    else
         search_for_file_mod_time(SearchDirs, FileName, SearchResult, !IO),
         (
             SearchResult = ok(TimeT),
@@ -1387,9 +1395,9 @@ get_search_directories(Globals, FileType, SearchDirs) :-
         globals.lookup_accumulating_option(Globals, SearchDirOpt, SearchDirs0),
         % Make sure the current directory is searched for C headers
         % and libraries.
-        ( list.member(dir.this_directory, SearchDirs0) ->
+        ( if list.member(dir.this_directory, SearchDirs0) then
             SearchDirs = SearchDirs0
-        ;
+        else
             SearchDirs = [dir.this_directory | SearchDirs0]
         )
     ;
@@ -1400,9 +1408,9 @@ get_search_directories(Globals, FileType, SearchDirs) :-
 find_oldest_timestamp(error(_) @ MaybeTimestamp, _) = MaybeTimestamp.
 find_oldest_timestamp(ok(_), error(_) @ MaybeTimestamp) = MaybeTimestamp.
 find_oldest_timestamp(ok(Timestamp1), ok(Timestamp2)) = ok(Timestamp) :-
-    ( compare((<), Timestamp1, Timestamp2) ->
+    ( if compare((<), Timestamp1, Timestamp2) then
         Timestamp = Timestamp1
-    ;
+    else
         Timestamp = Timestamp2
     ).
 
@@ -1418,10 +1426,10 @@ make_remove_target_file_by_name(Globals, VerboseOption, ModuleName, FileType,
     module_target_to_file_name(Globals, ModuleName, FileType,
         do_not_create_dirs, FileName, !IO),
     make_remove_file(Globals, VerboseOption, FileName, !Info, !IO),
-    ( TimestampExt = timestamp_extension(Globals, FileType) ->
+    ( if timestamp_extension(FileType, TimestampExt) then
         make_remove_module_file(Globals, VerboseOption, ModuleName,
             TimestampExt, !Info, !IO)
-    ;
+    else
         true
     ).
 
@@ -1431,11 +1439,12 @@ make_remove_module_file(Globals, VerboseOption, ModuleName, Ext, !Info, !IO) :-
     make_remove_file(Globals, VerboseOption, FileName, !Info, !IO).
 
 make_remove_file(Globals, VerboseOption, FileName, !Info, !IO) :-
-    verbose_msg_option(Globals, VerboseOption, report_remove_file(FileName),
-        !IO),
+    verbose_make_msg_option(Globals, VerboseOption,
+        report_remove_file(FileName), !IO),
     io.remove_file_recursively(FileName, _, !IO),
-    !Info ^ file_timestamps :=
-        map.delete(!.Info ^ file_timestamps, FileName).
+    FileTimestamps0 = !.Info ^ file_timestamps,
+    map.delete(FileName, FileTimestamps0, FileTimestamps),
+    !Info ^ file_timestamps := FileTimestamps.
 
 :- pred report_remove_file(string::in, io::di, io::uo) is det.
 
@@ -1466,10 +1475,8 @@ target_extension(_, module_target_track_flags) = yes(".track_flags").
 target_extension(_, module_target_c_header(header_mih)) = yes(".mih").
 target_extension(_, module_target_c_header(header_mh)) = yes(".mh").
 target_extension(_, module_target_c_code) = yes(".c").
-target_extension(_, module_target_il_code) = yes(".il").
 
     % XXX ".exe" if the module contains main.
-target_extension(_, module_target_il_asm) = yes(".dll").
 target_extension(_, module_target_csharp_code) = yes(".cs").
 target_extension(_, module_target_java_code) = yes(".java").
 target_extension(_, module_target_java_class_code) = yes(".class").
@@ -1482,7 +1489,6 @@ target_extension(_, module_target_xml_doc) = yes(".xml").
 
     % These all need to be handled as special cases.
 target_extension(_, module_target_foreign_object(_, _)) = no.
-target_extension(_, module_target_foreign_il_asm(_)) = no.
 target_extension(_, module_target_fact_table_object(_, _)) = no.
 
     % Currently the .cs extension is still treated as the build-all target for
@@ -1514,14 +1520,16 @@ linked_target_file_name(Globals, ModuleName, TargetType, FileName, !IO) :-
         module_name_to_file_name(Globals, ModuleName, ".dll",
             do_not_create_dirs, FileName, !IO)
     ;
-        ( TargetType = java_launcher
-        ; TargetType = erlang_launcher
-        ),
+        TargetType = erlang_launcher,
         % These are shell scripts.
+        % XXX Shouldn't the extension be ".bat" when --target-env-type
+        % is windows?
         module_name_to_file_name(Globals, ModuleName, "",
             do_not_create_dirs, FileName, !IO)
     ;
-        TargetType = java_archive,
+        ( TargetType = java_archive
+        ; TargetType = java_executable
+        ),
         module_name_to_file_name(Globals, ModuleName, ".jar",
             do_not_create_dirs, FileName, !IO)
     ;
@@ -1538,14 +1546,6 @@ module_target_to_file_name(Globals, ModuleName, TargetType, MkDir, FileName,
         !IO) :-
     module_target_to_file_name_maybe_search(Globals, ModuleName, TargetType,
         MkDir, do_not_search, FileName, !IO).
-
-:- pred module_target_to_search_file_name(globals::in, module_name::in,
-    module_target_type::in, file_name::out, io::di, io::uo) is det.
-
-module_target_to_search_file_name(Globals, ModuleName, TargetType, FileName,
-        !IO) :-
-    module_target_to_file_name_maybe_search(Globals, ModuleName, TargetType,
-        do_not_create_dirs, do_search, FileName, !IO).
 
 :- pred module_target_to_file_name_maybe_search(globals::in, module_name::in,
     module_target_type::in, maybe_create_dirs::in, maybe_search::in,
@@ -1569,27 +1569,15 @@ module_target_to_file_name_maybe_search(Globals, ModuleName, TargetType,
         MaybeExt = no,
         (
             TargetType = module_target_foreign_object(PIC, Lang),
-            (
+            ( if
                 ForeignModuleName =
                     foreign_language_module_name(ModuleName, Lang)
-            ->
-                module_target_to_file_name_maybe_search(Globals,    
+            then
+                module_target_to_file_name_maybe_search(Globals,
                     ForeignModuleName, module_target_object_code(PIC), MkDir,
                     Search, FileName, !IO)
-            ;
+            else
                 unexpected($module, $pred, "object test failed")
-            )
-        ;
-            TargetType = module_target_foreign_il_asm(Lang),
-            (
-                ForeignModuleName =
-                    foreign_language_module_name(ModuleName, Lang)
-            ->
-                module_target_to_file_name_maybe_search(Globals,
-                    ForeignModuleName, module_target_il_asm, MkDir,
-                    Search, FileName, !IO)
-            ;
-                unexpected($module, $pred, "ilasm test failed")
             )
         ;
             TargetType = module_target_fact_table_object(PIC, FactFile),
@@ -1604,8 +1592,6 @@ module_target_to_file_name_maybe_search(Globals, ModuleName, TargetType,
             ; TargetType = module_target_erlang_code
             ; TargetType = module_target_erlang_header
             ; TargetType = module_target_errors
-            ; TargetType = make.module_target_il_asm
-            ; TargetType = module_target_il_code
             ; TargetType = module_target_intermodule_interface
             ; TargetType = module_target_csharp_code
             ; TargetType = module_target_java_code
@@ -1623,67 +1609,95 @@ module_target_to_file_name_maybe_search(Globals, ModuleName, TargetType,
         )
     ).
 
-    % Note that we need a timestamp file for `.err' files because
-    % errors are written to the `.err' file even when writing interfaces.
-    % The timestamp is only updated when compiling to target code.
-    %
-    % We need a timestamp file for `.analysis' files because they
-    % can be modified in the process of analysing _another_ module.
-    % The timestamp is only updated after actually analysing the module that
-    % the `.analysis' file corresponds to.
-    %
-    % Header files share a timestamp file with their corresponding target code
-    % files.
-    %
-timestamp_extension(_, module_target_errors) = ".err_date".
-timestamp_extension(_, module_target_private_interface) = ".date0".
-timestamp_extension(_, module_target_long_interface) = ".date".
-timestamp_extension(_, module_target_short_interface) = ".date".
-timestamp_extension(_, module_target_unqualified_short_interface) = ".date3".
-timestamp_extension(_, module_target_intermodule_interface) = ".optdate".
-timestamp_extension(_, module_target_analysis_registry) = ".analysis_date".
-timestamp_extension(_, module_target_c_code) = ".c_date".
-timestamp_extension(Globals, module_target_c_header(_)) = Ext :-
-    Ext = timestamp_extension(Globals, module_target_c_code).
-timestamp_extension(_, module_target_il_code) = ".il_date".
-timestamp_extension(_, module_target_csharp_code) = ".cs_date".
-timestamp_extension(_, module_target_java_code) = ".java_date".
-timestamp_extension(_, module_target_erlang_code) = ".erl_date".
-timestamp_extension(Globals, module_target_erlang_header) =
-    timestamp_extension(Globals, module_target_erlang_code).
+timestamp_extension(ModuleTargetType, Extension) :-
+    (
+        ModuleTargetType = module_target_errors,
+        % We need a timestamp file for `.err' files because errors are written
+        % to the `.err' file even when writing interfaces. The timestamp
+        % is only updated when compiling to target code.
+        Extension = ".err_date"
+    ;
+        ModuleTargetType = module_target_private_interface,
+        Extension = ".date0"
+    ;
+        ModuleTargetType = module_target_long_interface,
+        Extension = ".date"
+    ;
+        ModuleTargetType = module_target_short_interface,
+        Extension = ".date"
+    ;
+        ModuleTargetType = module_target_unqualified_short_interface,
+        Extension = ".date3"
+    ;
+        ModuleTargetType = module_target_intermodule_interface,
+        Extension = ".optdate"
+    ;
+        ModuleTargetType = module_target_analysis_registry,
+        % We need a timestamp file for `.analysis' files because they
+        % can be modified in the process of analysing _another_ module.
+        % The timestamp is only updated after actually analysing the module
+        % that the `.analysis' file corresponds to.
+        Extension = ".analysis_date"
+    ;
+        % Header files share a timestamp file with their corresponding
+        % target code files.
+        ( ModuleTargetType = module_target_c_code
+        ; ModuleTargetType = module_target_c_header(_)
+        ),
+        Extension = ".c_date"
+    ;
+        ModuleTargetType = module_target_csharp_code,
+        Extension = ".cs_date"
+    ;
+        ModuleTargetType = module_target_java_code,
+        Extension = ".java_date"
+    ;
+        % Header files share a timestamp file with their corresponding
+        % target code files.
+        ( ModuleTargetType = module_target_erlang_code
+        ; ModuleTargetType = module_target_erlang_header
+        ),
+        Extension = ".erl_date"
+    ).
 
 :- func search_for_file_type(module_target_type) = maybe(option).
 
-search_for_file_type(module_target_source) = no.
-search_for_file_type(module_target_errors) = no.
-    % XXX only for inter-module optimization.
-search_for_file_type(module_target_private_interface) =
-        yes(search_directories).
-search_for_file_type(module_target_long_interface) = yes(search_directories).
-search_for_file_type(module_target_short_interface) = yes(search_directories).
-search_for_file_type(module_target_unqualified_short_interface) =
-        yes(search_directories).
-search_for_file_type(module_target_intermodule_interface) =
-        yes(intermod_directories).
-search_for_file_type(module_target_analysis_registry) =
-        yes(intermod_directories).
-search_for_file_type(module_target_track_flags) = no.
-search_for_file_type(module_target_c_header(_)) = yes(c_include_directory).
-search_for_file_type(module_target_c_code) = no.
-search_for_file_type(module_target_il_code) = no.
-search_for_file_type(module_target_il_asm) = no.
-search_for_file_type(module_target_csharp_code) = no.
-search_for_file_type(module_target_java_code) = no.
-search_for_file_type(module_target_java_class_code) = no.
-search_for_file_type(module_target_erlang_header) =
-        yes(erlang_include_directory).
-search_for_file_type(module_target_erlang_code) = no.
-search_for_file_type(module_target_erlang_beam_code) = no.
-search_for_file_type(module_target_object_code(_)) = no.
-search_for_file_type(module_target_foreign_object(_, _)) = no.
-search_for_file_type(module_target_foreign_il_asm(_)) = no.
-search_for_file_type(module_target_fact_table_object(_, _)) = no.
-search_for_file_type(module_target_xml_doc) = no.
+search_for_file_type(ModuleTargetType) = MaybeSearchOption :-
+    (
+        ( ModuleTargetType = module_target_source
+        ; ModuleTargetType = module_target_errors
+        ; ModuleTargetType = module_target_track_flags
+        ; ModuleTargetType = module_target_c_code
+        ; ModuleTargetType = module_target_csharp_code
+        ; ModuleTargetType = module_target_java_code
+        ; ModuleTargetType = module_target_java_class_code
+        ; ModuleTargetType = module_target_erlang_code
+        ; ModuleTargetType = module_target_erlang_beam_code
+        ; ModuleTargetType = module_target_object_code(_)
+        ; ModuleTargetType = module_target_foreign_object(_, _)
+        ; ModuleTargetType = module_target_fact_table_object(_, _)
+        ; ModuleTargetType = module_target_xml_doc
+        ),
+        MaybeSearchOption = no
+    ;
+        ( ModuleTargetType = module_target_private_interface
+        ; ModuleTargetType = module_target_short_interface
+        ; ModuleTargetType = module_target_long_interface
+        ; ModuleTargetType = module_target_unqualified_short_interface
+        ),
+        MaybeSearchOption = yes(search_directories)
+    ;
+        ( ModuleTargetType = module_target_intermodule_interface
+        ; ModuleTargetType = module_target_analysis_registry
+        ),
+        MaybeSearchOption = yes(intermod_directories)
+    ;
+        ModuleTargetType = module_target_c_header(_),
+        MaybeSearchOption = yes(c_include_directory)
+    ;
+        ModuleTargetType = module_target_erlang_header,
+        MaybeSearchOption = yes(erlang_include_directory)
+    ).
 
 target_is_grade_or_arch_dependent(Target) :-
     is_target_grade_or_arch_dependent(Target) = yes.
@@ -1708,8 +1722,6 @@ is_target_grade_or_arch_dependent(Target) = IsDependent :-
         ; Target = module_target_track_flags
         ; Target = module_target_c_header(header_mih)
         ; Target = module_target_c_code
-        ; Target = module_target_il_code
-        ; Target = module_target_il_asm
         ; Target = module_target_csharp_code
         ; Target = module_target_java_code
         ; Target = module_target_java_class_code
@@ -1718,7 +1730,6 @@ is_target_grade_or_arch_dependent(Target) = IsDependent :-
         ; Target = module_target_erlang_header
         ; Target = module_target_object_code(_)
         ; Target = module_target_foreign_object(_, _)
-        ; Target = module_target_foreign_il_asm(_)
         ; Target = module_target_fact_table_object(_, _)
         ),
         IsDependent = yes
@@ -1726,13 +1737,13 @@ is_target_grade_or_arch_dependent(Target) = IsDependent :-
 
 %-----------------------------------------------------------------------------%
 
-debug_msg(Globals, P, !IO) :-
-    verbose_msg_option(Globals, debug_make, P, !IO).
+debug_make_msg(Globals, P, !IO) :-
+    verbose_make_msg_option(Globals, debug_make, P, !IO).
 
-verbose_msg(Globals, P, !IO) :-
-    verbose_msg_option(Globals, verbose_make, P, !IO).
+verbose_make_msg(Globals, P, !IO) :-
+    verbose_make_msg_option(Globals, verbose_make, P, !IO).
 
-verbose_msg_option(Globals, Option, P, !IO) :-
+verbose_make_msg_option(Globals, Option, P, !IO) :-
     globals.lookup_bool_option(Globals, Option, OptionValue),
     (
         OptionValue = yes,
@@ -1743,8 +1754,8 @@ verbose_msg_option(Globals, Option, P, !IO) :-
     ).
 
 debug_file_msg(Globals, TargetFile, Msg, !IO) :-
-    debug_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    debug_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             make_write_target_file(Globals, TargetFile, !IO),
             io.write_string(": ", !IO),
             io.write_string(Msg, !IO),
@@ -1770,21 +1781,21 @@ make_write_target_file_wrapped(Globals, Prefix, TargetFile, Suffix, !IO) :-
     TargetFile = target_file(ModuleName, FileType),
     module_target_to_file_name(Globals, ModuleName, FileType,
         do_not_create_dirs, FileName, !IO),
-    (
+    ( if
         Prefix = "",
         Suffix = ""
-    ->
+    then
         io.write_string(FileName, !IO)
-    ;
+    else
         % Try to write this with one call to avoid interleaved output when
         % doing parallel builds.
         io.write_string(Prefix ++ FileName ++ Suffix, !IO)
     ).
 
 maybe_make_linked_target_message(Globals, TargetFile, !IO) :-
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
-            % Try to write this with one call to avoid interleaved output
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
+            % Write this with one call to avoid interleaved output
             % when doing parallel builds.
             io.write_string("Making " ++ TargetFile ++ "\n", !IO)
         ), !IO).
@@ -1795,8 +1806,8 @@ maybe_make_target_message(Globals, TargetFile, !IO) :-
         !IO).
 
 maybe_make_target_message_to_stream(Globals, OutputStream, TargetFile, !IO) :-
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.set_output_stream(OutputStream, OldOutputStream, !IO),
             make_write_target_file_wrapped(Globals, "Making ", TargetFile,
                 "\n", !IO),
@@ -1804,8 +1815,8 @@ maybe_make_target_message_to_stream(Globals, OutputStream, TargetFile, !IO) :-
         ), !IO).
 
 maybe_reanalyse_modules_message(Globals, !IO) :-
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.output_stream(OutputStream, !IO),
             io.write_string(OutputStream,
                 "Reanalysing invalid/suboptimal modules\n", !IO)
@@ -1824,22 +1835,23 @@ maybe_warn_up_to_date_target(Globals, Target, !Info, !IO) :-
     globals.lookup_bool_option(Globals, warn_up_to_date, Warn),
     (
         Warn = yes,
-        ( set.member(Target, !.Info ^ command_line_targets) ->
+        ( if set.member(Target, !.Info ^ command_line_targets) then
             io.write_string("** Nothing to be done for `", !IO),
             make_write_module_or_linked_target(Globals, Target, !IO),
             io.write_string("'.\n", !IO)
-        ;
+        else
             true
         )
     ;
         Warn = no
     ),
-    !Info ^ command_line_targets :=
-        set.delete(!.Info ^ command_line_targets, Target).
+    CmdLineTargets0 = !.Info ^ command_line_targets,
+    set.delete(Target, CmdLineTargets0, CmdLineTargets),
+    !Info ^ command_line_targets := CmdLineTargets.
 
 maybe_symlink_or_copy_linked_target_message(Globals, Target, !IO) :-
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.write_string("Made symlink/copy of ", !IO),
             make_write_module_or_linked_target(Globals, Target, !IO),
             io.write_string("\n", !IO)
@@ -1865,7 +1877,7 @@ make_write_module_or_linked_target(Globals, ModuleName - FileType, !IO) :-
 
 %-----------------------------------------------------------------------------%
 %
-% Timing
+% Timing.
 %
 
 :- pragma foreign_proc("C",
@@ -1895,7 +1907,7 @@ get_real_milliseconds(_, _, _) :-
 
 %-----------------------------------------------------------------------------%
 %
-% Hash functions
+% Hash functions.
 %
 
 module_name_hash(SymName, Hash) :-
@@ -1904,7 +1916,7 @@ module_name_hash(SymName, Hash) :-
         Hash = string.hash(String)
     ;
         SymName = qualified(_Qual, String),
-        % Hashing the the module qualifier seems to be not worthwhile.
+        % Hashing the module qualifier seems to be not worthwhile.
         Hash = string.hash(String)
     ).
 
@@ -1962,64 +1974,51 @@ module_target_type_to_nonce(Type) = X :-
         Type = module_target_c_code,
         X = 11
     ;
-        Type = module_target_il_code,
+        Type = module_target_java_code,
         X = 12
     ;
-        Type = module_target_il_asm,
+        Type = module_target_erlang_header,
         X = 13
     ;
-        Type = module_target_java_code,
+        Type = module_target_erlang_code,
         X = 14
     ;
-        Type = module_target_erlang_header,
+        Type = module_target_erlang_beam_code,
         X = 15
     ;
-        Type = module_target_erlang_code,
-        X = 16
-    ;
-        Type = module_target_erlang_beam_code,
-        X = 17
-    ;
         Type = module_target_object_code(PIC),
-        X = 18 `mix` pic_to_nonce(PIC)
-    ;
-        Type = module_target_foreign_il_asm(_ForeignLang),
-        X = 19 
+        X = 16 `mix` pic_to_nonce(PIC)
     ;
         Type = module_target_foreign_object(_PIC, _ForeignLang),
-        X = 20
+        X = 17
     ;
         Type = module_target_fact_table_object(_PIC, _FileName),
-        X = 21
+        X = 18
     ;
         Type = module_target_xml_doc,
-        X = 22
+        X = 19
     ;
         Type = module_target_track_flags,
-        X = 23
+        X = 20
     ;
         Type = module_target_java_class_code,
-        X = 24
+        X = 21
     ;
         Type = module_target_csharp_code,
-        X = 25
+        X = 22
     ).
 
 :- func pic_to_nonce(pic) = int.
 
 pic_to_nonce(pic) = 1.
-pic_to_nonce(link_with_pic) = 2.
 pic_to_nonce(non_pic) = 3.
+% For compatibility; we used to have pic_to_nonce(link_with_pic) = 2.
 
 :- func mix(int, int) = int.
 
 mix(H0, X) = H :-
     H1 = H0 `xor` (H0 `unchecked_left_shift` 5),
     H = H1 `xor` X.
-
-:- func concoct_second_hash(int) = int.
-
-concoct_second_hash(H) = mix(H, 0xfe3dbe7f).    % whatever
 
 %-----------------------------------------------------------------------------%
 :- end_module make.util.

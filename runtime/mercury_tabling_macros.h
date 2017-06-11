@@ -1,23 +1,18 @@
-/*
-** vim: ts=4 sw=4 et
-*/
-/*
-** Copyright (C) 1997-2000,2002-2007 The University of Melbourne.
-** This file may only be copied under the terms of the GNU Library General
-** Public License - see the file COPYING.LIB in the Mercury distribution.
-*/
+// vim: ts=4 sw=4 expandtab ft=c
 
-/*
-** mercury_tabling_macros.h
-**
-** This file defines macros used by the implementation of tabling
-** (which means mostly the procedures defined in library/private_builtin.m).
-** These macros just call the real implementation routines defined in
-** runtime/mercury_tabling.c, but they also optionally print debugging
-** information.
-*/
+// Copyright (C) 1997-2000,2002-2007 The University of Melbourne.
+// This file may only be copied under the terms of the GNU Library General
+// Public License - see the file COPYING.LIB in the Mercury distribution.
 
-#include "mercury_deep_copy.h"  /* for MR_make_permanent */
+// mercury_tabling_macros.h
+//
+// This file defines macros used by the implementation of tabling
+// (which means mostly the procedures defined in library/private_builtin.m).
+// These macros just call the real implementation routines defined in
+// runtime/mercury_tabling.c, but they also optionally print debugging
+// information.
+
+#include "mercury_deep_copy.h"  // for MR_make_permanent
 
 #define MR_RAW_TABLE_ANY(table, type_info, value)                           \
     MR_table_type((table), (type_info), (value))
@@ -76,6 +71,12 @@
 #define MR_RAW_TABLE_INT_STATS(stats, table, value)                         \
     MR_int_hash_lookup_or_add_stats((stats), (table), (value));
 
+#define MR_RAW_TABLE_UINT(table, value)                                      \
+    MR_word_hash_lookup_or_add((table), (value));
+
+#define MR_RAW_TABLE_UINT_STATS(stats, table, value)                         \
+    MR_word_hash_lookup_or_add_stats((stats), (table), (value));
+
 #define MR_RAW_TABLE_CHAR(table, value)                                     \
     MR_int_hash_lookup_or_add((table), (value));
 
@@ -112,7 +113,7 @@
 #define MR_RAW_TABLE_TYPECLASSINFO_STATS(stats, table, typeclass_info)      \
     MR_type_class_info_lookup_or_add_stats((stats), (table), (typeclass_info))
 
-/***********************************************************************/
+////////////////////////////////////////////////////////////////////////////
 
 #define MR_TABLE_ANY(stats, debug, back, kind, t, t0, type_info, value)     \
     do {                                                                    \
@@ -222,6 +223,19 @@
         }                                                                   \
     } while (0)
 
+#define MR_TABLE_UINT(stats, debug, back, t, t0, value)                     \
+    do {                                                                    \
+        if (stats != NULL) {                                                \
+            (t) = MR_RAW_TABLE_UINT_STATS((stats), (t0), (value));          \
+        } else {                                                            \
+            (t) = MR_RAW_TABLE_UINT((t0), (value));                         \
+        }                                                                   \
+        if (MR_tabledebug) {                                                \
+            printf("TABLE %p: uint %lu => %p\n",                            \
+                (t0), (unsigned long) (value), (t));                        \
+        }                                                                   \
+    } while (0)
+
 #define MR_TABLE_CHAR(stats, debug, back, t, t0, value)                     \
     do {                                                                    \
         if (stats != NULL) {                                                \
@@ -301,7 +315,7 @@
         }                                                                   \
     } while (0)
 
-/***********************************************************************/
+////////////////////////////////////////////////////////////////////////////
 
 #define MR_TABLE_CREATE_ANSWER_BLOCK(debug, table, num_slots)               \
     do {                                                                    \
@@ -310,7 +324,7 @@
             printf("allocated answer block %p -> %p, %d words\n",           \
                 (table), (table)->MR_answerblock, (int) (num_slots));       \
         }                                                                   \
-    } while(0)
+    } while (0)
 
 #define MR_TABLE_CREATE_NODE_ANSWER_BLOCK(debug, block_ptr, num_slots)      \
     do {                                                                    \
@@ -319,7 +333,7 @@
             printf("allocated node block %p -> %p, %d words\n",             \
                 block_ptr, *block_ptr, (int) (num_slots));                  \
         }                                                                   \
-    } while(0)
+    } while (0)
 
 #define MR_TABLE_GET_ANSWER(debug, ab, offset)                              \
     (( (debug && MR_tabledebug) ?                                           \
@@ -337,4 +351,4 @@
         }                                                                   \
         (ab)[offset] =                                                      \
             MR_make_permanent((value), (MR_TypeInfo) (type_info));          \
-    } while(0)
+    } while (0)

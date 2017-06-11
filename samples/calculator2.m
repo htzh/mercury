@@ -65,14 +65,14 @@ main_2(CalcInfo0, !IO) :-
         io.write_string("EOF\n", !IO)
     ;
         Res = term(VarSet, Term),
-        (
+        ( if
             Term = term.functor(term.atom("="),
                 [term.variable(Var, _Context), ExprTerm0], _)
-        ->
+        then
             ExprTerm = ExprTerm0,
             varset.lookup_name(VarSet, Var, VarName),
             SetVar = yes(VarName)
-        ;
+        else
             ExprTerm = Term,
             SetVar = no
         ),
@@ -129,7 +129,7 @@ report_eval_error(unexpected_const(Const), !IO) :-
         io.write_string(String, !IO),
         io.write_string("""", !IO)
     ;
-        ( Const = term.integer(_)
+        ( Const = term.integer(_, _, _, _)
         ; Const = term.atom(_)
         ; Const = term.implementation_defined(_)
         ),
@@ -141,30 +141,39 @@ report_eval_error(unexpected_const(Const), !IO) :-
 
 eval_expr(CalcInfo, VarSet, term.variable(Var, _Context)) = Res :-
     varset.lookup_name(VarSet, Var, VarName),
-    ( map.search(CalcInfo, VarName, Res0) ->
+    ( if map.search(CalcInfo, VarName, Res0) then
         Res = Res0
-    ;
+    else
         throw(unknown_variable(VarName))
     ).
 eval_expr(CalcInfo, VarSet, term.functor(term.atom(Op), Args, _)) = Res :-
-    (
-        ( Args = [Arg1],
+    ( if
+        (
+            Args = [Arg1],
             Res0 = eval_unop(Op, eval_expr(CalcInfo, VarSet, Arg1))
-        ; Args = [Arg1, Arg2],
+        ;
+            Args = [Arg1, Arg2],
             Res0 = eval_binop(Op,
                 eval_expr(CalcInfo, VarSet, Arg1),
                 eval_expr(CalcInfo, VarSet, Arg2))
         )
-    ->
+    then
         Res = Res0
-    ;
+    else
         throw(unknown_operator(Op, list.length(Args)))
     ).
-eval_expr(_, _, term.functor(term.integer(Int), _, _)) = Int.
+eval_expr(_, _, Term) = Int :-
+    Term = term.functor(Const, _, Context),
+    Const = term.integer(_, _, _, _),
+    ( if term_to_int(Term, Int0) then
+        Int = Int0
+    else
+        throw(unexpected_const(Const) - Context)
+    ).
 eval_expr(_, _, term.functor(term.float(Float), _, Context)) =
-        throw(unexpected_const(term.float(Float)) - Context).
+    throw(unexpected_const(term.float(Float)) - Context).
 eval_expr(_, _, term.functor(term.string(String), _, Context)) =
-        throw(unexpected_const(term.string(String)) - Context).
+    throw(unexpected_const(term.string(String)) - Context).
 eval_expr(_,  _, term.functor(ImplDefConst, _, Context)) = _ :-
     ImplDefConst = term.implementation_defined(_),
     throw(unexpected_const(ImplDefConst) - Context).
@@ -193,7 +202,7 @@ eval_binop("//", Num1, Num2) = Num1 // Num2.
 
 :- pred calculator2.ops_table(string::in, op_info::out, list(op_info)::out)
     is semidet.
-  
+
 calculator2.ops_table("//", op_info(infix(y, x), 400), []).
 calculator2.ops_table("*",  op_info(infix(y, x), 400), []).
 calculator2.ops_table("+",  op_info(infix(y, x), 500),
@@ -203,7 +212,7 @@ calculator2.ops_table("-",  op_info(infix(y, x), 500),
 calculator2.ops_table("=", op_info(infix(x, x), 700), []).
 
 :- instance ops.op_table(calculator_op_table) where [
-    
+
     ( ops.lookup_infix_op(_, Op, Priority, LeftAssoc, RightAssoc) :-
         calculator2.ops_table(Op, Info, _),
         Info = op_info(infix(LeftAssoc, RightAssoc), Priority)
@@ -224,7 +233,7 @@ calculator2.ops_table("=", op_info(infix(x, x), 700), []).
     ops.lookup_op(Table, Op) :-
         ops.lookup_binary_prefix_op(Table, Op, _, _, _),
     ops.lookup_op(Table, Op) :- ops.lookup_postfix_op(Table, Op, _, _),
-    
+
     ops.lookup_op_infos(_, Op, OpInfo, OtherInfos) :-
         calculator2.ops_table(Op, OpInfo, OtherInfos),
 

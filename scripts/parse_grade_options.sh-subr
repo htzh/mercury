@@ -26,8 +26,6 @@
         case "$1" in
             c|C)
                 target=c ;;
-            il|IL)
-                target=il ;;
             csharp|'C#')
                 target=csharp ;;
             java|Java)
@@ -40,9 +38,6 @@
                 ;;
         esac
         ;;
-
-    --il|--IL|--il-only|--IL-only)
-        target=il ;;
 
     --csharp|'--C#'|--csharp-only|'--C#-only')
         target=csharp ;;
@@ -86,7 +81,7 @@
     --gc)
         shift
         case "$1" in
-            accurate|conservative|boehm|boehm_debug|hgc|mps|none|automatic)
+            accurate|conservative|boehm|boehm_debug|hgc|none|automatic)
                 gc_method=$1 ;;
             *)
                 echo "$0: invalid gc method \`$1'" 1>&2
@@ -183,11 +178,6 @@
     --no-single-prec-float)
         single_prec_float=false ;;
 
-    --pic-reg)
-        pic_reg=true ;;
-    --no-pic-reg)
-        pic_reg=false ;;
-
     --debug)
         debug=true ;;
     --no-debug)
@@ -265,7 +255,6 @@
         minimal_model_debug=false
         pregenerated_dist=false
         single_prec_float=false
-        pic_reg=false
         debug=false
         decl_debug=false
         ss_debug=false
@@ -280,24 +269,6 @@
         for grade_piece in $grade_pieces
         do
             case "$grade_piece" in
-                il)
-                    target=il
-                    asm_labels=false
-                    non_local_gotos=false
-                    global_regs=false
-                    highlevel_code=true
-                    gcc_nested_functions=false
-                    highlevel_data=true
-                    ;;
-                ilc)
-                    target=il
-                    asm_labels=false
-                    non_local_gotos=false
-                    global_regs=false
-                    highlevel_code=true
-                    gcc_nested_functions=false
-                    highlevel_data=false
-                    ;;
                 csharp)
                     target=csharp
                     asm_labels=false
@@ -423,9 +394,6 @@
                 agc)
                     gc_method=accurate
                     ;;
-                mps)
-                    gc_method=mps
-                    ;;
                 gc)
                     gc_method=boehm
                     ;;
@@ -532,10 +500,6 @@
 
                 spf)
                     single_prec_float=true
-                    ;;
-
-                picreg)
-                    pic_reg=true
                     ;;
 
                 debug)

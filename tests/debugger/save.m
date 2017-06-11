@@ -1,4 +1,6 @@
-% vim: ts=4 sw=4 et
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
 
 :- module save.
 
@@ -15,12 +17,12 @@
 :- import_module string.
 
 main(!IO) :-
-    (
+    ( if
         data(Data),
         queen(Data, Out)
-    ->
+    then
         print_list(Out, !IO)
-    ;
+    else
         io.write_string("No solution\n", !IO)
     ),
     io.see("save_file", SeeRes, !IO),
@@ -43,7 +45,7 @@ main(!IO) :-
 
 :- pred data(list(int)::out) is det.
 
-data([1,2,3,4,5]).
+data([1, 2, 3, 4, 5]).
 
 :- pred queen(list(int)::in, list(int)::out) is nondet.
 
@@ -85,11 +87,11 @@ nodiag(B, D, L) :-
         L = [N | T],
         NmB = N - B,
         BmN = B - N,
-        ( D = NmB ->
+        ( if D = NmB then
             fail
-        ; D = BmN ->
+        else if D = BmN then
             fail
-        ;
+        else
             true
         ),
         D1 = D + 1,

@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2004-2006, 2010-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: version_hash_table.m.
 % Main author: rafe, wangp.
@@ -13,13 +13,13 @@
 % (See the header comments in version_array.m for an explanation of version
 % types.)
 %
-% Version hash tables.  The "latest" version of the hash table provides roughly
-% the same performance as the unique hash table implementation.  "Older"
-% versions of the hash table are still accessible, but will incur a growing
-% performance penalty as more updates are made to the hash table.
+% Version hash tables. The "latest" version of the hash table provides
+% roughly the same performance as the unique hash table implementation.
+% "Older" versions of the hash table are still accessible, but will incur
+% a performance penalty that grows as more updates are made to the hash table.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module version_hash_table.
 :- interface.
@@ -27,7 +27,7 @@
 :- import_module assoc_list.
 :- import_module char.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type version_hash_table(K, V).
 
@@ -36,8 +36,8 @@
 
     % init(HashPred, N, MaxOccupancy)
     % constructs a new hash table with initial size 2 ^ N that is
-    % doubled whenever MaxOccupancy is achieved; elements are
-    % indexed using HashPred.
+    % doubled whenever MaxOccupancy is achieved; elements are indexed
+    % using HashPred.
     %
     % HashPred must compute a hash for a given key.
     % N must be greater than 0.
@@ -51,12 +51,12 @@
 
     % unsafe_init(HashPred, N, MaxOccupancy)
     %
-    % Like init/3, but the constructed hash table is backed by a non-thread safe
-    % version array. It is unsafe to concurrently access or update the hash
-    % table from different threads, or any two hash tables which were produced
-    % from operations on the same original hash table.
-    % However, if the hash table or its descendents will not be used in such a
-    % manner, a non-thread safe hash table can be much faster than a thread
+    % Like init/3, but the constructed hash table is backed by a
+    % non-thread-safe version array. It is unsafe to concurrently access
+    % or update the hash table from different threads, or any two hash tables
+    % which were produced from operations on the same original hash table.
+    % However, if the hash table or its descendants will not be used in such a
+    % manner, a non-thread-safe hash table can be much faster than a thread
     % safe one.
     %
 :- func unsafe_init(hash_pred(K)::in(hash_pred), int::in, float::in) =
@@ -71,7 +71,8 @@
     % unsafe_init_default(HashFn)
     %
     % Like init_default/3 but the constructed hash table is backed by a
-    % non-thread safe version array. See the description of unsafe_init/3 above.
+    % non-thread-safe version array. See the description of unsafe_init/3
+    % above.
     %
 :- func unsafe_init_default(hash_pred(K)::in(hash_pred)) =
    (version_hash_table(K, V)::out) is det.
@@ -80,86 +81,82 @@
     %
 % :- func hash_pred(version_hash_table(K, V)) = hash_pred(K).
 
-    % Default hash_preds for ints and strings and everything (buwahahaha!)
-    %
-:- pred int_hash(int::in, int::out) is det.
-:- pred string_hash(string::in, int::out) is det.
-:- pred char_hash(char::in, int::out) is det.
-:- pred float_hash(float::in, int::out) is det.
-:- pred generic_hash(T::in, int::out) is det.
-
-    % Returns the number of buckets in a hash table.
+    % Return the number of buckets in a hash table.
     %
 :- func num_buckets(version_hash_table(K, V)) = int.
 
-    % Returns the number of occupants in a hash table.
+    % Return the number of occupants in a hash table.
     %
 :- func num_occupants(version_hash_table(K, V)) = int.
+
+    % Default hash_preds for ints and strings and everything.
+    % They are very simple and almost certainly not very good
+    % for your purpose, whatever your purpose is.
+    %
+:- pred int_hash(int::in, int::out) is det.
+:- pred char_hash(char::in, int::out) is det.
+:- pred string_hash(string::in, int::out) is det.
+:- pred float_hash(float::in, int::out) is det.
+:- pred generic_hash(T::in, int::out) is det.
 
     % Copy the hash table explicitly.
     %
     % An explicit copy allows programmers to control the cost of copying
-    % the table.  For more information see the comments at the top of the
+    % the table. For more information see the comments at the top of the
     % version_array module.
     %
-    % This is not a deep copy, it copies only the structure.
+    % This is not a deep copy: it copies only the structure.
     %
 :- func copy(version_hash_table(K, V)) = version_hash_table(K, V).
 
-    % Insert key-value binding into a hash table; if one is
-    % already there then the previous value is overwritten.
-    % A predicate version is also provided.
+    % Search for the value associated with the given key. Fail
+    % if there is no entry for the key.
     %
-:- func set(version_hash_table(K, V), K, V) = version_hash_table(K, V).
-:- pred set(K::in, V::in,
-            version_hash_table(K, V)::in, version_hash_table(K, V)::out)
-                is det.
+:- func search(version_hash_table(K, V), K) = V is semidet.
+:- pred search(version_hash_table(K, V)::in, K::in, V::out) is semidet.
 
-    % Field update for hash tables.
-    % HT ^ elem(K) := V  is equivalent to  set(HT, K, V).
-    %
-:- func 'elem :='(K, version_hash_table(K, V), V) = version_hash_table(K, V).
-
-    % Insert a key-value binding into a hash table.  An
-    % exception is thrown if a binding for the key is already
-    % present.  A predicate version is also provided.
-    %
-:- func det_insert(version_hash_table(K, V), K, V) = version_hash_table(K, V).
-:- pred det_insert(K::in, V::in,
-            version_hash_table(K, V)::in, version_hash_table(K, V)::out)
-                is det.
-
-    % Change a key-value binding in a hash table.  An
-    % exception is thrown if a binding for the key does not
-    % already exist.  A predicate version is also provided.
-    %
-:- func det_update(version_hash_table(K, V), K, V) = version_hash_table(K, V).
-:- pred det_update(K::in, V::in,
-            version_hash_table(K, V)::in, version_hash_table(K, V)::out)
-                is det.
-
-    % Delete the entry for the given key, leaving the hash table
-    % unchanged if there is no such entry.  A predicate version is also
-    % provided.
-    %
-:- func delete(version_hash_table(K, V), K) = version_hash_table(K, V).
-:- pred delete(K::in, version_hash_table(K, V)::in,
-            version_hash_table(K, V)::out) is det.
-
-    % Lookup the value associated with the given key.  An exception
-    % is raised if there is no entry for the key.
+    % Lookup the value associated with the given key. Throw an exception
+    % if there is no entry for the key.
     %
 :- func lookup(version_hash_table(K, V), K) = V.
 
     % Field access for hash tables.
-    % HT ^ elem(K)  is equivalent to  lookup(HT, K).
+    % `HT ^ elem(K)' is equivalent to `lookup(HT, K)'.
     %
 :- func version_hash_table(K, V) ^ elem(K) = V.
 
-    % Like lookup, but just fails if there is no entry for the key.
+    % Insert key-value binding into a hash table. If one is already there,
+    % then the previous value is overwritten.
     %
-:- func search(version_hash_table(K, V), K) = V is semidet.
-:- pred search(version_hash_table(K, V)::in, K::in, V::out) is semidet.
+:- func set(version_hash_table(K, V), K, V) = version_hash_table(K, V).
+:- pred set(K::in, V::in,
+    version_hash_table(K, V)::in, version_hash_table(K, V)::out) is det.
+
+    % Field update for hash tables.
+    % `HT ^ elem(K) := V' is equivalent to `set(HT, K, V)'.
+    %
+:- func 'elem :='(K, version_hash_table(K, V), V) = version_hash_table(K, V).
+
+    % Insert a key-value binding into a hash table. An exception is thrown
+    % if a binding for the key is already present.
+    %
+:- func det_insert(version_hash_table(K, V), K, V) = version_hash_table(K, V).
+:- pred det_insert(K::in, V::in,
+    version_hash_table(K, V)::in, version_hash_table(K, V)::out) is det.
+
+    % Change a key-value binding in a hash table. Throw exception
+    % if a binding for the key does not already exist.
+    %
+:- func det_update(version_hash_table(K, V), K, V) = version_hash_table(K, V).
+:- pred det_update(K::in, V::in,
+    version_hash_table(K, V)::in, version_hash_table(K, V)::out) is det.
+
+    % Delete the entry for the given key, leaving the hash table
+    % unchanged if there is no such entry.
+    %
+:- func delete(version_hash_table(K, V), K) = version_hash_table(K, V).
+:- pred delete(K::in,
+    version_hash_table(K, V)::in, version_hash_table(K, V)::out) is det.
 
     % Convert a hash table into an association list.
     %
@@ -167,8 +164,8 @@
 
     % from_assoc_list(HashPred, N, MaxOccupancy, AssocList) = Table:
     %
-    % Convert an association list into a hash table.  The first three
-    % parameters are the same as for init/3 above.
+    % Convert an association list into a hash table. The first three parameters
+    % are the same as for init/3 above.
     %
 :- func from_assoc_list(hash_pred(K)::in(hash_pred), int::in, float::in,
         assoc_list(K, V)::in) =
@@ -194,9 +191,9 @@
 :- mode fold(in(pred(in, in, mdi, muo) is semidet), in, mdi, muo) is semidet.
 :- mode fold(in(pred(in, in, di, uo) is semidet), in, di, uo) is semidet.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-    % Test if two version_hash_tables are equal.  This predicate is used by
+    % Test if two version_hash_tables are equal. This predicate is used by
     % unifications on the version_hash_table type.
     %
 :- pred equal(version_hash_table(K, V)::in, version_hash_table(K, V)::in)
@@ -205,8 +202,8 @@
 % of higher order code.
 :- pragma terminates(equal/2).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -220,12 +217,11 @@
 :- import_module pair.
 :- import_module require.
 :- import_module string.
-:- import_module type_desc.
 :- import_module unit.
 :- import_module univ.
 :- import_module version_array.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type version_hash_table(K, V)
     --->    ht(
@@ -239,7 +235,7 @@
 :- type buckets(K, V) == version_array(hash_table_alist(K, V)).
 
     % Assuming a decent hash function, there should be few collisions so each
-    % bucket will usually contain an empty list or a singleton.  Including a
+    % bucket will usually contain an empty list or a singleton. Including a
     % singleton constructor therefore reduces memory consumption.
     %
 :- type hash_table_alist(K, V)
@@ -247,7 +243,7 @@
     ;       ht_single(K, V)
     ;       ht_cons(K, V, hash_table_alist(K, V)).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 init(HashPred, N, MaxOccupancy) = init_2(HashPred, N, MaxOccupancy, yes).
 
@@ -257,28 +253,28 @@ unsafe_init(HashPred, N, MaxOccupancy) = init_2(HashPred, N, MaxOccupancy, no).
     (version_hash_table(K, V)::out) is det.
 
 init_2(HashPred, N, MaxOccupancy, NeedSafety) = HT :-
-    (      if N =< 0 then
-            throw(software_error("version_hash_table.new_hash_table: N =< 0"))
-      else if N >= int.bits_per_int then
-            throw(software_error(
-                "version_hash_table.new: N >= int.bits_per_int"))
-      else if MaxOccupancy =< 0.0 then
-            throw(software_error(
-                "version_hash_table.new: MaxOccupancy =< 0.0"))
-      else
-            NumBuckets = 1 << N,
-            MaxOccupants = ceiling_to_int(float(NumBuckets) * MaxOccupancy),
-            (
-                NeedSafety = yes,
-                Buckets = version_array.init(NumBuckets, ht_nil)
-            ;
-                NeedSafety = no,
-                Buckets = version_array.unsafe_init(NumBuckets, ht_nil)
-            ),
-            HT = ht(0, MaxOccupants, HashPred, Buckets)
+    ( if N =< 0 then
+        throw(software_error("version_hash_table.new_hash_table: N =< 0"))
+    else if N >= int.bits_per_int then
+        throw(software_error(
+            "version_hash_table.new: N >= int.bits_per_int"))
+    else if MaxOccupancy =< 0.0 then
+        throw(software_error(
+            "version_hash_table.new: MaxOccupancy =< 0.0"))
+    else
+        NumBuckets = 1 << N,
+        MaxOccupants = ceiling_to_int(float(NumBuckets) * MaxOccupancy),
+        (
+            NeedSafety = yes,
+            Buckets = version_array.init(NumBuckets, ht_nil)
+        ;
+            NeedSafety = no,
+            Buckets = version_array.unsafe_init(NumBuckets, ht_nil)
+        ),
+        HT = ht(0, MaxOccupants, HashPred, Buckets)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % These numbers are picked out of thin air.
     %
@@ -286,7 +282,7 @@ init_default(HashPred) = init(HashPred, 7, 0.9).
 
 unsafe_init_default(HashPred) = unsafe_init(HashPred, 7, 0.9).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 num_buckets(HT) = NumBuckets :-
     promise_equivalent_solutions [NumBuckets] (
@@ -298,7 +294,7 @@ num_occupants(HT) = NumOccupants :-
         NumOccupants = HT ^ ht_num_occupants
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func find_slot(version_hash_table(K, V), K) = int.
 :- pragma inline(find_slot/2).
@@ -343,330 +339,7 @@ find_slot_2(HashPred, K, NumBuckets, H) :-
     HashPred = HashPred0;
 ").
 
-%-----------------------------------------------------------------------------%
-
-copy(HT0) = HT :-
-    promise_equivalent_solutions [HT] (
-        HT0 = ht(NumOccupants, MaxOccupants, HashPred, Buckets0),
-        Buckets = version_array.copy(Buckets0),
-        HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets)
-    ).
-
-%-----------------------------------------------------------------------------%
-
-set(HT0, K, V) = HT :-
-    H = find_slot(HT0, K),
-    promise_equivalent_solutions [NumOccupants0, MaxOccupants, HashPred,
-            Buckets0] (
-        HT0 = ht(NumOccupants0, MaxOccupants, HashPred, Buckets0)
-    ),
-    AL0 = Buckets0 ^ elem(H),
-    (
-        AL0 = ht_nil,
-        AL = ht_single(K, V),
-        MayExpand = yes
-    ;
-        AL0 = ht_single(K0, _V0),
-        ( if K0 = K then
-            AL = ht_single(K0, V),
-            MayExpand = no
-          else
-            AL = ht_cons(K, V, AL0),
-            MayExpand = yes
-        )
-    ;
-        AL0 = ht_cons(_, _, _),
-        ( if alist_replace(AL0, K, V, AL1) then
-            AL = AL1,
-            MayExpand = no
-          else
-            AL = ht_cons(K, V, AL0),
-            MayExpand = yes
-        )
-    ),
-    Buckets = Buckets0 ^ elem(H) := AL,
-    (
-        MayExpand = no,
-        HT = ht(NumOccupants0, MaxOccupants, HashPred, Buckets)
-    ;
-        MayExpand = yes,
-        NumOccupants = NumOccupants0 + 1,
-        ( NumOccupants > MaxOccupants ->
-            HT = expand(NumOccupants, MaxOccupants, HashPred, Buckets)
-        ;
-            HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets)
-        )
-    ).
-
-'elem :='(K, HT, V) = set(HT, K, V).
-
-set(K, V, HT, set(HT, K, V)).
-
-:- pred alist_replace(hash_table_alist(K, V)::in, K::in, V::in,
-    hash_table_alist(K, V)::out) is semidet.
-
-alist_replace(AL0, K, V, AL) :-
-    require_complete_switch [AL0]
-    (
-        AL0 = ht_nil,
-        fail
-    ;
-        AL0 = ht_single(K, _),
-        AL = ht_single(K, V)
-    ;
-        AL0 = ht_cons(K0, V0, T0),
-        ( if K0 = K then
-            AL = ht_cons(K0, V, T0)
-          else
-            alist_replace(T0, K, V, T),
-            AL = ht_cons(K0, V0, T)
-        )
-    ).
-
-%-----------------------------------------------------------------------------%
-
-search(HT, K, search(HT, K)).
-
-search(HT, K) = V :-
-    H = find_slot(HT, K),
-    promise_equivalent_solutions [Buckets] (
-        Buckets = HT ^ ht_buckets
-    ),
-    AL = Buckets ^ elem(H),
-    alist_search(AL, K, V).
-
-:- pred alist_search(hash_table_alist(K, V)::in, K::in, V::out) is semidet.
-
-alist_search(AL, K, V) :-
-    require_complete_switch [AL]
-    (
-        AL = ht_nil,
-        fail
-    ;
-        AL = ht_single(K, V)
-    ;
-        AL = ht_cons(HK, HV, T),
-        ( if HK = K then
-            HV = V
-          else
-            alist_search(T, K, V)
-        )
-    ).
-
-%-----------------------------------------------------------------------------%
-
-det_insert(HT0, K, V) = HT :-
-    H = find_slot(HT0, K),
-    promise_equivalent_solutions [NumOccupants0, MaxOccupants, HashPred,
-            Buckets0] (
-        HT0 = ht(NumOccupants0, MaxOccupants, HashPred, Buckets0)
-    ),
-    AL0 = Buckets0 ^ elem(H),
-    (
-        AL0 = ht_nil,
-        AL = ht_single(K, V)
-    ;
-        ( AL0 = ht_single(_, _)
-        ; AL0 = ht_cons(_, _, _)
-        ),
-        ( if alist_search(AL0, K, _) then
-            throw(software_error(
-                "version_hash_table.det_insert: key already present"))
-          else
-            AL = ht_cons(K, V, AL0)
-        )
-    ),
-    Buckets = Buckets0 ^ elem(H) := AL,
-    NumOccupants = NumOccupants0 + 1,
-    ( NumOccupants > MaxOccupants ->
-        HT = expand(NumOccupants, MaxOccupants, HashPred, Buckets)
-    ;
-        HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets)
-    ).
-
-det_insert(K, V, HT, det_insert(HT, K, V)).
-
-%-----------------------------------------------------------------------------%
-
-det_update(HT0, K, V) = HT :-
-    H = find_slot(HT0, K),
-    promise_equivalent_solutions [Buckets0] (
-        Buckets0 = HT0 ^ ht_buckets
-    ),
-    AL0 = Buckets0 ^ elem(H),
-    ( if alist_replace(AL0, K, V, AL1) then
-        AL = AL1
-      else
-        throw(software_error("version_hash_table.det_update: key not found"))
-    ),
-    Buckets = Buckets0 ^ elem(H) := AL,
-    promise_equivalent_solutions [HT] (
-        HT = HT0 ^ ht_buckets := Buckets
-    ).
-
-det_update(K, V, HT, det_update(HT, K, V)).
-
-%-----------------------------------------------------------------------------%
-
-lookup(HT, K) =
-    ( if   V = search(HT, K)
-      then V
-      else func_error("version_hash_table.lookup: key not found")
-    ).
-
-elem(K, HT) = lookup(HT, K).
-
-%-----------------------------------------------------------------------------%
-
-delete(HT0, K) = HT :-
-    H = find_slot(HT0, K),
-    promise_equivalent_solutions [NumOccupants0, MaxOccupants, HashPred,
-            Buckets0] (
-        HT0 = ht(NumOccupants0, MaxOccupants, HashPred, Buckets0)
-    ),
-    AL0 = Buckets0 ^ elem(H),
-    ( if alist_remove(AL0, K, AL) then
-        Buckets = Buckets0 ^ elem(H) := AL,
-        NumOccupants = NumOccupants0 - 1,
-        HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets)
-      else
-        HT = HT0
-    ).
-
-delete(K, HT, delete(HT, K)).
-
-:- pred alist_remove(hash_table_alist(K, V)::in, K::in,
-    hash_table_alist(K, V)::out) is semidet.
-
-alist_remove(AL0, K, AL) :-
-    require_complete_switch [AL0]
-    (
-        AL0 = ht_nil,
-        fail
-    ;
-        AL0 = ht_single(K, _),
-        % The preceding list node remains ht_cons but that is acceptable.
-        AL = ht_nil
-    ;
-        AL0 = ht_cons(K0, V0, T0),
-        ( if K0 = K then
-            AL = T0
-          else
-            alist_remove(T0, K, T),
-            AL = ht_cons(K0, V0, T)
-        )
-    ).
-
-%-----------------------------------------------------------------------------%
-
-to_assoc_list(HT) = AL :-
-    promise_equivalent_solutions [Buckets] (
-        Buckets = HT ^ ht_buckets
-    ),
-    foldl(to_assoc_list_2, Buckets, [], AL).
-
-:- pred to_assoc_list_2(hash_table_alist(K, V)::in,
-    assoc_list(K, V)::in, assoc_list(K, V)::out) is det.
-
-to_assoc_list_2(X, AL0, AL) :-
-    (
-        X = ht_nil,
-        AL = AL0
-    ;
-        X = ht_single(K, V),
-        AL = [K - V | AL0]
-    ;
-        X = ht_cons(K, V, T),
-        AL1 = [K - V | AL0],
-        to_assoc_list_2(T, AL1, AL)
-    ).
-
-from_assoc_list(HashPred, N, MaxOccupants, AList) = HT :-
-    from_assoc_list_2(AList, init(HashPred, N, MaxOccupants), HT).
-
-from_assoc_list(HashPred, AList) = HT :-
-    from_assoc_list_2(AList, init_default(HashPred), HT).
-
-:- pred from_assoc_list_2(assoc_list(K, V)::in,
-    version_hash_table(K, V)::in, version_hash_table(K, V)::out) is det.
-
-from_assoc_list_2([], !HT).
-from_assoc_list_2([K - V | T], !HT) :-
-    !HT ^ elem(K) := V,
-    from_assoc_list_2(T, !HT).
-
-%-----------------------------------------------------------------------------%
-
-    % Hash tables expand by doubling in size.
-    %
-    % Ensuring expand/4 is _not_ inlined into version_hash_table.det_insert,
-    % etc. actually makes those predicates more efficient.
-    % expand calls version_array.init, which implicitly takes a type_info for
-    % version_hash_table_alist(K, V) that has to be created dynamically.
-    % version_array.init is not fully opt-exported so the unused type_info
-    % argument is not eliminated, nor is the creation of the type_info
-    % delayed until the (rare) call to expand.
-    %
-:- func expand(int, int, hash_pred(K), buckets(K, V)) =
-    version_hash_table(K, V).
-
-:- pragma no_inline(expand/4).
-
-expand(NumOccupants, MaxOccupants0, HashPred0, Buckets0) = HT :-
-    NumBuckets0 = size(Buckets0),
-    NumBuckets = NumBuckets0 + NumBuckets0,
-    MaxOccupants = MaxOccupants0 + MaxOccupants0,
-    unsafe_hash_pred_cast(HashPred0, HashPred),
-    Buckets1 = version_array.init(NumBuckets, ht_nil),
-    reinsert_bindings(0, Buckets0, HashPred, NumBuckets, Buckets1, Buckets),
-    HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets).
-
-:- pred reinsert_bindings(int::in, buckets(K, V)::in,
-    hash_pred(K)::in(hash_pred), int::in,
-    buckets(K, V)::in, buckets(K, V)::out) is det.
-
-reinsert_bindings(I, OldBuckets, HashPred, NumBuckets, !Buckets) :-
-    ( if I >= size(OldBuckets) then
-        true
-      else
-        AL = OldBuckets ^ elem(I),
-        reinsert_alist(AL, HashPred, NumBuckets, !Buckets),
-        reinsert_bindings(I + 1, OldBuckets, HashPred, NumBuckets, !Buckets)
-    ).
-
-:- pred reinsert_alist(hash_table_alist(K, V)::in, hash_pred(K)::in(hash_pred),
-    int::in, buckets(K, V)::in, buckets(K, V)::out) is det.
-
-reinsert_alist(AL, HashPred, NumBuckets, !Buckets) :-
-    (
-        AL = ht_nil
-    ;
-        AL = ht_single(K, V),
-        unsafe_insert(K, V, HashPred, NumBuckets, !Buckets)
-    ;
-        AL = ht_cons(K, V, T),
-        unsafe_insert(K, V, HashPred, NumBuckets, !Buckets),
-        reinsert_alist(T, HashPred, NumBuckets, !Buckets)
-    ).
-
-:- pred unsafe_insert(K::in, V::in, hash_pred(K)::in(hash_pred), int::in,
-    buckets(K, V)::in, buckets(K, V)::out) is det.
-
-unsafe_insert(K, V, HashPred, NumBuckets, Buckets0, Buckets) :-
-    find_slot_2(HashPred, K, NumBuckets, H),
-    AL0 = Buckets0 ^ elem(H),
-    (
-        AL0 = ht_nil,
-        AL = ht_single(K, V)
-    ;
-        ( AL0 = ht_single(_, _)
-        ; AL0 = ht_cons(_, _, _)
-        ),
-        AL = ht_cons(K, V, AL0)
-    ),
-    Buckets = Buckets0 ^ elem(H) := AL.
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % There are almost certainly better ones out there...
     %
@@ -704,77 +377,376 @@ int_hash(N, N).
     H = key;
 ").
 
-%-----------------------------------------------------------------------------%
-
-    % There are almost certainly better ones out there...
-    %
-string_hash(S, string.hash(S)).
-
-%-----------------------------------------------------------------------------%
-
-    % There are almost certainly better ones out there...
-    %
-float_hash(F, float.hash(F)).
-
-%-----------------------------------------------------------------------------%
-
     % There are almost certainly better ones out there...
     %
 char_hash(C, H) :-
     int_hash(char.to_int(C), H).
 
-%-----------------------------------------------------------------------------%
-
-    % This, again, is straight off the top of my head.
+    % There are almost certainly better ones out there...
     %
+string_hash(S, string.hash(S)).
+
+    % There are almost certainly better ones out there...
+    %
+float_hash(F, float.hash(F)).
+
 generic_hash(T, H) :-
-    ( if      dynamic_cast(T, Int) then
-
+    % This, again, is straight off the top of my head.
+    ( if dynamic_cast(T, Int) then
         int_hash(Int, H)
-
-      else if dynamic_cast(T, String) then
-
+    else if dynamic_cast(T, String) then
         string_hash(String, H)
-
-      else if dynamic_cast(T, Float) then
-
+    else if dynamic_cast(T, Float) then
         float_hash(Float, H)
-
-      else if dynamic_cast(T, Char) then
-
+    else if dynamic_cast(T, Char) then
         char_hash(Char, H)
-
-      else if dynamic_cast(T, Univ) then
-
+    else if dynamic_cast(T, Univ) then
         generic_hash(univ_value(Univ), H)
-
-      else if dynamic_cast_to_array(T, Array) then
-
-        H = array.foldl(
-                ( func(X, HA0) = HA :-
-                    generic_hash(X, HX),
-                    munge(HX, HA0) = HA
-                ),
-                Array,
-                0
-            )
-
-      else
-
+    else if dynamic_cast_to_array(T, Array) then
+        SubHash =
+            ( func(X, HA0) = HA :-
+                generic_hash(X, HX),
+                munge(HX, HA0) = HA
+            ),
+        H = array.foldl(SubHash, Array, 0)
+    else
         deconstruct(T, canonicalize, FunctorName, Arity, Args),
         string_hash(FunctorName, H0),
         munge(Arity, H0) = H1,
-        list.foldl(
+        SubHash =
             ( pred(U::in, HA0::in, HA::out) is det :-
                 generic_hash(U, HUA),
                 munge(HUA, HA0) = HA
             ),
-            Args,
-            H1, H
+        list.foldl(SubHash, Args, H1, H)
+    ).
+
+%---------------------------------------------------------------------------%
+
+copy(HT0) = HT :-
+    promise_equivalent_solutions [HT] (
+        HT0 = ht(NumOccupants, MaxOccupants, HashPred, Buckets0),
+        Buckets = version_array.copy(Buckets0),
+        HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets)
+    ).
+
+%---------------------------------------------------------------------------%
+
+search(HT, K) = V :-
+    H = find_slot(HT, K),
+    promise_equivalent_solutions [Buckets] (
+        Buckets = HT ^ ht_buckets
+    ),
+    AL = Buckets ^ elem(H),
+    alist_search(AL, K, V).
+
+search(HT, K, search(HT, K)).
+
+:- pred alist_search(hash_table_alist(K, V)::in, K::in, V::out) is semidet.
+
+alist_search(AL, K, V) :-
+    require_complete_switch [AL]
+    (
+        AL = ht_nil,
+        fail
+    ;
+        AL = ht_single(K, V)
+    ;
+        AL = ht_cons(HK, HV, T),
+        ( if HK = K then
+            HV = V
+        else
+            alist_search(T, K, V)
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+
+lookup(HT, K) =
+    ( if   V = search(HT, K) then
+        V
+    else
+        func_error("version_hash_table.lookup: key not found")
+    ).
+
+elem(K, HT) = lookup(HT, K).
+
+%---------------------------------------------------------------------------%
+
+set(HT0, K, V) = HT :-
+    H = find_slot(HT0, K),
+    promise_equivalent_solutions [NumOccupants0, MaxOccupants, HashPred,
+            Buckets0] (
+        HT0 = ht(NumOccupants0, MaxOccupants, HashPred, Buckets0)
+    ),
+    AL0 = Buckets0 ^ elem(H),
+    (
+        AL0 = ht_nil,
+        AL = ht_single(K, V),
+        MayExpand = yes
+    ;
+        AL0 = ht_single(K0, _V0),
+        ( if K0 = K then
+            AL = ht_single(K0, V),
+            MayExpand = no
+        else
+            AL = ht_cons(K, V, AL0),
+            MayExpand = yes
+        )
+    ;
+        AL0 = ht_cons(_, _, _),
+        ( if alist_replace(AL0, K, V, AL1) then
+            AL = AL1,
+            MayExpand = no
+        else
+            AL = ht_cons(K, V, AL0),
+            MayExpand = yes
+        )
+    ),
+    Buckets = Buckets0 ^ elem(H) := AL,
+    (
+        MayExpand = no,
+        HT = ht(NumOccupants0, MaxOccupants, HashPred, Buckets)
+    ;
+        MayExpand = yes,
+        NumOccupants = NumOccupants0 + 1,
+        ( if NumOccupants > MaxOccupants then
+            HT = expand(NumOccupants, MaxOccupants, HashPred, Buckets)
+        else
+            HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets)
+        )
+    ).
+
+set(K, V, HT, set(HT, K, V)).
+
+'elem :='(K, HT, V) = set(HT, K, V).
+
+:- pred alist_replace(hash_table_alist(K, V)::in, K::in, V::in,
+    hash_table_alist(K, V)::out) is semidet.
+
+alist_replace(AL0, K, V, AL) :-
+    require_complete_switch [AL0]
+    (
+        AL0 = ht_nil,
+        fail
+    ;
+        AL0 = ht_single(K, _),
+        AL = ht_single(K, V)
+    ;
+        AL0 = ht_cons(K0, V0, T0),
+        ( if K0 = K then
+            AL = ht_cons(K0, V, T0)
+        else
+            alist_replace(T0, K, V, T),
+            AL = ht_cons(K0, V0, T)
+        )
+    ).
+
+%---------------------------------------------------------------------------%
+
+det_insert(HT0, K, V) = HT :-
+    H = find_slot(HT0, K),
+    promise_equivalent_solutions
+        [NumOccupants0, MaxOccupants, HashPred, Buckets0]
+    (
+        HT0 = ht(NumOccupants0, MaxOccupants, HashPred, Buckets0)
+    ),
+    AL0 = Buckets0 ^ elem(H),
+    (
+        AL0 = ht_nil,
+        AL = ht_single(K, V)
+    ;
+        ( AL0 = ht_single(_, _)
+        ; AL0 = ht_cons(_, _, _)
+        ),
+        ( if alist_search(AL0, K, _) then
+            throw(software_error(
+                "version_hash_table.det_insert: key already present"))
+        else
+            AL = ht_cons(K, V, AL0)
+        )
+    ),
+    Buckets = Buckets0 ^ elem(H) := AL,
+    NumOccupants = NumOccupants0 + 1,
+    ( if NumOccupants > MaxOccupants then
+        HT = expand(NumOccupants, MaxOccupants, HashPred, Buckets)
+    else
+        HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets)
+    ).
+
+det_insert(K, V, HT, det_insert(HT, K, V)).
+
+%---------------------------------------------------------------------------%
+
+det_update(HT0, K, V) = HT :-
+    H = find_slot(HT0, K),
+    promise_equivalent_solutions [Buckets0] (
+        Buckets0 = HT0 ^ ht_buckets
+    ),
+    AL0 = Buckets0 ^ elem(H),
+    ( if alist_replace(AL0, K, V, AL1) then
+        AL = AL1
+    else
+        throw(software_error("version_hash_table.det_update: key not found"))
+    ),
+    Buckets = Buckets0 ^ elem(H) := AL,
+    promise_equivalent_solutions [HT] (
+        HT = HT0 ^ ht_buckets := Buckets
+    ).
+
+det_update(K, V, HT, det_update(HT, K, V)).
+
+%---------------------------------------------------------------------------%
+
+delete(HT0, K) = HT :-
+    H = find_slot(HT0, K),
+    promise_equivalent_solutions
+        [NumOccupants0, MaxOccupants, HashPred, Buckets0]
+    (
+        HT0 = ht(NumOccupants0, MaxOccupants, HashPred, Buckets0)
+    ),
+    AL0 = Buckets0 ^ elem(H),
+    ( if alist_remove(AL0, K, AL) then
+        Buckets = Buckets0 ^ elem(H) := AL,
+        NumOccupants = NumOccupants0 - 1,
+        HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets)
+    else
+        HT = HT0
+    ).
+
+delete(K, HT, delete(HT, K)).
+
+:- pred alist_remove(hash_table_alist(K, V)::in, K::in,
+    hash_table_alist(K, V)::out) is semidet.
+
+alist_remove(AL0, K, AL) :-
+    require_complete_switch [AL0]
+    (
+        AL0 = ht_nil,
+        fail
+    ;
+        AL0 = ht_single(K, _),
+        % The preceding list node remains ht_cons but that is acceptable.
+        AL = ht_nil
+    ;
+        AL0 = ht_cons(K0, V0, T0),
+        ( if K0 = K then
+            AL = T0
+        else
+            alist_remove(T0, K, T),
+            AL = ht_cons(K0, V0, T)
+        )
+    ).
+
+%---------------------------------------------------------------------------%
+
+to_assoc_list(HT) = AL :-
+    promise_equivalent_solutions [Buckets] (
+        Buckets = HT ^ ht_buckets
+    ),
+    foldl(to_assoc_list_2, Buckets, [], AL).
+
+:- pred to_assoc_list_2(hash_table_alist(K, V)::in,
+    assoc_list(K, V)::in, assoc_list(K, V)::out) is det.
+
+to_assoc_list_2(X, AL0, AL) :-
+    (
+        X = ht_nil,
+        AL = AL0
+    ;
+        X = ht_single(K, V),
+        AL = [K - V | AL0]
+    ;
+        X = ht_cons(K, V, T),
+        AL1 = [K - V | AL0],
+        to_assoc_list_2(T, AL1, AL)
+    ).
+
+from_assoc_list(HashPred, N, MaxOccupants, AList) = HT :-
+    from_assoc_list_2(AList, init(HashPred, N, MaxOccupants), HT).
+
+from_assoc_list(HashPred, AList) = HT :-
+    from_assoc_list_2(AList, init_default(HashPred), HT).
+
+:- pred from_assoc_list_2(assoc_list(K, V)::in,
+    version_hash_table(K, V)::in, version_hash_table(K, V)::out) is det.
+
+from_assoc_list_2([], !HT).
+from_assoc_list_2([K - V | T], !HT) :-
+    !HT ^ elem(K) := V,
+    from_assoc_list_2(T, !HT).
+
+%---------------------------------------------------------------------------%
+
+    % Hash tables expand by doubling in size.
+    %
+    % Ensuring expand/4 is _not_ inlined into version_hash_table.det_insert,
+    % etc. actually makes those predicates more efficient.
+    % expand calls version_array.init, which implicitly takes a type_info for
+    % version_hash_table_alist(K, V) that has to be created dynamically.
+    % version_array.init is not fully opt-exported so the unused type_info
+    % argument is not eliminated, nor is the creation of the type_info
+    % delayed until the (rare) call to expand.
+    %
+:- func expand(int, int, hash_pred(K), buckets(K, V)) =
+    version_hash_table(K, V).
+:- pragma no_inline(expand/4).
+
+expand(NumOccupants, MaxOccupants0, HashPred0, Buckets0) = HT :-
+    NumBuckets0 = size(Buckets0),
+    NumBuckets = NumBuckets0 + NumBuckets0,
+    MaxOccupants = MaxOccupants0 + MaxOccupants0,
+    unsafe_hash_pred_cast(HashPred0, HashPred),
+    Buckets1 = version_array.init(NumBuckets, ht_nil),
+    reinsert_bindings(0, Buckets0, HashPred, NumBuckets, Buckets1, Buckets),
+    HT = ht(NumOccupants, MaxOccupants, HashPred, Buckets).
+
+:- pred reinsert_bindings(int::in, buckets(K, V)::in,
+    hash_pred(K)::in(hash_pred), int::in,
+    buckets(K, V)::in, buckets(K, V)::out) is det.
+
+reinsert_bindings(I, OldBuckets, HashPred, NumBuckets, !Buckets) :-
+    ( if I >= size(OldBuckets) then
+        true
+    else
+        AL = OldBuckets ^ elem(I),
+        reinsert_alist(AL, HashPred, NumBuckets, !Buckets),
+        reinsert_bindings(I + 1, OldBuckets, HashPred, NumBuckets, !Buckets)
+    ).
+
+:- pred reinsert_alist(hash_table_alist(K, V)::in, hash_pred(K)::in(hash_pred),
+    int::in, buckets(K, V)::in, buckets(K, V)::out) is det.
+
+reinsert_alist(AL, HashPred, NumBuckets, !Buckets) :-
+    (
+        AL = ht_nil
+    ;
+        AL = ht_single(K, V),
+        unsafe_insert(K, V, HashPred, NumBuckets, !Buckets)
+    ;
+        AL = ht_cons(K, V, T),
+        unsafe_insert(K, V, HashPred, NumBuckets, !Buckets),
+        reinsert_alist(T, HashPred, NumBuckets, !Buckets)
+    ).
+
+:- pred unsafe_insert(K::in, V::in, hash_pred(K)::in(hash_pred), int::in,
+    buckets(K, V)::in, buckets(K, V)::out) is det.
+
+unsafe_insert(K, V, HashPred, NumBuckets, Buckets0, Buckets) :-
+    find_slot_2(HashPred, K, NumBuckets, H),
+    AL0 = Buckets0 ^ elem(H),
+    (
+        AL0 = ht_nil,
+        AL = ht_single(K, V)
+    ;
+        ( AL0 = ht_single(_, _)
+        ; AL0 = ht_cons(_, _, _)
+        ),
+        AL = ht_cons(K, V, AL0)
+    ),
+    Buckets = Buckets0 ^ elem(H) := AL.
+
+%---------------------------------------------------------------------------%
 
 :- func munge(int, int) = int.
 
@@ -782,7 +754,7 @@ munge(N, X) =
     (X `unchecked_left_shift` N) `xor`
     (X `unchecked_right_shift` (int.bits_per_int - N)).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 fold(F, HT, X0) = X :-
     promise_equivalent_solutions [Buckets] (
@@ -833,21 +805,21 @@ fold_p(P, List, !A) :-
         fold_p(P, KVs, !A)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 equal(A, B) :-
-    ( private_builtin.pointer_equal(A, B) ->
+    ( if private_builtin.pointer_equal(A, B) then
         true
-    ;
+    else
         % We cannot deconstruct a non-canonical type in this all-solutions
         % context (because the unification and call to fold may fail).
         % Therefore we call num_occupants.
         NumA = num_occupants(A),
         NumB = num_occupants(B),
         NumA = NumB,
-        % Ensure that each item in A has an item in B, and because they have
-        % the same number, if this is true then there is not an item in B
-        % that does not match one in A.
+        % Test whether each item in A also occurs in B. Since A and B have
+        % the same number of items, if this is true, then we also know that
+        % there is no item in B that does not also occur in A.
         fold(compare_item(B), A, unit, _)
     ).
 
@@ -857,6 +829,6 @@ equal(A, B) :-
 compare_item(Table, K, V, unit, unit) :-
     search(Table, K, V).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module version_hash_table.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

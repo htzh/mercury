@@ -1,11 +1,16 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab ft=make
+#-----------------------------------------------------------------------------#
 
 THIS_DIR = par_conj
+SUBDIRS =
+TESTS_DIR = ..
+MAYBE_J1 =
 
 #-----------------------------------------------------------------------------#
 
 # please keep these lists sorted
-DEP_PAR_CONJ_PROGS= \
+DEP_PAR_CONJ_PROGS = \
 	bug_130_unreachable \
 	bug_130_should_push_signal \
 	consume_in_some_branches \
@@ -69,7 +74,7 @@ LLDS_PROGS = \
 	par_ddeath \
 	par_ddeath_2
 
-ifeq "$(filter hl% java% csharp% il% erlang%,$(GRADE))" ""
+ifeq "$(filter hl% java% csharp% erlang%,$(GRADE))" ""
 	PROGS0 = $(LLDS_PROGS)
 else
 	PROGS0 =
@@ -99,30 +104,17 @@ endif
 # `mmc --make' doesn't expect subdirectories to appear in targets.
 ifeq ($(MMAKE_USE_MMC_MAKE),yes)
 OS_SUBDIR=
-ILS_SUBDIR=
-DLLS_SUBDIR=
 else
 OS_SUBDIR=$(os_subdir)
-ILS_SUBDIR=$(ils_subdir)
-DLLS_SUBDIR=$(dlls_subdir)
 endif
 
-
-ifeq ($(findstring il,$(GRADE)),il)
-	TARGET_OBJ_EXT=dll
-	TARGET_OBJ_SUBDIR=$(DLLS_SUBDIR)
-else
-	TARGET_OBJ_EXT=$(O)
-	TARGET_OBJ_SUBDIR=$(OS_SUBDIR)
-endif
-OBJS =	$(OBJ_PROGS:%=$(TARGET_OBJ_SUBDIR)%.$(TARGET_OBJ_EXT)) \
-		$(IL_PROGS:%=$(ILS_SUBDIR)%.il)
+TARGET_OBJ_EXT=$(O)
+TARGET_OBJ_SUBDIR=$(OS_SUBDIR)
+OBJS =	$(OBJ_PROGS:%=$(TARGET_OBJ_SUBDIR)%.$(TARGET_OBJ_EXT))
 
 #-----------------------------------------------------------------------------#
 
 TESTS = $(sort $(PROGS))
-SUBDIRS =
-TESTS_DIR = ..
 include $(TESTS_DIR)/Mmake.common
 
 # Module-specific options should go in Mercury.options so they
@@ -191,7 +183,9 @@ printtests:
 printobjs:
 	@echo $(OBJS)
 
-clean_local:
+clean_local: clean_par_conj
+
+clean_par_conj:
 	rm -f *.err *.h
 
 #-----------------------------------------------------------------------------#

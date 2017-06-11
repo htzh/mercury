@@ -1,13 +1,10 @@
-/*
-** vim: ts=4 sw=4 expandtab
-*/
-/*
-** Copyright (C) 2007 The University of Melbourne.
-** This file may only be copied under the terms of the GNU Library General
-** Public License - see the file COPYING.LIB in the Mercury distribution.
-*/
+// vim: ts=4 sw=4 expandtab ft=c
 
-/* mercury_bitmap.c - bitmap handling */
+// Copyright (C) 2007 The University of Melbourne.
+// This file may only be copied under the terms of the GNU Library General
+// Public License - see the file COPYING.LIB in the Mercury distribution.
+
+// mercury_bitmap.c - bitmap handling
 
 #include "mercury_imp.h"
 #include "mercury_bitmap.h"
@@ -18,12 +15,10 @@ static int MR_hex_char_to_int(char digit);
 static MR_String MR_do_bitmap_to_string(MR_ConstBitmapPtr, MR_bool, MR_bool,
     MR_AllocSiteInfoPtr);
 
-/*
-** Note that MR_bitmap_cmp and MR_hash_bitmap are actually defined
-** as macros in mercury_bitmap.h, if we're using GNU C.
-** We define them here whether or not we're using gcc, so that users
-** can easily switch between gcc and cc without rebuilding the libraries.
-*/
+// Note that MR_bitmap_cmp and MR_hash_bitmap are actually defined
+// as macros in mercury_bitmap.h, if we are using GNU C.
+// We define them here whether or not we are using gcc, so that users
+// can easily switch between gcc and cc without rebuilding the libraries.
 
 #undef MR_bitmap_cmp
 
@@ -42,10 +37,10 @@ MR_hash_bitmap(MR_ConstBitmapPtr b)
 }
 
 static const char hex_digits[] =
-            {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-            'A', 'B', 'C', 'D', 'E', 'F'};
+    {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+    'A', 'B', 'C', 'D', 'E', 'F'};
 
-static int 
+static int
 MR_hex_char_to_int(char digit)
 {
     switch (digit) {
@@ -80,13 +75,13 @@ static MR_String
 MR_do_bitmap_to_string(MR_ConstBitmapPtr b,
     MR_bool quote, MR_bool use_saved_hp, MR_AllocSiteInfoPtr alloc_id)
 {
-    MR_String result;
-    int i;
-    int len;
-    int num_bytes;
-    int num_bits_len;
-    int start;
-    char num_bits_str[100];
+    MR_String   result;
+    size_t      i;
+    size_t      len;
+    size_t      num_bytes;
+    size_t      num_bits_len;
+    int         start;
+    char        num_bits_str[100];
 
     sprintf(num_bits_str, "%" MR_INTEGER_LENGTH_MODIFIER "d", b->num_bits);
     num_bits_len = strlen(num_bits_str);

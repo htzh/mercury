@@ -5,15 +5,15 @@
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %---------------------------------------------------------------------------%
-% 
+%
 % File: term_size_prof.m.
 % Author: zs.
 % Stability: low.
-% 
+%
 % This file is automatically imported into every module when term size
 % profiling is enabled. It contains support predicates used for term size
 % profiling.
-% 
+%
 %---------------------------------------------------------------------------%
 %---------------------------------------------------------------------------%
 
@@ -115,9 +115,9 @@
 }").
 
 measure_size(_Value, Size) :-
-    ( semidet_succeed ->
+    ( if semidet_succeed then
         error("measure_size: not implemented")
-    ;
+    else
         Size = 0
     ).
 
@@ -142,9 +142,9 @@ measure_size(_Value, Size) :-
 }").
 
 measure_size_acc(_Value, Size0, Size) :-
-    ( semidet_succeed ->
+    ( if semidet_succeed then
         error("measure_size_acc: not implemented")
-    ;
+    else
         Size = Size0
     ).
 
@@ -215,9 +215,9 @@ increment_size(_Value, _Incr) :-
 
 complexity_is_active(IsActive) :-
     impure private_builtin.imp,
-    ( semidet_succeed ->
+    ( if semidet_succeed then
         error("complexity_mark_active: not implemented")
-    ;
+    else
         % Required only to avoid warnings; never executed.
         IsActive = is_active
     ).

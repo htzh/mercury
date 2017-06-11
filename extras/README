@@ -30,6 +30,9 @@ dynamic_linking
 fixed		An implementation of fixed-point arithmetic with
 		the COBOL semantics.
 
+gmp_int         A Mercury binding to GNU multi-precision library,
+                providing integers with arbitrary precision.
+
 graphics	Some packages for doing graphics programming 
                 and GUIs in Mercury: 
 			- a binding to Tcl/Tk
@@ -59,11 +62,20 @@ mopenssl	A Mercury binding to the openssl library.
 
 morphine	A trace analysis system for Mercury.
 
+mp_int		A multi-precision integer type based on a binding to the
+		library libtommath.
+
 net		A network library which uses the standard library stream
 		interface.
 
 odbc		A Mercury interface to ODBC (Open Database Connectivity),
 		for interfacing to standard relational database packages.
+
+
+old_term_parser	A library containing versions of the the standard library's
+		lexer, parser, term, term_io and varset modules as they
+		were on 2017-02-15.  Intended for backwards compatibility
+		with older code.
 
 posix		A Mercury interface to some of the POSIX
 		(Portable Operating System Interface) APIs.

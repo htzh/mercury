@@ -6,11 +6,13 @@
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
 %
+% Main authors: trd, dgj.
+%
 % This module defines predicate for interfacing with foreign languages.
 % that are necessary for the frontend of the compiler to construct
-% the list of items.  The predicates in this module should not depend
-% on the HLDS in any way.  The predicates for interfacing with foreign
-% languages that do depend on the HLDS are defined in foreign.m.
+% the parse tree. The predicates in this module should not depend on the HLDS
+% in any way. The predicates for interfacing with foreign languages that
+% *do* depend on the HLDS are defined in foreign.m.
 %
 % This module also contains the parts of the name mangler that are used
 % by the frontend of the compiler.
@@ -18,9 +20,6 @@
 % Warning: any changes to the name mangling algorithms implemented in this
 % module may also require changes to profiler/demangle.m, util/mdemangle.c and
 % compiler/name_mangle.m.
-%
-% Main authors: trd, dgj.
-% This code was originally part of the foreign module and was moved here.
 %
 %-----------------------------------------------------------------------------%
 
@@ -30,72 +29,70 @@
 :- import_module libs.
 :- import_module libs.globals.
 :- import_module parse_tree.prog_data.
-:- import_module mdbcomp.prim_data.
+:- import_module parse_tree.prog_data_foreign.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
 
 :- import_module bool.
+:- import_module cord.
 :- import_module list.
-:- import_module term.
 
 %-----------------------------------------------------------------------------%
 
-:- type foreign_decl_info == list(foreign_decl_code).
-                                % in reverse order
-:- type foreign_body_info == list(foreign_body_code).
-                                % in reverse order
+:- type foreign_decl_codes == cord(foreign_decl_code).
+:- type foreign_body_codes == cord(foreign_body_code).
 
 :- type foreign_decl_code
     --->    foreign_decl_code(
                 fdecl_lang          :: foreign_language,
                 fdecl_is_local      :: foreign_decl_is_local,
-                fdecl_code          :: string,
+                fdecl_code          :: foreign_literal_or_include,
                 fdecl_context       :: prog_context
             ).
 
 :- type foreign_body_code
     --->    foreign_body_code(
                 fbody_lang          :: foreign_language,
-                fbody_code          :: string,
+                fbody_code          :: foreign_literal_or_include,
                 fbody_context       :: prog_context
             ).
 
-:- type foreign_export_defns == list(foreign_export).
+:- type foreign_export_defns == list(foreign_export_defn).
+
+:- type foreign_export_defn
+    --->    foreign_export_defn(
+                % The code for `pragma foreign_export' is generated directly
+                % as strings by export.m.
+                string
+            ).
+
 :- type foreign_export_decls
     --->    foreign_export_decls(
-                fexp_decls_info     :: foreign_decl_info,
+                fexp_decls_codes    :: list(foreign_decl_code),
                 fexp_decls_list     :: list(foreign_export_decl)
             ).
 
 :- type foreign_export_decl
     --->    foreign_export_decl(
+                % Language of the export.
                 fexp_decl_lang      :: foreign_language,
-                                    % Language of the export.
 
+                % Return type.
                 fexp_decl_ret_type  :: string,
-                                    % Return type.
 
+                % Function name.
                 fexp_decl_func_name :: string,
-                                    % Function name.
 
+                % Argument declarations.
                 fexp_decl_arg_decls :: string
-                                    % Argument declarations.
             ).
-
-    % Some code from a `pragma foreign_code' declaration that is not
-    % associated with a given procedure.
-    %
-:- type user_foreign_code
-    --->    user_foreign_code(
-                foreign_language,   % language of this code
-                string,             % code
-                term.context        % source code location
-            ).
-
-    % The code for `pragma foreign_export' is generated directly as strings
-    % by export.m.
-    %
-:- type foreign_export  ==  string.
 
 %-----------------------------------------------------------------------------%
+
+:- pred foreign_decl_code_is_for_lang(foreign_language::in,
+    foreign_decl_code::in) is semidet.
+:- pred foreign_body_code_is_for_lang(foreign_language::in,
+    foreign_body_code::in) is semidet.
 
     % foreign_import_module_name(ForeignImport)
     %
@@ -124,7 +121,7 @@
     ;       lang_csharp.
 
     % The module name used for this foreign language.
-    % Not all foreign languages generate external modules
+    % Not all foreign languages generate external modules,
     % so this function only succeeds for those that do.
     %
 :- func foreign_language_module_name(module_name, foreign_language) =
@@ -141,13 +138,10 @@
 :- mode foreign_language_file_extension(in(lang_gen_ext_file)) = out is det.
 
     % It is possible that more than one foreign language could be used to
-    % implement a particular piece of code.
-    % Therefore, foreign languages have an order of preference, from most
-    % preferred to least perferred.
-    % prefer_foreign_language(Globals, Target, Lang1, Lang2) returns the
-    % yes if Lang2 is preferred over Lang1.
-    %
-    % Otherwise it will return no.
+    % implement a particular piece of code. Therefore, foreign languages
+    % have an order of preference, from most preferred to least perferred.
+    % prefer_foreign_language(Globals, Target, Lang1, Lang2) returns
+    % `yes' if Lang2 is preferred over Lang1; otherwise, it will return no.
     %
 :- func prefer_foreign_language(globals, compilation_target,
     foreign_language, foreign_language) = bool.
@@ -161,7 +155,7 @@
 %-----------------------------------------------------------------------------%
 %
 % The following are the parts of the name mangler that are needed by
-% the compiler frontend so that it can write out makefile fragments.
+% the compiler frontend so that it can write out Makefile fragments.
 
     % Returns the name of the initialization function for a given module.
     %
@@ -196,19 +190,21 @@
 :- import_module parse_tree.file_names.
 
 :- import_module char.
-:- import_module int.
 :- import_module solutions.
 :- import_module string.
 
 %-----------------------------------------------------------------------------%
 
+foreign_decl_code_is_for_lang(Lang, DeclCode) :-
+    Lang = DeclCode ^ fdecl_lang.
+
+foreign_body_code_is_for_lang(Lang, BodyCode) :-
+    Lang = BodyCode ^ fbody_lang.
+
 foreign_import_module_name(ImportModule) = ModuleName :-
-    ImportModule = foreign_import_module_info(Lang, ForeignImportModule, _),
+    ImportModule = foreign_import_module_info(Lang, ForeignImportModule),
     (
         Lang = lang_c,
-        ModuleName = ForeignImportModule
-    ;
-        Lang = lang_il,
         ModuleName = ForeignImportModule
     ;
         Lang = lang_java,
@@ -223,16 +219,12 @@ foreign_import_module_name(ImportModule) = ModuleName :-
 
 foreign_import_module_name_from_module(ModuleForeignImported, CurrentModule) =
         ImportedForeignCodeModuleName :-
-    ModuleForeignImported = foreign_import_module_info(Lang, _, _),
+    ModuleForeignImported = foreign_import_module_info(Lang, _),
     ImportedForeignCodeModuleName1 = ModuleForeignImported ^
         foreign_import_module_name,
     (
         Lang = lang_c,
         ImportedForeignCodeModuleName = ImportedForeignCodeModuleName1
-    ;
-        Lang = lang_il,
-        ImportedForeignCodeModuleName = handle_std_library(CurrentModule,
-            ImportedForeignCodeModuleName1)
     ;
         Lang = lang_csharp,
         ImportedForeignCodeModuleName = handle_std_library(CurrentModule,
@@ -250,16 +242,17 @@ foreign_import_module_name_from_module(ModuleForeignImported, CurrentModule) =
     % On the il backend, we need to refer to the module "mercury" when
     % referencing a std library module when we are not actually building
     % the std library.
+    % XXX Obsolete comment.
     %
 :- func handle_std_library(module_name, module_name) = module_name.
 
 handle_std_library(CurrentModule, ModuleName0) = ModuleName :-
-    (
+    ( if
         mercury_std_library_module_name(ModuleName0),
-        \+ mercury_std_library_module_name(CurrentModule)
-    ->
+        not mercury_std_library_module_name(CurrentModule)
+    then
         ModuleName = unqualified("mercury")
-    ;
+    else
         ModuleName = ModuleName0
     ).
 
@@ -283,60 +276,37 @@ foreign_language_module_name(ModuleName, Lang) = FullyQualifiedModuleName :-
 foreign_language_file_extension(lang_c) = ".c".
 foreign_language_file_extension(lang_csharp) = ".cs".
 foreign_language_file_extension(lang_java) = ".java".
-foreign_language_file_extension(lang_il) = _ :-
-    fail.
 
 %-----------------------------------------------------------------------------%
 
+prefer_foreign_language(_Globals, Target, Lang1, Lang2) = Prefer :-
     % Currently we don't use the globals to compare foreign language
     % interfaces, but if we added appropriate options we might want
     % to do this later.
-    %
-prefer_foreign_language(_Globals, target_c, Lang1, Lang2) =
-    % When compiling to C, C is always preferred over any other language.
-    ( Lang2 = lang_c, not Lang1 = lang_c ->
-        yes
+    (
+        Target = target_c,
+        % When compiling to C, C is always preferred over any other language.
+        ( if Lang2 = lang_c, not Lang1 = lang_c then
+            Prefer = yes
+        else
+            Prefer = no
+        )
     ;
-        no
-    ).
-
-prefer_foreign_language(_Globals, target_il, Lang1, Lang2) = Comp :-
-    % When compiling to il, first we prefer il, then csharp.
-    % After that we don't care.
-    PreferredList = [lang_il, lang_csharp],
-
-    FindLangPriority = (func(L) = X :-
-        ( list.nth_member_search(PreferredList, L, X0) ->
-            X = X0
-        ;
-            X = list.length(PreferredList) + 1
-        )),
-    N1 = FindLangPriority(Lang1),
-    N2 = FindLangPriority(Lang2),
-    ( N2 < N1 ->
-        Comp = yes
+        Target = target_csharp,
+        Prefer = no
     ;
-        Comp = no
-    ).
-
-prefer_foreign_language(_Globals, target_csharp, _Lang1, _Lang2) = no.
-
-prefer_foreign_language(_Globals, target_java, _Lang1, _Lang2) = no.
-    % Nothing useful to do here, but when we add Java as a foreign language,
-    % we should add it here.
-
-prefer_foreign_language(_Globals, target_x86_64, Lang1, Lang2) =
-    % When compiling to x86_64 assembler, C is always preferred over any
-    % other language.
-    ( Lang2 = lang_c, not Lang1 = lang_c ->
-        yes
+        Target = target_java,
+        % Nothing useful to do here, but when we add Java as a
+        % foreign language, we should add it here.
+        % XXX Obsolete comment.
+        Prefer = no
     ;
-        no
+        Target = target_erlang,
+        % Nothing useful to do here, but when we add Erlang as a
+        % foreign language, we should add it here.
+        % XXX Obsolete comment.
+        Prefer = no
     ).
-
-prefer_foreign_language(_Globals, target_erlang, _Lang1, _Lang2) = no.
-    % Nothing useful to do here, but when we add Erlang as a foreign language,
-    % we should add it here.
 
 %-----------------------------------------------------------------------------%
 
@@ -351,12 +321,10 @@ all_foreign_languages = Langs :-
 valid_foreign_language(lang_c).
 valid_foreign_language(lang_java).
 valid_foreign_language(lang_csharp).
-valid_foreign_language(lang_il).
 valid_foreign_language(lang_erlang).
 
 %-----------------------------------------------------------------------------%
 
-foreign_type_language(il(_)) = lang_il.
 foreign_type_language(c(_)) = lang_c.
 foreign_type_language(java(_)) = lang_java.
 foreign_type_language(csharp(_)) = lang_csharp.
@@ -386,7 +354,7 @@ name_mangle_2(AllowLeadingDigit, Name) = MangledName :-
     % require changes to profiler/demangle.m, util/mdemangle.c,
     % compiler/name_mangle.m and library/rtti_implementation.m.
 
-    (
+    ( if
         string.is_all_alnum_or_underscore(Name),
         (
             AllowLeadingDigit = yes
@@ -397,17 +365,17 @@ name_mangle_2(AllowLeadingDigit, Name) = MangledName :-
             string.index(Name, 0, FirstChar),
             not char.is_digit(FirstChar)
         )
-    ->
+    then
         % Any names that start with `f_' are changed so that they start with
         % `f__', so that we can use names starting with `f_' (followed by
         % anything except an underscore) without fear of name collisions.
 
-        ( string.append("f_", Suffix, Name) ->
+        ( if string.append("f_", Suffix, Name) then
             MangledName = "f__" ++ Suffix
-        ;
+        else
             MangledName = Name
         )
-    ;
+    else
         MangledName = convert_to_valid_c_identifier(Name)
     ).
 
@@ -415,9 +383,9 @@ qualify_name(Module0, Name0) = Name :-
     string.append_list([Module0, "__", Name0], Name).
 
 convert_to_valid_c_identifier(String) = Name :-
-    ( name_conversion_table(String, Name0) ->
+    ( if name_conversion_table(String, Name0) then
         Name = Name0
-    ;
+    else
         Name = "f" ++ convert_to_valid_c_identifier_2(String)
     ).
 
@@ -460,7 +428,7 @@ name_conversion_table("[]", "f_nil").
 :- func convert_to_valid_c_identifier_2(string) = string.
 
 convert_to_valid_c_identifier_2(String) = Name :-
-    ( string.first_char(String, Char, Rest) ->
+    ( if string.first_char(String, Char, Rest) then
         % XXX This will cause ABI incompatibilities between compilers which are
         % built in grades that have different character representations.
         char.to_int(Char, Code),
@@ -468,11 +436,11 @@ convert_to_valid_c_identifier_2(String) = Name :-
         string.append("_", CodeString, ThisCharString),
         Name0 = convert_to_valid_c_identifier_2(Rest),
         string.append(ThisCharString, Name0, Name)
-    ;
-        % String is the empty string
+    else
+        % String is the empty string.
         Name = String
     ).
 
 %-----------------------------------------------------------------------------%
-:- end_module prog_foreign.
+:- end_module parse_tree.prog_foreign.
 %-----------------------------------------------------------------------------%

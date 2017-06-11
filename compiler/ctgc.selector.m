@@ -16,8 +16,11 @@
 :- module transform_hlds.ctgc.selector.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_pragma.
 
 :- import_module io.
 :- import_module list.
@@ -86,6 +89,7 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
 :- import_module parse_tree.prog_type.
 
@@ -98,7 +102,6 @@
 :- import_module require.
 :- import_module set.
 :- import_module solutions.
-:- import_module string.
 
 %-----------------------------------------------------------------------------%
 
@@ -113,6 +116,7 @@ selector_init(ConsId, Index) = [TermSel] :-
     ;
         ( ConsId = closure_cons(_, _)
         ; ConsId = int_const(_)
+        ; ConsId = uint_const(_)
         ; ConsId = float_const(_)
         ; ConsId = char_const(_)
         ; ConsId = string_const(_)
@@ -125,7 +129,7 @@ selector_init(ConsId, Index) = [TermSel] :-
         ; ConsId = typeclass_info_const(_)
         ; ConsId = ground_term_const(_, _)
         ; ConsId = tabling_info_const(_)
-        ; ConsId = table_io_decl(_)
+        ; ConsId = table_io_entry_desc(_)
         ; ConsId = deep_profiling_proc_layout(_)
         ),
         unexpected($module, $pred, "cannot handle cons_id")
@@ -524,7 +528,7 @@ branch_map_search([Type - Sel | TypeSels], KeyType, ValueSel):-
 
 reset_tables(!IO) :-
     table_reset_for_type_contains_subtype_1_4(!IO),
-    table_reset_for_type_arg_types_3(!IO).
+    table_reset_for_type_arg_types_3(!IO),
     table_reset_for_normalize_selector_with_type_information_4(!IO).
 
 %-----------------------------------------------------------------------------%

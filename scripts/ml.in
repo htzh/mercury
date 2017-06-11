@@ -53,6 +53,7 @@ THREAD_LIBS="@THREAD_LIBS@"
 HWLOC_LIBS="@HWLOC_LIBS@"
 HWLOC_STATIC_LIBS="@HWLOC_STATIC_LIBS@"
 TRACE_BASE_LIBS_SYSTEM="@TRACE_BASE_LIBS_SYSTEM@"
+LDFLAGS_FOR_SANITIZERS="@LDFLAGS_FOR_SANITIZERS@"
 
 TMPDIR=${TMPDIR=/tmp}
 MATH_LIB=${MERCURY_MATH_LIB="@MATH_LIB@"}
@@ -73,9 +74,6 @@ export LINK
 case "$CC" in
 	*gcc*)
 		COMPILER=gcc
-		;;
-	*lcc*)
-		COMPILER=lcc
 		;;
 	*clang*)
 		COMPILER=clang
@@ -264,9 +262,6 @@ case "$GRADE" in
 	*.hgc*)
 		gc_grade=hgc
 		;;
-	*.mps*)
-		gc_grade=mps
-		;;
 	*)
 		gc_grade=nogc
 		;;
@@ -356,9 +351,11 @@ case $ss_debug in
 		;;
 esac
 
+# compile_target_code.m falls back to calling `strip' separately if using a
+# linker flag is not possible. That would be non-trivial in this script.
 case $strip in
 	true)
-		STRIP_OPTS="-s"
+		STRIP_OPTS="@LD_STRIP_FLAG@"
 		;;
 	false)
 		STRIP_OPTS=""
@@ -374,11 +371,6 @@ else
 	DEBUG_FLAG=""
 fi
 
-case $gc_method in
-	mps)
-		use_thread_libs=true
-		;;
-esac
 case $thread_safe in
 	true)
 		use_thread_libs=true
@@ -396,11 +388,11 @@ case $use_thread_libs.$make_shared_lib in
 		THREAD_LIBS=""
 		;;
 esac
-case "$thread_safe,$highlevel_code,$all_libs" in
-	true,false,static)
+case "$thread_safe,$all_libs" in
+	true,static)
 		THREAD_LIBS="$THREAD_LIBS $HWLOC_STATIC_LIBS"
 		;;
-	true,false,shared)
+	true,shared)
 		THREAD_LIBS="$THREAD_LIBS $HWLOC_LIBS"
 		;;
 esac
@@ -435,6 +427,7 @@ case $make_shared_lib in
 				ARCH_OPTS="$ARCH_OPTS $LD_LIBFLAGS_FOR_TRACE"
 				;;
 		esac
+		SANITIZER_OPTS="$LDFLAGS_FOR_SANITIZERS"
 		;;
 	false)
 		LINKER="$CC"
@@ -447,6 +440,7 @@ case $make_shared_lib in
 				ARCH_OPTS="$ARCH_OPTS $LDFLAGS_FOR_TRACE"
 				;;
 		esac
+		SANITIZER_OPTS="$LDFLAGS_FOR_SANITIZERS"
 		;;
 esac
 
@@ -565,7 +559,7 @@ else
 	NOLOGO_OPTS=""
 fi
 
-LINKER_PRE_FLAGS="$NOLOGO_OPTS $MSVCRT_OPTS $PRINT_MAP_OPT $UNDEF_OPT $STRIP_OPTS $MAYBE_STATIC_OPT $ARCH_OPTS"
+LINKER_PRE_FLAGS="$NOLOGO_OPTS $MSVCRT_OPTS $PRINT_MAP_OPT $UNDEF_OPT $STRIP_OPTS $MAYBE_STATIC_OPT $ARCH_OPTS $SANITIZER_OPTS"
 LINKER_POST_FLAGS="@LINK_OPT_SEP@ $NODEFAULTLIB_FLAG $DEBUG_FLAG $LIBDIR_OPTS $RPATH_OPT_LIST $LIBS"
 
 case $verbose in

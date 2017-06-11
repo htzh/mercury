@@ -1,20 +1,26 @@
-:- module determinism.
-
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
+%
 % This module has a couple of test cases for determinism analysis
 % of complicated unifications.
 
-:- interface.
-:- import_module list, std_util.
+:- module determinism.
 
-:- inst fg = bound(free - ground).
-:- inst gf = bound(ground - free).
-:- inst list(Inst) = bound([] ; [Inst | list(Inst)]).
+:- interface.
+
+:- import_module list.
+:- import_module pair.
+
+:- inst fg == bound(free - ground).
+:- inst gf == bound(ground - free).
+:- inst list(Inst) == bound([] ; [Inst | determinism.list(Inst)]).
 
 :- pred q(list(pair(int))).
-:- mode q(free -> list(fg)) is det.
+:- mode q(free >> determinism.list(fg)) is det.
 
 :- pred r(list(pair(int))).
-:- mode r(free -> list(gf)) is det.
+:- mode r(free >> determinism.list(gf)) is det.
 
 :- pred p is det.
 :- pred p2 is semidet.
@@ -23,19 +29,19 @@
 :- implementation.
 
 p :-
-	q(X),
-	r(Y),
-	X = Y.
+    q(X),
+    r(Y),
+    X = Y.
 
 p2 :-
-	q(X),
-	q(Y),
-	X = Y.
+    q(X),
+    q(Y),
+    X = Y.
 
 p3 :-
-	r(X),
-	r(Y),
-	X = Y.
+    r(X),
+    r(Y),
+    X = Y.
 
-:- external(q/1).
-:- external(r/1).
+:- pragma external_pred(q/1).
+:- pragma external_pred(r/1).

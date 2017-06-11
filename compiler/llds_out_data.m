@@ -9,7 +9,7 @@
 % File: llds_out_data.m.
 % Main authors: conway, fjh, zs.
 %
-% This module defines the routines for printing out LLDS lvals, rvals, 
+% This module defines the routines for printing out LLDS lvals, rvals,
 % and global variables.
 %
 %----------------------------------------------------------------------------%
@@ -17,6 +17,7 @@
 :- module ll_backend.llds_out.llds_out_data.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_llds.
 :- import_module ll_backend.llds.
 :- import_module ll_backend.llds_out.llds_out_util.
@@ -148,6 +149,7 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
 :- import_module backend_libs.c_util.
 :- import_module backend_libs.name_mangle.
@@ -155,7 +157,10 @@
 :- import_module ll_backend.layout_out.
 :- import_module ll_backend.llds_out.llds_out_code_addr.
 :- import_module ll_backend.rtti_out.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_foreign.
 
 :- import_module int.
@@ -215,9 +220,9 @@ output_record_lval_decls_format(Info, Lval, FirstIndent, LaterIndent,
         )
     ;
         Lval = global_var_ref(CGlobalVar),
-        ( decl_set_is_member(decl_c_global_var(CGlobalVar), !.DeclSet) ->
+        ( if decl_set_is_member(decl_c_global_var(CGlobalVar), !.DeclSet) then
             true
-        ;
+        else
             % All env_var_ref global_var_refs should have been output by
             % output_c_procedure_decls already, and as of now there are no
             % other global_var_refs.
@@ -236,9 +241,9 @@ output_lval(Info, Lval, !IO) :-
         output_reg(Type, Num, !IO)
     ;
         Lval = stackvar(N),
-        ( N =< 0 ->
+        ( if N =< 0 then
             unexpected($file, $pred, "stack var out of range")
-        ;
+        else
             true
         ),
         io.write_string("MR_sv(", !IO),
@@ -246,9 +251,9 @@ output_lval(Info, Lval, !IO) :-
         io.write_string(")", !IO)
     ;
         Lval = parent_stackvar(N),
-        ( N =< 0 ->
+        ( if N =< 0 then
             unexpected($file, $pred, "parent stack var out of range")
-        ;
+        else
             true
         ),
         io.write_string("MR_parent_sv(", !IO),
@@ -256,9 +261,9 @@ output_lval(Info, Lval, !IO) :-
         io.write_string(")", !IO)
     ;
         Lval = framevar(N),
-        ( N =< 0 ->
+        ( if N =< 0 then
             unexpected($file, $pred, "frame var out of range")
-        ;
+        else
             true
         ),
         io.write_string("MR_fv(", !IO),
@@ -325,10 +330,10 @@ output_lval(Info, Lval, !IO) :-
         ),
         output_rval(Info, Rval, !IO),
         io.write_string(", ", !IO),
-        ( FieldNumRval = const(llconst_int(FieldNum)) ->
+        ( if FieldNumRval = const(llconst_int(FieldNum)) then
             % Avoid emitting the (MR_Integer) cast.
             io.write_int(FieldNum, !IO)
-        ;
+        else
             output_rval(Info, FieldNumRval, !IO)
         ),
         io.write_string(")", !IO)
@@ -370,9 +375,9 @@ output_lval_for_assign(Info, Lval, Type, !IO) :-
     ;
         Lval = stackvar(N),
         Type = lt_word,
-        ( N < 0 ->
+        ( if N < 0 then
             unexpected($file, $pred, "stack var out of range")
-        ;
+        else
             true
         ),
         io.write_string("MR_sv(", !IO),
@@ -381,9 +386,9 @@ output_lval_for_assign(Info, Lval, Type, !IO) :-
     ;
         Lval = parent_stackvar(N),
         Type = lt_word,
-        ( N < 0 ->
+        ( if N < 0 then
             unexpected($file, $pred, "parent stack var out of range")
-        ;
+        else
             true
         ),
         io.write_string("MR_parent_sv(", !IO),
@@ -392,9 +397,9 @@ output_lval_for_assign(Info, Lval, Type, !IO) :-
     ;
         Lval = framevar(N),
         Type = lt_word,
-        ( N =< 0 ->
+        ( if N =< 0 then
             unexpected($file, $pred, "frame var out of range")
-        ;
+        else
             true
         ),
         io.write_string("MR_fv(", !IO),
@@ -473,10 +478,10 @@ output_lval_for_assign(Info, Lval, Type, !IO) :-
         ),
         output_rval(Info, Rval, !IO),
         io.write_string(", ", !IO),
-        ( FieldNumRval = const(llconst_int(FieldNum)) ->
+        ( if FieldNumRval = const(llconst_int(FieldNum)) then
             % Avoid emitting the (MR_Integer) cast.
             io.write_int(FieldNum, !IO)
-        ;
+        else
             output_rval(Info, FieldNumRval, !IO)
         ),
         io.write_string(")", !IO)
@@ -508,12 +513,12 @@ output_lval_for_assign(Info, Lval, Type, !IO) :-
 
 output_lval_as_word(Info, Lval, !IO) :-
     llds.lval_type(Lval, ActualType),
-    ( llds_types_match(lt_word, ActualType) ->
+    ( if llds_types_match(lt_word, ActualType) then
         output_lval(Info, Lval, !IO)
-    ; ActualType = lt_float ->
+    else if ActualType = lt_float then
         % Sanity check -- if this happens, the LLDS is ill-typed.
         unexpected($file, $pred, "float")
-    ;
+    else
         io.write_string("MR_LVALUE_CAST(MR_Word,", !IO),
         output_lval(Info, Lval, !IO),
         io.write_string(")", !IO)
@@ -604,17 +609,17 @@ lval_to_string(double_stackvar(Type, N)) = String :-
     string.format("%s(%d,%d)", [s(Macro), i(N), i(N + 1)], String).
 
 reg_to_string(reg_r, N) =
-    ( N =< max_real_r_reg ->
+    ( if N =< max_real_r_reg then
         "MR_r" ++ int_to_string(N)
-    ; N =< max_virtual_r_reg ->
+    else if N =< max_virtual_r_reg then
         "MR_r(" ++ int_to_string(N) ++ ")"
-    ;
+    else
         unexpected($file, $pred, "register number too large")
     ).
 reg_to_string(reg_f, N) =
-    ( N =< max_virtual_f_reg ->
+    ( if N =< max_virtual_f_reg then
         "MR_f(" ++ int_to_string(N) ++ ")"
-    ;
+    else
         unexpected($file, $pred, "register number too large")
     ).
 
@@ -633,7 +638,7 @@ max_virtual_f_reg = 1024.
 output_reg(RegType, N, !IO) :-
     io.write_string(reg_to_string(RegType, N), !IO).
 
-% The calls to env_var_is_acceptable_char in prog_io_goal.m ensure that
+% The calls to env_var_is_acceptable_char in parse_goal.m ensure that
 % EnvVarName is acceptable as part of a C identifier.
 % The prefix must be identical to envvar_prefix in util/mkinit.c and
 % global_var_name in mlds_to_c.m.
@@ -684,28 +689,28 @@ output_record_rval_decls_format(Info, Rval, FirstIndent, LaterIndent,
         Rval = mkword_hole(_)
     ;
         Rval = const(Const),
-        ( Const = llconst_code_addr(CodeAddress) ->
+        ( if Const = llconst_code_addr(CodeAddress) then
             output_record_code_addr_decls_format(Info, CodeAddress,
                 FirstIndent, LaterIndent, !N, !DeclSet, !IO)
-        ; Const = llconst_data_addr(DataId, _) ->
+        else if Const = llconst_data_addr(DataId, _) then
             output_record_data_id_decls_format(Info, DataId,
                 FirstIndent, LaterIndent, !N, !DeclSet, !IO)
-        ; Const = llconst_float(FloatVal) ->
+        else if Const = llconst_float(FloatVal) then
             % If floats are boxed, but are allocated statically, then for each
             % float constant which we might want to box we declare a static
             % const variable holding that constant.
 
             UnboxedFloat = Info ^ lout_unboxed_float,
             StaticGroundFloats = Info ^ lout_static_ground_floats,
-            (
+            ( if
                 UnboxedFloat = no,
                 StaticGroundFloats = yes
-            ->
+            then
                 float_literal_name(FloatVal, FloatName),
                 FloatLabel = decl_float_label(FloatName),
-                ( decl_set_is_member(FloatLabel, !.DeclSet) ->
+                ( if decl_set_is_member(FloatLabel, !.DeclSet) then
                     true
-                ;
+                else
                     decl_set_insert(FloatLabel, !DeclSet),
                     FloatString = c_util.make_float_literal(FloatVal),
                     output_indent(FirstIndent, LaterIndent, !.N, !IO),
@@ -715,10 +720,10 @@ output_record_rval_decls_format(Info, Rval, FirstIndent, LaterIndent,
                         ";\n"
                     ], !IO)
                 )
-            ;
+            else
                 true
             )
-        ;
+        else
             true
         )
     ;
@@ -737,18 +742,18 @@ output_record_rval_decls_format(Info, Rval, FirstIndent, LaterIndent,
         % a static const variable holding that constant.
 
         c_util.binop_category_string(Op, Category, OpStr),
-        ( Category = float_arith_binop ->
+        ( if Category = float_arith_binop then
             UnboxFloat = Info ^ lout_unboxed_float,
             StaticGroundFloats = Info ^ lout_static_ground_floats,
-            (
+            ( if
                 UnboxFloat = no,
                 StaticGroundFloats = yes,
                 float_const_binop_expr_name(Op, SubRvalA, SubRvalB, FloatName)
-            ->
+            then
                 FloatLabel = decl_float_label(FloatName),
-                ( decl_set_is_member(FloatLabel, !.DeclSet) ->
+                ( if decl_set_is_member(FloatLabel, !.DeclSet) then
                     true
-                ;
+                else
                     decl_set_insert(FloatLabel, !DeclSet),
                     output_indent(FirstIndent, LaterIndent, !.N, !IO),
                     !:N = !.N + 1,
@@ -769,10 +774,10 @@ output_record_rval_decls_format(Info, Rval, FirstIndent, LaterIndent,
                     output_rval_as_type(Info, SubRvalB, lt_float, !IO),
                     io.write_string(";\n", !IO)
                 )
-            ;
+            else
                 true
             )
-        ;
+        else
             true
         )
     ;
@@ -802,7 +807,7 @@ output_record_rvals_decls_format(Info, Rvals @ [_ | _],
     % that do not permit tail recursion, we can free up the stack frames
     % occupied by a bunch of loop iterations before the declarations of *all*
     % the rvals have been output.
-    % 
+    %
 :- pred output_record_rvals_decls_format_count(llds_out_info::in,
     list(rval)::in, list(rval)::out, int::in,
     string::in, string::in, int::in, int::out, decl_set::in,
@@ -811,12 +816,12 @@ output_record_rvals_decls_format(Info, Rvals @ [_ | _],
 output_record_rvals_decls_format_count(_, [], [], _, _, _, !N, !DeclSet, !IO).
 output_record_rvals_decls_format_count(Info, [Rval | Rvals], LeftOverRvals,
         Count, FirstIndent, LaterIndent, !N, !DeclSet, !IO) :-
-    ( Count > 0 ->
+    ( if Count > 0 then
         output_record_rval_decls_format(Info, Rval,
             FirstIndent, LaterIndent, !N, !DeclSet, !IO),
         output_record_rvals_decls_format_count(Info, Rvals, LeftOverRvals,
             Count - 1, FirstIndent, LaterIndent, !N, !DeclSet, !IO)
-    ;
+    else
         LeftOverRvals = [Rval | Rvals]
     ).
 
@@ -859,32 +864,53 @@ output_rval(Info, Rval, !IO) :-
         io.write_string(")", !IO)
     ;
         Rval = binop(Op, SubRvalA, SubRvalB),
-        binop_category_string(Op, Category, OpStr),
         (
-            Category = array_index_binop,
+            Op = array_index(_),
             io.write_string("(", !IO),
             output_rval_as_type(Info, SubRvalA, lt_data_ptr, !IO),
             io.write_string(")[", !IO),
             output_rval_as_type(Info, SubRvalB, lt_integer, !IO),
             io.write_string("]", !IO)
         ;
-            Category = compound_compare_binop,
+            Op = string_unsafe_index_code_unit,
+            io.write_string("MR_nth_code_unit(", !IO),
+            output_rval_as_type(Info, SubRvalA, lt_data_ptr, !IO),
+            io.write_string(", ", !IO),
+            output_rval_as_type(Info, SubRvalB, lt_integer, !IO),
+            io.write_string(")", !IO)
+        ;
+            Op = pointer_equal_conservative,
+            io.write_string("(((MR_Word) ", !IO),
+            output_rval(Info, SubRvalA, !IO),
+            io.write_string(") == ((MR_Word) ", !IO),
+            output_rval(Info, SubRvalB, !IO),
+            io.write_string("))", !IO)
+        ;
+            ( Op = compound_lt
+            ; Op = compound_eq
+            ),
             % These operators are intended to be generated only when using
             % the Erlang backend.
             unexpected($file, $pred, "compound_compare_binop")
         ;
-            Category = string_compare_binop,
+            ( Op = str_eq, OpStr = "=="
+            ; Op = str_ne, OpStr = "!="
+            ; Op = str_le, OpStr = "<="
+            ; Op = str_ge, OpStr = ">="
+            ; Op = str_lt, OpStr = "<"
+            ; Op = str_gt, OpStr = ">"
+            ),
             io.write_string("(strcmp(", !IO),
-            ( SubRvalA = const(llconst_string(SubRvalAConst)) ->
+            ( if SubRvalA = const(llconst_string(SubRvalAConst)) then
                 output_rval_const(Info, llconst_string(SubRvalAConst), !IO)
-            ;
+            else
                 io.write_string("(char *) ", !IO),
                 output_rval_as_type(Info, SubRvalA, lt_data_ptr, !IO)
             ),
             io.write_string(", ", !IO),
-            ( SubRvalB = const(llconst_string(SubRvalBConst)) ->
+            ( if SubRvalB = const(llconst_string(SubRvalBConst)) then
                 output_rval_const(Info, llconst_string(SubRvalBConst), !IO)
-            ;
+            else
                 io.write_string("(char *) ", !IO),
                 output_rval_as_type(Info, SubRvalB, lt_data_ptr, !IO)
             ),
@@ -894,8 +920,16 @@ output_rval(Info, Rval, !IO) :-
             io.write_string(" ", !IO),
             io.write_string("0)", !IO)
         ;
-            ( Category = float_compare_binop
-            ; Category = float_arith_binop
+            ( Op = float_eq, OpStr = "=="
+            ; Op = float_ne, OpStr = "!="
+            ; Op = float_le, OpStr = "<="
+            ; Op = float_ge, OpStr = ">="
+            ; Op = float_lt, OpStr = "<"
+            ; Op = float_gt, OpStr = ">"
+            ; Op = float_plus, OpStr = "+"
+            ; Op = float_minus, OpStr = "-"
+            ; Op = float_times, OpStr = "*"
+            ; Op = float_divide, OpStr = "/"
             ),
             io.write_string("(", !IO),
             output_rval_as_type(Info, SubRvalA, lt_float, !IO),
@@ -905,19 +939,35 @@ output_rval(Info, Rval, !IO) :-
             output_rval_as_type(Info, SubRvalB, lt_float, !IO),
             io.write_string(")", !IO)
         ;
-            Category = unsigned_compare_binop,
+            Op = unsigned_le,
             io.write_string("(", !IO),
             output_rval_as_type(Info, SubRvalA, lt_unsigned, !IO),
-            io.write_string(" ", !IO),
-            io.write_string(OpStr, !IO),
-            io.write_string(" ", !IO),
+            io.write_string(" <= ", !IO),
             output_rval_as_type(Info, SubRvalB, lt_unsigned, !IO),
             io.write_string(")", !IO)
         ;
-            Category = int_or_bool_binary_infix_binop,
-            (
+            ( Op = int_add, OpStr = "+"
+            ; Op = int_sub, OpStr = "-"
+            ; Op = int_mul, OpStr = "*"
+            ; Op = int_div, OpStr = "/"
+            ; Op = int_mod, OpStr = "%"
+            ; Op = eq, OpStr = "=="
+            ; Op = ne, OpStr = "!="
+            ; Op = int_lt, OpStr = "<"
+            ; Op = int_gt, OpStr = ">"
+            ; Op = int_le, OpStr = "<="
+            ; Op = int_ge, OpStr = ">="
+            ; Op = unchecked_left_shift, OpStr = "<<"
+            ; Op = unchecked_right_shift, OpStr = ">>"
+            ; Op = bitwise_and, OpStr = "&"
+            ; Op = bitwise_or, OpStr = "|"
+            ; Op = bitwise_xor, OpStr = "^"
+            ; Op = logical_and, OpStr = "&&"
+            ; Op = logical_or, OpStr = "||"
+            ),
+            ( if
                 % Special-case equality ops to avoid some unnecessary casts --
-                % there's no difference between signed and unsigned equality,
+                % there is no difference between signed and unsigned equality,
                 % so if both args are unsigned, we don't need to cast them to
                 % MR_Integer.
                 ( Op = eq ; Op = ne ),
@@ -925,7 +975,7 @@ output_rval(Info, Rval, !IO) :-
                 ( SubRvalAType = lt_word ; SubRvalAType = lt_unsigned ),
                 llds.rval_type(SubRvalB, SubRvalBType),
                 ( SubRvalBType = lt_word ; SubRvalBType = lt_unsigned )
-            ->
+            then
                 io.write_string("(", !IO),
                 output_rval(Info, SubRvalA, !IO),
                 io.write_string(" ", !IO),
@@ -933,13 +983,13 @@ output_rval(Info, Rval, !IO) :-
                 io.write_string(" ", !IO),
                 output_rval(Info, SubRvalB, !IO),
                 io.write_string(")", !IO)
-        %   ;
+        %   else if
         %       XXX broken for C == minint
         %       (since `NewC = 0 - C' overflows)
         %       Op = (+),
         %       SubRvalB = const(llconst_int(C)),
         %       C < 0
-        %   ->
+        %   then
         %       NewOp = (-),
         %       NewC = 0 - C,
         %       NewSubRvalB = const(llconst_int(NewC)),
@@ -950,7 +1000,7 @@ output_rval(Info, Rval, !IO) :-
         %       io.write_string(" "),
         %       output_rval(NewSubRvalB),
         %       io.write_string(")")
-            ;
+            else
                 io.write_string("(", !IO),
                 output_rval_as_type(Info, SubRvalA, lt_integer, !IO),
                 io.write_string(" ", !IO),
@@ -960,48 +1010,80 @@ output_rval(Info, Rval, !IO) :-
                 io.write_string(")", !IO)
             )
         ;
-            Category = macro_binop,
-            io.write_string(OpStr, !IO),
+            ( Op = uint_eq, OpStr = "=="
+            ; Op = uint_ne, OpStr = "!="
+            ; Op = uint_lt, OpStr = "<"
+            ; Op = uint_gt, OpStr = ">"
+            ; Op = uint_le, OpStr = "<="
+            ; Op = uint_ge, OpStr = ">="
+            ; Op = uint_add, OpStr = "+"
+            ; Op = uint_sub, OpStr = "-"
+            ; Op = uint_mul, OpStr = "*"
+            ; Op = uint_div, OpStr = "/"
+            ; Op = uint_mod, OpStr = "%"
+            ; Op = uint_bitwise_and, OpStr = "&"
+            ; Op = uint_bitwise_or, OpStr = "|"
+            ; Op = uint_bitwise_xor, OpStr = "^"
+            ; Op = uint_unchecked_left_shift, OpStr = "<<"
+            ; Op = uint_unchecked_right_shift, OpStr = ">>"
+            ),
             io.write_string("(", !IO),
+            output_rval_as_type(Info, SubRvalA, lt_unsigned, !IO),
+            io.write_string(" ", !IO),
+            io.write_string(OpStr, !IO),
+            io.write_string(" ", !IO),
+            output_rval_as_type(Info, SubRvalB, lt_unsigned, !IO),
+            io.write_string(")", !IO)
+        ;
+            Op = str_cmp,
+            io.write_string("MR_strcmp(", !IO),
+            output_rval_as_type(Info, SubRvalA, lt_data_ptr, !IO),
+            io.write_string(", ", !IO),
+            output_rval_as_type(Info, SubRvalB, lt_data_ptr, !IO),
+            io.write_string(")", !IO)
+        ;
+            Op = offset_str_eq(N),
+            io.write_string("MR_offset_streq(", !IO),
+            io.write_int(N, !IO),
+            io.write_string(", ", !IO),
+            output_rval_as_type(Info, SubRvalA, lt_data_ptr, !IO),
+            io.write_string(", ", !IO),
+            output_rval_as_type(Info, SubRvalB, lt_data_ptr, !IO),
+            io.write_string(")", !IO)
+        ;
+            Op = body,
+            io.write_string("MR_body(", !IO),
             output_rval_as_type(Info, SubRvalA, lt_integer, !IO),
             io.write_string(", ", !IO),
             output_rval_as_type(Info, SubRvalB, lt_integer, !IO),
             io.write_string(")", !IO)
         ;
-            Category = float_macro_binop,
-            (
-                Op = float_word_bits
-            ->
-                io.write_string(OpStr, !IO),
-                io.write_string("(", !IO),
-                output_rval_as_type(Info, SubRvalA, lt_float, !IO),
+            Op = float_word_bits,
+            io.write_string("MR_float_word_bits(", !IO),
+            output_rval_as_type(Info, SubRvalA, lt_float, !IO),
+            io.write_string(", ", !IO),
+            output_rval_as_type(Info, SubRvalB, lt_integer, !IO),
+            io.write_string(")", !IO)
+        ;
+            Op = float_from_dword,
+            ( if is_aligned_dword_ptr(SubRvalA, SubRvalB, MemRef) then
+                io.write_string("MR_float_from_dword_ptr(MR_dword_ptr(", !IO),
+                output_rval(Info, mem_addr(MemRef), !IO),
+                io.write_string("))", !IO)
+            else
+                io.write_string("MR_float_from_dword(", !IO),
+                output_rval(Info, SubRvalA, !IO),
                 io.write_string(", ", !IO),
-                output_rval_as_type(Info, SubRvalB, lt_integer, !IO),
+                output_rval(Info, SubRvalB, !IO),
                 io.write_string(")", !IO)
-            ;
-                Op = float_from_dword
-            ->
-                ( is_aligned_dword_ptr(SubRvalA, SubRvalB, MemRef) ->
-                    io.write_string("MR_float_from_dword_ptr(MR_dword_ptr(", !IO),
-                    output_rval(Info, mem_addr(MemRef), !IO),
-                    io.write_string("))", !IO)
-                ;
-                    io.write_string("MR_float_from_dword(", !IO),
-                    output_rval(Info, SubRvalA, !IO),
-                    io.write_string(", ", !IO),
-                    output_rval(Info, SubRvalB, !IO),
-                    io.write_string(")", !IO)
-                )
-            ;
-                sorry($file, $pred, "unknown float_macro_binop")
             )
         )
     ;
         Rval = mkword(Tag, SubRval),
-        (
+        ( if
             SubRval = const(llconst_data_addr(DataId, no)),
             DataId = scalar_common_data_id(type_num(TypeNum), CellNum)
-        ->
+        then
             io.write_string("MR_TAG_COMMON(", !IO),
             io.write_int(Tag, !IO),
             io.write_string(",", !IO),
@@ -1009,15 +1091,15 @@ output_rval(Info, Rval, !IO) :-
             io.write_string(",", !IO),
             io.write_int(CellNum, !IO),
             io.write_string(")", !IO)
-        ;
+        else if
             SubRval = unop(mkbody, const(llconst_int(Body)))
-        ->
+        then
             io.write_string("MR_tbmkword(", !IO),
             io.write_int(Tag, !IO),
             io.write_string(", ", !IO),
             io.write_int(Body, !IO),
             io.write_string(")", !IO)
-        ;
+        else
             io.write_string("MR_tmkword(", !IO),
             io.write_int(Tag, !IO),
             io.write_string(", ", !IO),
@@ -1034,7 +1116,7 @@ output_rval(Info, Rval, !IO) :-
         % If a field is used as an rval, then we need to use the
         % MR_const_field() macro or its variants, not the MR_field() macro
         % or its variants, to avoid warnings about discarding const.
-        ( Lval = field(MaybeTag, Rval, FieldNumRval) ->
+        ( if Lval = field(MaybeTag, Rval, FieldNumRval) then
             (
                 MaybeTag = yes(Tag),
                 io.write_string("MR_ctfield(", !IO),
@@ -1046,14 +1128,14 @@ output_rval(Info, Rval, !IO) :-
             ),
             output_rval(Info, Rval, !IO),
             io.write_string(", ", !IO),
-            ( FieldNumRval = const(llconst_int(FieldNum)) ->
+            ( if FieldNumRval = const(llconst_int(FieldNum)) then
                 % Avoid emitting the (MR_Integer) cast.
                 io.write_int(FieldNum, !IO)
-            ;
+            else
                 output_rval(Info, FieldNumRval, !IO)
             ),
             io.write_string(")", !IO)
-        ;
+        else
             output_lval(Info, Lval, !IO)
         )
     ;
@@ -1065,9 +1147,9 @@ output_rval(Info, Rval, !IO) :-
             MemRef = stackvar_ref(SubRval),
             io.write_string("&MR_sv(", !IO),
             % Don't clutter the output with unnecessary casts.
-            ( SubRval = const(llconst_int(SlotNum)) ->
+            ( if SubRval = const(llconst_int(SlotNum)) then
                 io.write_int(SlotNum, !IO)
-            ;
+            else
                 output_rval_as_type(Info, SubRval, lt_integer, !IO)
             ),
             io.write_string(")", !IO)
@@ -1075,9 +1157,9 @@ output_rval(Info, Rval, !IO) :-
             MemRef = framevar_ref(SubRval),
             io.write_string("&MR_fv(", !IO),
             % Don't clutter the output with unnecessary casts.
-            ( SubRval = const(llconst_int(SlotNum)) ->
+            ( if SubRval = const(llconst_int(SlotNum)) then
                 io.write_int(SlotNum, !IO)
-            ;
+            else
                 output_rval_as_type(Info, SubRval, lt_integer, !IO)
             ),
             io.write_string(")", !IO)
@@ -1095,9 +1177,9 @@ output_rval(Info, Rval, !IO) :-
             output_rval(Info, BaseRval, !IO),
             io.write_string(", ", !IO),
             % Don't clutter the output with unnecessary casts.
-            ( FieldNumRval = const(llconst_int(FieldNum)) ->
+            ( if FieldNumRval = const(llconst_int(FieldNum)) then
                 io.write_int(FieldNum, !IO)
-            ;
+            else
                 output_rval_as_type(Info, FieldNumRval, lt_integer, !IO)
             ),
             io.write_string(")", !IO)
@@ -1116,10 +1198,10 @@ output_rval_const(Info, Const, !IO) :-
         io.write_string("MR_FALSE", !IO)
     ;
         Const = llconst_int(N),
-        % We need to cast to (MR_Integer) to ensure things like 1 << 32 work
-        % when `MR_Integer' is 64 bits but `int' is 32 bits.
-        output_llds_type_cast(lt_integer, !IO),
-        io.write_int(N, !IO)
+        c_util.output_int_expr_cur_stream(N, !IO)
+    ;
+        Const = llconst_uint(N),
+        c_util.output_uint_expr_cur_stream(N, !IO)
     ;
         Const = llconst_foreign(Value, Type),
         io.write_char('(', !IO),
@@ -1131,18 +1213,18 @@ output_rval_const(Info, Const, !IO) :-
         % The cast to (MR_Float) here lets the C compiler do arithmetic in
         % `float' rather than `double' if `MR_Float' is `float' not `double'.
         output_llds_type_cast(lt_float, !IO),
-        c_util.output_float_literal(FloatVal, !IO)
+        c_util.output_float_literal_cur_stream(FloatVal, !IO)
     ;
         Const = llconst_string(String),
         io.write_string("MR_string_const(""", !IO),
-        c_util.output_quoted_string(String, !IO),
+        c_util.output_quoted_string_cur_stream(String, !IO),
         io.write_string(""", ", !IO),
         io.write_int(string.count_utf8_code_units(String), !IO),
         io.write_string(")", !IO)
     ;
         Const = llconst_multi_string(Strings),
         io.write_string("MR_string_const(""", !IO),
-        c_util.output_quoted_multi_string(Strings, !IO),
+        c_util.output_quoted_multi_string_cur_stream(Strings, !IO),
         io.write_string(""", ", !IO),
 
         % The "+1" is for the NULL character.
@@ -1164,23 +1246,23 @@ output_rval_const(Info, Const, !IO) :-
             % the size of the generated C source file, which has a
             % considerably longer lifetime. In debugging grades, the
             % file size difference can be very substantial.
-            (
+            ( if
                 DataId = scalar_common_data_id(type_num(TypeNum), CellNum)
-            ->
+            then
                 io.write_string("MR_COMMON(", !IO),
                 io.write_int(TypeNum, !IO),
                 io.write_string(",", !IO),
                 io.write_int(CellNum, !IO),
                 io.write_string(")", !IO)
-            ;
+            else if
                 DataId = rtti_data_id(RttiId),
                 rtti_id_emits_type_ctor_info(RttiId, Ctor),
                 Ctor = rtti_type_ctor(Module, Name, Arity),
                 sym_name_doesnt_need_mangling(Module),
                 name_doesnt_need_mangling(Name)
-            ->
+            then
                 output_type_ctor_addr(Module, Name, Arity, !IO)
-            ;
+            else
                 output_llds_type_cast(lt_data_ptr, !IO),
                 output_data_id_addr(Info, DataId, !IO)
             )
@@ -1199,88 +1281,90 @@ output_rval_const(Info, Const, !IO) :-
     io::di, io::uo) is det.
 
 output_type_ctor_addr(Module0, Name, Arity, !IO) :-
-    ( Module0 = unqualified("") ->
+    ( if Module0 = unqualified("") then
         Module = mercury_public_builtin_module
-    ;
+    else
         Module = Module0
     ),
     % We don't need to mangle the module name, but we do need to convert it
     % to a C identifier in the standard fashion.
     ModuleStr = sym_name_mangle(Module),
-    ( Arity = 0 ->
-        (
+    ( if Arity = 0 then
+        ( if
             ModuleStr = "builtin",
-            ( Name = "int" ->
+            ( if Name = "int" then
                 Macro = "MR_INT_CTOR_ADDR"
-            ; Name = "float" ->
+            else if Name = "uint" then
+                Macro = "MR_UINT_CTOR_ADDR"
+            else if Name = "float" then
                 Macro = "MR_FLOAT_CTOR_ADDR"
-            ; Name = "string" ->
+            else if Name = "string" then
                 Macro = "MR_STRING_CTOR_ADDR"
-            ; Name = "character" ->
+            else if Name = "character" then
                 Macro = "MR_CHAR_CTOR_ADDR"
-            ;
+            else
                 fail
             )
-        ->
+        then
             io.write_string(Macro, !IO)
-        ;
+        else if
             ModuleStr = "io",
             Name = "state"
-        ->
+        then
             io.write_string("MR_IO_CTOR_ADDR", !IO)
-        ;
+        else if
             ModuleStr = "bool",
             Name = "bool"
-        ->
+        then
             io.write_string("MR_BOOL_CTOR_ADDR", !IO)
-        ;
+        else
             io.format("MR_CTOR0_ADDR(%s, %s)", [s(ModuleStr), s(Name)], !IO)
         )
-    ; Arity = 1 ->
-        (
+    else if Arity = 1 then
+        ( if
             Name = "list",
             ModuleStr = "list"
-        ->
+        then
             io.write_string("MR_LIST_CTOR_ADDR", !IO)
-        ;
+        else if
             Name = "private_builtin",
             ModuleStr = "type_info"
-        ->
+        then
             io.write_string("MR_TYPE_INFO_CTOR_ADDR", !IO)
-        ;
+        else
             io.format("MR_CTOR1_ADDR(%s, %s)", [s(ModuleStr), s(Name)], !IO)
         )
-    ;
+    else
         io.format("MR_CTOR_ADDR(%s, %s, %d)",
             [s(ModuleStr), s(Name), i(Arity)], !IO)
     ).
 
 output_rval_as_type(Info, Rval, DesiredType, !IO) :-
     llds.rval_type(Rval, ActualType),
-    ( llds_types_match(DesiredType, ActualType) ->
+    ( if llds_types_match(DesiredType, ActualType) then
         % No casting needed.
         output_rval(Info, Rval, !IO)
-    ;
+    else
         % We need to convert to the right type first.
         % Convertions to/from float must be treated specially;
         % for the others, we can just use a cast.
-        ( DesiredType = lt_float ->
+        ( if DesiredType = lt_float then
             io.write_string("MR_word_to_float(", !IO),
             output_rval(Info, Rval, !IO),
             io.write_string(")", !IO)
-        ; ActualType = lt_float ->
-            ( DesiredType = lt_word ->
+        else if ActualType = lt_float then
+            ( if DesiredType = lt_word then
                 output_float_rval_as_word(Info, Rval, !IO)
-            ; DesiredType = lt_data_ptr ->
+            else if DesiredType = lt_data_ptr then
                 output_float_rval_as_data_ptr(Info, Rval, !IO)
-            ;
+            else
                 unexpected($file, $pred, "type error")
             )
-        ;
-            (
+        else
+            ( if
                 Rval = const(llconst_int(N)),
                 direct_field_int_constant(DesiredType) = yes
-            ->
+            then
                 % The condition above increases the runtime of the compiler
                 % very slightly. The elimination of the unnecessary casts
                 % reduces the size of the generated C source file, which has
@@ -1288,7 +1372,7 @@ output_rval_as_type(Info, Rval, DesiredType, !IO) :-
                 % the file size difference can be very substantial; it can be
                 % in the range of megabytes.
                 io.write_int(N, !IO)
-            ;
+            else
                 % Cast value to desired type.
                 output_llds_type_cast(DesiredType, !IO),
                 output_rval(Info, Rval, !IO)
@@ -1323,11 +1407,11 @@ output_float_rval(Info, Rval, IsPtr, !IO) :-
     % which we declared earlier.
     UnboxFloat = Info ^ lout_unboxed_float,
     StaticGroundFloats = Info ^ lout_static_ground_floats,
-    (
+    ( if
         UnboxFloat = no,
         StaticGroundFloats = yes,
         float_const_expr_name(Rval, FloatName)
-    ->
+    then
         (
             IsPtr = yes,
             Cast = lt_data_ptr
@@ -1338,7 +1422,7 @@ output_float_rval(Info, Rval, IsPtr, !IO) :-
         output_llds_type_cast(Cast, !IO),
         io.write_string("&mercury_float_const_", !IO),
         io.write_string(FloatName, !IO)
-    ;
+    else
         (
             IsPtr = yes,
             output_llds_type_cast(lt_data_ptr, !IO)
@@ -1367,28 +1451,28 @@ is_aligned_dword_ptr(lval(LvalA), lval(LvalB), MemRef) :-
     ).
 
 output_test_rval(Info, Test, !IO) :-
-    (
+    ( if
         is_int_cmp(Test, Left, RightConst, OpStr, _)
-    ->
+    then
         io.write_string(OpStr, !IO),
         io.write_string("(", !IO),
         output_rval(Info, Left, !IO),
         io.write_string(",", !IO),
         io.write_int(RightConst, !IO),
         io.write_string(")", !IO)
-    ;
+    else if
         Test = unop(logical_not, InnerTest),
         is_int_cmp(InnerTest, Left, RightConst, _, NegOpStr)
-    ->
+    then
         io.write_string(NegOpStr, !IO),
         io.write_string("(", !IO),
         output_rval(Info, Left, !IO),
         io.write_string(",", !IO),
         io.write_int(RightConst, !IO),
         io.write_string(")", !IO)
-    ;
+    else if
         is_ptag_test(Test, Rval, Ptag, Negated)
-    ->
+    then
         (
             Negated = no,
             io.write_string("MR_PTAG_TEST(", !IO)
@@ -1400,10 +1484,10 @@ output_test_rval(Info, Test, !IO) :-
         io.write_string(",", !IO),
         io.write_int(Ptag, !IO),
         io.write_string(")", !IO)
-    ;
+    else if
         Test = unop(logical_not, InnerTest),
         is_ptag_test(InnerTest, Rval, Ptag, Negated)
-    ->
+    then
         (
             Negated = no,
             io.write_string("MR_PTAG_TESTR(", !IO)
@@ -1415,11 +1499,11 @@ output_test_rval(Info, Test, !IO) :-
         io.write_string(",", !IO),
         io.write_int(Ptag, !IO),
         io.write_string(")", !IO)
-    ;
+    else if
         Test = binop(logical_and, Left, Right),
         is_ptag_test(Left, Rval, Ptag, no),
         is_remote_stag_test(Right, Rval, Ptag, Stag)
-    ->
+    then
         io.write_string("MR_RTAGS_TEST(", !IO),
         output_rval(Info, Rval, !IO),
         io.write_string(",", !IO),
@@ -1427,12 +1511,12 @@ output_test_rval(Info, Test, !IO) :-
         io.write_string(",", !IO),
         io.write_int(Stag, !IO),
         io.write_string(")", !IO)
-    ;
+    else if
         Test = unop(logical_not, InnerTest),
         InnerTest = binop(logical_and, Left, Right),
         is_ptag_test(Left, Rval, Ptag, no),
         is_remote_stag_test(Right, Rval, Ptag, Stag)
-    ->
+    then
         io.write_string("MR_RTAGS_TESTR(", !IO),
         output_rval(Info, Rval, !IO),
         io.write_string(",", !IO),
@@ -1440,9 +1524,9 @@ output_test_rval(Info, Test, !IO) :-
         io.write_string(",", !IO),
         io.write_int(Stag, !IO),
         io.write_string(")", !IO)
-    ;
+    else if
         is_local_stag_test(Test, Rval, Ptag, Stag, Negated)
-    ->
+    then
         (
             Negated = no,
             io.write_string("MR_LTAGS_TEST(", !IO)
@@ -1456,10 +1540,10 @@ output_test_rval(Info, Test, !IO) :-
         io.write_string(",", !IO),
         io.write_int(Stag, !IO),
         io.write_string(")", !IO)
-    ;
+    else if
         Test = unop(logical_not, InnerTest),
         is_local_stag_test(InnerTest, Rval, Ptag, Stag, Negated)
-    ->
+    then
         (
             Negated = no,
             io.write_string("MR_LTAGS_TESTR(", !IO)
@@ -1473,7 +1557,7 @@ output_test_rval(Info, Test, !IO) :-
         io.write_string(",", !IO),
         io.write_int(Stag, !IO),
         io.write_string(")", !IO)
-    ;
+    else
         output_rval_as_type(Info, Test, lt_bool, !IO)
     ).
 
@@ -1571,11 +1655,11 @@ direct_field_int_constant(lt_word) = no.
 %
 
 float_const_expr_name(Expr, Name) :-
-    ( Expr = const(llconst_float(Float)) ->
+    ( if Expr = const(llconst_float(Float)) then
         float_literal_name(Float, Name)
-    ; Expr = binop(Op, Arg1, Arg2) ->
+    else if Expr = binop(Op, Arg1, Arg2) then
         float_const_binop_expr_name(Op, Arg1, Arg2, Name)
-    ;
+    else
         fail
     ).
 
@@ -1642,9 +1726,9 @@ output_record_data_id_decls_format(Info, DataId, FirstIndent, LaterIndent,
     ;
         DataId = rtti_data_id(RttiId),
         DeclId = decl_rtti_id(RttiId),
-        ( decl_set_is_member(DeclId, !.DeclSet) ->
+        ( if decl_set_is_member(DeclId, !.DeclSet) then
             true
-        ;
+        else
             decl_set_insert(DeclId, !DeclSet),
             output_indent(FirstIndent, LaterIndent, !.N, !IO),
             !:N = !.N + 1,
@@ -1654,9 +1738,9 @@ output_record_data_id_decls_format(Info, DataId, FirstIndent, LaterIndent,
     ;
         DataId = layout_id(LayoutName),
         DeclId = decl_layout_id(LayoutName),
-        ( decl_set_is_member(DeclId, !.DeclSet) ->
+        ( if decl_set_is_member(DeclId, !.DeclSet) then
             true
-        ;
+        else
             decl_set_insert(DeclId, !DeclSet),
             output_indent(FirstIndent, LaterIndent, !.N, !IO),
             !:N = !.N + 1,
@@ -1699,9 +1783,9 @@ output_data_id(Info, DataId, !IO) :-
         output_layout_name(LayoutName, !IO)
     ;
         DataId = layout_slot_id(Kind, PredProcId),
-        Kind = table_io_decl_id,
-        TableIoDeclMap = Info ^ lout_table_io_decl_map,
-        map.lookup(TableIoDeclMap, PredProcId, LayoutSlotName),
+        Kind = table_io_entry_id,
+        TableIoEntryMap = Info ^ lout_table_io_entry_map,
+        map.lookup(TableIoEntryMap, PredProcId, LayoutSlotName),
         MangledModuleName = Info ^ lout_mangled_module_name,
         output_layout_slot_id(use_layout_macro, MangledModuleName,
             LayoutSlotName, !IO)

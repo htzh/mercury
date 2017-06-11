@@ -8,7 +8,7 @@
 %
 % This module provides a bunch of parsing combinators directed towards
 % parsing text (in some encoding or bunch of encodings). The parsing state
-% that gets threadded through is polymorphic in the type of the result
+% that gets threaded through is polymorphic in the type of the result
 % stored in it. This can cause problems if you construct a big combinator
 % expression (particularly using the "or" combinator) where the type
 % of this result in the initial parsing state is unbound and is inherited
@@ -81,10 +81,10 @@
 	--->	ok(T)
 	;	error(string).
 
-:- pred pstate(entity, encoding, globals, io__state, pstate(unit)).
+:- pred pstate(entity, encoding, globals, io, pstate(unit)).
 :- mode pstate(in, in, in, di, puo) is det.
 
-:- pred finish(parse(T1), pstate(T1), io__state).
+:- pred finish(parse(T1), pstate(T1), io).
 :- mode finish(out, pdi, uo) is det.
 
 :- pred try(parser(T1, T2),
@@ -139,10 +139,10 @@
 :- pred quote(pstate(_), pstate(unicode)).
 :- mode quote(pdi, puo) is det.
 
-:- pred io(pred(T1, io__state, io__state), T1, pstate(T2), pstate(T2)).
+:- pred io(pred(T1, io, io), T1, pstate(T2), pstate(T2)).
 :- mode io(pred(out, di, uo) is det, out, pdi, puo) is det.
 
-:- pred io(pred(io__state, io__state), pstate(T2), pstate(T2)).
+:- pred io(pred(io, io), pstate(T2), pstate(T2)).
 :- mode io(pred(di, uo) is det, pdi, puo) is det.
 
 :- pred mkString(list(unicode), string, pstate(T1), pstate(T1)).
@@ -241,7 +241,7 @@
 		    encoding	:: encoding,
 		    status	:: status(T),
 		    globals	:: globals,
-		    io		:: io__state
+		    io		:: io
 		).
 
 :- type status(T)
@@ -418,13 +418,13 @@ lit1(U) -->
     )).
 
 lit(Str) -->
-    { string__to_char_list(Str, Chars) },
+    { string.to_char_list(Str, Chars) },
     (lit2(Chars)		    then (pred(_::in, pdi, puo) is det -->
     return(Str)
     )).
 
 lit(Str, Thing) -->
-    { string__to_char_list(Str, Chars) },
+    { string.to_char_list(Str, Chars) },
     (lit2(Chars)		    then (pred(_::in, pdi, puo) is det -->
     return(Thing)
     )).
@@ -435,7 +435,7 @@ lit(Str, Thing) -->
 lit2([]) -->
     return(unit).
 lit2([C|Is]) -->
-    { char__to_int(C, I) },
+    { char.to_int(C, I) },
     (tok			    then (pred(I0::in, pdi, puo) is det -->
     ( { I = I0 } ->
 	lit2(Is)
@@ -616,8 +616,7 @@ filter(Parser) -->
     return(Xs)
     ).
 
-:- pred filter1(list(opt(T)), list(T)) is det.
-:- mode filter1(in, out) is det.
+:- pred filter1(list(opt(T))::in, list(T)::out) is det.
 
 filter1([], []).
 filter1([X0|Xs0], Xs) :-

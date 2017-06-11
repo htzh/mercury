@@ -23,18 +23,19 @@
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module hlds.vartypes.
+:- import_module mdbcomp.
 :- import_module mdbcomp.goal_path.
-:- import_module parse_tree.
-:- import_module parse_tree.prog_data.
 
 %-----------------------------------------------------------------------------%
+%
+% IMPORTANT: the type constraint_id in hlds_data.m makes use of goal ids
+% to identify goals that impose constraints between the typechecking pass
+% and the polymorphism pass. For this reason, goal ids should not be
+% recalculated anywhere between these two passes. See the XXX comment
+% near the declaration of constraint_id.
+%
 
-    % IMPORTANT: the type constraint_id in hlds_data.m makes use of goal ids
-    % to identify goals that impose constraints between the typechecking pass
-    % and the polymorphism pass. For this reason, goal ids should not be
-    % recalculated anywhere between these two passes. See the XXX comment
-    % near the declaration of constraint_id.
-    %
 :- pred fill_goal_id_slots_in_proc(module_info::in,
     containing_goal_map::out, proc_info::in, proc_info::out) is det.
 
@@ -51,9 +52,9 @@
 
     % Fill in the goal path slots in the given procedure.
     % This predicate is here ONLY to support the RBMM and GTGC modules,
-    % which are hard to transition to make use of goal_ids instead;
-    % all new code should instead use the predicates above that fill in
-    % the goal_id slots instead.
+    % which are hard to transition to make use of goal_ids instead.
+    % All new code should instead use the predicates above that fill in
+    % the goal_id slots.
     %
 :- pred fill_goal_path_slots_in_proc(module_info::in,
     proc_info::in, proc_info::out) is det.
@@ -63,15 +64,17 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
-:- import_module hlds.hlds_goal.
-:- import_module mdbcomp.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
+:- import_module assoc_list.
+:- import_module counter.
 :- import_module int.
 :- import_module list.
 :- import_module map.
-:- import_module maybe.
+:- import_module pair.
 :- import_module require.
 
 %-----------------------------------------------------------------------------%
@@ -92,55 +95,69 @@ fill_goal_id_slots_in_proc(ModuleInfo, ContainingGoalMap, !ProcInfo) :-
 fill_goal_id_slots_in_proc_body(ModuleInfo, VarTypes, ContainingGoalMap,
         Goal0, Goal) :-
     SlotInfo = slot_info(ModuleInfo, VarTypes),
-    fill_goal_id_slots(SlotInfo, whole_body_goal, 0, _,
-        map.init, ContainingGoalMap, Goal0, Goal).
+    fill_goal_id_slots(SlotInfo, whole_body_goal, counter.init(0), _,
+        [], ContainingGoalList, Goal0, Goal),
+    map.from_rev_sorted_assoc_list(ContainingGoalList, ContainingGoalMap).
 
 fill_goal_id_slots_in_clauses(ModuleInfo, ContainingGoalMap,
         ClausesInfo0, ClausesInfo) :-
     clauses_info_get_clauses_rep(ClausesInfo0, ClausesRep0, ItemNumbers),
-    get_clause_list(ClausesRep0, Clauses0),
+    get_clause_list_for_replacement(ClausesRep0, Clauses0),
     clauses_info_get_vartypes(ClausesInfo0, VarTypes),
     SlotInfo = slot_info(ModuleInfo, VarTypes),
+    % If there is exactly one clause, we could theoretically start the counter
+    % at zero, assigning goal_id(0) to the whole clause, since it is also
+    % the whole procedure body. However, all passes that care about the whole
+    % procedure body work on procedures, not clauses, and are there unaffected
+    % by what we do here. So we don't bother.
     list.map_foldl3(fill_slots_in_clause(SlotInfo),
-        Clauses0, Clauses, 1, _, 1, _, map.init, ContainingGoalMap),
+        Clauses0, Clauses, 1, _, counter.init(1), _,
+        [], ContainingGoalList),
+    map.from_rev_sorted_assoc_list(ContainingGoalList, ContainingGoalMap),
     set_clause_list(Clauses, ClausesRep),
     clauses_info_set_clauses_rep(ClausesRep, ItemNumbers,
         ClausesInfo0, ClausesInfo).
 
-:- pred fill_slots_in_clause(slot_info::in, clause::in, clause::out,
-    int::in, int::out, int::in, int::out,
-    containing_goal_map::in, containing_goal_map::out) is det.
-
-fill_slots_in_clause(SlotInfo, Clause0, Clause, !GoalNum, !ClauseNum,
-        !ContainingGoalMap) :-
-    Goal0 = Clause0 ^ clause_body,
-    ContainingGoal = containing_goal(whole_body_goal_id,
-        step_disj(!.ClauseNum)),
-    !:ClauseNum = !.ClauseNum + 1,
-    fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
-        Goal0, Goal),
-    Clause = Clause0 ^ clause_body := Goal.
-
-fill_goal_path_slots_in_proc(ModuleInfo, !Proc) :-
-    proc_info_get_goal(!.Proc, Goal0),
-    proc_info_get_vartypes(!.Proc, VarTypes),
-    SlotInfo = slot_info(ModuleInfo, VarTypes),
-    fill_goal_path_slots(rgp_nil, SlotInfo, Goal0, Goal),
-    proc_info_set_goal(Goal, !Proc).
-
 %-----------------------------------------------------------------------------%
 
+% We accumulate information about containing goals in lists of this type.
+% The list is reverse ordered. When we assign a goal its id, which will be
+% the highest numbered goal id allocated thus far, we put it at the front of
+% the list.
+%
+% We convert this list to a map only when it is complete. This is faster
+% than building up the map itself as we go along, as it avoids the requirement
+% to repeatedly rebalance the 234 tree that implements the map. (The final
+% conversion builds the 234 tree we want directly, without any need for
+% rebalancing.)
+:- type containing_goal_list == assoc_list(goal_id, containing_goal).
+
+:- pred fill_slots_in_clause(slot_info::in, clause::in, clause::out,
+    int::in, int::out, counter::in, counter::out,
+    containing_goal_list::in, containing_goal_list::out) is det.
+
+fill_slots_in_clause(SlotInfo, Clause0, Clause, CurClauseNum, NextClauseNum,
+        !GoalNumCounter, !ContainingGoalList) :-
+    Goal0 = Clause0 ^ clause_body,
+    ContainingGoal = containing_goal(whole_body_goal_id,
+        step_disj(CurClauseNum)),
+    NextClauseNum = CurClauseNum + 1,
+    fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNumCounter,
+        !ContainingGoalList, Goal0, Goal),
+    Clause = Clause0 ^ clause_body := Goal.
+
 :- pred fill_goal_id_slots(slot_info::in, containing_goal::in,
-    int::in, int::out, containing_goal_map::in, containing_goal_map::out,
+    counter::in, counter::out,
+    containing_goal_list::in, containing_goal_list::out,
     hlds_goal::in, hlds_goal::out) is det.
 
-fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
-        Goal0, Goal) :-
+fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNumCounter,
+        !ContainingGoalList, Goal0, Goal) :-
     Goal0 = hlds_goal(GoalExpr0, GoalInfo0),
-    GoalId = goal_id(!.GoalNum),
-    !:GoalNum = !.GoalNum + 1,
+    counter.allocate(GoalNum, !GoalNumCounter),
+    GoalId = goal_id(GoalNum),
     goal_info_set_goal_id(GoalId, GoalInfo0, GoalInfo),
-    map.det_insert(GoalId, ContainingGoal, !ContainingGoalMap),
+    !:ContainingGoalList = [GoalId - ContainingGoal | !.ContainingGoalList],
     (
         ( GoalExpr0 = plain_call(_, _, _, _, _, _)
         ; GoalExpr0 = generic_call(_, _, _, _, _)
@@ -152,9 +169,8 @@ fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
         (
             RHS0 = rhs_lambda_goal(Purity, Groundness, PredOrFunc, EvalMethod,
                 NonLocals, QuantVars, LambdaModes, Detism, LambdaGoal0),
-            fill_goal_id_slots(SlotInfo,
-                containing_goal(GoalId, step_lambda),
-                !GoalNum, !ContainingGoalMap, LambdaGoal0, LambdaGoal),
+            fill_goal_id_slots(SlotInfo, containing_goal(GoalId, step_lambda),
+                !GoalNumCounter, !ContainingGoalList, LambdaGoal0, LambdaGoal),
             RHS = rhs_lambda_goal(Purity, Groundness, PredOrFunc, EvalMethod,
                 NonLocals, QuantVars, LambdaModes, Detism, LambdaGoal),
             GoalExpr = unify(LHS, RHS,  Mode, Kind, Context)
@@ -166,31 +182,31 @@ fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
         )
     ;
         GoalExpr0 = conj(ConjType, Goals0),
-        fill_conj_id_slots(SlotInfo, GoalId, 0, !GoalNum, !ContainingGoalMap,
-            Goals0, Goals),
+        fill_conj_id_slots(SlotInfo, GoalId, 0,
+            !GoalNumCounter, !ContainingGoalList, Goals0, Goals),
         GoalExpr = conj(ConjType, Goals)
     ;
         GoalExpr0 = disj(Goals0),
-        fill_disj_id_slots(SlotInfo, GoalId, 0, !GoalNum, !ContainingGoalMap,
-            Goals0, Goals),
+        fill_disj_id_slots(SlotInfo, GoalId, 0,
+            !GoalNumCounter, !ContainingGoalList, Goals0, Goals),
         GoalExpr = disj(Goals)
     ;
         GoalExpr0 = switch(Var, CanFail, Cases0),
         VarTypes = SlotInfo ^ slot_info_vartypes,
         ModuleInfo = SlotInfo ^ slot_info_module_info,
         lookup_var_type(VarTypes, Var, Type),
-        ( switch_type_num_functors(ModuleInfo, Type, NumFunctors) ->
+        ( if switch_type_num_functors(ModuleInfo, Type, NumFunctors) then
             MaybeNumFunctors = known_num_functors_in_type(NumFunctors)
-        ;
+        else
             MaybeNumFunctors = unknown_num_functors_in_type
         ),
-        fill_switch_id_slots(SlotInfo, GoalId, 0, MaybeNumFunctors, !GoalNum,
-            !ContainingGoalMap, Cases0, Cases),
+        fill_switch_id_slots(SlotInfo, GoalId, 0, MaybeNumFunctors,
+            !GoalNumCounter, !ContainingGoalList, Cases0, Cases),
         GoalExpr = switch(Var, CanFail, Cases)
     ;
         GoalExpr0 = negation(SubGoal0),
         fill_goal_id_slots(SlotInfo, containing_goal(GoalId, step_neg),
-            !GoalNum, !ContainingGoalMap, SubGoal0, SubGoal),
+            !GoalNumCounter, !ContainingGoalList, SubGoal0, SubGoal),
         GoalExpr = negation(SubGoal)
     ;
         GoalExpr0 = scope(Reason, SubGoal0),
@@ -200,24 +216,24 @@ fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
         SubGoal0 = hlds_goal(_, InnerInfo),
         OuterDetism = goal_info_get_determinism(GoalInfo),
         InnerDetism = goal_info_get_determinism(InnerInfo),
-        ( InnerDetism = OuterDetism ->
+        ( if InnerDetism = OuterDetism then
             MaybeCut = scope_is_no_cut
-        ;
+        else
             MaybeCut = scope_is_cut
         ),
         fill_goal_id_slots(SlotInfo,
             containing_goal(GoalId, step_scope(MaybeCut)),
-            !GoalNum, !ContainingGoalMap, SubGoal0, SubGoal),
+            !GoalNumCounter, !ContainingGoalList, SubGoal0, SubGoal),
         GoalExpr = scope(Reason, SubGoal)
     ;
-        GoalExpr0 = if_then_else(A, Cond0, Then0, Else0),
+        GoalExpr0 = if_then_else(Vars, Cond0, Then0, Else0),
         fill_goal_id_slots(SlotInfo, containing_goal(GoalId, step_ite_cond),
-            !GoalNum, !ContainingGoalMap, Cond0, Cond),
+            !GoalNumCounter, !ContainingGoalList, Cond0, Cond),
         fill_goal_id_slots(SlotInfo, containing_goal(GoalId, step_ite_then),
-            !GoalNum, !ContainingGoalMap, Then0, Then),
+            !GoalNumCounter, !ContainingGoalList, Then0, Then),
         fill_goal_id_slots(SlotInfo, containing_goal(GoalId, step_ite_else),
-            !GoalNum, !ContainingGoalMap, Else0, Else),
-        GoalExpr = if_then_else(A, Cond, Then, Else)
+            !GoalNumCounter, !ContainingGoalList, Else0, Else),
+        GoalExpr = if_then_else(Vars, Cond, Then, Else)
     ;
         GoalExpr0 = shorthand(ShortHand0),
         (
@@ -225,15 +241,15 @@ fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
                 MainGoal0, OrElseGoals0, OrElseInners),
             fill_goal_id_slots(SlotInfo,
                 containing_goal(GoalId, step_atomic_main),
-                !GoalNum, !ContainingGoalMap, MainGoal0, MainGoal),
-            fill_orelse_id_slots(SlotInfo, GoalId, 0, !GoalNum,
-                !ContainingGoalMap, OrElseGoals0, OrElseGoals),
+                !GoalNumCounter, !ContainingGoalList, MainGoal0, MainGoal),
+            fill_orelse_id_slots(SlotInfo, GoalId, 0, !GoalNumCounter,
+                !ContainingGoalList, OrElseGoals0, OrElseGoals),
             ShortHand = atomic_goal(GoalType, Outer, Inner, MaybeOutputVars,
                 MainGoal, OrElseGoals, OrElseInners)
         ;
             ShortHand0 = try_goal(MaybeIO, ResultVar, SubGoal0),
             fill_goal_id_slots(SlotInfo, containing_goal(GoalId, step_try),
-                !GoalNum, !ContainingGoalMap, SubGoal0, SubGoal),
+                !GoalNumCounter, !ContainingGoalList, SubGoal0, SubGoal),
             ShortHand = try_goal(MaybeIO, ResultVar, SubGoal)
         ;
             ShortHand0 = bi_implication(_, _),
@@ -245,98 +261,109 @@ fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
     Goal = hlds_goal(GoalExpr, GoalInfo).
 
 :- pred fill_conj_id_slots(slot_info::in, goal_id::in, int::in,
-    int::in, int::out, containing_goal_map::in, containing_goal_map::out,
+    counter::in, counter::out,
+    containing_goal_list::in, containing_goal_list::out,
     list(hlds_goal)::in, list(hlds_goal)::out) is det.
 
-fill_conj_id_slots(_, _, _, !GoalNum, !ContainingGoalMap, [], []).
-fill_conj_id_slots(SlotInfo, GoalId, N0, !GoalNum, !ContainingGoalMap,
-        [Goal0 | Goals0], [Goal | Goals]) :-
-    N1 = N0 + 1,
-    ContainingGoal = containing_goal(GoalId, step_conj(N1)),
-    fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
-        Goal0, Goal),
-    fill_conj_id_slots(SlotInfo, GoalId, N1, !GoalNum, !ContainingGoalMap,
-        Goals0, Goals).
+fill_conj_id_slots(_, _, _, !GoalNumCounter, !ContainingGoalList, [], []).
+fill_conj_id_slots(SlotInfo, GoalId, LastConjunctNum, !GoalNumCounter,
+        !ContainingGoalList, [Goal0 | Goals0], [Goal | Goals]) :-
+    CurConjunctNum = LastConjunctNum + 1,
+    ContainingGoal = containing_goal(GoalId, step_conj(CurConjunctNum)),
+    fill_goal_id_slots(SlotInfo, ContainingGoal,
+        !GoalNumCounter, !ContainingGoalList, Goal0, Goal),
+    fill_conj_id_slots(SlotInfo, GoalId, CurConjunctNum, !GoalNumCounter,
+        !ContainingGoalList, Goals0, Goals).
 
 :- pred fill_disj_id_slots(slot_info::in, goal_id::in, int::in,
-    int::in, int::out, containing_goal_map::in, containing_goal_map::out,
+    counter::in, counter::out,
+    containing_goal_list::in, containing_goal_list::out,
     list(hlds_goal)::in, list(hlds_goal)::out) is det.
 
-fill_disj_id_slots(_, _, _, !GoalNum, !ContainingGoalMap, [], []).
-fill_disj_id_slots(SlotInfo, GoalId, N0, !GoalNum, !ContainingGoalMap,
-        [Goal0 | Goals0], [Goal | Goals]) :-
-    N1 = N0 + 1,
-    ContainingGoal = containing_goal(GoalId, step_disj(N1)),
-    fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
-        Goal0, Goal),
-    fill_disj_id_slots(SlotInfo, GoalId, N1, !GoalNum, !ContainingGoalMap,
-        Goals0, Goals).
+fill_disj_id_slots(_, _, _, !GoalNumCounter, !ContainingGoalList, [], []).
+fill_disj_id_slots(SlotInfo, GoalId, LastDisjunctNum, !GoalNumCounter,
+        !ContainingGoalList, [Goal0 | Goals0], [Goal | Goals]) :-
+    CurDisjunctNum = LastDisjunctNum + 1,
+    ContainingGoal = containing_goal(GoalId, step_disj(CurDisjunctNum)),
+    fill_goal_id_slots(SlotInfo, ContainingGoal,
+        !GoalNumCounter, !ContainingGoalList, Goal0, Goal),
+    fill_disj_id_slots(SlotInfo, GoalId, CurDisjunctNum, !GoalNumCounter,
+        !ContainingGoalList, Goals0, Goals).
 
 :- pred fill_switch_id_slots(slot_info::in, goal_id::in,
-    int::in, maybe_switch_num_functors::in, int::in, int::out,
-    containing_goal_map::in, containing_goal_map::out,
+    int::in, maybe_switch_num_functors::in, counter::in, counter::out,
+    containing_goal_list::in, containing_goal_list::out,
     list(case)::in, list(case)::out) is det.
 
-fill_switch_id_slots(_, _, _, _, !GoalNum, !ContainingGoalMap, [], []).
-fill_switch_id_slots(SlotInfo, GoalId, N0, MaybeNumFunctors, 
-        !GoalNum, !ContainingGoalMap, [Case0 | Cases0], [Case | Cases]) :-
+fill_switch_id_slots(_, _, _, _, !GoalNumCounter, !ContainingGoalList, [], []).
+fill_switch_id_slots(SlotInfo, GoalId, LastArmNum, MaybeNumFunctors,
+        !GoalNumCounter, !ContainingGoalList,
+        [Case0 | Cases0], [Case | Cases]) :-
     Case0 = case(MainConsId, OtherConsIds, Goal0),
-    N1 = N0 + 1,
+    CurArmNum = LastArmNum + 1,
     ContainingGoal =
-        containing_goal(GoalId, step_switch(N1, MaybeNumFunctors)),
-    fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
-        Goal0, Goal),
+        containing_goal(GoalId, step_switch(CurArmNum, MaybeNumFunctors)),
+    fill_goal_id_slots(SlotInfo, ContainingGoal,
+        !GoalNumCounter, !ContainingGoalList, Goal0, Goal),
     Case = case(MainConsId, OtherConsIds, Goal),
-    fill_switch_id_slots(SlotInfo, GoalId, N1, MaybeNumFunctors,
-        !GoalNum, !ContainingGoalMap, Cases0, Cases).
+    fill_switch_id_slots(SlotInfo, GoalId, CurArmNum, MaybeNumFunctors,
+        !GoalNumCounter, !ContainingGoalList, Cases0, Cases).
 
 :- pred fill_orelse_id_slots(slot_info::in, goal_id::in, int::in,
-    int::in, int::out, containing_goal_map::in, containing_goal_map::out,
+    counter::in, counter::out,
+    containing_goal_list::in, containing_goal_list::out,
     list(hlds_goal)::in, list(hlds_goal)::out) is det.
 
-fill_orelse_id_slots(_, _, _, !GoalNum, !ContainingGoalMap, [], []).
-fill_orelse_id_slots(SlotInfo, GoalId, N0, !GoalNum, !ContainingGoalMap,
-        [Goal0 | Goals0], [Goal | Goals]) :-
-    N1 = N0 + 1,
-    ContainingGoal = containing_goal(GoalId, step_atomic_orelse(N1)),
-    fill_goal_id_slots(SlotInfo, ContainingGoal, !GoalNum, !ContainingGoalMap,
-        Goal0, Goal),
-    fill_orelse_id_slots(SlotInfo, GoalId, N1, !GoalNum, !ContainingGoalMap,
-        Goals0, Goals).
+fill_orelse_id_slots(_, _, _, !GoalNumCounter, !ContainingGoalList, [], []).
+fill_orelse_id_slots(SlotInfo, GoalId, LastOrElseNum, !GoalNumCounter,
+        !ContainingGoalList, [Goal0 | Goals0], [Goal | Goals]) :-
+    CurOrElseNum = LastOrElseNum + 1,
+    ContainingGoal = containing_goal(GoalId, step_atomic_orelse(CurOrElseNum)),
+    fill_goal_id_slots(SlotInfo, ContainingGoal,
+        !GoalNumCounter, !ContainingGoalList, Goal0, Goal),
+    fill_orelse_id_slots(SlotInfo, GoalId, CurOrElseNum, !GoalNumCounter,
+        !ContainingGoalList, Goals0, Goals).
 
 %-----------------------------------------------------------------------------%
+
+fill_goal_path_slots_in_proc(ModuleInfo, !Proc) :-
+    proc_info_get_goal(!.Proc, Goal0),
+    proc_info_get_vartypes(!.Proc, VarTypes),
+    SlotInfo = slot_info(ModuleInfo, VarTypes),
+    fill_goal_path_slots(rgp_nil, SlotInfo, Goal0, Goal),
+    proc_info_set_goal(Goal, !Proc).
 
 :- pred fill_goal_path_slots(reverse_goal_path::in, slot_info::in,
     hlds_goal::in, hlds_goal::out) is det.
 
-fill_goal_path_slots(RevPath0, SlotInfo, Goal0, Goal) :-
+fill_goal_path_slots(RevGoalPath, SlotInfo, Goal0, Goal) :-
     Goal0 = hlds_goal(GoalExpr0, GoalInfo0),
-    goal_info_set_reverse_goal_path(RevPath0, GoalInfo0, GoalInfo),
+    goal_info_set_reverse_goal_path(RevGoalPath, GoalInfo0, GoalInfo),
     (
         GoalExpr0 = conj(ConjType, Goals0),
-        fill_conj_path_slots(RevPath0, 0, SlotInfo, Goals0, Goals),
+        fill_conj_path_slots(RevGoalPath, 0, SlotInfo, Goals0, Goals),
         GoalExpr = conj(ConjType, Goals)
     ;
         GoalExpr0 = disj(Goals0),
-        fill_disj_path_slots(RevPath0, 0, SlotInfo, Goals0, Goals),
+        fill_disj_path_slots(RevGoalPath, 0, SlotInfo, Goals0, Goals),
         GoalExpr = disj(Goals)
     ;
         GoalExpr0 = switch(Var, CanFail, Cases0),
         VarTypes = SlotInfo ^ slot_info_vartypes,
         ModuleInfo = SlotInfo ^ slot_info_module_info,
         lookup_var_type(VarTypes, Var, Type),
-        ( switch_type_num_functors(ModuleInfo, Type, NumFunctors) ->
+        ( if switch_type_num_functors(ModuleInfo, Type, NumFunctors) then
             MaybeNumFunctors = known_num_functors_in_type(NumFunctors)
-        ;
+        else
             MaybeNumFunctors = unknown_num_functors_in_type
         ),
-        fill_switch_path_slots(RevPath0, 0, MaybeNumFunctors, SlotInfo,
+        fill_switch_path_slots(RevGoalPath, 0, MaybeNumFunctors, SlotInfo,
             Cases0, Cases),
         GoalExpr = switch(Var, CanFail, Cases)
     ;
         GoalExpr0 = negation(SubGoal0),
-        RevPath = rgp_cons(RevPath0, step_neg),
-        fill_goal_path_slots(RevPath, SlotInfo, SubGoal0, SubGoal),
+        SubRevGoalPath = rgp_cons(RevGoalPath, step_neg),
+        fill_goal_path_slots(SubRevGoalPath, SlotInfo, SubGoal0, SubGoal),
         GoalExpr = negation(SubGoal)
     ;
         GoalExpr0 = scope(Reason, SubGoal0),
@@ -346,19 +373,19 @@ fill_goal_path_slots(RevPath0, SlotInfo, Goal0, Goal) :-
         SubGoal0 = hlds_goal(_, InnerInfo),
         OuterDetism = goal_info_get_determinism(GoalInfo),
         InnerDetism = goal_info_get_determinism(InnerInfo),
-        ( InnerDetism = OuterDetism ->
+        ( if InnerDetism = OuterDetism then
             MaybeCut = scope_is_no_cut
-        ;
+        else
             MaybeCut = scope_is_cut
         ),
-        RevPath = rgp_cons(RevPath0, step_scope(MaybeCut)),
-        fill_goal_path_slots(RevPath, SlotInfo, SubGoal0, SubGoal),
+        SubRevGoalPath = rgp_cons(RevGoalPath, step_scope(MaybeCut)),
+        fill_goal_path_slots(SubRevGoalPath, SlotInfo, SubGoal0, SubGoal),
         GoalExpr = scope(Reason, SubGoal)
     ;
         GoalExpr0 = if_then_else(Vars, Cond0, Then0, Else0),
-        RevPathCond = rgp_cons(RevPath0, step_ite_cond),
-        RevPathThen = rgp_cons(RevPath0, step_ite_then),
-        RevPathElse = rgp_cons(RevPath0, step_ite_else),
+        RevPathCond = rgp_cons(RevGoalPath, step_ite_cond),
+        RevPathThen = rgp_cons(RevGoalPath, step_ite_then),
+        RevPathElse = rgp_cons(RevGoalPath, step_ite_else),
         fill_goal_path_slots(RevPathCond, SlotInfo, Cond0, Cond),
         fill_goal_path_slots(RevPathThen, SlotInfo, Then0, Then),
         fill_goal_path_slots(RevPathElse, SlotInfo, Else0, Else),
@@ -368,7 +395,12 @@ fill_goal_path_slots(RevPath0, SlotInfo, Goal0, Goal) :-
         (
             RHS0 = rhs_lambda_goal(Purity, Groundness, PredOrFunc, EvalMethod,
                 NonLocals, QuantVars, LambdaModes, Detism, LambdaGoal0),
-            fill_goal_path_slots(RevPath0, SlotInfo, LambdaGoal0, LambdaGoal),
+            % This assigns RevGoalPath to LambdaGoal as well as to Goal.
+            % This is ok only because the only user of rev goal paths that are
+            % directly stored (as opposed to computed from goal_ids) is invoked
+            % only after lambda goals have been expanded out.
+            fill_goal_path_slots(RevGoalPath, SlotInfo,
+                LambdaGoal0, LambdaGoal),
             RHS = rhs_lambda_goal(Purity, Groundness, PredOrFunc, EvalMethod,
                 NonLocals, QuantVars, LambdaModes, Detism, LambdaGoal)
         ;
@@ -389,16 +421,16 @@ fill_goal_path_slots(RevPath0, SlotInfo, Goal0, Goal) :-
         (
             ShortHand0 = atomic_goal(GoalType, Outer, Inner, MaybeOutputVars,
                 MainGoal0, OrElseGoals0, OrElseInners),
-            RevPathMain = rgp_cons(RevPath0, step_atomic_main),
+            RevPathMain = rgp_cons(RevGoalPath, step_atomic_main),
             fill_goal_path_slots(RevPathMain, SlotInfo, MainGoal0, MainGoal),
-            fill_orelse_path_slots(RevPath0, 0, SlotInfo,
+            fill_orelse_path_slots(RevGoalPath, 0, SlotInfo,
                 OrElseGoals0, OrElseGoals),
             ShortHand = atomic_goal(GoalType, Outer, Inner, MaybeOutputVars,
                 MainGoal, OrElseGoals, OrElseInners)
         ;
             ShortHand0 = try_goal(MaybeIO, ResultVar, SubGoal0),
-            RevPath = rgp_cons(RevPath0, step_try),
-            fill_goal_path_slots(RevPath, SlotInfo, SubGoal0, SubGoal),
+            SubRevGoalPath = rgp_cons(RevGoalPath, step_try),
+            fill_goal_path_slots(SubRevGoalPath, SlotInfo, SubGoal0, SubGoal),
             ShortHand = try_goal(MaybeIO, ResultVar, SubGoal)
         ;
             ShortHand0 = bi_implication(_, _),
@@ -413,49 +445,54 @@ fill_goal_path_slots(RevPath0, SlotInfo, Goal0, Goal) :-
     list(hlds_goal)::in, list(hlds_goal)::out) is det.
 
 fill_conj_path_slots(_, _, _, [], []).
-fill_conj_path_slots(RevPath0, N0, SlotInfo,
+fill_conj_path_slots(ParentRevGoalPath, LastConjunctNum, SlotInfo,
         [Goal0 | Goals0], [Goal | Goals]) :-
-    N1 = N0 + 1,
-    fill_goal_path_slots(rgp_cons(RevPath0, step_conj(N1)), SlotInfo, 
-        Goal0, Goal),
-    fill_conj_path_slots(RevPath0, N1, SlotInfo, Goals0, Goals).
+    CurConjunctNum = LastConjunctNum + 1,
+    RevGoalPath = rgp_cons(ParentRevGoalPath, step_conj(CurConjunctNum)),
+    fill_goal_path_slots(RevGoalPath, SlotInfo, Goal0, Goal),
+    fill_conj_path_slots(ParentRevGoalPath, CurConjunctNum, SlotInfo,
+        Goals0, Goals).
 
 :- pred fill_disj_path_slots(reverse_goal_path::in, int::in, slot_info::in,
     list(hlds_goal)::in, list(hlds_goal)::out) is det.
 
 fill_disj_path_slots(_, _, _, [], []).
-fill_disj_path_slots(RevPath0, N0, SlotInfo,
+fill_disj_path_slots(ParentRevGoalPath, LastDisjunctNum, SlotInfo,
         [Goal0 | Goals0], [Goal | Goals]) :-
-    N1 = N0 + 1,
-    fill_goal_path_slots(rgp_cons(RevPath0, step_disj(N1)), SlotInfo, 
-        Goal0, Goal),
-    fill_disj_path_slots(RevPath0, N1, SlotInfo, Goals0, Goals).
+    CurDisjunctNum = LastDisjunctNum + 1,
+    RevGoalPath = rgp_cons(ParentRevGoalPath, step_disj(CurDisjunctNum)),
+    fill_goal_path_slots(RevGoalPath, SlotInfo, Goal0, Goal),
+    fill_disj_path_slots(ParentRevGoalPath, CurDisjunctNum, SlotInfo,
+        Goals0, Goals).
 
 :- pred fill_switch_path_slots(reverse_goal_path::in,
     int::in, maybe_switch_num_functors::in, slot_info::in,
     list(case)::in, list(case)::out) is det.
 
 fill_switch_path_slots(_, _, _, _, [], []).
-fill_switch_path_slots(RevPath0, N0, MaybeNumFunctors, SlotInfo,
-        [Case0 | Cases0], [Case | Cases]) :-
+fill_switch_path_slots(ParentRevGoalPath, LastArmNum, MaybeNumFunctors,
+        SlotInfo, [Case0 | Cases0], [Case | Cases]) :-
     Case0 = case(MainConsId, OtherConsIds, Goal0),
-    N1 = N0 + 1,
-    fill_goal_path_slots(rgp_cons(RevPath0, step_switch(N1, MaybeNumFunctors)),
-        SlotInfo, Goal0, Goal),
+    CurArmNum = LastArmNum + 1,
+    RevGoalPath = rgp_cons(ParentRevGoalPath,
+        step_switch(CurArmNum, MaybeNumFunctors)),
+    fill_goal_path_slots(RevGoalPath, SlotInfo, Goal0, Goal),
     Case = case(MainConsId, OtherConsIds, Goal),
-    fill_switch_path_slots(RevPath0, N1, MaybeNumFunctors, SlotInfo,
-        Cases0, Cases).
+    fill_switch_path_slots(ParentRevGoalPath, CurArmNum, MaybeNumFunctors,
+        SlotInfo, Cases0, Cases).
 
 :- pred fill_orelse_path_slots(reverse_goal_path::in, int::in,
     slot_info::in, list(hlds_goal)::in, list(hlds_goal)::out) is det.
 
 fill_orelse_path_slots(_, _, _, [], []).
-fill_orelse_path_slots(RevPath0, N0, SlotInfo,
+fill_orelse_path_slots(ParentRevGoalPath, LastOrElseNum, SlotInfo,
         [Goal0 | Goals0], [Goal | Goals]) :-
-    N1 = N0 + 1,
-    fill_goal_path_slots(rgp_cons(RevPath0, step_atomic_orelse(N1)), SlotInfo,
-        Goal0, Goal),
-    fill_orelse_path_slots(RevPath0, N1, SlotInfo, Goals0, Goals).
+    CurOrElseNum = LastOrElseNum + 1,
+    RevGoalPath = rgp_cons(ParentRevGoalPath,
+        step_atomic_orelse(CurOrElseNum)),
+    fill_goal_path_slots(RevGoalPath, SlotInfo, Goal0, Goal),
+    fill_orelse_path_slots(ParentRevGoalPath, CurOrElseNum, SlotInfo,
+        Goals0, Goals).
 
 %-----------------------------------------------------------------------------%
 :- end_module hlds.goal_path.

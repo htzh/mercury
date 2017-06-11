@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1999-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: mlds.m.
 % Main author: fjh.
@@ -20,7 +20,7 @@
 % languages such as Java, Java bytecode, high-level C, C++, or C--, etc.
 % This is as opposed to the LLDS, which is better suited for generating
 % assembler or the very low-level C or GNU C (lower level than C--) that
-% the original Mercury compiler backend generates.  In the LLDS, we are
+% the original Mercury compiler backend generates. In the LLDS, we are
 % doing all our own register allocation and stack manipulation, but with
 % MLDS, those tasks are the responsibility of the target.
 % The one really important simplification that we do make relative to the
@@ -34,13 +34,13 @@
 % of the intended target languages don't support all of those features.
 % Therefore the HLDS->MLDS compiler must ensure that the final MLDS code that
 % it eventually generates does not use features which the target does not
-% support.  This will (presumably) be accomplished by having handle_options.m
+% support. This will (presumably) be accomplished by having handle_options.m
 % set various flags according to the selected target, and having the
 % HLDS->MLDS compiler take account of those flags and either generate simpler
 % MLDS code in the first place or run some extra simplification passes over
 % the MLDS code before invoking the MLDS->target compiler.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Mapping Mercury names to MLDS names
 %
@@ -63,7 +63,7 @@
 % [Rationale: the reason for keeping structured names rather than flattened
 % names at the MLDS level is that we don't want to do name mangling at
 % the HLDS -> MLDS stage, since we don't know what restrictions the target
-% language will impose.  For example, some target languages (e.g. C++, Java)
+% language will impose. For example, some target languages (e.g. C++, Java)
 % will support overloading, while others (e.g. C) will not.]
 %
 % 3. Procedure signatures
@@ -83,8 +83,8 @@
 % it fails, it must return.
 %
 % With the `--copy-out' option, arguments with top_out modes will be returned
-% by value.  This requires the target language to support multiple return
-% values.  The MLDS->target code generator can of course handle that by mapping
+% by value. This requires the target language to support multiple return
+% values. The MLDS->target code generator can of course handle that by mapping
 % functions with multiple return values into functions that return a struct,
 % array, or tuple.
 % With the `--nondet-copy-out' option, arguments for nondet procedures with
@@ -104,7 +104,7 @@
 % 4. Variables
 %
 % MLDS variable names are determined by the HLDS variable name and
-% (in some cases, to avoid ambiguity) variable number.  The MLDS
+% (in some cases, to avoid ambiguity) variable number. The MLDS
 % variable name is a structured term that keeps the original variable
 % name separate from the distinguishing variable number.
 % It is up to each individual backend to mangle the variable name
@@ -144,15 +144,15 @@
 % (that is, the corresponding MLDS type may be just `MR_Word' or its
 % equivalent).
 %
-% 7.  Data constructors.
+% 7. Data constructors.
 %
 % With --high-level-data, Mercury data constructors normally get mapped to
 % MLDS types nested within the MLDS type for the Mercury data type to which
-% the constructors belong.  There are some exceptions; see ml_type_gen.m
-% for full details.  The MLDS type name includes the constructor arity.
+% the constructors belong. There are some exceptions; see ml_type_gen.m
+% for full details. The MLDS type name includes the constructor arity.
 % [Rationale: Mercury allows data constructors to be overloaded on
 % their result type within a single module, and also allows them
-% to be overloaded on arity within a single type.  Nesting resolves
+% to be overloaded on arity within a single type. Nesting resolves
 % the first problem, and keeping the arity in the MLDS type name
 % resolves the second.]
 % XXX There is a problem in the Java back-end with Mercury types for which
@@ -163,7 +163,7 @@
 % XXX There are problems with the RTTI definitions for the Java back-end.
 % Under the current system, the definitions are output as static variables
 % with static initializers, ordered so that subdefinitions always appear before
-% the definition which uses them.  This is neccessary because in Java, static
+% the definition which uses them. This is necessary because in Java, static
 % initializers are performed at runtime in textual order, and if a definition
 % relies on another static variable for its constructor but said variable has
 % not been initialized, then it is treated as `null' by the JVM with no
@@ -175,7 +175,7 @@
 % At some point this should be changed so that initialization is performed by 2
 % phases: first allocate all of the objects, then fill in the fields.
 %
-% 8.  Insts and modes
+% 8. Insts and modes
 %
 % Inst and mode definitions do not get translated into MLDS.
 %
@@ -196,14 +196,14 @@
 % Mercury type classes should map directly to MLDS interfaces.
 %
 % Mercury instance definitions should map to classes which implement the
-% corresponding interface.  Note that if there is an instance declaration
+% corresponding interface. Note that if there is an instance declaration
 % `:- instance foo(bar)', then the MLDS type for `bar' will *not* implement
 % the MLDS interface for `foo' -- instead, there will be a new MLDS type
 % for `instance foo(bar)' which implements that interface.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% Mapping MLDS names to the target language
+% Mapping MLDS names to the target language.
 %
 %
 % Ultimately the exact choice of how MLDS names are mapped to
@@ -234,12 +234,12 @@
 %
 % If the target does not support overloading, then any Mercury names which
 % are overloaded within a single Mercury module must be qualified to avoid
-% ambiguity.  However, Mercury names which are not overloaded should not
-% be qualified.  If a name is overloaded but occurs only once in the module's
+% ambiguity. However, Mercury names which are not overloaded should not
+% be qualified. If a name is overloaded but occurs only once in the module's
 % interface then the version in the interface should not be qualified.
 % The arity-zero version of type should not be arity-qualified
 % unless this would cause ambiguity with an unqualified name generated by
-% the previous rule.  Likewise, the arity-zero version of function
+% the previous rule. Likewise, the arity-zero version of function
 % (i.e. a constant) should not be function-qualified or arity-qualified
 % unless this would cause ambiguity with an unqualified name generated
 % the aforementioned rule.
@@ -277,21 +277,21 @@
 % names, i.e. the regular expression `.*_[0-9]+',
 % should always be qualified (even if not overloaded).
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Notes on garbage collection and liveness.
 %
 %
 % "Liveness-accurate GC" is GC in which the collector does not trace local
 % variables which are definitely not live according to a straight-forward
-% static analysis of definite-deadness/possible-liveness.  Liveness-accurate
+% static analysis of definite-deadness/possible-liveness. Liveness-accurate
 % GC is desirable, in general, since tracing through variables which are
 % no longer live may lead to excessive memory retention for some programs.
 % However these programs are relatively rare, so liveness-accurate GC
 % is not always worth the extra complication.
 %
 % The MLDS is therefore designed to optionally support liveness-accurate
-% GC, if the target language supports it.  If liveness-accurate GC is
+% GC, if the target language supports it. If liveness-accurate GC is
 % supported and enabled, then it is the responsibility of the target
 % language implementation to do whatever is needed to avoid having the GC
 % trace variables which have gone out of scope.
@@ -299,11 +299,11 @@
 % That means that to support liveness-accurate the HLDS->MLDS code
 % generator just needs to cover the cases where a straight-forward liveness
 % calculation on the generated MLDS does not match up with the desired
-% result of a straight-forward liveness calculation on the HLDS.  That is,
+% result of a straight-forward liveness calculation on the HLDS. That is,
 % the HLDS->MLDS code generator must generate code to clobber variables
 % which are no longer live according to a straight-forward liveness
 % calculation on the HLDS but which have not gone out of scope in
-% the generated MLDS.  For example, with our current HLDS->MLDS code
+% the generated MLDS. For example, with our current HLDS->MLDS code
 % generation scheme, this is the case for variables in the `else' of a
 % nondet if-then-else once the `then' has been entered.
 % (XXX Currently ml_code_gen.m does _not_ clobber those variables, though.)
@@ -313,9 +313,9 @@
 % target language implementation's _cooperation_, since if the MLDS code
 % generator inserts statements to clobber variables that are no longer live,
 % then an uncooperative target language implementation could just optimize
-% them away, since they are assignments to dead variables.  Given this need
+% them away, since they are assignments to dead variables. Given this need
 % for the MLDS target back-end's cooperation, it makes sense to assign as
-% much of the responsibily for this task as is possible to the MLDS target
+% much of the responsibility for this task as is possible to the MLDS target
 % back-end, to keep the front-end simple and to keep the responsibility
 % for this task in one place.
 %
@@ -325,22 +325,30 @@
 % calculation in the MLDS target back-end, so in such cases we do need
 % to handle it in the HLDS->MLDS code generator.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module ml_backend.mlds.
 :- interface.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
 :- import_module backend_libs.foreign.
 :- import_module backend_libs.rtti.
+:- import_module hlds.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module libs.
 :- import_module libs.globals.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module ml_backend.ml_global_data.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
+:- import_module parse_tree.prog_data_pragma.
 :- import_module parse_tree.prog_foreign.
 :- import_module parse_tree.prog_type.
 
@@ -350,34 +358,43 @@
 :- import_module maybe.
 :- import_module set.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- type mercury_module_name == prim_data.module_name.
+:- type mercury_module_name == sym_name.module_name.
 
-%
-% The type `mlds' is the actual MLDS.
-% XXX we ought to make this type abstract
-%
+    % The type `mlds' is the actual MLDS.
+    % XXX We ought to make this type abstract.
 :- type mlds
     --->    mlds(
                 % The original Mercury module name.
                 mlds_name               :: mercury_module_name,
 
-                % Code defined in some other language, e.g.  for
+                % Code defined in some other language, e.g. for
                 % `pragma foreign_decl', etc.
                 mlds_foreign_code_map   :: map(foreign_language,
                                             mlds_foreign_code),
 
                 % The MLDS code itself.
 
-                % Packages/classes to import
+                % Packages/classes to import.
                 mlds_toplevel_imports   :: mlds_imports,
 
                 mlds_global_defns       :: ml_global_data,
 
-                % Definitions of code and non-global data.
-                % XXX Is there any non-global data?
-                mlds_defns              :: list(mlds_defn),
+                % Definitions of the classes that represent types
+                % with high level data.
+                mlds_type_defns         :: list(mlds_class_defn),
+
+                % Definitions of the structures that hold the tables
+                % of tabled procedures.
+                mlds_table_struct_defns :: list(mlds_data_defn),
+
+                % Definitions of the translated procedures.
+                % After code generation, this will contain only
+                % function definitions, but after ml_elim_nested,
+                % it may also contain the definitions of the types
+                % of environments.
+                mlds_proc_defns         :: list(mlds_defn),
 
                 % The names of init and final preds.
                 mlds_init_preds         :: list(string),
@@ -479,33 +496,12 @@
     %
 :- func mlds_append_name(mlds_module_name, string) = mlds_module_name.
 
-    % When targetting languages such as IL, C#, and Java, which don't support
+    % When targetting languages such as C#, and Java, which don't support
     % global methods or global variables, we need to wrap all the generated
     % global functions and global data inside a wrapper class. This function
     % returns the name to use for the wrapper class.
     %
 :- func wrapper_class_name = string.
-
-:- type mlds_defn
-    --->    mlds_defn(
-                % The name of the entity being declared.
-                md_entity_name          :: mlds_entity_name,
-
-                % The source location.
-                md_context              :: mlds_context,
-
-                % these contain the following:
-                % access,               % public/private/protected
-                % member_type,          % static/per_instance
-                % virtuality,           % virtual/non_virtual
-                % overridability,       % sealed/overridable (class/funcs only)
-                % constness,            % const/modifiable  (data only)
-                % is_abstract,          % abstract/concrete
-                % etc.
-                md_decl_flags           :: mlds_decl_flags,
-
-                md_entity_defn          :: mlds_entity_defn
-            ).
 
     % An mlds name may contain arbitrary characters.
     % If the target language has restrictions on what names can be used
@@ -513,6 +509,12 @@
     % generator to mangle these names accordingly.
 :- type mlds_qualified_entity_name
     ==  mlds_fully_qualified_name(mlds_entity_name).
+:- type mlds_qualified_data_name
+    ==  mlds_fully_qualified_name(mlds_data_name).
+:- type mlds_qualified_function_name
+    ==  mlds_fully_qualified_name(mlds_function_name).
+:- type mlds_qualified_type_name
+    ==  mlds_fully_qualified_name(mlds_type_name).
 
 :- type mlds_fully_qualified_name(T)
     --->    qual(mlds_module_name, mlds_qual_kind, T).
@@ -525,19 +527,23 @@
     --->    module_qual
     ;       type_qual.
 
-:- type mlds_entity_name
-    --->    entity_type(mlds_class_name, arity)   % Name, arity.
-    ;       entity_data(mlds_data_name)
-    ;       entity_function(
-                % Identifies the source code predicate or function.
-                ef_pred_label       :: mlds_pred_label,
+:- type mlds_type_name
+    --->    mlds_type_name(
+                mlds_class_name,
+                arity
+            ).
 
-                ef_proc_id          :: proc_id,
+:- type mlds_plain_func_name
+    --->    mlds_plain_func_name(
+                % Identifies the source code predicate or function.
+                pfn_pred_label      :: mlds_pred_label,
+
+                pfn_proc_id         :: proc_id,
 
                 % A sequence number used to distinguish different MLDS
                 % functions when compiling a single HLDS predicate into
                 % multiple MLDS functions (e.g. to handle backtracking).
-                ef_maybe_func_seq   :: maybe(mlds_func_sequence_num),
+                pfn_maybe_func_seq  :: maybe(mlds_func_sequence_num),
 
                 % Specifies the HLDS pred_id.
                 % This should generally not be needed much, since all the
@@ -545,14 +551,24 @@
                 % and/or in the mlds_entity_defn. However, the target
                 % generator may want to refer to the HLDS for additional
                 % information.
-                ef_pred_id          :: pred_id
+                pfn_pred_id         :: pred_id
+            ).
+
+:- type mlds_func_sequence_num == int.
+
+:- type mlds_function_name
+    --->    mlds_function_name(
+                mlds_plain_func_name
             )
-    ;       entity_export(
+    ;       mlds_function_export(
                 % A pragma foreign_export name.
                 string
             ).
 
-:- type mlds_func_sequence_num == int.
+:- type mlds_entity_name
+    --->    entity_data(mlds_data_name)
+    ;       entity_function(mlds_function_name)
+    ;       entity_type(mlds_type_name).
 
     % This specifies information about some entity being defined
     % The entity may be any of the following:
@@ -564,31 +580,60 @@
     %       struct (value class)
     %       enum
     %
-:- type mlds_entity_defn
+:- type mlds_defn
     --->    mlds_data(
                 % Represents a constant or variable.
-
-                mlds_type,
-                mlds_initializer,
-                % If accurate GC is enabled, we associate with each variable
-                % the code needed to initialise or trace that variable when
-                % doing GC (in the compiler-generated gc trace functions).
-                mlds_gc_statement
+                mlds_data_defn
             )
     ;       mlds_function(
                 % Represents functions.
-
-                maybe(pred_proc_id),    % Identifies the original
-                                        % Mercury procedure, if any.
-                mlds_func_params,       % The arguments & return types.
-                mlds_function_body,     % The function body.
-                list(mlds_attribute),   % Attributes.
-                set(string)             % The set of environment variables
-                                        % referred to by the function body.
+                mlds_function_defn
             )
     ;       mlds_class(
                 % Represents packages, classes, interfaces, structs, enums.
                 mlds_class_defn
+            ).
+
+:- func wrap_data_defn(mlds_data_defn) = mlds_defn.
+:- func wrap_function_defn(mlds_function_defn) = mlds_defn.
+:- func wrap_class_defn(mlds_class_defn) = mlds_defn.
+
+:- type mlds_data_defn
+    --->    mlds_data_defn(
+                mdd_data_name           :: mlds_data_name,
+                mdd_context             :: mlds_context,
+                mdd_decl_flags          :: mlds_data_decl_flags,
+
+                mdd_type                :: mlds_type,
+                mdd_init                :: mlds_initializer,
+
+                % If accurate GC is enabled, we associate with each variable
+                % the code needed to initialise or trace that variable when
+                % doing GC (in the compiler-generated gc trace functions).
+                mdd_gc                  :: mlds_gc_statement
+            ).
+
+:- type mlds_function_defn
+    --->    mlds_function_defn(
+                mfd_function_name       :: mlds_function_name,
+                mfd_context             :: mlds_context,
+                mfd_decl_flags          :: mlds_function_decl_flags,
+
+                % Identifies the original Mercury procedure, if any.
+                mfd_orig_proc           :: maybe(pred_proc_id),
+
+                % The arguments & return types.
+                mfd_param               :: mlds_func_params,
+
+                mfd_body                :: mlds_function_body,
+                mfd_attributes          :: list(mlds_attribute),
+
+                % The set of environment variables referred to
+                % by the function body.
+                mfd_env_vars            :: set(string),
+
+                % Information used to generate tail recursion errors.
+                mfd_tail_rec            :: maybe(require_tail_recursion)
             ).
 
     % If accurate GC is enabled, we associate with each variable
@@ -608,9 +653,9 @@
     ;       gc_initialiser(statement)
     ;       gc_no_stmt.
 
-    % It is possible for the function to be defined externally
-    % (i.e. the original Mercury procedure was declared `:- external').
-    % (If you want to generate an abstract body consider adding another
+    % It is possible for the function to be defined externally,
+    % if the Mercury procedure has a `:- pragma external_{pred/func}'.
+    % (If you want to generate an abstract body, consider adding another
     % alternative here).
     %
 :- type mlds_function_body
@@ -637,14 +682,14 @@
 
 :- type mlds_func_params
     --->    mlds_func_params(
-                mlds_arguments,    % names and types of arguments (inputs)
-                mlds_return_types  % types of return values (outputs)
+                list(mlds_argument),    % names and types of arguments (inputs)
+                mlds_return_types       % types of return values (outputs)
             ).
 
 :- type mlds_arguments == list(mlds_argument).
 :- type mlds_argument
     --->    mlds_argument(
-                mlds_entity_name,          % Argument name.
+                mlds_var_name,             % Argument name.
                 mlds_type,                 % Argument type.
                 mlds_gc_statement          % code for GC necessitated
                                            % by this argument.
@@ -653,11 +698,11 @@
 :- type mlds_arg_types == list(mlds_type).
 :- type mlds_return_types == list(mlds_type).
 
-:- func mlds_get_arg_types(mlds_arguments) = list(mlds_type).
+:- func mlds_get_arg_types(list(mlds_argument)) = list(mlds_type).
 
-    % An mlds_func_signature is like an mlds_func_params
-    % except that it only includes the function's type, not
-    % the parameter names.
+    % An mlds_func_signature is like an mlds_func_params, except that
+    % it only includes the types of the function's arguments,
+    % and not their names.
     %
 :- type mlds_func_signature
     --->    mlds_func_signature(
@@ -670,7 +715,7 @@
 :- type mlds_class_kind
     --->    mlds_class     % A generic class: can inherit other classes and
                            % interfaces (but most targets will only support
-                           % single inheritence, so usually there will be
+                           % single inheritance, so usually there will be
                            % at most one class).
 
     ;       mlds_package   % A class with only static members (can only
@@ -695,25 +740,29 @@
     %
 :- type mlds_class_defn
     --->    mlds_class_defn(
-                mcd_kind        :: mlds_class_kind,
+                mcd_type_name       :: mlds_type_name,
+                mcd_context         :: mlds_context,
+                mcd_decl_flags      :: mlds_class_decl_flags,
+
+                mcd_kind            :: mlds_class_kind,
 
                 % Imports these classes (or modules, packages, ...).
-                mcd_imports     :: mlds_imports,
+                mcd_imports         :: mlds_imports,
 
                 % Inherits these base classes.
-                mcd_inherits    :: list(mlds_class_id),
+                mcd_inherits        :: list(mlds_class_id),
 
                 % Implements these interfaces.
-                mcd_implements  :: list(mlds_interface_id),
+                mcd_implements      :: list(mlds_interface_id),
 
                 % Type parameters.
-                mcd_tparams     :: list(type_param),
+                mcd_tparams         :: list(type_param),
 
                 % Has these constructors.
-                mcd_ctors       :: list(mlds_defn),
+                mcd_ctors           :: list(mlds_defn),
 
                 % Contains these members.
-                mcd_members     :: list(mlds_defn)
+                mcd_members         :: list(mlds_defn)
             ).
 
 :- type mlds_type
@@ -743,18 +792,18 @@
 
     ;       mlds_cont_type(mlds_return_types)
             % The type for the continuation functions used to handle
-            % nondeterminism
+            % nondeterminism.
 
     ;       mlds_commit_type
             % mlds_commit_type is used for storing information about a
             % commit. This is an abstract type; the exact definition
-            % will depend on the back-end.  The only operations on this ADT
-            % are `try_commit' and `do_commit'.  This type holds
+            % will depend on the back-end. The only operations on this ADT
+            % are `try_commit' and `do_commit'. This type holds
             % information about the `try_commit' stack frame that is
             % needed to unwind the stack when a `do_commit' is executed.
             %
             % For the C back-end, if we're implementing do_commit/try_commit
-            % using setjmp/longmp, then mlds_commit_type will be jmp_buf.
+            % using setjmp/longjmp, then mlds_commit_type will be jmp_buf.
             % If we're implementing them using GNU C nested functions, then
             % it will be `__label__'; in this case, the local variable
             % of this "type" is actually a label, and doing a goto to that
@@ -772,6 +821,7 @@
 
     ;       mlds_native_bool_type
     ;       mlds_native_int_type
+    ;       mlds_native_uint_type
     ;       mlds_native_float_type
     ;       mlds_native_char_type
             % MLDS native builtin types.
@@ -866,12 +916,10 @@
 :- type mlds_class_id == mlds_type.
 :- type mlds_interface_id == mlds_type.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% Declaration flags
+% Declaration flags.
 %
-
-:- type mlds_decl_flags.
 
 :- type access
     % The following used for class members (this includes globals,
@@ -879,13 +927,15 @@
 
     --->    acc_public
             % Accessible to anyone.
-    ;       acc_protected
-            % Only accessible to the class and to derived classes.
     ;       acc_private
             % Only accessible to the class.
-    ;       acc_default
+    % ;     acc_protected
+            % Only accessible to the class and to derived classes.
+            % We don't generate protected members.
+    % ;     acc_default
             % Java "default" access or .NET assembly access:
             % accessible to anything defined in the same package.
+            % We don't generate default members.
 
     % The following is used for entities defined in a block/2 statement,
     % i.e. local variables and nested functions.
@@ -894,19 +944,25 @@
             % Only accessible within the block in which the entity
             % (variable or nested function) is defined.
 
+    % The accessibility of classes themselves.
+:- type class_access
+    --->    class_public
+    ;       class_private.
+
 :- type per_instance
-    --->    one_copy    % I.e. "static" storage duration (but not necessarily
-                        % static linkage) or static member function. Note that
-                        % `one_copy' variables *must* have an initializer
-                        % (the GCC back-end relies on this.)
+    --->    one_copy
+            % I.e. "static" storage duration (but not necessarily static
+            % linkage) or static member function. Note that `one_copy'
+            % variables *must* have an initializer.
 
     ;       per_instance.
-                        % I.e. "auto" local variable in function, or non-static
-                        % member of class.
+            % I.e. "auto" local variable in function, or non-static
+            % member of class.
 
-:- type virtuality
-    --->    non_virtual
-    ;       virtual.
+% We don't actually need this type (yet).
+% :- type virtuality
+%     --->    non_virtual
+%     ;       virtual.
 
 :- type overridability
     --->    overridable
@@ -917,35 +973,70 @@
     --->    modifiable
     ;       const.
 
-:- type abstractness
-    --->    concrete
-    ;       abstract.
+% We don't actually need this type (yet).
+% :- type abstractness
+%     --->    concrete
+%     ;       abstract.
 
-:- func access(mlds_decl_flags) = access.
-:- func per_instance(mlds_decl_flags) = per_instance.
-:- func virtuality(mlds_decl_flags) = virtuality.
-:- func overridability(mlds_decl_flags) = overridability.
-:- func constness(mlds_decl_flags) = constness.
-:- func abstractness(mlds_decl_flags) = abstractness.
+%---------------------%
 
-:- func set_access(mlds_decl_flags, access) = mlds_decl_flags.
-:- func set_per_instance(mlds_decl_flags, per_instance) = mlds_decl_flags.
-:- func set_virtuality(mlds_decl_flags, virtuality) = mlds_decl_flags.
-:- func set_overridability(mlds_decl_flags, overridability) = mlds_decl_flags.
-:- func set_constness(mlds_decl_flags, constness) = mlds_decl_flags.
-:- func set_abstractness(mlds_decl_flags, abstractness) = mlds_decl_flags.
+:- type mlds_data_decl_flags.
 
-:- func init_decl_flags(access, per_instance, virtuality, overridability,
-    constness, abstractness) = mlds_decl_flags.
+:- func init_data_decl_flags(access, per_instance, constness)
+    = mlds_data_decl_flags.
+
+:- func get_data_access(mlds_data_decl_flags) = access.
+:- func get_data_per_instance(mlds_data_decl_flags) = per_instance.
+:- func get_data_constness(mlds_data_decl_flags) = constness.
+
+:- pred set_data_access(access::in,
+    mlds_data_decl_flags::in, mlds_data_decl_flags::out) is det.
+:- pred set_data_per_instance(per_instance::in,
+    mlds_data_decl_flags::in, mlds_data_decl_flags::out) is det.
+:- pred set_data_constness(constness::in,
+    mlds_data_decl_flags::in, mlds_data_decl_flags::out) is det.
 
     % Return the declaration flags appropriate for an initialized
     % local static constant.
     %
-:- func ml_static_const_decl_flags = mlds_decl_flags.
+:- func ml_static_const_decl_flags = mlds_data_decl_flags.
 
-%-----------------------------------------------------------------------------%
+%---------------------%
+
+:- type mlds_function_decl_flags.
+
+:- func init_function_decl_flags(access, per_instance)
+    = mlds_function_decl_flags.
+
+:- func get_function_access(mlds_function_decl_flags) = access.
+:- func get_function_per_instance(mlds_function_decl_flags) = per_instance.
+
+:- pred set_function_access(access::in,
+    mlds_function_decl_flags::in, mlds_function_decl_flags::out) is det.
+:- pred set_function_per_instance(per_instance::in,
+    mlds_function_decl_flags::in, mlds_function_decl_flags::out) is det.
+
+%---------------------%
+
+:- type mlds_class_decl_flags.
+
+:- func init_class_decl_flags(class_access, overridability, constness)
+    = mlds_class_decl_flags.
+
+:- func get_class_access(mlds_class_decl_flags) = class_access.
+:- func get_class_overridability(mlds_class_decl_flags) = overridability.
+:- func get_class_constness(mlds_class_decl_flags) = constness.
+
+:- pred set_class_access(class_access::in,
+    mlds_class_decl_flags::in, mlds_class_decl_flags::out) is det.
+:- pred set_class_overridability(overridability::in,
+    mlds_class_decl_flags::in, mlds_class_decl_flags::out) is det.
+:- pred set_class_constness(constness::in,
+    mlds_class_decl_flags::in, mlds_class_decl_flags::out) is det.
+
+%---------------------------------------------------------------------------%
 %
-% Foreign code interfacing
+% Foreign code interfacing.
 %
 
     % Foreign code required for the foreign language interface.
@@ -955,9 +1046,9 @@
     %
 :- type mlds_foreign_code
     --->    mlds_foreign_code(
-                foreign_decl_info,
-                foreign_import_module_info_list,
-                list(user_foreign_code),
+                list(foreign_decl_code),
+                list(foreign_body_code),
+                list(foreign_import_module_info),
                 list(mlds_pragma_export)
             ).
 
@@ -967,25 +1058,27 @@
     --->    ml_pragma_export(
                 foreign_language,
                 string,                        % Exported name
-                mlds_qualified_entity_name,    % MLDS name for exported entity
+                mlds_qualified_function_name,  % MLDS name for exported entity
                 mlds_func_params,              % MLDS function parameters
                 list(tvar),                    % Universally quantified type
                                                % variables.
                 mlds_context
             ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% Attributes
+% Attributes.
+%
 
 :- type mlds_attribute
     --->    custom(
                 mlds_type
             ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% Contexts (i.e. source code locations)
+% Contexts (i.e. source code locations).
+%
 
     % mlds.context is probably == prog_context,
     % but might also contain goal_path or other information.
@@ -995,9 +1088,9 @@
 
 :- func mlds_get_prog_context(mlds_context) = prog_context.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% Statements
+% Statements.
 %
 
 :- type statement
@@ -1073,15 +1166,28 @@
     % Function call/return.
 
     ;       ml_stmt_call(
-                mlds_func_signature,    % Signature of the function.
-                mlds_rval,              % The function to call.
-                maybe(mlds_rval),       % For method calls, this field
-                                        % specifies the `this' object.
-                list(mlds_rval),        % Ordinary function arguments.
-                list(mlds_lval),        % Places to store the function return
-                                        % value(s).
-                ml_call_kind            % Indicates whether this call is a
-                                        % tail call.
+                % The signature of the callee function.
+                mlds_func_signature,
+
+                % The function to call.
+                mlds_rval,
+
+                % For method calls, this field specifies the `this' object.
+                maybe(mlds_rval),
+
+                % The ordinary function arguments.
+                list(mlds_rval),
+
+                % Th places to store the function return value(s).
+                list(mlds_lval),
+
+                % Is this call an ordinary call, a tail call,
+                % or a no-return call?
+                ml_call_kind,
+
+                % The set of special treatments that apply to this call.
+                % Almost always the empty set.
+                set(ml_call_marker)
             )
 
     ;       ml_stmt_return(list(mlds_rval))  % Some targets will not support
@@ -1092,9 +1198,8 @@
     ;       ml_stmt_try_commit(mlds_lval, statement, statement)
     ;       ml_stmt_do_commit(mlds_rval)
             % try_commit(Ref, GoalToTry, CommitHandlerGoal):
-            %   Execute GoalToTry.  If GoalToTry exits via a
-            %   `commit(Ref)' instruction, then execute
-            %   CommitHandlerGoal.
+            %   Execute GoalToTry. If GoalToTry exits via a `commit(Ref)'
+            %   instruction, then execute CommitHandlerGoal.
             %
             % do_commit(Ref):
             %   Unwind the stack to the corresponding `try_commit'
@@ -1110,12 +1215,12 @@
             % in goals called from the GoalToTry goal in the try_commit
             % instruction with the same Ref.
             %
-            % The C and GCC back-ends require each try_commit to be put in
-            % its own nested function, to avoid problems with setjmp() and
-            % local vars not declared volatile. They also require each
-            % do_commit to be put in its own function -- this is needed when
-            % using __builtin_setjmp()/__builtin_longjmp() to ensure that
-            % the call to __builtin_longjmp() is not in the same function
+            % The C back-end requires each try_commit to be put in its own
+            % nested function, to avoid problems with setjmp() and local vars
+            % not declared volatile. They also require each do_commit to be
+            % put in its own function -- this is needed when using
+            % __builtin_setjmp()/__builtin_longjmp() to ensure that the
+            % call to __builtin_longjmp() is not in the same function
             % as the call to __builtin_setjmp().
 
     % Exception handling.
@@ -1147,10 +1252,15 @@
 
     ;       ml_stmt_atomic(mlds_atomic_statement).
 
-%-----------------------------------------------------------------------------%
+:- inst ml_stmt_is_call
+    --->    ml_stmt_call(ground, ground, ground, ground, ground,
+                ground, ground).
+
+%---------------------------------------------------------------------------%
 %
-% Extra info for switches
+% Extra info for switches.
 %
+
     % The range of possible values which the switch variable might take
     % (if known).
 :- type mlds_switch_range
@@ -1198,7 +1308,7 @@
     ;       default_case(statement).
             % The default is to execute the specified statement.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Extra info for labels.
 %
@@ -1219,7 +1329,7 @@
             % loop, just like a C/C++/Java/C# `continue' statement.
             % Not supported by all target languages.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Extra info for calls.
 %
@@ -1243,7 +1353,20 @@
     ;       tail_call       % A tail call.
     ;       ordinary_call.  % Just an ordinary call.
 
-%-----------------------------------------------------------------------------%
+    % The `ml_call_marker' type lists the ways in which the MLDS backend's
+    % handling of a call should deviate from the usual course of events.
+    %
+:- type ml_call_marker
+    --->    mcm_disable_non_tail_rec_warning.
+            % Don't generate a warning we would otherwise generate
+            % if this call is (a) recursive, but (b) not *tail* recursive.
+            %
+            % For the reason why this information is attached to a call
+            % in the MLDS, as well as being expressed as a scope in the HLDS,
+            % see the comment at the top of ml_tailcall.m (which generates
+            % such warnings during compilations that target the MLDS backend).
+
+%---------------------------------------------------------------------------%
 %
 % Extra info for exception handling.
 %
@@ -1264,7 +1387,7 @@
                 % If `no', then exception value will not be used.
             ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     %
     % atomic statements
@@ -1283,7 +1406,7 @@
             % assign_if_in_heap(Location, Value):
             % Assign the address specified by rval to the location specified
             % by lval if the address is in the bounds of the garbage collected
-            % heap.  Otherwise assign a null pointer to lval.
+            % heap. Otherwise assign a null pointer to lval.
 
     % Heap management.
 
@@ -1424,7 +1547,6 @@
     --->    ml_target_c
     ;       ml_target_gnu_c
 %   ;       ml_target_c_minus_minus
-    ;       ml_target_il
     ;       ml_target_csharp
     ;       ml_target_java.
 %   ;       ml_target_java_asm
@@ -1436,8 +1558,7 @@
                 % `pragma foreign_proc' declaration.
 
                 string,
-                maybe(prog_context),
-                target_code_attributes
+                maybe(prog_context)
             )
     ;       raw_target_code(
                 % Raw_target_code holds C code that the compiler has generated.
@@ -1447,27 +1568,14 @@
                 % target_code_component must be a `name(Name)' component,
                 % for which we do not output #line directives.
 
-                string,
-                target_code_attributes
+                string
             )
 
     ;       target_code_input(mlds_rval)
     ;       target_code_output(mlds_lval)
     ;       target_code_type(mlds_type)
-    ;       target_code_name(mlds_qualified_entity_name)
+    ;       target_code_function_name(mlds_qualified_function_name)
     ;       target_code_alloc_id(mlds_alloc_id).
-
-:- type target_code_attributes == list(target_code_attribute).
-
-:- type target_code_attribute
-    --->    max_stack_size(int).
-            % max_stack_size(Size):
-            % This attribute declares the maximum stack usage of a
-            % particular piece of code.  The unit that `Size' is measured
-            % in depends upon foreign language being used.  Currently this
-            % attribute is only used (and is in fact required) by the
-            % `IL' foreign language interface, and is measured in units
-            % of stack items.
 
 :- type mlds_alloc_id
     --->    mlds_alloc_id(int).
@@ -1490,7 +1598,7 @@
     ;       prune_tickets_to(mlds_rval).
 %   ;       discard_tickets_to(mlds_rval).  % used only by the library
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % An mlds_field_id represents some data within an object.
     %
@@ -1518,11 +1626,312 @@
 
     % An mlds_var represents a variable or constant.
     %
+    % XXX While this may have been the original intention, we currently
+    % also use mlds_var_names to represent the names of fields in
+    % structure types.
+    %
+    % XXX Some global constants need to be visible throughout the program,
+    % including outside the module that defines them, and therefore their
+    % names need to be module qualified. However, variables used inside
+    % a function, method or class should *not* need to be module qualified,
+    % since the target language should restrict their visibility to
+    % just (one part of) the target language module. Removing the module
+    % qualification from such variables would make the generated code
+    % considerably less cluttered and therefore easier to read.
+    %
 :- type mlds_var == mlds_fully_qualified_name(mlds_var_name).
 :- type mlds_var_name
-        --->    mlds_var_name(string, maybe(int)).
-                % Var name and perhaps a unique number to be added as a
-                % suffix where necessary.
+    --->    mlds_prog_var(string, int)
+            % This MLDS variable represents a variable in the HLDS procedure
+            % being translated to MLDS. The string gives its name
+            % (if it is unnamed, the string will be ""), and the int gives
+            % its HLDS variable number.
+
+    ;       mlds_prog_var_foreign(string)
+            % This MLDS variable represents a HLDS variable. It does not
+            % have the usual numeric suffix derived from its HLDS variable
+            % number because it is one of the arguments of a foreign_proc
+            % goal. Its name in the target language must be exactly the same
+            % as the name written by the programmer, since that is the name
+            % by which the foreign language code will refer to it.
+
+    ;       mlds_prog_var_boxed(string, int)
+            % This MLDS variable represents the boxed version of the HLDS
+            % variable with the given name and number.
+
+    ;       mlds_prog_var_conv(int, string, int)
+            % This MLDS variable represents a version of a HLDS variable
+            % (of the name and number given by the second and third args)
+            % created by a boxing or unboxing operation. The first integer
+            % is a sequence number that uniquely identifies the operation
+            % within the MLDS code generated for a Mercury procedure.
+            % XXX Why is mlds_prog_var_boxed separate from this?
+
+    ;       mlds_prog_var_next_value(string, int)
+            % This MLDS variable represents the next value to be assigned
+            % to the HLDS variable with the given name and number.
+            %
+            % The compiler must generate such temporaries when generating code
+            % for tail calls that switch input arguments. For example,
+            % if a procedure with head p(X, Y, ...) contains a tail call
+            % p(Y, X, ...), then having the tail call assign the first
+            % two arguments as X := Y, Y := X would not work, since
+            % the first assignment would clobber X. The compiler therefore
+            % generates next_value_of_X := Y, next_value_of_Y := X,
+            % followed by X := next_value_of_X, Y := next_value_of_Y.
+
+    ;       mlds_local_var(string, int)
+            % This MLDS variable represents a local copy of a HLDS variable
+            % (with the given name and number) that is an output variable
+            % of a commit scope. With --nondet-copy-out, the code inside
+            % the scope that produces the HLDS variable assigns its value
+            % to the local copy; this value is then copied to the actual
+            % mlds_prog_var representing the HLDS variable when the scope
+            % succeeds.
+
+    ;       mlds_comp_var(mlds_compiler_var).
+            % This MLDS variable was created by the compiler as part of
+            % the translation process; it does NOT correspond to a variable
+            % in the HLDS.
+
+:- inst mlds_prog_var for mlds_var_name/0
+    --->    mlds_prog_var(ground, ground).
+
+:- type mlds_compiler_var
+    --->    mcv_non_prog_var_boxed(string)
+    ;       mcv_non_prog_var_conv(int, string)
+    ;       mcv_non_prog_var_next_value(string)
+            % What the mlds_prog_var_boxed, mlds_prog_var_conv, and
+            % mlds_prog_var_next_value are to mlds_prog_vars, these are
+            % to mlds_comp_vars. The string is the output of
+            % ml_var_name_to_string of the original mlds_comp_var.
+
+    ;       mcv_succeeded
+            % The MLDS variable indicating whether a compiler generated
+            % semidet goal has succeeded.
+
+    ;       mcv_success_indicator
+            % The MLDS variable representing the target language variable
+            % SUCCESS_INDICATOR used by hand-written code in semidet
+            % foreign_procs to indicate success or failure.
+
+    ;       mcv_new_obj(int)
+            % A temporary variable holding the address of a newly allocated
+            % object, used by accurate gc. The integer is a unique sequence
+            % number allocated from a per-procedure counter that dedicated
+            % for this purpose.
+
+    ;       mcv_dummy_var
+            % HLDS variables of dummy types don't have MLDS variables holding
+            % their values, since they don't *have* values. All HLDS variables
+            % of dummy types are mapped to this single MLDS variable when
+            % they are used in a context that requires an MLDS variable for
+            % them. This MLDS variable is (obviously) never initialized
+            % to any meaningful value.
+
+    ;       mcv_cond(int)
+            % This MLDS variable records whether the condition of a model_non
+            % if-then-else has ever succeeded. The integer is a sequence number
+            % allocated from a counter that is dedicated for this purpose.
+
+    ;       mcv_conv_var(int)
+            % This MLDS variable holds the address of the callee of a generic
+            % call (according to the comment creating it, we need a variable
+            % to hold the address to work around limitations in old C
+            % compilers). The integer is a sequence number allocated from
+            % a counter that is dedicated for this purpose.
+
+    ;       mcv_arg(int)
+            % This MLDS variable represents the Nth output parameter of
+            % a success continuation, where N is the given integer.
+
+    ;       mcv_wrapper_arg(int)
+            % This MLDS variable represents the Nth parameter of the wrapper
+            % function around a procedure, where N is the given integer.
+            % We put a wrapper function around procedures when they are used
+            % as the code in a closure.
+
+    ;       mcv_param(int)
+            % This MLDS variable represents the Nth parameter of an MLDS
+            % function, where N is the given integer, when the declaration
+            % of that function is standardized for printing in an automatically
+            % generated header file. This standardization avoids the need
+            % to regenerate every file that depends on that header file
+            % when the actual names of the corresponding procedure's arguments
+            % change in the HLDS.
+
+    ;       mcv_out_param(int)
+            % This MLDS variable represents the Nth putput parameter of an MLDS
+            % function being compiled to C#, where N is the given integer,
+            % and N > 1. (The C# backend returns the first output parameter
+            % as the return value, but returns the others as the "out"
+            % parameters represented by these MLDS variables.
+
+    ;       mcv_return_value
+            % This MLDS variable represents the return value(s) of method
+            % created by the Java backend.
+            % XXX document me in more detail.
+
+    ;       mcv_closure
+    ;       mcv_closure_arg
+            % These two MLDS variables respectively represent the unboxed
+            % and the boxed versions of a closure.
+
+    ;       mcv_closure_layout_ptr
+            % This MLDS variable holds a pointer to a closure's
+            % MR_Closure_Layout structure. This is used for accurate gc.
+
+    ;       mcv_type_params
+            % This MLDS variable holds a pointer to a closure's materialized
+            % type_infos. This is used for accurate gc.
+
+    ;       mcv_type_info
+            % This MLDS variable holds a pointer to a materialized type_info.
+            % This is used for accurate gc.
+
+    ;       mcv_cont
+    ;       mcv_cont_env_ptr
+            % These MLDS variables hold respectively a nondet continuation,
+            % and the pointer to the environment containing the variables
+            % for the continuation.
+
+    ;       mcv_env
+    ;       mcv_env_ptr
+            % These MLDS variables refer to environments needed to simulate
+            % nested functions in targets that don't support them. The mcv_env
+            % variable is the environment structure itself, while mcv_env_ptr
+            % is its address.
+
+    ;       mcv_env_ptr_arg
+            % This MLDS variable, like mcv_env_ptr, points to an environment
+            % structure, but its type is generic; it is not specific to the
+            % structure of the environment it actually points to. Therefore
+            % mcv_env_ptr_args are cast to mcv_env_ptrs before use.
+
+    ;       mcv_frame
+    ;       mcv_frame_ptr
+            % These MLDS variables refer to the frames that hold variables
+            % when we compile code for accurate gc. The mcv_frame variable
+            % is the frame structure itself, while mcv_frame_ptr
+            % is its address.
+
+    ;       mcv_this_frame
+            % This MLDS variable, like mcv_frame_ptr, points to a frame
+            % that holds variables when we compile for accurate gc, but
+            % its type is generic; it is not specific to the structure
+            % of the frame it actually points to. Therefore mcv_this_frames
+            % are cast to mcv_frame_ptrs before use.
+
+    ;       mcv_prev
+    ;       mcv_trace
+            % These MLDS variables represent two fixed fields in the frames
+            % that hold variables when we compiler for accurate gc. mcv_prev
+            % points to the previous frame (if any) in the chain of frames,
+            % while mcv_trace points to the function that traces the contents
+            % of the current frame.
+
+    ;       mcv_stack_chain
+            % This MLDS variable represents the global variable that holds
+            % the pointer to the current chain of frames.
+
+    ;       mcv_saved_stack_chain(int)
+            % This MLDS variable represents a locally-saved copy of the
+            % global variable represented by mcv_stack_chain.
+
+    ;       mcv_ptr_num
+    ;       mcv_args
+            % These two MLDS variables are used by the Java backend.
+            % I (zs) don't know what their semantics is.
+
+    ;       mcv_reserved_obj_name(string, int)
+            % This MLDS variable is the specially reserved global variable
+            % (or static member variable) whose address is used to represent
+            % the function symbol with the given name and arity.
+
+    ;       mcv_aux_var(mlds_compiler_aux_var, int)
+            % These MLDS variables contain values (most, but not all of which
+            % are very short-lived) used to implement Mercury constructs
+            % such as commits and switches. They contain such information
+            % as the boundaries of a binary search or slot numbers in the
+            % hash tables used to implement switches.
+            % The integer is a sequence number (unique within the procedure)
+            % allocated from a counter that is shared between all mcv_aux_vars.
+
+    ;       mcv_const_var(mlds_compiler_const_var, int)
+            % These MLDS variables are global variables holding constant,
+            % immutable data. What kind of data is given by the first argument.
+            % The integer is a sequence number (unique within the whole module)
+            % allocated from a counter that is shared between all
+            % mcv_const_vars.
+
+    ;       mcv_global_data_field(int, int)
+            % This MLDS "variable name" is actually not the name of a variable,
+            % but the name of a structure field. When implementing lookup
+            % switches (and some related HLDS constructs, such as lookup
+            % disjunctions, which are like lookup switches without the switch),
+            % the compiler generates a vector of rows, with each row holding
+            % one solution generated by the switch (or the disjunction).
+            % We store all solutions that contain the same vector of types
+            % in the same static (immutable) global variable. The type
+            % of this variable is thus an array of structures, with the
+            % types of the field being given by the types of the variables that
+            % comprise the outputs of the HLDS construct being implemented.
+            %
+            % The two arguments of mcv_global_data_field are the type number
+            % and the field number. The type number uniquely identifies
+            % the list of field types in each row (among all the lists of
+            % field types for which we generate static arrays of rows),
+            % while the second just gives the position of the field
+            % in that list. Field numbers start at 0.
+
+    ;       mcv_du_ctor_field_hld(string)
+            % This MLDS "variable name" is actually not the name of a variable,
+            % but the name of a structure field. When compiling with
+            % --high-level-data, we generate a type in the target language
+            % for each data constructor in a discriminated union type;
+            % this MLDS "variable" is the name of one of the fields
+            % of this type.
+            % NOTE: See the XXX on the code that turns these MLDS variables
+            % into strings.
+
+    ;       mcv_mr_value
+    ;       mcv_data_tag
+    ;       mcv_enum_const(string)
+    ;       mcv_sectag_const(string)
+            % These MLDS variables represent member variables in the classes
+            % we generate with --high-level-data for discriminated union types
+            % (both enum and non-enum). I (zs) don't know exactly what
+            % they are used for.
+            % NOTE: See the XXX on the code that turns some these
+            % MLDS variables into strings.
+
+    ;       mcv_base_class(int).
+            % This MLDS variable name is used in the implementation of
+            % base classes in the C backend, but I (zs) don't know exactly
+            % what it is used for.
+
+:- type mlds_compiler_aux_var
+    --->    mcav_commit
+    ;       mcav_slot
+    ;       mcav_later_slot
+    ;       mcav_num_later_solns
+    ;       mcav_limit
+    ;       mcav_str
+    ;       mcav_lo
+    ;       mcav_mid
+    ;       mcav_hi
+    ;       mcav_stop_loop
+    ;       mcav_result
+    ;       mcav_case_num.
+
+:- type mlds_compiler_const_var
+    --->    mccv_const_var
+    ;       mccv_float
+    ;       mccv_closure_layout
+    ;       mccv_typevar_vector
+    ;       mccv_bit_vector.
+
+:- func ml_var_name_to_string(mlds_var_name) = string.
 
     % An lval represents a data location or variable that can be used
     % as the target of an assignment.
@@ -1580,8 +1989,10 @@
             )
 
     % Variables.
-    % These may be local or they may come from some enclosing scope
-    % the variable name should be fully qualified.
+    % These may be local or they may come from some enclosing scope.
+    % The variable name should be fully qualified.
+    % XXX See the comment on mlds_var above about module qualifying the names
+    % of *local* variables.
 
     ;       ml_var(
                 mlds_var,
@@ -1591,9 +2002,9 @@
 :- type global_var_ref
     --->    env_var_ref(string).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% Expressions
+% Expressions.
 %
 
 :- type ml_scalar_common_type_num
@@ -1681,6 +2092,7 @@
     --->    mlconst_true
     ;       mlconst_false
     ;       mlconst_int(int)
+    ;       mlconst_uint(uint)
     ;       mlconst_enum(int, mlds_type)
     ;       mlconst_char(int)
     ;       mlconst_float(float)
@@ -1760,15 +2172,14 @@
             % used to implement memoization, loopcheck or minimal model
             % semantics for the given procedure.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-% Note: the types `tag' and `reset_trail_reason' here are all
-% defined exactly the same as the ones in llds.m.  The definitions are
-% duplicated here because we don't want mlds.m to depend on llds.m.
-% (Alternatively, we could move both these definitions into a new module
-% imported by both mlds.m and llds.m, but these definitions are small enough
-% and simple enough that I don't think it is worth creating a new module
-% just for them.)
+% Note: the types `tag' and `reset_trail_reason' here are all defined
+% exactly the same as the ones in llds.m. The definitions are duplicated here
+% because we don't want mlds.m to depend on llds.m. (Alternatively, we could
+% move both these definitions into a new module in the backend_libs.m package,
+% but these definitions are small enough and simple enough that it is probably
+% not worth creating a new module just for them.)
 
     % A tag should be a small non-negative integer.
     %
@@ -1783,7 +2194,7 @@
     ;       exception
     ;       gc.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type mlds_qualified_proc_label
     ==  mlds_fully_qualified_name(mlds_proc_label).
@@ -1828,7 +2239,7 @@
 
 :- func mlds_std_tabling_proc_label(mlds_proc_label) = mlds_proc_label.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type mlds_exported_enums == list(mlds_exported_enum).
 
@@ -1847,40 +2258,111 @@
                 exported_enum_constant_value    :: mlds_initializer
             ).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
-:- import_module backend_libs.foreign.
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
-:- import_module hlds.hlds_data.
-:- import_module libs.globals.
+:- import_module mdbcomp.builtin_modules.
 :- import_module parse_tree.file_names.
 :- import_module parse_tree.java_names.
-:- import_module parse_tree.prog_type.
 
-:- import_module int.
 :- import_module require.
 :- import_module string.
 :- import_module term.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 mlds_get_module_name(MLDS) = MLDS ^ mlds_name.
 
-%-----------------------------------------------------------------------------%
+% For Java:
+% The "package_name" is really the name of the Mercury module, and the
+% "module_name" is the "package_name" plus additional qualifiers (if any).
+% For example, a type `c' in module `a.b' would have package_name == `a.b'
+% and module_name == `a.b.c'.
+% XXX clean this up
+%
+% Note that modules in the Mercury standard library map get a `mercury'
+% prefix e.g. `mercury.builtin', `mercury.io', `mercury.univ', etc.,
+% when mapped to MLDS package names.
 
-% Currently mlds_contexts just contain a prog_context.
+:- type mlds_module_name
+    --->    mlds_module_name(
+                mmn_package_name    :: mdbcomp.sym_name.module_name,
+                mmn_module_name     :: mdbcomp.sym_name.module_name
+            ).
 
-:- type mlds_context
-    --->    mlds_context(prog_context).
+mercury_module_name_to_mlds(MercuryModule) = Name :-
+    ( if mercury_std_library_module_name(MercuryModule) then
+        MLDS_Package = add_outermost_qualifier("mercury", MercuryModule)
+    else
+        MLDS_Package = MercuryModule
+    ),
+    Name = mlds_module_name(MLDS_Package, MLDS_Package).
 
-mlds_make_context(Context) = mlds_context(Context).
+mercury_module_and_package_name_to_mlds(MLDS_Package, MercuryModule)
+    = mlds_module_name(MLDS_Package, MercuryModule).
 
-mlds_get_prog_context(mlds_context(Context)) = Context.
+mlds_module_name_to_sym_name(Module) = Module ^ mmn_module_name.
 
-%-----------------------------------------------------------------------------%
+mlds_module_name_to_package_name(Module) = Module ^ mmn_package_name.
+
+is_std_lib_module(Module, Name) :-
+    Name0 = Module ^ mmn_module_name,
+    strip_outermost_qualifier(Name0, "mercury", Name),
+    mercury_std_library_module_name(Name).
+
+%---------------------------------------------------------------------------%
+
+mlds_append_class_qualifier(Target, mlds_module_name(Package, Module),
+        QualKind, ClassName, ClassArity) = Name :-
+    % For the Java back-end, we flip the initial case of an type qualifiers,
+    % in order to match the usual Java conventions.
+    ( if
+        Target = target_java,
+        QualKind = type_qual
+    then
+        AdjustedModule = flip_initial_case_of_final_part(Module)
+    else
+        AdjustedModule = Module
+    ),
+    string.format("%s_%d", [s(ClassName), i(ClassArity)], ClassQualifier),
+    Name = mlds_module_name(Package,
+        qualified(AdjustedModule, ClassQualifier)).
+
+mlds_append_wrapper_class(Name) = mlds_append_name(Name, wrapper_class_name).
+
+mlds_append_name(mlds_module_name(Package, Module), Name)
+    = mlds_module_name(Package, qualified(Module, Name)).
+
+wrapper_class_name = "mercury_code".
+
+%---------------------------------------------------------------------------%
+
+get_initializer_array_size(no_initializer) = no_size.
+get_initializer_array_size(init_obj(_)) = no_size.
+get_initializer_array_size(init_struct(_, _)) = no_size.
+get_initializer_array_size(init_array(Elems)) = array_size(list.length(Elems)).
+
+%---------------------------------------------------------------------------%
+
+wrap_data_defn(DataDefn) = mlds_data(DataDefn).
+wrap_function_defn(FunctionDefn) = mlds_function(FunctionDefn).
+wrap_class_defn(ClassDefn) = mlds_class(ClassDefn).
+
+%---------------------------------------------------------------------------%
+
+mlds_get_arg_types(Parameters) = ArgTypes :-
+    GetArgType = (func(mlds_argument(_, Type, _)) = Type),
+    ArgTypes = list.map(GetArgType, Parameters).
+
+mlds_get_func_signature(mlds_func_params(Parameters, RetTypes)) =
+        mlds_func_signature(ParamTypes, RetTypes) :-
+    ParamTypes = mlds_get_arg_types(Parameters).
+
+%---------------------------------------------------------------------------%
 
 % There is some special-case handling for arrays, foreign types and some
 % other types here, but apart from that, currently we return mlds_types
@@ -1891,18 +2373,18 @@ mlds_get_prog_context(mlds_context(Context)) = Context.
 % and instead fully convert all Mercury types to MLDS types.
 
 mercury_type_to_mlds_type(ModuleInfo, Type) = MLDSType :-
-    ( type_to_ctor_and_args(Type, TypeCtor, TypeArgs) ->
-        (
+    ( if type_to_ctor_and_args(Type, TypeCtor, TypeArgs) then
+        ( if
             TypeCtor = type_ctor(qualified(unqualified("array"), "array"), 1),
             TypeArgs = [ElemType]
-        ->
+        then
             MLDSElemType = mercury_type_to_mlds_type(ModuleInfo, ElemType),
             MLDSType = mlds_mercury_array_type(MLDSElemType)
-        ;
+        else if
             TypeCtor = type_ctor(qualified(mercury_private_builtin_module,
                 "store_at_ref_type"), 1),
             TypeArgs = [RefType]
-        ->
+        then
             MLDSRefType = mercury_type_to_mlds_type(ModuleInfo, RefType),
             module_info_get_globals(ModuleInfo, Globals),
             globals.get_target(Globals, Target),
@@ -1914,36 +2396,34 @@ mercury_type_to_mlds_type(ModuleInfo, Type) = MLDSType :-
                 MLDSType = MLDSRefType
             ;
                 ( Target = target_c
-                ; Target = target_il
                 ; Target = target_java
-                ; Target = target_x86_64
                 ; Target = target_erlang
                 ),
                 MLDSType = mlds_ptr_type(MLDSRefType)
             )
-        ;
+        else
             module_info_get_type_table(ModuleInfo, TypeTable),
-            ( search_type_ctor_defn(TypeTable, TypeCtor, TypeDefn) ->
+            ( if search_type_ctor_defn(TypeTable, TypeCtor, TypeDefn) then
                 hlds_data.get_type_defn_body(TypeDefn, TypeBody),
-                ( TypeBody = hlds_foreign_type(ForeignTypeBody) ->
+                ( if TypeBody = hlds_foreign_type(ForeignTypeBody) then
                     MLDSType = foreign_type_to_mlds_type(ModuleInfo,
                         ForeignTypeBody)
-                ; TypeBody = hlds_abstract_type(_) ->
+                else if TypeBody = hlds_abstract_type(_) then
                     Category = classify_type_ctor(ModuleInfo, TypeCtor),
                     ExportedType = non_foreign_type(Type),
                     MLDSType = mercury_type(Type, Category, ExportedType)
-                ;
+                else
                     Category = classify_type_defn_body(TypeBody),
                     ExportedType = non_foreign_type(Type),
                     MLDSType = mercury_type(Type, Category, ExportedType)
                 )
-            ;
+            else
                 Category = classify_type_ctor(ModuleInfo, TypeCtor),
                 ExportedType = non_foreign_type(Type),
                 MLDSType = mercury_type(Type, Category, ExportedType)
             )
         )
-    ;
+    else
         Category = ctor_cat_variable,
         ExportedType = non_foreign_type(Type),
         MLDSType = mercury_type(Type, Category, ExportedType)
@@ -1956,7 +2436,7 @@ foreign_type_to_mlds_type(ModuleInfo, ForeignTypeBody) = MLDSType :-
     % foreign_type_body_to_exported_type in foreign.m.
     % Any changes here may require changes there as well.
 
-    ForeignTypeBody = foreign_type_body(MaybeIL, MaybeC, MaybeJava,
+    ForeignTypeBody = foreign_type_body(MaybeC, MaybeJava,
         MaybeCSharp, _MaybeErlang),
     module_info_get_globals(ModuleInfo, Globals),
     globals.get_target(Globals, Target),
@@ -1970,17 +2450,6 @@ foreign_type_to_mlds_type(ModuleInfo, ForeignTypeBody) = MLDSType :-
             MaybeC = no,
             % This is checked by check_foreign_type in make_hlds.
             unexpected($module, $pred, "no C foreign type")
-        )
-    ;
-        Target = target_il,
-        (
-            MaybeIL = yes(Data),
-            Data = foreign_type_lang_data(ILForeignType, _, _),
-            ForeignType = il(ILForeignType)
-        ;
-            MaybeIL = no,
-            % This is checked by check_foreign_type in make_hlds.
-            unexpected($module, $pred, "no IL foreign type")
         )
     ;
         Target = target_csharp,
@@ -2005,97 +2474,374 @@ foreign_type_to_mlds_type(ModuleInfo, ForeignTypeBody) = MLDSType :-
             unexpected($module, $pred, "no Java foreign type")
         )
     ;
-        Target = target_x86_64,
-        unexpected($module, $pred, "target x86_64 with --high-level-code")
-    ;
         Target = target_erlang,
         unexpected($module, $pred, "target erlang")
     ),
     MLDSType = mlds_foreign_type(ForeignType).
 
-%-----------------------------------------------------------------------------%
-
-get_initializer_array_size(no_initializer) = no_size.
-get_initializer_array_size(init_obj(_)) = no_size.
-get_initializer_array_size(init_struct(_, _)) = no_size.
-get_initializer_array_size(init_array(Elems)) = array_size(list.length(Elems)).
-
-mlds_get_func_signature(mlds_func_params(Parameters, RetTypes)) =
-        mlds_func_signature(ParamTypes, RetTypes) :-
-    ParamTypes = mlds_get_arg_types(Parameters).
-
-mlds_get_arg_types(Parameters) = ArgTypes :-
-    GetArgType = (func(mlds_argument(_, Type, _)) = Type),
-    ArgTypes = list.map(GetArgType, Parameters).
-
-%-----------------------------------------------------------------------------%
-
-% For IL:
-% An MLDS module name consists of two parts. One part is the package
-% which the module name is defined in, and the other part is the actual
-% module name. For example the module name System.XML could be defined
-% in the package XML.
+%---------------------------------------------------------------------------%
 %
-% For Java:
-% The "package_name" is really the name of the Mercury module, and the
-% "module_name" is the "package_name" plus additional qualifiers (if any).
-% For example, a type `c' in module `a.b' would have package_name == `a.b'
-% and module_name == `a.b.c'.
-% XXX clean this up
+% The flags contain the following information:
 %
-% Note that modules in the Mercury standard library map get a `mercury'
-% prefix e.g. `mercury.builtin', `mercury.io', `mercury.univ', etc.,
-% when mapped to MLDS package names.
+% access,               % public/private/protected
+% member_type,          % static/per_instance
+% virtuality,           % virtual/non_virtual
+% overridability,       % sealed/overridable (class/funcs only)
+% constness,            % const/modifiable  (data only)
+% is_abstract,          % abstract/concrete
+%
+% Note that the compiler can pack all the enumeration arguments together,
+% though a cell will still be allocated.
+%
 
-% :- type mlds_module_name == prim_data.module_name.
-:- type mlds_module_name
-    --->    mlds_module_name(
-                mmn_package_name    :: prim_data.module_name,
-                mmn_module_name     :: prim_data.module_name
+%---------------------------------------------------------------------------%
+
+:- type mlds_data_decl_flags
+    --->    mlds_data_decl_flags(
+                mddf_access          :: access,
+                mddf_per_instance    :: per_instance,
+                mddf_constness       :: constness
             ).
 
-mercury_module_and_package_name_to_mlds(MLDS_Package, MercuryModule)
-    = mlds_module_name(MLDS_Package, MercuryModule).
+init_data_decl_flags(Access, PerInstance, Constness) =
+    mlds_data_decl_flags(Access, PerInstance, Constness).
 
-mercury_module_name_to_mlds(MercuryModule) = Name :-
-    ( mercury_std_library_module_name(MercuryModule) ->
-        MLDS_Package = add_outermost_qualifier("mercury", MercuryModule)
-    ;
-        MLDS_Package = MercuryModule
-    ),
-    Name = mlds_module_name(MLDS_Package, MLDS_Package).
+get_data_access(Flags) = X :-
+    X = Flags ^ mddf_access.
+get_data_per_instance(Flags) = X :-
+    X = Flags ^ mddf_per_instance.
+get_data_constness(Flags) = X :-
+    X = Flags ^ mddf_constness.
 
-is_std_lib_module(Module, Name) :-
-    Name0 = Module ^ mmn_module_name,
-    strip_outermost_qualifier(Name0, "mercury", Name),
-    mercury_std_library_module_name(Name).
+set_data_access(Access, !Flags) :-
+    !Flags ^ mddf_access := Access.
+set_data_per_instance(PerInstance, !Flags) :-
+    !Flags ^ mddf_per_instance := PerInstance.
+set_data_constness(Constness, !Flags) :-
+    !Flags ^ mddf_constness := Constness.
 
-mlds_module_name_to_sym_name(Module) = Module ^ mmn_module_name.
+ml_static_const_decl_flags = DeclFlags :-
+    % Note that rtti_data_decl_flags, in rtti_to_mlds.m,
+    % must be the same as this apart from the access.
+    Access = acc_local,
+    PerInstance = one_copy,
+    Constness = const,
+    DeclFlags = init_data_decl_flags(Access, PerInstance, Constness).
 
-mlds_module_name_to_package_name(Module) = Module ^ mmn_package_name.
+%---------------------------------------------------------------------------%
 
-mlds_append_class_qualifier(Target, mlds_module_name(Package, Module),
-        QualKind, ClassName, ClassArity) = Name :-
-    % For the Java back-end, we flip the initial case of an type qualifiers,
-    % in order to match the usual Java conventions.
+:- type mlds_function_decl_flags
+    --->    mlds_function_decl_flags(
+                mfdf_access         :: access,
+                mfdf_per_instance   :: per_instance
+            ).
+
+init_function_decl_flags(Access, PerInstance) =
+    mlds_function_decl_flags(Access, PerInstance).
+
+get_function_access(Flags) = X :-
+    X = Flags ^ mfdf_access.
+get_function_per_instance(Flags) = X :-
+    X = Flags ^ mfdf_per_instance.
+
+set_function_access(Access, !Flags) :-
+    !Flags ^ mfdf_access := Access.
+set_function_per_instance(PerInstance, !Flags) :-
+    !Flags ^ mfdf_per_instance := PerInstance.
+
+%---------------------------------------------------------------------------%
+
+:- type mlds_class_decl_flags
+    --->    mlds_class_decl_flags(
+                mcdf_access         :: class_access,
+                mcdf_overridability :: overridability,
+                mcdf_constness      :: constness
+            ).
+
+init_class_decl_flags(Access, Overridability, Constness) =
+    mlds_class_decl_flags(Access, Overridability, Constness).
+
+get_class_access(Flags) = X :-
+    X = Flags ^ mcdf_access.
+get_class_overridability(Flags) = X :-
+    X = Flags ^ mcdf_overridability.
+get_class_constness(Flags) = X :-
+    X = Flags ^ mcdf_constness.
+
+set_class_access(Access, !Flags) :-
+    !Flags ^ mcdf_access := Access.
+set_class_overridability(Overridability, !Flags) :-
+    !Flags ^ mcdf_overridability := Overridability.
+set_class_constness(Constness, !Flags) :-
+    !Flags ^ mcdf_constness := Constness.
+
+%---------------------------------------------------------------------------%
+
+    % Currently mlds_contexts just contain a prog_context.
+:- type mlds_context
+    --->    mlds_context(prog_context).
+
+mlds_make_context(Context) = mlds_context(Context).
+
+mlds_get_prog_context(mlds_context(Context)) = Context.
+
+%---------------------------------------------------------------------------%
+
+ml_var_name_to_string(Var) = Str :-
     (
-        Target = target_java,
-        QualKind = type_qual
-    ->
-        AdjustedModule = flip_initial_case_of_final_part(Module)
+        Var = mlds_prog_var(ProgVarName, ProgVarNum),
+        ( if ProgVarName = "" then
+            Str = string.format("Var_%d", [i(ProgVarNum)])
+        else
+            Str = string.format("%s_%d", [s(ProgVarName), i(ProgVarNum)])
+        )
     ;
-        AdjustedModule = Module
-    ),
-    string.format("%s_%d", [s(ClassName), i(ClassArity)], ClassQualifier),
-    Name = mlds_module_name(Package,
-        qualified(AdjustedModule, ClassQualifier)).
+        Var = mlds_prog_var_foreign(ProgVarName),
+        ( if ProgVarName = "" then
+            unexpected($pred, "mlds_prog_var_foreign with empty name")
+        else
+            Str = ProgVarName
+        )
+    ;
+        Var = mlds_prog_var_boxed(ProgVarName, ProgVarNum),
+        ( if ProgVarName = "" then
+            Str = string.format("boxed_Var_%d", [i(ProgVarNum)])
+        else
+            Str = string.format("boxed_%s_%d", [s(ProgVarName), i(ProgVarNum)])
+        )
+    ;
+        Var = mlds_prog_var_conv(ConvSeq, ProgVarName, ProgVarNum),
+        ( if ProgVarName = "" then
+            Str = string.format("conv%d_Var_%d", [i(ConvSeq), i(ProgVarNum)])
+        else
+            Str = string.format("conv%d_%s_%d",
+                [i(ConvSeq), s(ProgVarName), i(ProgVarNum)])
+        )
+    ;
+        Var = mlds_prog_var_next_value(ProgVarName, ProgVarNum),
+        % Before the change to structure representations of mlds_var_names,
+        % we used to add "__tmp_copy" as a suffix, not "next_value_of_"
+        % as a prefix. Using a suffix created the possibility of conflict
+        % with other compiler generated names (which could have added a
+        % known prefix to a string controlled by the user, which in turn
+        % *could* have ended in "__tmp_copy"), and the "tmp_copy" part
+        % was also misleading, since these variables are not copied *from*
+        % the variable they are named after; in fact, they are copied *to*
+        % that variable.
+        ( if ProgVarName = "" then
+            Str = string.format("next_value_of_Var_%d", [i(ProgVarNum)])
+        else
+            Str = string.format("next_value_of_%s_%d",
+                [s(ProgVarName), i(ProgVarNum)])
+        )
+    ;
+        Var = mlds_local_var(ProgVarName, ProgVarNum),
+        ( if ProgVarName = "" then
+            Str = string.format("local_Var_%d", [i(ProgVarNum)])
+        else
+            Str = string.format("local_%s_%d", [s(ProgVarName), i(ProgVarNum)])
+        )
+    ;
+        Var = mlds_comp_var(CompVar),
+        (
+            CompVar = mcv_non_prog_var_boxed(BaseVarStr),
+            Str = string.format("boxed_%s", [s(BaseVarStr)])
+        ;
+            CompVar = mcv_non_prog_var_conv(ConvSeq, BaseVarStr),
+            Str = string.format("conv%d_%s", [i(ConvSeq), s(BaseVarStr)])
+        ;
+            CompVar = mcv_non_prog_var_next_value(BaseVarStr),
+            Str = string.format("next_value_of_%s", [s(BaseVarStr)])
+        ;
+            CompVar = mcv_succeeded,
+            Str = "succeeded"
+        ;
+            CompVar = mcv_success_indicator,
+            Str = "SUCCESS_INDICATOR"
+        ;
+            CompVar = mcv_new_obj(Id),
+            Str = string.format("new_obj_%d", [i(Id)])
+        ;
+            CompVar = mcv_dummy_var,
+            Str = "dummy_var"
+        ;
+            CompVar = mcv_cond(CondNum),
+            Str = string.format("cond_%d", [i(CondNum)])
+        ;
+            CompVar = mcv_conv_var(ConvVarNum),
+            Str = string.format("func_%d", [i(ConvVarNum)])
+        ;
+            CompVar = mcv_arg(ArgNum),
+            Str = string.format("arg%d", [i(ArgNum)])
+        ;
+            CompVar = mcv_wrapper_arg(ArgNum),
+            Str = string.format("wrapper_arg_%d", [i(ArgNum)])
+        ;
+            CompVar = mcv_param(ArgNum),
+            Str = string.format("param_%d", [i(ArgNum)])
+        ;
+            CompVar = mcv_out_param(ArgNum),
+            Str = string.format("out_param_%d", [i(ArgNum)])
+        ;
+            CompVar = mcv_return_value,
+            Str = "return_value"
+        ;
+            CompVar = mcv_closure,
+            Str = "closure"
+        ;
+            CompVar = mcv_closure_arg,
+            Str = "closure_arg"
+        ;
+            CompVar = mcv_closure_layout_ptr,
+            Str = "closure_layout_ptr"
+        ;
+            CompVar = mcv_type_params,
+            Str = "type_params"
+        ;
+            CompVar = mcv_type_info,
+            Str = "type_info"
+        ;
+            CompVar = mcv_cont,
+            Str = "cont"
+        ;
+            CompVar = mcv_cont_env_ptr,
+            Str = "cont_env_ptr"
+        ;
+            CompVar = mcv_env,
+            Str = "env"
+        ;
+            CompVar = mcv_env_ptr,
+            Str = "env_ptr"
+        ;
+            CompVar = mcv_env_ptr_arg,
+            Str = "env_ptr_arg"
+        ;
+            CompVar = mcv_frame,
+            Str = "frame"
+        ;
+            CompVar = mcv_frame_ptr,
+            Str = "frame_ptr"
+        ;
+            CompVar = mcv_this_frame,
+            Str = "this_frame"
+        ;
+            CompVar = mcv_prev,
+            Str = "prev"
+        ;
+            CompVar = mcv_trace,
+            Str = "trace"
+        ;
+            CompVar = mcv_stack_chain,
+            Str = "stack_chain"
+        ;
+            CompVar = mcv_saved_stack_chain(Id),
+            Str = string.format("saved_stack_chain_%d", [i(Id)])
+        ;
+            CompVar = mcv_ptr_num,
+            Str = "ptr_num"
+        ;
+            CompVar = mcv_args,
+            Str = "args"
+        ;
+            CompVar = mcv_reserved_obj_name(CtorName, CtorArity),
+            Str = string.format("obj_%s_%d", [s(CtorName), i(CtorArity)])
+        ;
+            CompVar = mcv_aux_var(AuxVar, Num),
+            (
+                AuxVar = mcav_commit,
+                AuxVarStr = "commit"
+            ;
+                AuxVar = mcav_slot,
+                AuxVarStr = "slot"
+            ;
+                AuxVar = mcav_later_slot,
+                AuxVarStr = "later_slot"
+            ;
+                AuxVar = mcav_num_later_solns,
+                AuxVarStr = "num_later_solns"
+            ;
+                AuxVar = mcav_limit,
+                AuxVarStr = "limit"
+            ;
+                AuxVar = mcav_str,
+                AuxVarStr = "str"
+            ;
+                AuxVar = mcav_lo,
+                AuxVarStr = "lo"
+            ;
+                AuxVar = mcav_mid,
+                AuxVarStr = "mid"
+            ;
+                AuxVar = mcav_hi,
+                AuxVarStr = "hi"
+            ;
+                AuxVar = mcav_stop_loop,
+                AuxVarStr = "stop_loop"
+            ;
+                AuxVar = mcav_result,
+                AuxVarStr = "result"
+            ;
+                AuxVar = mcav_case_num,
+                AuxVarStr = "case_num"
+            ),
+            Str = string.format("%s_%d", [s(AuxVarStr), i(Num)])
+        ;
+            CompVar = mcv_const_var(ConstVar, Num),
+            (
+                ConstVar = mccv_const_var,
+                ConstVarStr = "const_var"
+            ;
+                ConstVar = mccv_float,
+                ConstVarStr = "float"
+            ;
+                ConstVar = mccv_closure_layout,
+                ConstVarStr = "closure_layout"
+            ;
+                ConstVar = mccv_typevar_vector,
+                ConstVarStr = "typevar_vector"
+            ;
+                ConstVar = mccv_bit_vector,
+                ConstVarStr = "bit_vector"
+            ),
+            Str = string.format("%s_%d", [s(ConstVarStr), i(Num)])
+        ;
+            CompVar = mcv_global_data_field(TypeRawNum, FieldNum),
+            Str = string.format("vct_%d_f_%d", [i(TypeRawNum), i(FieldNum)])
+        ;
+            CompVar = mcv_du_ctor_field_hld(FieldName),
+            % XXX There is nothing to stop the variable names we generate here
+            % from clashing with the strings we generate for other kinds of
+            % mlds_var_names. In particular, the values of FieldName that
+            % ml_gen_hld_field_name generates for unnamed field in a Mercury
+            % type, which are generated with "F" ++ .int_to_string(ArgNum),
+            % *will* conflict with the mlds_prog_vars that correspond
+            % to any variables that the user names "F1", "F2" and so on.
+            Str = FieldName
+        ;
+            CompVar = mcv_mr_value,
+            Str = "MR_value"
+        ;
+            CompVar = mcv_data_tag,
+            Str = "data_tag"
+        ;
+            CompVar = mcv_enum_const(ConstName),
+            % XXX There is nothing to stop the variable names we generate here
+            % from clashing with the strings we generate for other kinds of
+            % mlds_var_names.
+            Str = ConstName
+        ;
+            CompVar = mcv_sectag_const(ConstName),
+            % XXX There is nothing to stop the variable names we generate here
+            % from clashing with the strings we generate for other kinds of
+            % mlds_var_names.
+            Str = ConstName
+        ;
+            CompVar = mcv_base_class(BaseNum),
+            Str = string.format("base_%d", [i(BaseNum)])
+        )
+    ).
 
-mlds_append_wrapper_class(Name) = mlds_append_name(Name, wrapper_class_name).
-
-mlds_append_name(mlds_module_name(Package, Module), Name)
-    = mlds_module_name(Package, qualified(Module, Name)).
-
-wrapper_class_name = "mercury_code".
+%---------------------------------------------------------------------------%
 
 mlds_std_tabling_proc_label(ProcLabel0) = ProcLabel :-
     % We standardize the parts of PredLabel0 that aren't computable from
@@ -2114,58 +2860,6 @@ mlds_std_tabling_proc_label(ProcLabel0) = ProcLabel :-
     ),
     ProcLabel = mlds_proc_label(PredLabel, ProcId).
 
-%-----------------------------------------------------------------------------%
-
-    % The compiler can pack all the enumeration arguments together,
-    % though a cell will still be allocated.
-    %
-:- type mlds_decl_flags
-    --->    mlds_decl_flags(
-                mdf_access          :: access,
-                mdf_per_instance    :: per_instance,
-                mdf_virtuality      :: virtuality,
-                mdf_overridability  :: overridability,
-                mdf_constness       :: constness,
-                mdf_abstractness    :: abstractness
-            ).
-
-access(Flags) = Flags ^ mdf_access.
-per_instance(Flags) = Flags ^ mdf_per_instance.
-virtuality(Flags) = Flags ^ mdf_virtuality.
-overridability(Flags) = Flags ^ mdf_overridability.
-constness(Flags) = Flags ^ mdf_constness.
-abstractness(Flags) = Flags ^ mdf_abstractness.
-
-set_access(Flags, Access) =
-    Flags ^ mdf_access := Access.
-set_per_instance(Flags, PerInstance) =
-    Flags ^ mdf_per_instance := PerInstance.
-set_virtuality(Flags, Virtuality) =
-    Flags ^ mdf_virtuality := Virtuality.
-set_overridability(Flags, Overridability) =
-    Flags ^ mdf_overridability := Overridability.
-set_constness(Flags, Constness) =
-    Flags ^ mdf_constness := Constness.
-set_abstractness(Flags, Abstractness) =
-    Flags ^ mdf_abstractness := Abstractness.
-
-init_decl_flags(Access, PerInstance, Virtuality, Overridability, Constness,
-        Abstractness) =
-    mlds_decl_flags(Access, PerInstance, Virtuality, Overridability, Constness,
-        Abstractness).
-
-ml_static_const_decl_flags = DeclFlags :-
-    % Note that rtti_data_decl_flags, in rtti_to_mlds.m,
-    % must be the same as this apart from the access.
-    Access = acc_local,
-    PerInstance = one_copy,
-    Virtuality = non_virtual,
-    Overridability = overridable,
-    Constness = const,
-    Abstractness = concrete,
-    DeclFlags = init_decl_flags(Access, PerInstance,
-        Virtuality, Overridability, Constness, Abstractness).
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module ml_backend.mlds.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

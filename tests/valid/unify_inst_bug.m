@@ -1,10 +1,14 @@
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
+
 :- module unify_inst_bug.
 :- interface.
 
 :- type t(T) ---> t ; t(t(t(T))).
 :- inst t(T) ---> t ; t(t(t(T))).
 
-:- mode m :: in(t(ground)).
+:- mode m == in(t(ground)).
 
 :- pred p(t(int)::m, t(int)::m) is semidet.
 
@@ -17,4 +21,3 @@
 % unification never terminates.
 
 p(X, X).
-

@@ -1,4 +1,6 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab
+#-----------------------------------------------------------------------------#
 # Copyright (C) 1995-2012 The University of Melbourne.
 # This file may only be copied under the terms of the GNU General
 # Public Licence - see the file COPYING in the Mercury distribution.
@@ -34,7 +36,7 @@ include Mercury.options
 
 MAIN_TARGET = all
 
-ALL_DEEP_MODULES = \
+ALL_DEEP_MAIN_MODULES = \
 	mdprof_cgi \
 	mdprof_test \
 	mdprof_dump \
@@ -43,11 +45,11 @@ ALL_DEEP_MODULES = \
 	mdprof_procrep
 
 # Always compile the deep profiler, even if it is not enabled.
-# 
+#
 MAIN_TARGET=all
-MERCURY_MAIN_MODULES=$(ALL_DEEP_MODULES)
-DEPEND=$(patsubst %,%.depend,$(ALL_DEEP_MODULES))
-PDBS=$(patsubst %,%.pdb,$(ALL_DEEP_MODULES))
+MERCURY_MAIN_MODULES=$(ALL_DEEP_MAIN_MODULES)
+DEPEND=$(patsubst %,%.depend,$(ALL_DEEP_MAIN_MODULES))
+PDBS=$(patsubst %,%.pdb,$(ALL_DEEP_MAIN_MODULES))
 
 ifeq ("$(ENABLE_DEEP_PROFILER)","yes")
 	INSTALL=install_cgi_progs
@@ -60,6 +62,7 @@ VPATH = $(LIBRARY_DIR) $(SSDB_DIR)
 #-----------------------------------------------------------------------------#
 
 MDBCOMP_MODULES = \
+	builtin_modules.m \
 	feedback.automatic_parallelism.m \
 	feedback.m \
 	mdbcomp.m \
@@ -69,9 +72,8 @@ MDBCOMP_MODULES = \
 	rtti_access.m \
 	shared_utilities.m \
 	slice_and_dice.m \
+	sym_name.m \
 	trace_counts.m
-
-MDBCOMP_ORIG_MODULES = $(patsubst %,$(MDBCOMP_DIR)/%,$(MDBCOMP_MODULES))
 
 #-----------------------------------------------------------------------------#
 
@@ -88,14 +90,14 @@ endif
 
 #-----------------------------------------------------------------------------#
 
-ifneq ("$(filter il% csharp% java% erlang%,$(GRADE))","")
+ifneq ("$(filter csharp% java% erlang%,$(GRADE))","")
 MLOBJS =
 endif
 
 #-----------------------------------------------------------------------------#
 
 # The deep profiler contains quite a lot of C code for which there are
-# currently not C#, IL, Java or Erlang implementations.  We need to pass
+# currently not C#, Java or Erlang implementations. We need to pass
 # `--allow-stubs' in order to compile it.
 #
 ifneq ("$(filter il% csharp% java% erlang%,$(GRADE))","")
@@ -120,28 +122,30 @@ Mercury.modules: DEEP_FLAGS
 	$(MC) $(ALL_GRADEFLAGS) $(ALL_MCFLAGS) -f *.m
 
 .PHONY: all
-all:	$(MDBCOMP_MODULES) $(ALL_DEEP_MODULES) $(TAGS_FILE_EXISTS)
+all:	$(MDBCOMP_MODULES) $(ALL_DEEP_MAIN_MODULES) $(TAGS_FILE_EXISTS)
 
-# We use the sentinel file .mdbcomp_modules to avoid the race condition that
-# exists because the rule would normally be invoked for each of the mdbcomp
-# modules.  Note that a .PHONY target does not work.  However, we also need
-# to use the no-op action '@' to allow make to see that the timestamps on
-# the $(MDBCOMP_MODULES) have changed and that other things may need
-# rebuilding.
-$(MDBCOMP_MODULES): .mdbcomp_modules
-	@
-
-# We need to start by turning write permission on for each copied file
-# in case some exist, but we need to ignore errors in case some don't exist.
-# The exit 0 is to prevent make itself from printing a message about the
-# (ignored) failure of an action.
+#-----------------------------------------------------------------------------#
 #
-# We could modify the action here to copy only the changed files.
-.mdbcomp_modules : $(MDBCOMP_ORIG_MODULES)
-	-@chmod a+w $(MDBCOMP_MODULES) > /dev/null 2>&1; exit 0
-	cp $(MDBCOMP_ORIG_MODULES) .
-	@chmod a-w $(MDBCOMP_MODULES)
-	touch $@
+# The programs in this directory rely on the mdbcomp package, since
+# it contains the types that define the representation of Mercury programs
+# for tools such as debuggers and profilers, and predicates that operate on
+# those representations.
+#
+# If we linked ../mdbcomp/libmer_mdbcomp.so into the executables in this
+# directory, then those executables would have to be compiled in the same grade
+# as the modules of the mdbcomp directory, which in turn is the same grade
+# as the modules of the library and compiler directories. This would work,
+# but it would mean that rebuilding the tools in this directory in another
+# grade (e.g. to enable debugging) would take several minutes. To avoid such
+# delays, we copy across the source files of the mdbcomp library. The copied
+# .m files, and the .m files that natively reside in this directory, can be
+# recompiled in a different grade much more quickly than that.
+#
+
+$(MDBCOMP_MODULES): %: $(MDBCOMP_DIR)/%
+	-@/bin/rm -f $*
+	@cp $(MDBCOMP_DIR)/$* .
+	@chmod a-w $*
 
 #-----------------------------------------------------------------------------#
 
@@ -175,10 +179,10 @@ $(cs_subdir)mdprof_procrep_init.c:		$(UTIL_DIR)/mkinit$(EXT_FOR_EXE)
 #-----------------------------------------------------------------------------#
 
 .PHONY: check
-check:	DEPEND=$(patsubst %,%.check,$(ALL_DEEP_MODULES))
+check:	DEPEND=$(patsubst %,%.check,$(ALL_DEEP_MAIN_MODULES))
 
-.PHONY: ints 
-ints:	DEPEND=$(patsubst %,%.ints,$(ALL_DEEP_MODULES))
+.PHONY: ints
+ints:	DEPEND=$(patsubst %,%.ints,$(ALL_DEEP_MAIN_MODULES))
 
 #-----------------------------------------------------------------------------#
 
@@ -206,9 +210,10 @@ DEEP_MS = \
 
 .PHONY: tags_file_exists
 tags_file_exists:
-	@if test ! -f tags; then echo making tags; \
-	$(MTAGS) $(DEEP_MS) $(MDBCOMP_DIR)/*.m $(LIBRARY_DIR)/*.m; \
-	touch .deep_tags; \
+	@if test ! -f tags; then \
+		echo making tags; \
+		$(MTAGS) $(DEEP_MS) $(MDBCOMP_DIR)/*.m $(LIBRARY_DIR)/*.m; \
+		touch .deep_tags; \
 	fi
 
 #-----------------------------------------------------------------------------#
@@ -289,16 +294,27 @@ install_cgi_progs: mdprof_cgi mdprof_dump mdprof_test \
 	# with the deep profiler, so we install them as well.
 	-[ -d $(INSTALL_MERC_BIN_DIR) ] || mkdir -p $(INSTALL_MERC_BIN_DIR)
 	cp `vpath_find mdprof_cgi$(EXT_FOR_EXE)` \
-		$(INSTALL_MERC_BIN_DIR)/mdprof_cgi
+		$(INSTALL_MERC_BIN_DIR)/mdprof_cgi$(EXT_FOR_EXE)
 	cp `vpath_find mdprof_test$(EXT_FOR_EXE)` \
-		$(INSTALL_MERC_BIN_DIR)/mdprof_test
+		$(INSTALL_MERC_BIN_DIR)/mdprof_test$(EXT_FOR_EXE)
 	cp `vpath_find mdprof_dump$(EXT_FOR_EXE)` \
-		$(INSTALL_MERC_BIN_DIR)/mdprof_dump
+		$(INSTALL_MERC_BIN_DIR)/mdprof_dump$(EXT_FOR_EXE)
 	cp `vpath_find mdprof_create_feedback$(EXT_FOR_EXE)` \
-		$(INSTALL_MERC_BIN_DIR)/mdprof_create_feedback
+		$(INSTALL_MERC_BIN_DIR)/mdprof_create_feedback$(EXT_FOR_EXE)
 	cp `vpath_find mdprof_report_feedback$(EXT_FOR_EXE)` \
-		$(INSTALL_MERC_BIN_DIR)/mdprof_report_feedback
+		$(INSTALL_MERC_BIN_DIR)/mdprof_report_feedback$(EXT_FOR_EXE)
+ifeq ($(findstring java,$(GRADE)),java)
+	cp `vpath_find mdprof_cgi.jar` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find mdprof_create_feedback.jar` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find mdprof_dump.jar` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find mdprof_procrep.jar` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find mdprof_report_feedback.jar` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find mdprof_test.jar` $(INSTALL_MERC_BIN_DIR)
+endif
 
+#-----------------------------------------------------------------------------#
+
+.PHONY: uninstall
 uninstall:
 	# We try to uninstall mdprof_cgi, but failure to do so is not an
 	# error for two reasons: because we may simply lack permission to
@@ -307,6 +323,12 @@ uninstall:
 	# value of $(ENABLE_DEEP_PROFILER) to check for the latter wouldn't
 	# necessarily do any good, since its setting may have changed since
 	# the original install.)
-	-rm -f $(INSTALL_CGI_DIR)/mdprof_cgi
+	-rm -f $(INSTALL_CGI_DIR)/mdprof_cgi$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mdprof_cgi$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mdprof_test$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mdprof_dump$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mdprof_create_feedback$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mdprof_report_feedback$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mdprof_procrep$(EXT_FOR_EXE)
 
 #-----------------------------------------------------------------------------#

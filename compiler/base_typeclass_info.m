@@ -47,21 +47,16 @@
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_rtti.
-:- import_module mdbcomp.
-:- import_module mdbcomp.prim_data.
+:- import_module hlds.status.
 :- import_module parse_tree.
 :- import_module parse_tree.prog_data.
-:- import_module parse_tree.prog_type.
 
 :- import_module assoc_list.
 :- import_module bool.
-:- import_module int.
 :- import_module map.
 :- import_module maybe.
 :- import_module pair.
 :- import_module require.
-:- import_module string.
-:- import_module term.
 
 %---------------------------------------------------------------------------%
 
@@ -92,22 +87,23 @@ gen_infos_for_instances(ModuleInfo, ClassId,
     % order seems worthwhile on aesthetic grounds.
     gen_infos_for_instances(ModuleInfo, ClassId, InstanceDefns, !RttiDatas),
 
-    InstanceDefn = hlds_instance_defn(InstanceModule, ImportStatus,
-        _TermContext, _InstanceConstraints, InstanceTypes, _OriginalTypes,
-        Body, _MaybePredProcIds, _Varset, _SuperClassProofs),
-    (
+    InstanceDefn = hlds_instance_defn(InstanceModule,
+        InstanceTypes, _OriginalTypes, ImportStatus, _TermContext,
+        _InstanceConstraints, Body, _MaybePredProcIds,
+        _Varset, _SuperClassProofs),
+    ( if
         Body = instance_body_concrete(_),
         % Only make the base_typeclass_info if the instance declaration
         % originally came from _this_ module.
-        status_defined_in_this_module(ImportStatus) = yes
-    ->
+        instance_status_defined_in_this_module(ImportStatus) = yes
+    then
         make_instance_string(InstanceTypes, InstanceString),
         gen_body(ModuleInfo, ClassId, InstanceDefn, BaseTypeClassInfo),
         TCName = generate_class_name(ClassId),
         RttiData = rtti_data_base_typeclass_info(TCName, InstanceModule,
             InstanceString, BaseTypeClassInfo),
         !:RttiDatas = [RttiData | !.RttiDatas]
-    ;
+    else
         % The instance decl is from another module, or is abstract,
         % so we don't bother including it.
         true
@@ -121,10 +117,10 @@ gen_infos_for_instances(ModuleInfo, ClassId,
 gen_body(ModuleInfo, ClassId, InstanceDefn, BaseTypeClassInfo) :-
     num_extra_instance_args(InstanceDefn, NumExtra),
 
-    Constraints = InstanceDefn ^ instance_constraints,
+    Constraints = InstanceDefn ^ instdefn_constraints,
     list.length(Constraints, NumConstraints),
 
-    MaybeInstancePredProcIds = InstanceDefn ^ instance_hlds_interface,
+    MaybeInstancePredProcIds = InstanceDefn ^ instdefn_hlds_interface,
     (
         MaybeInstancePredProcIds = no,
         unexpected($module, $pred,
@@ -132,13 +128,7 @@ gen_body(ModuleInfo, ClassId, InstanceDefn, BaseTypeClassInfo) :-
     ;
         MaybeInstancePredProcIds = yes(InstancePredProcIds)
     ),
-    ExtractPredProcId = (pred(HldsPredProc::in, PredProc::out) is det :-
-        (
-            HldsPredProc = hlds_class_proc(PredId, ProcId),
-            PredProc = proc(PredId, ProcId)
-        )),
-    list.map(ExtractPredProcId, InstancePredProcIds, PredProcIds),
-    construct_proc_labels(ModuleInfo, PredProcIds, ProcLabels),
+    construct_proc_labels(ModuleInfo, InstancePredProcIds, ProcLabels),
     gen_superclass_count(ClassId, ModuleInfo, SuperClassCount, ClassArity),
     list.length(ProcLabels, NumMethods),
     BaseTypeClassInfo = base_typeclass_info(NumExtra, NumConstraints,
@@ -161,8 +151,8 @@ construct_proc_labels(ModuleInfo, [proc(PredId, ProcId) | PredProcIds],
 gen_superclass_count(ClassId, ModuleInfo, NumSuperClasses, ClassArity) :-
     module_info_get_class_table(ModuleInfo, ClassTable),
     map.lookup(ClassTable, ClassId, ClassDefn),
-    list.length(ClassDefn ^ class_supers, NumSuperClasses),
-    list.length(ClassDefn ^ class_vars, ClassArity).
+    list.length(ClassDefn ^ classdefn_supers, NumSuperClasses),
+    list.length(ClassDefn ^ classdefn_vars, ClassArity).
 
 %----------------------------------------------------------------------------%
 :- end_module backend_libs.base_typeclass_info.

@@ -5,14 +5,14 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % File: det_util.m.
 % Main authors: fjh, zs.
-% 
+%
 % Utility predicates used in two or more of the modules concerned with
 % determinism: switch_detection, cse_detection, det_analysis, det_report
 % and simplify.
-% 
+%
 %-----------------------------------------------------------------------------%
 
 :- module check_hlds.det_util.
@@ -24,12 +24,12 @@
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.instmap.
+:- import_module hlds.vartypes.
 :- import_module parse_tree.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
 :- import_module parse_tree.set_of_var.
 
-:- import_module bool.
 :- import_module list.
 
 %-----------------------------------------------------------------------------%
@@ -65,6 +65,12 @@
     --->    does_not_contain_require_scope
     ;       contains_require_scope.
 
+    % Does the predicate being analyzed contain an incomplete switch?
+    %
+:- type contains_incomplete_switch
+    --->    does_not_contain_incomplete_switch
+    ;       contains_incomplete_switch.
+
     % Does the predicate being analyzed contain a call that can be optimized
     % by format_call.m?
     %
@@ -74,12 +80,17 @@
 
 :- type det_info.
 
-    % Given a list of cases, and a list of the possible cons_ids
-    % that the switch variable could be bound to, select out only
-    % those cases whose cons_id occurs in the list of possible cons_ids.
+    % delete_unreachable_cases(Cases0, ConsIds, ReachableCases,
+    %   UnreachableGoals):
+    %
+    % Given Cases, and ConsIds, a list of the possible cons_ids that
+    % the switch variable could be bound to, return as ReachableCases
+    % the subset of Cases whose cons_id occurs in ConsIds.
+    %
+    % Return the goals of the unreachable cases in UnreachableGoals.
     %
 :- pred delete_unreachable_cases(list(case)::in, list(cons_id)::in,
-    list(case)::out) is det.
+    list(case)::out, list(hlds_goal)::out) is det.
 
     % Update the current substitution to account for the effects
     % of the given unification.
@@ -104,15 +115,13 @@
 :- pred det_info_add_error_spec(error_spec::in, det_info::in, det_info::out)
     is det.
 
-:- pred det_info_init(module_info::in, vartypes::in, pred_id::in, proc_id::in,
-    report_pess_extra_vars::in, list(error_spec)::in, det_info::out) is det.
+:- pred det_info_init(module_info::in, pred_proc_id::in,
+    prog_varset::in, vartypes::in, report_pess_extra_vars::in,
+    list(error_spec)::in, det_info::out) is det.
 
 :- pred det_info_get_module_info(det_info::in, module_info::out) is det.
-:- pred det_info_get_pred_id(det_info::in, pred_id::out) is det.
-:- pred det_info_get_proc_id(det_info::in, proc_id::out) is det.
-:- pred det_info_get_reorder_conj(det_info::in, bool::out) is det.
-:- pred det_info_get_reorder_disj(det_info::in, bool::out) is det.
-:- pred det_info_get_fully_strict(det_info::in, bool::out) is det.
+:- pred det_info_get_pred_proc_id(det_info::in, pred_proc_id::out) is det.
+:- pred det_info_get_varset(det_info::in, prog_varset::out) is det.
 :- pred det_info_get_vartypes(det_info::in, vartypes::out) is det.
 :- pred det_info_get_pess_extra_vars(det_info::in,
     report_pess_extra_vars::out) is det.
@@ -120,23 +129,21 @@
     contains_format_call::out) is det.
 :- pred det_info_get_has_req_scope(det_info::in,
     contains_require_scope::out) is det.
+:- pred det_info_get_has_incomplete_switch(det_info::in,
+    contains_incomplete_switch::out) is det.
 :- pred det_info_get_error_specs(det_info::in, list(error_spec)::out) is det.
 
 :- pred det_info_set_module_info(module_info::in, det_info::in, det_info::out)
     is det.
-:- pred det_info_set_vartypes(vartypes::in, det_info::in, det_info::out)
-    is det.
 :- pred det_info_set_has_format_call(det_info::in, det_info::out) is det.
 :- pred det_info_set_has_req_scope(det_info::in, det_info::out) is det.
+:- pred det_info_set_has_incomplete_switch(det_info::in, det_info::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
-:- import_module libs.
-:- import_module libs.globals.
-:- import_module libs.options.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.prog_util.
 
@@ -146,37 +153,45 @@
 
 %-----------------------------------------------------------------------------%
 
-delete_unreachable_cases(Cases0, PossibleConsIds, Cases) :-
+delete_unreachable_cases(Cases0, PossibleConsIds, ReachableCases,
+        UnreachableGoals) :-
     PossibleConsIdSet = set_tree234.list_to_set(PossibleConsIds),
     % We use a reverse list accumulator because we want to avoid requiring
     % O(n) stack space.
-    delete_unreachable_cases_2(Cases0, PossibleConsIdSet, [], RevCases),
-    list.reverse(RevCases, Cases).
+    delete_unreachable_cases_acc(Cases0, PossibleConsIdSet,
+        [], RevReachableCases, [], RevUnreachableGoals),
+    list.reverse(RevReachableCases, ReachableCases),
+    list.reverse(RevUnreachableGoals, UnreachableGoals).
 
-:- pred delete_unreachable_cases_2(list(case)::in, set_tree234(cons_id)::in,
-    list(case)::in, list(case)::out) is det.
+:- pred delete_unreachable_cases_acc(list(case)::in, set_tree234(cons_id)::in,
+    list(case)::in, list(case)::out,
+    list(hlds_goal)::in, list(hlds_goal)::out) is det.
 
-delete_unreachable_cases_2([], _PossibleConsIdSet, !RevCases).
-delete_unreachable_cases_2([Case0 | Cases0], PossibleConsIdSet, !RevCases) :-
+delete_unreachable_cases_acc([], _PossibleConsIdSet,
+        !RevReachableCases, !RevUnreachableGoals).
+delete_unreachable_cases_acc([Case0 | Cases0], PossibleConsIdSet,
+        !RevReachableCases, !RevUnreachableGoals) :-
     Case0 = case(MainConsId0, OtherConsIds0, Goal),
-    ( set_tree234.contains(PossibleConsIdSet, MainConsId0) ->
+    ( if set_tree234.contains(PossibleConsIdSet, MainConsId0) then
         list.filter(set_tree234.contains(PossibleConsIdSet),
             OtherConsIds0, OtherConsIds),
         Case = case(MainConsId0, OtherConsIds, Goal),
-        !:RevCases = [Case | !.RevCases]
-    ;
+        !:RevReachableCases = [Case | !.RevReachableCases]
+    else
         list.filter(set_tree234.contains(PossibleConsIdSet),
             OtherConsIds0, OtherConsIds1),
         (
-            OtherConsIds1 = []
-            % We don't add Case to !RevCases, effectively deleting it.
+            OtherConsIds1 = [],
+            % We don't add Case to !RevReachableCases, effectively deleting it.
+            !:RevUnreachableGoals = [Goal | !.RevUnreachableGoals]
         ;
             OtherConsIds1 = [MainConsId | OtherConsIds],
             Case = case(MainConsId, OtherConsIds, Goal),
-            !:RevCases = [Case | !.RevCases]
+            !:RevReachableCases = [Case | !.RevReachableCases]
         )
     ),
-    delete_unreachable_cases_2(Cases0, PossibleConsIdSet, !RevCases).
+    delete_unreachable_cases_acc(Cases0, PossibleConsIdSet,
+        !RevReachableCases, !RevUnreachableGoals).
 
 interpret_unify(X, rhs_var(Y), !Subst) :-
     unify_term(variable(X, context_init), variable(Y, context_init), !Subst).
@@ -193,18 +208,14 @@ det_lookup_pred_info_and_detism(DetInfo, PredId, ModeId, PredInfo, Detism) :-
     det_info_get_module_info(DetInfo, ModuleInfo),
     module_info_get_preds(ModuleInfo, PredTable),
     map.lookup(PredTable, PredId, PredInfo),
-    pred_info_get_procedures(PredInfo, ProcTable),
+    pred_info_get_proc_table(PredInfo, ProcTable),
     map.lookup(ProcTable, ModeId, ProcInfo),
     proc_info_interface_determinism(ProcInfo, Detism).
 
 det_get_proc_info(DetInfo, ProcInfo) :-
     det_info_get_module_info(DetInfo, ModuleInfo),
-    det_info_get_pred_id(DetInfo, PredId),
-    det_info_get_proc_id(DetInfo, ProcId),
-    module_info_get_preds(ModuleInfo, PredTable),
-    map.lookup(PredTable, PredId, PredInfo),
-    pred_info_get_procedures(PredInfo, ProcTable),
-    map.lookup(ProcTable, ProcId, ProcInfo).
+    det_info_get_pred_proc_id(DetInfo, PredProcId),
+    module_info_proc_info(ModuleInfo, PredProcId, ProcInfo).
 
 det_lookup_var_type(ModuleInfo, ProcInfo, Var, TypeDefn) :-
     proc_info_get_vartypes(ProcInfo, VarTypes),
@@ -228,56 +239,150 @@ det_info_add_error_spec(Spec, !DetInfo) :-
 
 :- type det_info
     --->    det_info(
-                di_module_info      :: module_info,
-                di_vartypes         :: vartypes,
-                di_pred_id          :: pred_id,     % the id of the proc
-                di_proc_id          :: proc_id,     % currently processed
-                di_reorder_conj     :: bool,        % --reorder-conj
-                di_reorder_disj     :: bool,        % --reorder-disj
-                di_fully_strict     :: bool,        % --fully-strict
-                di_pess_extra_vars  :: report_pess_extra_vars,
-                di_has_format_call  :: contains_format_call,
-                di_has_req_scope    :: contains_require_scope,
-                di_error_specs      :: list(error_spec)
+                di_module_info              :: module_info,
+
+                % The id of the proc currently processed.
+                di_pred_proc_id             :: pred_proc_id,
+
+                di_varset                   :: prog_varset,
+                di_vartypes                 :: vartypes,
+                di_pess_extra_vars          :: report_pess_extra_vars,
+                di_has_format_call          :: contains_format_call,
+                di_has_req_scope            :: contains_require_scope,
+                di_has_incomplete_switch    :: contains_incomplete_switch,
+                di_error_specs              :: list(error_spec)
             ).
 
-det_info_init(ModuleInfo, VarTypes, PredId, ProcId, PessExtraVars,
-        Specs, DetInfo) :-
-    module_info_get_globals(ModuleInfo, Globals),
-    globals.lookup_bool_option(Globals, reorder_conj, ReorderConj),
-    globals.lookup_bool_option(Globals, reorder_disj, ReorderDisj),
-    globals.lookup_bool_option(Globals, fully_strict, FullyStrict),
-    DetInfo = det_info(ModuleInfo, VarTypes, PredId, ProcId,
-        ReorderConj, ReorderDisj, FullyStrict, PessExtraVars,
-        does_not_contain_format_call, does_not_contain_require_scope,
+det_info_init(ModuleInfo, PredProcId, VarSet, VarTypes,
+        PessExtraVars, Specs, DetInfo) :-
+    DetInfo = det_info(ModuleInfo, PredProcId, VarSet, VarTypes,
+        PessExtraVars, does_not_contain_format_call,
+        does_not_contain_require_scope, does_not_contain_incomplete_switch,
         Specs).
 
-det_info_get_module_info(DI, DI ^ di_module_info).
-det_info_get_pred_id(DI, DI ^ di_pred_id).
-det_info_get_proc_id(DI, DI ^ di_proc_id).
-det_info_get_reorder_conj(DI, DI ^ di_reorder_conj).
-det_info_get_reorder_disj(DI, DI ^ di_reorder_disj).
-det_info_get_fully_strict(DI, DI ^ di_fully_strict).
-det_info_get_vartypes(DI, DI ^ di_vartypes).
-det_info_get_pess_extra_vars(DI, DI ^ di_pess_extra_vars).
-det_info_get_has_format_call(DI, DI ^ di_has_format_call).
-det_info_get_has_req_scope(DI, DI ^ di_has_req_scope).
-det_info_get_error_specs(DI, DI ^ di_error_specs).
+det_info_get_module_info(DetInfo, X) :-
+    X = DetInfo ^ di_module_info.
+det_info_get_pred_proc_id(DetInfo, X) :-
+    X = DetInfo ^ di_pred_proc_id.
+det_info_get_vartypes(DetInfo, X) :-
+    X = DetInfo ^ di_vartypes.
+det_info_get_varset(DetInfo, X) :-
+    X = DetInfo ^ di_varset.
+det_info_get_pess_extra_vars(DetInfo, X) :-
+    X = DetInfo ^ di_pess_extra_vars.
+det_info_get_has_format_call(DetInfo, X) :-
+    X = DetInfo ^ di_has_format_call.
+det_info_get_has_req_scope(DetInfo, X) :-
+    X = DetInfo ^ di_has_req_scope.
+det_info_get_has_incomplete_switch(DetInfo, X) :-
+    X = DetInfo ^ di_has_incomplete_switch.
+det_info_get_error_specs(DetInfo, X) :-
+    X = DetInfo ^ di_error_specs.
 
 :- pred det_info_set_error_specs(list(error_spec)::in,
     det_info::in, det_info::out) is det.
 
-det_info_set_module_info(ModuleInfo, !DetInfo) :-
-    !DetInfo ^ di_module_info := ModuleInfo.
-det_info_set_vartypes(VarTypes, !DetInfo) :-
-    !DetInfo ^ di_vartypes := VarTypes.
+det_info_set_module_info(X, !DetInfo) :-
+    ( if private_builtin.pointer_equal(X, !.DetInfo ^ di_module_info) then
+        true
+    else
+        !DetInfo ^ di_module_info := X
+    ).
 det_info_set_has_format_call(!DetInfo) :-
-    !DetInfo ^ di_has_format_call := contains_format_call.
+    X = contains_format_call,
+    ( if X = !.DetInfo ^ di_has_format_call then
+        true
+    else
+        !DetInfo ^ di_has_format_call := X
+    ).
 det_info_set_has_req_scope(!DetInfo) :-
-    !DetInfo ^ di_has_req_scope := contains_require_scope.
-det_info_set_error_specs(Specs, !DetInfo) :-
-    !DetInfo ^ di_error_specs := Specs.
+    X = contains_require_scope,
+    ( if X = !.DetInfo ^ di_has_req_scope then
+        true
+    else
+        !DetInfo ^ di_has_req_scope := X
+    ).
+det_info_set_has_incomplete_switch(!DetInfo) :-
+    X = contains_incomplete_switch,
+    ( if X = !.DetInfo ^ di_has_incomplete_switch then
+        true
+    else
+        !DetInfo ^ di_has_incomplete_switch := X
+    ).
+det_info_set_error_specs(X, !DetInfo) :-
+    !DetInfo ^ di_error_specs := X.
+
+% Access stats for the det_info structure, derived using the commented-out
+% code below:
+%
+%  i      read      same      diff   same%
+%  0   5135754    209308      2043  99.033%     module_info
+%  1    339264         0         0              pred_id
+%  2    339264         0         0              proc_id
+%  3    211938         0         0              vartypes
+%  4       371         0         0              pess_extra_vars
+%  5    299597       921      1381  40.009%     has_format_call
+%  6    299597       147       140  51.220%     has_req_scope
+%  7    300265         0        33   0.000%     error_specs
+
+% :- pragma foreign_decl("C", local,
+% "
+% #define MR_NUM_INFO_STATS    11
+% unsigned long MR_stats_read[MR_NUM_INFO_STATS];
+% unsigned long MR_stats_same[MR_NUM_INFO_STATS];
+% unsigned long MR_stats_diff[MR_NUM_INFO_STATS];
+% ").
+%
+% :- pred gather_info_read_stats(int::in,
+%     det_info::in, det_info::out) is det.
+%
+% :- pragma foreign_proc("C",
+%     gather_info_read_stats(N::in, Info0::in, Info::out),
+%     [will_not_call_mercury, promise_pure],
+% "
+%     ++MR_stats_read[N];
+%     Info = Info0;
+% ").
+%
+% :- pred gather_info_write_stats(int::in, T::in, T::in,
+%     det_info::in, det_info::out) is det.
+%
+% :- pragma foreign_proc("C",
+%     gather_info_write_stats(N::in, Old::in, New::in, Info0::in, Info::out),
+%     [will_not_call_mercury, promise_pure],
+% "
+%     if (((MR_Unsigned) Old) == ((MR_Unsigned) New)) {
+%         ++MR_stats_same[N];
+%     } else {
+%         ++MR_stats_diff[N];
+%     }
+%
+%     Info = Info0;
+% ").
+%
+% :- interface.
+% :- import_module io.
+% :- pred write_det_info_stats(io::di, io::uo) is det.
+% :- implementation.
+%
+% :- pragma foreign_proc("C",
+%     write_det_info_stats(IO0::di, IO::uo),
+%     [will_not_call_mercury, promise_pure],
+% "
+%     FILE *fp;
+%
+%     fp = fopen(""/tmp/DET_INFO_STATS"", ""a"");
+%     if (fp != NULL) {
+%         int i;
+%         for (i = 0; i < MR_NUM_INFO_STATS; i++) {
+%             fprintf(fp, ""stat_rsd %d %lu %lu %lu\\n"",
+%                 i, MR_stats_read[i], MR_stats_same[i], MR_stats_diff[i]);
+%         }
+%     }
+%
+%     IO = IO0;
+% ").
 
 %-----------------------------------------------------------------------------%
-:- end_module det_util.
+:- end_module check_hlds.det_util.
 %-----------------------------------------------------------------------------%

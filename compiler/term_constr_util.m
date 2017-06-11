@@ -16,19 +16,25 @@
 :- module transform_hlds.term_constr_util.
 :- interface.
 
-:- import_module hlds.hlds_pred.
+:- import_module hlds.
 :- import_module hlds.hlds_module.
+:- import_module hlds.hlds_pred.
+:- import_module hlds.vartypes.
+:- import_module libs.
 :- import_module libs.lp_rational.
 :- import_module libs.polyhedron.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_pragma.
 :- import_module transform_hlds.term_constr_data.
-:- import_module transform_hlds.term_constr_main.
+:- import_module transform_hlds.term_constr_main_types.
 
 :- import_module bool.
 :- import_module io.
 :- import_module list.
 :- import_module map.
 :- import_module maybe.
+:- import_module set.
 
 %-----------------------------------------------------------------------------%
 %
@@ -46,7 +52,7 @@
 
     % Retrieve the abstraction representation from the module_info.
     %
-:- func get_abstract_scc(module_info, list(pred_proc_id)) = abstract_scc.
+:- func get_abstract_scc(module_info, set(pred_proc_id)) = abstract_scc.
 
 :- func get_abstract_proc(module_info, pred_proc_id) = abstract_proc.
 
@@ -63,8 +69,8 @@
     size_var_map::out) is det.
 
     % Given a list of prog_vars, allocate one size_var per prog_var.
-    % Allocate the size_vars from the provided size_varset.  Return
-    % a map between prog_vars and size_vars.
+    % Allocate the size_vars from the provided size_varset.
+    % Return a map between prog_vars and size_vars.
     %
 :- pred make_size_var_map(list(prog_var)::in,
     size_varset::in, size_varset::out, size_var_map::out) is det.
@@ -92,7 +98,7 @@
 
     % create_var_substition(FromVars, ToVars) = Substitution.
     % Create a mapping that maps elements of `FromVars' to their
-    % corresponding elements in `ToVars'.  This mapping is many-one.
+    % corresponding elements in `ToVars'. This mapping is many-one.
     % An exception is thrown if `FromVars' contains any duplicate elements.
     %
 :- func create_var_substitution(size_vars, size_vars) = var_substitution.
@@ -118,7 +124,7 @@
 %-----------------------------------------------------------------------------%
 
     % substitute_size_vars: Takes a list of constraints and a
-    % var_substitution.  Returns the constraints with the specified
+    % var_substitution. Returns the constraints with the specified
     % substitutions made.
     %
 :- func substitute_size_vars(constraints, map(size_var, size_var))
@@ -158,7 +164,7 @@
 :- pred update_arg_size_info(pred_proc_id::in, polyhedron::in, module_info::in,
     module_info::out) is det.
 
-    % change_procs_constr_termination_info(SCC, Override, TermInfo,
+    % change_procs_constr_termination_info(SCC, Override, Term2Info,
     %   !ProcTable).
     %
     % If Override is yes, then this predicate overrides any existing
@@ -174,7 +180,7 @@
     %   !ProcTable).
     %
     % This predicate sets the arg_size_info property of the given
-    % list of procedures.  If Override is yes, then this predicate
+    % list of procedures. If Override is yes, then this predicate
     % overrides any existing arg_size information. If Override is
     % no, then it leaves the proc_info of a procedure unchanged
     % unless the proc_info had no arg_size information (i.e. the
@@ -188,18 +194,16 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
-:- import_module hlds.hlds_module.
 :- import_module hlds.hlds_out.
 :- import_module hlds.hlds_out.hlds_out_util.
-:- import_module hlds.hlds_pred.
 :- import_module libs.rat.
 :- import_module transform_hlds.term_constr_errors.
 :- import_module transform_hlds.term_norm.
 
 :- import_module pair.
 :- import_module require.
-:- import_module set.
 :- import_module std_util.
 :- import_module string.
 :- import_module term.
@@ -212,13 +216,13 @@ set_pred_proc_ids_constr_arg_size_info([PPId | PPIds], ArgSize, !ModuleInfo) :-
     PPId = proc(PredId, ProcId),
     module_info_get_preds(!.ModuleInfo, PredTable0),
     map.lookup(PredTable0, PredId, PredInfo0),
-    pred_info_get_procedures(PredInfo0, ProcTable0),
+    pred_info_get_proc_table(PredInfo0, ProcTable0),
     map.lookup(ProcTable0, ProcId, ProcInfo0),
-    proc_info_get_termination2_info(ProcInfo0, TermInfo0),
-    TermInfo = TermInfo0 ^ success_constrs := yes(ArgSize),
-    proc_info_set_termination2_info(TermInfo, ProcInfo0, ProcInfo),
+    proc_info_get_termination2_info(ProcInfo0, Term2Info0),
+    term2_info_set_success_constrs(yes(ArgSize), Term2Info0, Term2Info),
+    proc_info_set_termination2_info(Term2Info, ProcInfo0, ProcInfo),
     map.det_update(ProcId, ProcInfo, ProcTable0, ProcTable),
-    pred_info_set_procedures(ProcTable, PredInfo0, PredInfo),
+    pred_info_set_proc_table(ProcTable, PredInfo0, PredInfo),
     map.det_update(PredId, PredInfo, PredTable0, PredTable),
     module_info_set_preds(PredTable, !ModuleInfo),
     set_pred_proc_ids_constr_arg_size_info(PPIds, ArgSize, !ModuleInfo).
@@ -226,8 +230,8 @@ set_pred_proc_ids_constr_arg_size_info([PPId | PPIds], ArgSize, !ModuleInfo) :-
 lookup_proc_constr_arg_size_info(ModuleInfo, PredProcId) = MaybeArgSizeInfo :-
     PredProcId = proc(PredId, ProcId),
     module_info_pred_proc_info(ModuleInfo, PredId, ProcId, _, ProcInfo),
-    proc_info_get_termination2_info(ProcInfo, TermInfo),
-    MaybeArgSizeInfo = TermInfo ^ success_constrs.
+    proc_info_get_termination2_info(ProcInfo, Term2Info),
+    MaybeArgSizeInfo = term2_info_get_success_constrs(Term2Info).
 
 %-----------------------------------------------------------------------------%
 
@@ -281,7 +285,7 @@ add_context_to_constr_termination_info(no, _, no).
 add_context_to_constr_termination_info(yes(cannot_loop(_)), _,
         yes(cannot_loop(term_reason_import_supplied))).
 add_context_to_constr_termination_info(yes(can_loop(_)), Context,
-        yes(can_loop([Context - imported_pred]))).
+        yes(can_loop([term2_error(Context, imported_pred)]))).
 
 %-----------------------------------------------------------------------------%
 
@@ -330,14 +334,15 @@ create_var_substitution_2([Arg | Args], [HeadVar | HeadVars],  !Subst) :-
 make_arg_constraints([], _) = [].
 make_arg_constraints([Var | Vars], Zeros) = Constraints :-
     Constraints0 = make_arg_constraints(Vars, Zeros),
-    ( set.member(Var, Zeros) ->
+    ( if set.member(Var, Zeros) then
         Constraints = Constraints0
-    ;
+    else
         NewConstraint = construct_constraint([Var - one], lp_gt_eq, zero),
         Constraints = [NewConstraint | Constraints0]
     ).
 
-is_zero_size_var(Zeros, SizeVar) :- set.member(SizeVar, Zeros).
+is_zero_size_var(Zeros, SizeVar) :-
+    set.member(SizeVar, Zeros).
 
 %-----------------------------------------------------------------------------%
 %
@@ -419,17 +424,17 @@ update_arg_size_info(PPID, Polyhedron, !ModuleInfo) :-
 change_procs_constr_termination_info([], _, _, !ProcTable).
 change_procs_constr_termination_info([ProcId | ProcIds], Override, Termination,
         !ProcTable) :-
-    ProcInfo0 = !.ProcTable ^ det_elem(ProcId),
-    proc_info_get_termination2_info(ProcInfo0, TermInfo0),
-    (
+    map.lookup(!.ProcTable, ProcId, ProcInfo0),
+    proc_info_get_termination2_info(ProcInfo0, Term2Info0),
+    ( if
         ( Override = yes
-        ; TermInfo0 ^ term_status = no
+        ; term2_info_get_term_status(Term2Info0) = no
         )
-    ->
-        TermInfo = TermInfo0 ^ term_status := yes(Termination),
-        proc_info_set_termination2_info(TermInfo, ProcInfo0, ProcInfo),
+    then
+        term2_info_set_term_status(yes(Termination), Term2Info0, Term2Info),
+        proc_info_set_termination2_info(Term2Info, ProcInfo0, ProcInfo),
         map.det_update(ProcId, ProcInfo, !ProcTable)
-    ;
+    else
         true
     ),
     change_procs_constr_termination_info(ProcIds, Override, Termination,
@@ -438,17 +443,17 @@ change_procs_constr_termination_info([ProcId | ProcIds], Override, Termination,
 change_procs_constr_arg_size_info([], _, _, !ProcTable).
 change_procs_constr_arg_size_info([ProcId | ProcIds], Override, ArgSize,
         !ProcTable) :-
-    ProcInfo0 = !.ProcTable ^ det_elem(ProcId),
-    proc_info_get_termination2_info(ProcInfo0, TermInfo0),
-    (
+    map.lookup(!.ProcTable, ProcId, ProcInfo0),
+    proc_info_get_termination2_info(ProcInfo0, Term2Info0),
+    ( if
         ( Override = yes
-        ; TermInfo0 ^ success_constrs = no
+        ; term2_info_get_success_constrs(Term2Info0) = no
         )
-    ->
-        TermInfo = TermInfo0 ^ success_constrs := yes(ArgSize),
-        proc_info_set_termination2_info(TermInfo, ProcInfo0, ProcInfo),
+    then
+        term2_info_set_success_constrs(yes(ArgSize), Term2Info0, Term2Info),
+        proc_info_set_termination2_info(Term2Info, ProcInfo0, ProcInfo),
         map.det_update(ProcId, ProcInfo, !ProcTable)
-    ;
+    else
         true
     ),
     change_procs_constr_arg_size_info(ProcIds, Override, ArgSize, !ProcTable).
@@ -456,12 +461,12 @@ change_procs_constr_arg_size_info([ProcId | ProcIds], Override, ArgSize,
 %-----------------------------------------------------------------------------%
 
 get_abstract_scc(ModuleInfo, SCC) =
-    list.map(get_abstract_proc(ModuleInfo), SCC).
+    set.map(get_abstract_proc(ModuleInfo), SCC).
 
 get_abstract_proc(ModuleInfo, PPId) = AbstractProc :-
     module_info_pred_proc_info(ModuleInfo, PPId, _, ProcInfo),
-    proc_info_get_termination2_info(ProcInfo, TermInfo),
-    MaybeAbstractProc = TermInfo ^ abstract_rep,
+    proc_info_get_termination2_info(ProcInfo, Term2Info),
+    MaybeAbstractProc = term2_info_get_abstract_rep(Term2Info),
     (
         MaybeAbstractProc = yes(AbstractProc)
     ;

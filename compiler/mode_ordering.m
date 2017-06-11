@@ -44,7 +44,6 @@
 :- implementation.
 
 :- import_module check_hlds.clause_to_proc.
-:- import_module check_hlds.mode_constraint_robdd.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.inst_graph.
 :- import_module mode_robdd.
@@ -61,7 +60,6 @@
 :- import_module digraph.
 :- import_module pair.
 :- import_module require.
-:- import_module set.
 :- import_module solutions.
 :- import_module stack.
 
@@ -529,7 +527,7 @@ find_matching_proc(PredId, Args, ProdVars, ProcId, ConsumingVars, !MOI) :-
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
     pred_info_get_inst_graph_info(PredInfo, CalleeInstGraphInfo),
     CalleeInstGraph = CalleeInstGraphInfo ^ interface_inst_graph,
-    pred_info_get_procedures(PredInfo, ProcTable),
+    pred_info_get_proc_table(PredInfo, ProcTable),
     map.to_assoc_list(ProcTable, ProcList),
     (
         find_matching_proc_2(ProcList, ProdVars, Args,

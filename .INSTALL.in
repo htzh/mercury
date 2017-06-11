@@ -95,6 +95,21 @@
 # and read the Mercury documentation in the `doc' directory while you are
 # waiting.
 
+if pwd | grep ' '
+then
+    echo "The name of the current directory contains spaces."
+    echo "Mercury cannot be installed from such directories."
+    exit 1
+fi
+
+if test ! -d boehm_gc
+then
+    echo "This directory does not contain a complete source distribution."
+    echo "If you are trying to compile a workspace checked out of git,"
+    echo "you will need to read and follow INSTALL.git, not INSTALL."
+    exit 1
+fi
+
 sh configure &&
 make &&
 make install
@@ -126,9 +141,6 @@ make install
 #          The option --disable-nogc-grades prevents the installation
 #          of grades without garbage collection.
 #
-#          The option --enable-agc-grades causes the installation
-#          of grades that support type-accurate garbage collection.
-#
 #          The option --disable-prof-grades prevents the installation
 #          of grades that support profiling.
 #
@@ -155,12 +167,13 @@ make install
 #          The option --enable-stseg-grades causes the installation of grades
 #          that use stack segments.
 #
-#          The option --enable-dotnet-grades causes the installation
-#          of the .NET grades (see README.DotNet).  This grades are only
-#          installed if the .NET SDK is found.
+#          The option --disable-java-grade prevents the installation of the
+#          Java grade.  The Java grade will be installed by default if the
+#          Java SDK is found.
 #
-#          The option --enable-java-grade causes the installation of the Java
-#          grade.  This grade is only installed if the Java SDK is found.
+#          The option --disable-csharp-grade prevents the installation of the
+#          C# grade.  The C# grade will be installed by default if the
+#          .NET SDK is found.
 #
 #          The option --enable-erlang-grade causes the installation of the
 #          Erlang grade.  This grade is only installed if the Erlang/OTP

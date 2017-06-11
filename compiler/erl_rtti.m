@@ -19,9 +19,11 @@
 :- module erl_backend.erl_rtti.
 :- interface.
 
+:- import_module backend_libs.
 :- import_module backend_libs.erlang_rtti.
 :- import_module backend_libs.rtti.
 :- import_module erl_backend.elds.
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 
 :- import_module list.
@@ -49,7 +51,9 @@
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_rtti.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module bool.
@@ -87,9 +91,9 @@ erlang_rtti_data(_, rtti_data_type_class_instance(TCInstance)) =
 :- func maybe_get_special_predicate(univ) = maybe(rtti_proc_label).
 
 maybe_get_special_predicate(Univ) =
-    ( univ_to_type(Univ, ProcLabel) ->
+    ( if univ_to_type(Univ, ProcLabel) then
         yes(ProcLabel)
-    ;
+    else
         no
     ).
 
@@ -101,19 +105,19 @@ maybe_get_special_predicate(Univ) =
     int, type_ctor_details) = erlang_type_ctor_details.
 
 erlang_type_ctor_details(ModuleName, TypeName, Arity, Details) = D :-
-    (
+    ( if
         ModuleName = unqualified("list"),
         TypeName = "list",
         Arity = 1
-    ->
+    then
         D = erlang_list
-    ;
+    else if
         ModuleName = unqualified("array"),
         TypeName = "array",
         Arity = 1
-    ->
+    then
         D = erlang_array
-    ;
+    else
         D = erlang_type_ctor_details_2(Details)
     ).
 
@@ -125,9 +129,9 @@ erlang_type_ctor_details_2(CtorDetails) = Details :-
         CtorDetails = tcd_enum(_, Functors, _, _, IsDummy, FunctorNums),
         (
             IsDummy = yes,
-            ( Functors = [F] ->
+            ( if Functors = [F] then
                 Details = erlang_dummy(F ^ enum_name)
-            ;
+            else
                 unexpected($module, $pred,
                     "dummy type with more than one functor")
             )
@@ -151,14 +155,14 @@ erlang_type_ctor_details_2(CtorDetails) = Details :-
         unexpected($module, $pred, "reserved")
     ;
         CtorDetails = tcd_notag(_, NoTagFunctor),
-        NoTagFunctor = notag_functor(Name, TypeInfo, ArgName),
+        NoTagFunctor = notag_functor(Name, TypeInfo, ArgName, SubtypeInfo),
         OrigArity = 1,
         Ordinal = 0,
         FunctorNum = 0,
         ArgTypeInfo = convert_to_rtti_maybe_pseudo_type_info_or_self(TypeInfo),
         ArgInfos = [du_arg_info(ArgName, ArgTypeInfo, full_word)],
         DUFunctor = erlang_du_functor(Name, OrigArity, Ordinal, FunctorNum,
-            erlang_atom_raw(Name), ArgInfos, no),
+            erlang_atom_raw(Name), ArgInfos, no, SubtypeInfo),
         Details = erlang_du([DUFunctor])
     ;
         CtorDetails = tcd_eqv(Type),
@@ -182,7 +186,7 @@ erlang_type_ctor_details_2(CtorDetails) = Details :-
 convert_enum_functor(EnumFunctor, FunctorNum, ErlangFunctor) :-
     EnumFunctor = enum_functor(Name, Ordinal),
     ErlangFunctor = erlang_du_functor(Name, 0, Ordinal, FunctorNum,
-        erlang_atom_raw(Name), [], no).
+        erlang_atom_raw(Name), [], no, functor_subtype_none).
 
     % Convert a du_functor into the equivalent erlang_du_functor
     %
@@ -190,9 +194,9 @@ convert_enum_functor(EnumFunctor, FunctorNum, ErlangFunctor) :-
     is det.
 
 convert_du_functor(Functor, FunctorNum, ErlangFunctor) :-
-    Functor = du_functor(Name, Arity, Ordinal, _, ArgInfos, Exist),
+    Functor = du_functor(Name, Arity, Ordinal, _, ArgInfos, Exist, SubtypeInfo),
     ErlangFunctor = erlang_du_functor(Name, Arity, Ordinal, FunctorNum,
-        erlang_atom_raw(Name), ArgInfos, Exist).
+        erlang_atom_raw(Name), ArgInfos, Exist, SubtypeInfo).
 
 :- func convert_to_rtti_maybe_pseudo_type_info_or_self(
     rtti_maybe_pseudo_type_info) = rtti_maybe_pseudo_type_info_or_self.
@@ -289,7 +293,7 @@ erl_gen_method_wrapper(ModuleInfo, NumExtra, RttiProcLabel, WrapperFun,
     PredId = RttiProcLabel ^ rpl_pred_id,
     ProcId = RttiProcLabel ^ rpl_proc_id,
     ArgTypes = RttiProcLabel ^ rpl_proc_arg_types,
-    ArgModes = RttiProcLabel ^ rpl_proc_arg_modes,
+    TopFunctorModes = RttiProcLabel ^ rpl_proc_top_modes,
     Detism = RttiProcLabel ^ rpl_proc_interface_detism,
 
     % We can't store the address of the typeclass method directly in the
@@ -325,12 +329,12 @@ erl_gen_method_wrapper(ModuleInfo, NumExtra, RttiProcLabel, WrapperFun,
     % method implementation.
     ExtraVarsWs = ExtraVars ++ Ws,
     erl_gen_arg_list_arg_modes(ModuleInfo, opt_dummy_args,
-        ExtraVarsWs, ArgTypes, ArgModes, CallInputArgs, CallOutputArgs),
+        ExtraVarsWs, ArgTypes, TopFunctorModes, CallInputArgs, CallOutputArgs),
 
     % Figure out the input variables and output variables for this wrapper
     % function.
     erl_gen_arg_list_arg_modes(ModuleInfo, no_opt_dummy_args,
-        ExtraVarsWs, ArgTypes, ArgModes,
+        ExtraVarsWs, ArgTypes, TopFunctorModes,
         WrapperInputVarsPlusExtras, WrapperOutputVars),
     WrapperInputVars =
         list.delete_elems(WrapperInputVarsPlusExtras, ExtraVars),
@@ -604,6 +608,8 @@ erlang_type_ctor_rep(erlang_eqv(_)) =
     elds_term(make_enum_alternative("etcr_eqv")).
 erlang_type_ctor_rep(erlang_builtin(builtin_ctor_int)) =
     elds_term(make_enum_alternative("etcr_int")).
+erlang_type_ctor_rep(erlang_builtin(builtin_ctor_uint)) =
+    elds_term(make_enum_alternative("etcr_uint")).
 erlang_type_ctor_rep(erlang_builtin(builtin_ctor_float)) =
     elds_term(make_enum_alternative("etcr_float")).
 erlang_type_ctor_rep(erlang_builtin(builtin_ctor_char)) =
@@ -670,7 +676,7 @@ erl_gen_special_pred_wrapper(ModuleInfo, RttiProcLabel, WrapperFun, !VarSet) :-
     PredId = RttiProcLabel ^ rpl_pred_id,
     ProcId = RttiProcLabel ^ rpl_proc_id,
     ArgTypes = RttiProcLabel ^ rpl_proc_arg_types,
-    ArgModes = RttiProcLabel ^ rpl_proc_arg_modes,
+    TopFunctorModes = RttiProcLabel ^ rpl_proc_top_modes,
     Detism = RttiProcLabel ^ rpl_proc_interface_detism,
 
     % Create the variable list.
@@ -679,12 +685,12 @@ erl_gen_special_pred_wrapper(ModuleInfo, RttiProcLabel, WrapperFun, !VarSet) :-
     % Figure out the input and output variables for the call to the actual
     % special pred implementation.
     erl_gen_arg_list_arg_modes(ModuleInfo, opt_dummy_args,
-        Ws, ArgTypes, ArgModes, CallInputArgs, CallOutputArgs),
+        Ws, ArgTypes, TopFunctorModes, CallInputArgs, CallOutputArgs),
 
     % Figure out the input variables and output variables for this wrapper
     % function.
     erl_gen_arg_list_arg_modes(ModuleInfo, no_opt_dummy_args,
-        Ws, ArgTypes, ArgModes,
+        Ws, ArgTypes, TopFunctorModes,
         WrapperInputVars, WrapperOutputVars),
 
     determinism_to_code_model(Detism, CodeModel),
@@ -767,17 +773,17 @@ erlang_type_ctor_details(ModuleInfo, Details, Term, Defns) :-
     prog_varset::in, prog_varset::out) is det.
 
 reduce_list_term_complexity(Expr0, Expr, !RevAssignments, !VarSet) :-
-    (
+    ( if
         Expr0 = elds_term(elds_tuple([Functor, Head, Tail0])),
         Functor = elds_term(elds_atom(SymName)),
         unqualify_name(SymName) = "[|]"
-    ->
+    then
         reduce_list_term_complexity(Tail0, Tail, !RevAssignments, !VarSet),
         varset.new_var(V, !VarSet),
         Assign = elds_eq(expr_from_var(V), Tail),
         Expr = elds_term(elds_tuple([Functor, Head, expr_from_var(V)])),
         list.cons(Assign, !RevAssignments)
-    ;
+    else
         Expr = Expr0
     ).
 
@@ -799,35 +805,35 @@ reduce_list_term_complexity(Expr0, Expr, !RevAssignments, !VarSet) :-
     list(elds_rtti_defn)::in, list(elds_rtti_defn)::out) is det.
 
 rtti_to_elds_expr(MI, Term, ELDS, !Defns) :-
-    ( dynamic_cast(Term, Int) ->
+    ( if dynamic_cast(Term, Int) then
         ELDS = elds_term(elds_int(Int))
-    ; dynamic_cast(Term, Char) ->
+    else if dynamic_cast(Term, Char) then
         ELDS = elds_term(elds_char(Char))
-    ; dynamic_cast(Term, String) ->
+    else if dynamic_cast(Term, String) then
         ELDS = elds_term(elds_list_of_ints(String))
-    ; dynamic_cast(Term, Float) ->
+    else if dynamic_cast(Term, Float) then
         ELDS = elds_term(elds_float(Float))
 
     % The RTTI types which have to be handled specially.
-    ; dynamic_cast(Term, Atom) ->
+    else if dynamic_cast(Term, Atom) then
         Atom = erlang_atom_raw(S),
         ELDS = elds_term(elds_atom_raw(S))
-    ; dynamic_cast(Term, MaybePseudoTypeInfo) ->
+    else if dynamic_cast(Term, MaybePseudoTypeInfo) then
         convert_maybe_pseudo_type_info_to_elds(MI,
             MaybePseudoTypeInfo, ELDS, !Defns)
-    ; dynamic_cast(Term, MaybePseudoTypeInfoOrSelf) ->
+    else if dynamic_cast(Term, MaybePseudoTypeInfoOrSelf) then
         convert_maybe_pseudo_type_info_or_self_to_elds(MI,
             MaybePseudoTypeInfoOrSelf, ELDS, !Defns)
 
-    ;
+    else
         functor(Term, do_not_allow, Functor, Arity),
 
         list.map_foldl(convert_arg_to_elds_expr(MI, Term),
             0 .. (Arity - 1), Exprs, !Defns),
 
-        ( Functor = "{}" ->
+        ( if Functor = "{}" then
             ELDS = elds_term(elds_tuple(Exprs))
-        ;
+        else
             FunctorTerm = elds_term(elds_atom(unqualified(Functor))),
             ELDS = elds_term(elds_tuple([FunctorTerm | Exprs]))
         )
@@ -838,9 +844,9 @@ rtti_to_elds_expr(MI, Term, ELDS, !Defns) :-
     is det.
 
 convert_arg_to_elds_expr(MI, Term, Index, ELDS, !Defns) :-
-    ( arg(Term, do_not_allow, Index, Arg) ->
+    ( if arg(Term, do_not_allow, Index, Arg) then
         rtti_to_elds_expr(MI, Arg, ELDS, !Defns)
-    ;
+    else
         unexpected($module, $pred, "arg failed")
     ).
 

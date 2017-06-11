@@ -19,6 +19,7 @@
 
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_event.
 
 :- import_module io.
 :- import_module list.
@@ -59,10 +60,11 @@
 
 :- implementation.
 
-:- import_module mdbcomp.prim_data.
+:- import_module libs.file_util.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.builtin_lib_types.
 :- import_module parse_tree.prog_mode.
-:- import_module parse_tree.prog_out.
+:- import_module parse_tree.prog_type.
 
 :- import_module assoc_list.
 :- import_module bimap.
@@ -90,60 +92,63 @@ read_event_set(SpecsFileName, EventSetName, EventSpecMap, ErrorSpecs, !IO) :-
     % those tools are not yet mature enough. When they are, we should switch
     % to using them.
 
-    io.make_temp(TermFileName, !IO),
-    read_specs_file(SpecsFileName, TermFileName, Problem, !IO),
-    ( Problem = "" ->
-        io.open_input(TermFileName, TermOpenRes, !IO),
+    open_temp_input(TermFileResult, read_specs_file(SpecsFileName), !IO),
+    (
+        TermFileResult = ok({TermFileName, TermStream}),
+        io.read(TermStream, TermReadRes, !IO),
         (
-            TermOpenRes = ok(TermStream),
-            io.read(TermStream, TermReadRes, !IO),
-            (
-                TermReadRes = ok(EventSetTerm),
-                EventSetTerm = event_set_spec(EventSetName, EventSpecsTerm),
-                convert_list_to_spec_map(SpecsFileName, EventSpecsTerm,
-                    map.init, EventSpecMap, [], ErrorSpecs)
-            ;
-                TermReadRes = eof,
-                EventSetName = "",
-                EventSpecMap = map.init,
-                Pieces = [words("eof in term specification file"), nl],
-                ErrorSpec = error_spec(severity_error,
-                    phase_term_to_parse_tree,
-                    [error_msg(no, do_not_treat_as_first, 0,
-                        [always(Pieces)])]),
-                ErrorSpecs = [ErrorSpec]
-            ;
-                TermReadRes = error(TermReadMsg, LineNumber),
-                EventSetName = "",
-                EventSpecMap = map.init,
-                Pieces = [words(TermReadMsg), nl],
-                ErrorSpec = error_spec(severity_error,
-                    phase_term_to_parse_tree,
-                    [simple_msg(context(TermFileName, LineNumber),
-                        [always(Pieces)])]),
-                ErrorSpecs = [ErrorSpec]
-            ),
-            io.close_input(TermStream, !IO)
+            TermReadRes = ok(EventSetTerm),
+            EventSetTerm = event_set_spec(EventSetName,
+                EventSpecsTerm),
+            convert_list_to_spec_map(SpecsFileName, EventSpecsTerm,
+                map.init, EventSpecMap, [], ErrorSpecs)
         ;
-            TermOpenRes = error(TermOpenError),
+            TermReadRes = eof,
             EventSetName = "",
             EventSpecMap = map.init,
-            Pieces = [words(io.error_message(TermOpenError)), nl],
-            ErrorSpec = error_spec(severity_error, phase_term_to_parse_tree,
-                [error_msg(no, do_not_treat_as_first, 0, [always(Pieces)])]),
+            Pieces = [words("eof in term specification file"), nl],
+            ErrorSpec = error_spec(severity_error,
+                phase_term_to_parse_tree,
+                [error_msg(no, do_not_treat_as_first, 0,
+                    [always(Pieces)])]),
             ErrorSpecs = [ErrorSpec]
-        )
+        ;
+            TermReadRes = error(TermReadMsg, LineNumber),
+            EventSetName = "",
+            EventSpecMap = map.init,
+            Pieces = [words(TermReadMsg), nl],
+            ErrorSpec = error_spec(severity_error,
+                phase_term_to_parse_tree,
+                [simple_msg(context(TermFileName, LineNumber),
+                    [always(Pieces)])]),
+            ErrorSpecs = [ErrorSpec]
+        ),
+        io.close_input(TermStream, !IO),
+        io.remove_file(TermFileName, _RemoveRes, !IO)
     ;
+        TermFileResult = error(ErrorMessage),
         EventSetName = "",
         EventSpecMap = map.init,
-        Pieces = [words(Problem), nl],
-        ErrorSpec = error_spec(severity_error, phase_term_to_parse_tree,
-            [error_msg(no, do_not_treat_as_first, 0, [always(Pieces)])]),
+        Pieces = [words(ErrorMessage), nl],
+        ErrorSpec = error_spec(severity_error,
+            phase_term_to_parse_tree,
+            [error_msg(no, do_not_treat_as_first, 0,
+                [always(Pieces)])]),
         ErrorSpecs = [ErrorSpec]
-    ),
-    io.remove_file(TermFileName, _RemoveRes, !IO).
+    ).
 
-:- pred read_specs_file(string::in, string::in, string::out,
+:- pred read_specs_file(string::in, string::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+read_specs_file(SpecsFile, TermFile, Result, !IO) :-
+    read_specs_file_2(SpecsFile, TermFile, Problem, !IO),
+    ( if Problem = "" then
+        Result = ok
+    else
+        Result = error(Problem)
+    ).
+
+:- pred read_specs_file_2(string::in, string::in, string::out,
     io::di, io::uo) is det.
 
 :- pragma foreign_decl("C",
@@ -161,7 +166,7 @@ MR_String   read_specs_file_4(MR_AllocSiteInfoPtr alloc_id,
 ").
 
 :- pragma foreign_proc("C",
-    read_specs_file(SpecsFileName::in, TermFileName::in, Problem::out,
+    read_specs_file_2(SpecsFileName::in, TermFileName::in, Problem::out,
         _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, tabled_for_io, thread_safe],
 "
@@ -174,7 +179,7 @@ MR_String   read_specs_file_4(MR_AllocSiteInfoPtr alloc_id,
     MR_restore_transient_hp();
 ").
 
-read_specs_file(_, _, _, _, _) :-
+read_specs_file_2(_, _, _, _, _) :-
     unexpected($file, $pred, "non-C backend").
 
 :- pragma foreign_code("C", "
@@ -185,6 +190,7 @@ read_specs_file_2(MR_AllocSiteInfoPtr alloc_id, MR_String specs_file_name,
 {
     int         spec_fd;
     MR_String   problem;
+    char        errbuf[MR_STRERROR_BUF_SIZE];
 
     /*
     ** There are race conditions between opening the file, stat'ing the file
@@ -195,7 +201,7 @@ read_specs_file_2(MR_AllocSiteInfoPtr alloc_id, MR_String specs_file_name,
     spec_fd = open(specs_file_name, O_RDONLY);
     if (spec_fd < 0) {
         problem = MR_make_string(alloc_id, ""could not open %s: %s"",
-            specs_file_name, strerror(errno));
+            specs_file_name, MR_strerror(errno, errbuf, sizeof(errbuf)));
     } else {
         problem = read_specs_file_3(alloc_id, specs_file_name,
             term_file_name, spec_fd);
@@ -256,11 +262,13 @@ read_specs_file_4(MR_AllocSiteInfoPtr alloc_id, MR_String specs_file_name,
                 specs_file_name);
         } else {
             FILE *term_fp;
+            char errbuf[MR_STRERROR_BUF_SIZE];
 
             term_fp = fopen(term_file_name, ""w"");
             if (term_fp == NULL) {
                 problem = MR_make_string(alloc_id, ""could not open %s: %s"",
-                    term_file_name, strerror(errno));
+                    term_file_name,
+                    MR_strerror(errno, errbuf, sizeof(errbuf)));
             } else {
                 MR_print_event_set(term_fp, event_set);
                 fclose(term_fp);
@@ -371,11 +379,11 @@ convert_term_to_spec_map(FileName, SpecTerm, !EventSpecMap, !ErrorSpecs) :-
         AttrTypeMap0, AttrTypeMap, DepRel0, DepRel, !ErrorSpecs),
     convert_terms_to_attrs(EventName, FileName, AttrNameMap,
         AttrTypeMap, 0, AttrTerms, [], RevAttrs, !ErrorSpecs),
-    ( digraph.tsort(DepRel, AllAttrNameOrder) ->
+    ( if digraph.tsort(DepRel, AllAttrNameOrder) then
         % There is an order for computing the synthesized attributes.
         keep_only_synth_attr_nums(AttrNameMap, AllAttrNameOrder,
             SynthAttrNumOrder)
-    ;
+    else
         % It would be nice to print a list of the attributes involved in the
         % (one or more) circular dependencies detected by digraph.tsort,
         % but at present digraph.m does not have any predicates that can
@@ -392,7 +400,7 @@ convert_term_to_spec_map(FileName, SpecTerm, !EventSpecMap, !ErrorSpecs) :-
     list.reverse(RevAttrs, Attrs),
     EventSpec = event_spec(EventNumber, EventName, EventLineNumber,
         Attrs, SynthAttrNumOrder),
-    ( map.search(!.EventSpecMap, EventName, OldEventSpec) ->
+    ( if map.search(!.EventSpecMap, EventName, OldEventSpec) then
         OldLineNumber = OldEventSpec ^ event_spec_linenum,
         Pieces1 = [words("Duplicate event specification for event"),
             quote(EventName), suffix("."), nl],
@@ -401,7 +409,7 @@ convert_term_to_spec_map(FileName, SpecTerm, !EventSpecMap, !ErrorSpecs) :-
             [simple_msg(context(FileName, EventLineNumber), [always(Pieces1)]),
             simple_msg(context(FileName, OldLineNumber), [always(Pieces2)])]),
         !:ErrorSpecs = [DuplErrorSpec | !.ErrorSpecs]
-    ;
+    else
         map.det_insert(EventName, EventSpec, !EventSpecMap)
     ).
 
@@ -469,9 +477,9 @@ build_plain_type_map(EventName, FileName, EventLineNumber,
     AttrInfo = attr_info(AttrNum, AttrName, AttrLineNumber, AttrTypeTerm),
     map.det_insert(AttrNum, AttrInfo, !AttrNumMap),
     digraph.add_vertex(AttrName, AttrKey, !DepRel),
-    ( bimap.insert(AttrName, AttrKey, !KeyMap) ->
+    ( if bimap.insert(AttrName, AttrKey, !KeyMap) then
         map.det_insert(AttrName, AttrInfo, !AttrNameMap)
-    ;
+    else
         Pieces = [words("Event"), quote(EventName),
             words("has more than one attribute named"),
             quote(AttrName), suffix("."), nl],
@@ -485,10 +493,10 @@ build_plain_type_map(EventName, FileName, EventLineNumber,
         ; AttrTypeTerm = event_attr_type_synthesized(TypeTerm, _SynthCall)
         ),
         Type = convert_term_to_type(TypeTerm),
-        ( map.search(!.AttrTypeMap, AttrName, _OldType) ->
+        ( if map.search(!.AttrTypeMap, AttrName, _OldType) then
             % The error message has already been generated above.
             true
-        ;
+        else
             map.det_insert(AttrName, Type, !AttrTypeMap)
         )
     ;
@@ -524,13 +532,13 @@ build_dep_map(EventName, FileName, AttrNameMap, KeyMap, [AttrTerm | AttrTerms],
             !:ErrorSpecs = AttrErrorSpecs ++ !.ErrorSpecs
         ;
             AttrErrorSpecs = [],
-            ( map.search(!.AttrTypeMap, AttrName, AttrType) ->
+            ( if map.search(!.AttrTypeMap, AttrName, AttrType) then
                 ArgTypes = list.map(map.lookup(!.AttrTypeMap), ArgAttrNames),
-                (
+                ( if
                     map.search(AttrNameMap, FuncAttrName, FuncAttrInfo),
                     FuncAttrInfo ^ attr_info_type =
                         event_attr_type_function(FuncAttrPurity)
-                ->
+                then
                     (
                         FuncAttrPurity = event_attr_pure_function,
                         FuncPurity = purity_pure
@@ -538,16 +546,16 @@ build_dep_map(EventName, FileName, AttrNameMap, KeyMap, [AttrTerm | AttrTerms],
                         FuncAttrPurity = event_attr_impure_function,
                         FuncPurity = purity_impure
                     ),
-                    FuncAttrType = higher_order_type(ArgTypes, yes(AttrType),
-                        FuncPurity, lambda_normal),
-                    (
+                    construct_higher_order_func_type(FuncPurity, lambda_normal,
+                        ArgTypes, AttrType, FuncAttrType),
+                    ( if
                         map.search(!.AttrTypeMap, FuncAttrName,
                             OldFuncAttrType)
-                    ->
-                        ( FuncAttrType = OldFuncAttrType ->
+                    then
+                        ( if FuncAttrType = OldFuncAttrType then
                             % AttrTypeMap already contains the correct info.
                             true
-                        ;
+                        else
                             FuncAttrLineNumber =
                                 FuncAttrInfo ^ attr_info_linenumber,
                             % XXX Maybe we should give the types themselves.
@@ -561,11 +569,11 @@ build_dep_map(EventName, FileName, AttrNameMap, KeyMap, [AttrTerm | AttrTerms],
                                     [always(Pieces)])]),
                             !:ErrorSpecs = [ErrorSpec | !.ErrorSpecs]
                         )
-                    ;
+                    else
                         map.det_insert(FuncAttrName, FuncAttrType,
                             !AttrTypeMap)
                     )
-                ;
+                else
                     Pieces = [words("Attribute"), quote(AttrName),
                         words("cannot be synthesized"),
                         words("by non-function attribute"),
@@ -576,7 +584,7 @@ build_dep_map(EventName, FileName, AttrNameMap, KeyMap, [AttrTerm | AttrTerms],
                             [always(Pieces)])]),
                     !:ErrorSpecs = [ErrorSpec | !.ErrorSpecs]
                 )
-            ;
+            else
                 % The error message was already generated in the previous pass.
                 true
             )
@@ -598,9 +606,9 @@ record_arg_dependencies(_, _, _, _, _, _, [], !DepRel, !ErrorSpecs).
 record_arg_dependencies(EventName, FileName, AttrLineNumber, KeyMap,
         SynthAttrName, SynthAttrKey, [AttrName | AttrNames],
         !DepRel, !ErrorSpecs) :-
-    ( bimap.search(KeyMap, AttrName, AttrKey) ->
+    ( if bimap.search(KeyMap, AttrName, AttrKey) then
         digraph.add_edge(AttrKey, SynthAttrKey, !DepRel)
-    ;
+    else
         Pieces = [words("Attribute"), quote(SynthAttrName),
             words("of event"), quote(EventName),
             words("uses nonexistent attribute"), quote(AttrName),
@@ -634,11 +642,11 @@ convert_terms_to_attrs(EventName, FileName, AttrNameMap,
         AttrTypeTerm = event_attr_type_synthesized(_, SynthCallTerm),
         map.lookup(AttrTypeMap, AttrName, AttrType),
         SynthCallTerm = event_attr_synth_call_term(FuncAttrName, ArgAttrNames),
-        (
+        ( if
             FuncAttrInfo = map.search(AttrNameMap, FuncAttrName),
             FuncAttrNum = FuncAttrInfo ^ attr_info_number,
             list.map(map.search(AttrNameMap), ArgAttrNames, ArgAttrInfos)
-        ->
+        then
             ArgAttrNums = list.map(attr_info_number, ArgAttrInfos),
             ArgAttrNameNums = assoc_list.from_corresponding_lists(ArgAttrNames,
                 ArgAttrNums),
@@ -649,18 +657,18 @@ convert_terms_to_attrs(EventName, FileName, AttrNameMap,
             EventAttr = event_attribute(AttrNum, AttrName, AttrType, in_mode,
                 yes(SynthCall)),
             !:RevAttrs = [EventAttr | !.RevAttrs]
-        ;
+        else
             % The error that caused the map search failure has already had
             % an error message generated for it.
             true
         )
     ;
         AttrTypeTerm = event_attr_type_function(_),
-        ( map.search(AttrTypeMap, AttrName, AttrType) ->
+        ( if map.search(AttrTypeMap, AttrName, AttrType) then
             EventAttr = event_attribute(AttrNum, AttrName, AttrType, in_mode,
                 no),
             !:RevAttrs = [EventAttr | !.RevAttrs]
-        ;
+        else
             Pieces = [words("Event"), quote(EventName),
                 words("does not use the function attribute"),
                 quote(AttrName), suffix("."), nl],
@@ -677,12 +685,12 @@ convert_terms_to_attrs(EventName, FileName, AttrNameMap,
 
 convert_term_to_type(Term) = Type :-
     Term = event_attr_type_term(Name, Args),
-    (
+    ( if
         Args = [],
         builtin_type_to_string(BuiltinType, Name)
-    ->
+    then
         Type = builtin_type(BuiltinType)
-    ;
+    else
         SymName = string_to_sym_name(Name),
         ArgTypes = list.map(convert_term_to_type, Args),
         Type = defined_type(SymName, ArgTypes, kind_star)
@@ -695,12 +703,12 @@ convert_term_to_type(Term) = Type :-
 
 compute_prev_synth_attr_order(AttrNameMap, AttrName, Ancestors,
         !AlreadyComputed, PrevSynthOrder) :-
-    ( set.member(AttrName, Ancestors) ->
+    ( if set.member(AttrName, Ancestors) then
         % There is a circularity among the dependencies, which means that
         % PrevSynthOrder won't actually be used.
         PrevSynthOrder = []
-    ;
-        ( map.search(AttrNameMap, AttrName, AttrInfo) ->
+    else
+        ( if map.search(AttrNameMap, AttrName, AttrInfo) then
             AttrTerm = AttrInfo ^ attr_info_type,
             (
                 ( AttrTerm = event_attr_type_ordinary(_)
@@ -721,7 +729,7 @@ compute_prev_synth_attr_order(AttrNameMap, AttrName, Ancestors,
                 AttrNum = AttrInfo ^ attr_info_number,
                 PrevSynthOrder = SubPrevSynthOrder ++ [AttrNum]
             )
-        ;
+        else
             % An error has occurred somewhere, which means that
             % PrevSynthOrder won't actually be used.
             PrevSynthOrder = []
@@ -814,7 +822,7 @@ describe_attr_type(Type) = Desc :-
         Type = builtin_type(BuiltinType),
         builtin_type_to_string(BuiltinType, Desc)
     ;
-        Type = higher_order_type(_, _, _, _),
+        Type = higher_order_type(_, _, _, _, _),
         Desc = "function"
     ;
         ( Type = type_variable(_, _)
@@ -842,11 +850,6 @@ event_arg_types(EventSpecMap, EventName, ArgTypes) :-
 event_arg_modes(EventSpecMap, EventName, ArgModes) :-
     event_attributes(EventSpecMap, EventName, Attributes),
     list.filter_map(project_event_arg_mode, Attributes, ArgModes).
-
-:- pred project_event_arg_name(event_attribute::in, string::out) is semidet.
-
-project_event_arg_name(Attribute, Attribute ^ attr_name) :-
-    Attribute ^ attr_maybe_synth_call = no.
 
 :- pred project_event_arg_type(event_attribute::in, mer_type::out) is semidet.
 

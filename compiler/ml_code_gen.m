@@ -95,7 +95,7 @@
 %       [code]
 %
 % means that in the situation described by [situation],
-% for the the specified [construct] we will generate the specified [code].
+% for the specified [construct] we will generate the specified [code].
 %
 % There is one other important thing which can be considered part of the
 % calling convention for the code that we generate for each goal.
@@ -122,7 +122,7 @@
 %
 % If a model_foo goal occurs in a model_bar context, where foo != bar,
 % then we need to modify the code that we emit for the goal so that
-% it conforms to the calling convenion expected for model_bar.
+% it conforms to the calling convention expected for model_bar.
 %
 %   det goal in semidet context:
 %       <succeeded = Goal>
@@ -157,7 +157,7 @@
 %   model_semi goal:
 %       <succeeded = true>
 %   ===>
-%       succceeded = MR_TRUE;
+%       succeeded = MR_TRUE;
 %
 %   model_non goal
 %       <true && CONT()>
@@ -236,7 +236,7 @@
 %
 %       entry_func();
 %
-% The more efficient method generates the goals in reverse order, so it's less
+% The more efficient method generates the goals in reverse order, so it is less
 % readable, but it has fewer function calls and can make it easier for the C
 % compiler to inline things:
 %
@@ -251,7 +251,7 @@
 %
 % The more efficient method is the one we actually use.
 %
-% Here's how those two methods look on longer conjunctions of nondet goals:
+% Here is how those two methods look on longer conjunctions of nondet goals:
 %
 %   model_non goals (optimized for readability):
 %       <Goal1, Goal2, Goal3, Goals>
@@ -304,7 +304,7 @@
 %       <Goal1 && label1_func()>;
 %
 % This would avoid the undesirable deep nesting that we sometimes get with
-% our current scheme. However, if we're eliminating nested functions, as is
+% our current scheme. However, if we are eliminating nested functions, as is
 % normally the case, then after the ml_elim_nested transformation all the
 % functions and variables have been hoisted to the top level, so there is
 % no difference between these two.
@@ -409,7 +409,7 @@
 %           - deconstructions
 %       - switches
 %       - commits
-%       - `pragma c_code'
+%       - `pragma foreign_proc'
 %   - RTTI
 %   - high level data representation
 %     (i.e. generate MLDS type declarations for user-defined types)
@@ -419,7 +419,7 @@
 %   - XXX define compare & unify preds for RTTI types
 %   - XXX need to generate correct layout information for closures
 %     so that tests/hard_coded/copy_pred works.
-%   - XXX fix ANSI/ISO C conformance of the generated code (i.e. port to lcc)
+%   - XXX fix ANSI/ISO C conformance of the generated code
 %
 % UNIMPLEMENTED FEATURES:
 %   - test --det-copy-out
@@ -449,10 +449,13 @@
 :- module ml_backend.ml_code_gen.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_goal.
-:- import_module ml_backend.mlds.
+:- import_module hlds.vartypes.
 :- import_module ml_backend.ml_gen_info.
+:- import_module ml_backend.mlds.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
@@ -467,14 +470,6 @@
 :- pred ml_gen_goal_as_block(code_model::in, hlds_goal::in, statement::out,
     ml_gen_info::in, ml_gen_info::out) is det.
 
-    % Generate MLDS code for the specified goal in the specified code model.
-    % Return the result as two lists, one containing the necessary declarations
-    % and the other containing the generated statements.
-    %
-:- pred ml_gen_goal(code_model::in, hlds_goal::in,
-    list(mlds_defn)::out, list(statement)::out,
-    ml_gen_info::in, ml_gen_info::out) is det.
-
     % Generate code for a goal that is one branch of a branched control
     % structure. At the end of the branch, we need to forget what we learned
     % during the branch about which variables are bound to constants,
@@ -487,6 +482,14 @@
     ml_gen_info::in, ml_gen_info::out) is det.
 :- pred ml_gen_goal_as_branch_block(code_model::in, hlds_goal::in,
     statement::out, ml_gen_info::in, ml_gen_info::out) is det.
+
+    % Generate MLDS code for the specified goal in the specified code model.
+    % Return the result as two lists, one containing the necessary declarations
+    % and the other containing the generated statements.
+    %
+:- pred ml_gen_goal(code_model::in, hlds_goal::in,
+    list(mlds_defn)::out, list(statement)::out,
+    ml_gen_info::in, ml_gen_info::out) is det.
 
     % ml_gen_maybe_convert_goal_code_model(OuterCodeModel, InnerCodeModel,
     %   Context, Statements0, Statements, !Info):
@@ -504,7 +507,7 @@
     % Generate declarations for a list of local variables.
     %
 :- pred ml_gen_local_var_decls(prog_varset::in, vartypes::in,
-    prog_context::in, prog_vars::in, list(mlds_defn)::out,
+    prog_context::in, prog_vars::in, list(mlds_data_defn)::out,
     ml_gen_info::in, ml_gen_info::out) is det.
 
 %-----------------------------------------------------------------------------%
@@ -512,21 +515,21 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
 :- import_module ml_backend.ml_call_gen.
 :- import_module ml_backend.ml_code_util.
 :- import_module ml_backend.ml_commit_gen.
 :- import_module ml_backend.ml_disj_gen.
 :- import_module ml_backend.ml_foreign_proc_gen.
-:- import_module ml_backend.ml_gen_info.
 :- import_module ml_backend.ml_switch_gen.
 :- import_module ml_backend.ml_unify_gen.
-:- import_module parse_tree.prog_type.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.set_of_var.
 
 :- import_module bool.
-:- import_module map.
 :- import_module maybe.
 :- import_module require.
 :- import_module set.
@@ -537,30 +540,24 @@
 % Generate code for goals.
 %
 
-ml_gen_goal_as_branch(CodeModel, Goal, Decls, Statements, !Info) :-
-    ml_gen_info_get_const_var_map(!.Info, InitConstVarMap),
-    ml_gen_goal(CodeModel, Goal, Decls, Statements, !Info),
-    ml_gen_info_set_const_var_map(InitConstVarMap, !Info).
-
-    % Generate MLDS code for the specified goal in the specified code model.
-    % Return the result as a single statement (which may be a block statement
-    % containing nested declarations).
-    %
 ml_gen_goal_as_block(CodeModel, Goal, Statement, !Info) :-
     ml_gen_goal(CodeModel, Goal, Decls, Statements, !Info),
     Goal = hlds_goal(_, GoalInfo),
     Context = goal_info_get_context(GoalInfo),
     Statement = ml_gen_block(Decls, Statements, Context).
 
+ml_gen_goal_as_branch(CodeModel, Goal, Decls, Statements, !Info) :-
+    ml_gen_info_get_const_var_map(!.Info, InitConstVarMap),
+    ml_gen_goal(CodeModel, Goal, Decls, Statements, !Info),
+    ml_gen_info_set_const_var_map(InitConstVarMap, !Info).
+
 ml_gen_goal_as_branch_block(CodeModel, Goal, Statement, !Info) :-
     ml_gen_info_get_const_var_map(!.Info, InitConstVarMap),
     ml_gen_goal_as_block(CodeModel, Goal, Statement, !Info),
     ml_gen_info_set_const_var_map(InitConstVarMap, !Info).
 
-    % Generate MLDS code for the specified goal in the specified code model.
-    % Return the result as two lists, one containing the necessary declarations
-    % and the other containing the generated statements.
-    %
+%-----------------------------------------------------------------------------%
+
 ml_gen_goal(CodeModel, Goal, Decls, Statements, !Info) :-
     Goal = hlds_goal(GoalExpr, GoalInfo),
     Context = goal_info_get_context(GoalInfo),
@@ -583,7 +580,8 @@ ml_gen_goal(CodeModel, Goal, Decls, Statements, !Info) :-
     ml_gen_maybe_convert_goal_code_model(CodeModel, GoalCodeModel, Context,
         GoalStatements0, GoalStatements, !Info),
 
-    Decls = VarDecls ++ GoalDecls,
+    % XXX MLDS_DEFN
+    Decls = list.map(wrap_data_defn, VarDecls) ++ GoalDecls,
     Statements = GoalStatements.
 
 %-----------------------------------------------------------------------------%
@@ -611,9 +609,7 @@ ml_gen_goal_expr(GoalExpr, CodeModel, Context, GoalInfo, Decls, Statements,
             ml_gen_call(PredId, ProcId, ArgNames, ArgLvals, ActualArgTypes,
                 CodeModel, Context, no, Decls, Statements, !Info)
         ;
-            ( BuiltinState = inline_builtin
-            ; BuiltinState = out_of_line_builtin
-            ),
+            BuiltinState = inline_builtin,
             ml_gen_builtin(PredId, ProcId, ArgVars, CodeModel, Context,
                 Decls, Statements, !Info)
         )
@@ -627,7 +623,7 @@ ml_gen_goal_expr(GoalExpr, CodeModel, Context, GoalInfo, Decls, Statements,
     ;
         GoalExpr = call_foreign_proc(Attributes, PredId, ProcId,
             Args, ExtraArgs, MaybeTraceRuntimeCond, PragmaImpl),
-        PragmaImpl = fc_impl_ordinary(ForeignCode, MaybeContext),
+        PragmaImpl = fp_impl_ordinary(ForeignCode, MaybeContext),
         (
             MaybeContext = yes(ContextToUse)
         ;
@@ -638,11 +634,14 @@ ml_gen_goal_expr(GoalExpr, CodeModel, Context, GoalInfo, Decls, Statements,
             MaybeTraceRuntimeCond = no,
             ml_gen_ordinary_pragma_foreign_proc(CodeModel, Attributes,
                 PredId, ProcId, Args, ExtraArgs, ForeignCode,
-                ContextToUse, Decls, Statements, !Info)
+                ContextToUse, DataDecls, Statements, !Info),
+            % XXX MLDS_DEFN
+            Decls = list.map(wrap_data_defn, DataDecls)
         ;
             MaybeTraceRuntimeCond = yes(TraceRuntimeCond),
             ml_gen_trace_runtime_cond(TraceRuntimeCond, ContextToUse,
-                Decls, Statements, !Info)
+                Statements, !Info),
+            Decls = []
         )
     ;
         GoalExpr = conj(_ConjType, Goals),
@@ -656,7 +655,9 @@ ml_gen_goal_expr(GoalExpr, CodeModel, Context, GoalInfo, Decls, Statements,
     ;
         GoalExpr = switch(Var, CanFail, CasesList),
         ml_gen_switch(Var, CanFail, CasesList, CodeModel, Context, GoalInfo,
-            Decls, Statements, !Info)
+            DataDecls, Statements, !Info),
+        % XXX MLDS_DEFN
+        Decls = list.map(wrap_data_defn, DataDecls)
     ;
         GoalExpr = if_then_else(_Vars, Cond, Then, Else),
         ml_gen_ite(CodeModel, Cond, Then, Else, Context, Decls, Statements,
@@ -666,17 +667,49 @@ ml_gen_goal_expr(GoalExpr, CodeModel, Context, GoalInfo, Decls, Statements,
         ml_gen_negation(SubGoal, CodeModel, Context, Decls, Statements, !Info)
     ;
         GoalExpr = scope(Reason, SubGoal),
-        ( Reason = from_ground_term(TermVar, from_ground_term_construct) ->
+        (
+            Reason = from_ground_term(TermVar, from_ground_term_construct),
             ml_gen_ground_term(TermVar, SubGoal, Statements, !Info),
             Decls = []
         ;
+            ( Reason = from_ground_term(_, from_ground_term_deconstruct)
+            ; Reason = from_ground_term(_, from_ground_term_other)
+            ; Reason = promise_purity(_)
+            ; Reason = require_detism(_)
+            ; Reason = require_complete_switch(_)
+            ; Reason = require_switch_arms_detism(_, _)
+            ; Reason = trace_goal(_, _, _, _, _)
+            ),
+            ml_gen_goal(CodeModel, SubGoal, Decls, Statements, !Info)
+        ;
+            Reason = disable_warnings(HeadWarning, TailWarnings),
+            ml_gen_info_get_disabled_warnings(!.Info, Warnings0),
+            set.insert_list([HeadWarning | TailWarnings], Warnings0, Warnings),
+            ml_gen_info_set_disabled_warnings(Warnings, !Info),
+            ml_gen_goal(CodeModel, SubGoal, Decls, Statements, !Info),
+            ml_gen_info_set_disabled_warnings(Warnings0, !Info)
+        ;
+            ( Reason = exist_quant(_)
+            ; Reason = commit(_)
+            ; Reason = barrier(_)
+            ; Reason = promise_solutions(_, _)
+            ),
             ml_gen_commit(SubGoal, CodeModel, Context, Decls, Statements,
                 !Info)
+        ;
+            Reason = loop_control(_, _, _),
+            % This hasn't been implemented for the MLDS backend yet.
+            unexpected($module, "loop_control NYI")
+        ;
+            Reason = from_ground_term(_, from_ground_term_initial),
+            % These should have been replaced by one of the other
+            % from_ground_term_* scopes.
+            unexpected($module, "unexpected from_ground_term_initial")
         )
     ;
         GoalExpr = shorthand(_),
-        % these should have been expanded out by now
-        unexpected($module, $pred, "unexpected shorthand")
+        % These should have been expanded out by now.
+        unexpected($module, "unexpected shorthand")
     ).
 
 %-----------------------------------------------------------------------------%
@@ -845,13 +878,235 @@ cases_find_subgoal_nonlocals([Case | Cases], !SubGoalNonLocals) :-
     cases_find_subgoal_nonlocals(Cases, !SubGoalNonLocals).
 
 %-----------------------------------------------------------------------------%
+%
+% Code for if-then-else.
+%
+
+:- pred ml_gen_ite(code_model::in, hlds_goal::in, hlds_goal::in, hlds_goal::in,
+    prog_context::in, list(mlds_defn)::out, list(statement)::out,
+    ml_gen_info::in, ml_gen_info::out) is det.
+
+ml_gen_ite(CodeModel, Cond, Then, Else, Context, Decls, Statements, !Info) :-
+    Cond = hlds_goal(_, CondGoalInfo),
+    CondCodeModel = goal_info_get_code_model(CondGoalInfo),
+    (
+        %   model_det Cond:
+        %       <(Cond -> Then ; Else)>
+        %   ===>
+        %       <Cond>
+        %       <Then>
+
+        CondCodeModel = model_det,
+        ml_gen_goal_as_block(model_det, Cond, CondStatement, !Info),
+        ml_gen_goal_as_block(CodeModel, Then, ThenStatement, !Info),
+        Decls = [],
+        Statements = [CondStatement, ThenStatement]
+    ;
+        %   model_semi cond:
+        %       <(Cond -> Then ; Else)>
+        %   ===>
+        %       MR_bool succeeded;
+        %
+        %       <succeeded = Cond>
+        %       if (succeeded) {
+        %           <Then>
+        %       } else {
+        %           <Else>
+        %       }
+
+        CondCodeModel = model_semi,
+        ml_gen_info_get_const_var_map(!.Info, InitConstVarMap),
+        ml_gen_goal(model_semi, Cond, CondDecls, CondStatements, !Info),
+        ml_gen_test_success(!.Info, Succeeded),
+        ml_gen_goal_as_block(CodeModel, Then, ThenStatement, !Info),
+        ml_gen_info_set_const_var_map(InitConstVarMap, !Info),
+        ml_gen_goal_as_block(CodeModel, Else, ElseStatement, !Info),
+        ml_gen_info_set_const_var_map(InitConstVarMap, !Info),
+        IfStmt = ml_stmt_if_then_else(Succeeded, ThenStatement,
+            yes(ElseStatement)),
+        IfStatement = statement(IfStmt, mlds_make_context(Context)),
+        Decls = CondDecls,
+        Statements = CondStatements ++ [IfStatement]
+    ;
+        % XXX The following transformation does not do as good a job of GC
+        % as it could. Ideally we ought to ensure that stuff used only
+        % in the `Else' part will be reclaimed if a GC occurs during the `Then'
+        % part. But that is a bit tricky to achieve.
+        %
+        %   model_non cond:
+        %       <(Cond -> Then ; Else)>
+        %   ===>
+        %       MR_bool cond_<N>;
+        %
+        %       void then_func() {
+        %           cond_<N> = MR_TRUE;
+        %           <Then>
+        %       }
+        %
+        %       cond_<N> = MR_FALSE;
+        %       <Cond && then_func()>
+        %       if (!cond_<N>) {
+        %           <Else>
+        %       }
+        %
+        % except that we hoist any declarations generated for <Cond> to the top
+        % of the scope, so that they are in scope for the <Then> goal (this
+        % is needed for declarations of static consts).
+
+        CondCodeModel = model_non,
+        ml_gen_info_get_const_var_map(!.Info, InitConstVarMap),
+
+        % Generate the `cond_<N>' var and the code to initialize it to false.
+        ml_gen_info_new_cond_var(CondVar, !Info),
+        MLDS_Context = mlds_make_context(Context),
+        CondVarDecl = ml_gen_cond_var_decl(CondVar, MLDS_Context),
+        ml_gen_set_cond_var(!.Info, CondVar, ml_const(mlconst_false), Context,
+            SetCondFalse),
+
+        % Allocate a name for the `then_func'.
+        ml_gen_new_func_label(no, ThenFuncLabel, ThenFuncLabelRval, !Info),
+
+        % Generate <Cond && then_func()>.
+        ml_get_env_ptr(!.Info, EnvPtrRval),
+        SuccessCont = success_cont(ThenFuncLabelRval, EnvPtrRval, [], []),
+        ml_gen_info_push_success_cont(SuccessCont, !Info),
+        ml_gen_goal(model_non, Cond, CondDecls, CondStatements, !Info),
+        ml_gen_info_pop_success_cont(!Info),
+
+        % Generate the `then_func'.
+        % push nesting level
+        Then = hlds_goal(_, ThenGoalInfo),
+        ThenContext = goal_info_get_context(ThenGoalInfo),
+        ml_gen_set_cond_var(!.Info, CondVar, ml_const(mlconst_true),
+            ThenContext, SetCondTrue),
+        ml_gen_goal_as_block(CodeModel, Then, ThenStatement, !Info),
+        ThenFuncBody = statement(
+            ml_stmt_block([], [SetCondTrue, ThenStatement]),
+            mlds_make_context(ThenContext)),
+        % pop nesting level
+        ml_gen_nondet_label_func(!.Info, ThenFuncLabel, ThenContext,
+            ThenFuncBody, ThenFunc),
+
+        % Generate `if (!cond_<N>) { <Else> }'.
+        ml_gen_test_cond_var(!.Info, CondVar, CondSucceeded),
+        ml_gen_info_set_const_var_map(InitConstVarMap, !Info),
+        ml_gen_goal_as_block(CodeModel, Else, ElseStatement, !Info),
+        ml_gen_info_set_const_var_map(InitConstVarMap, !Info),
+        IfStmt = ml_stmt_if_then_else(
+            ml_unop(std_unop(logical_not), CondSucceeded),
+            ElseStatement, no),
+        IfStatement = statement(IfStmt, MLDS_Context),
+
+        % Package it all up in the right order.
+        % XXX MLDS_DEFN
+        Decls = [mlds_data(CondVarDecl) | CondDecls] ++
+            [mlds_function(ThenFunc)],
+        Statements = [SetCondFalse | CondStatements] ++ [IfStatement]
+    ).
+
+%-----------------------------------------------------------------------------%
+%
+% Code for negation.
+%
+
+:- pred ml_gen_negation(hlds_goal::in, code_model::in, prog_context::in,
+    list(mlds_defn)::out, list(statement)::out,
+    ml_gen_info::in, ml_gen_info::out) is det.
+
+ml_gen_negation(Cond, CodeModel, Context, Decls, Statements, !Info) :-
+    Cond = hlds_goal(_, CondGoalInfo),
+    CondCodeModel = goal_info_get_code_model(CondGoalInfo),
+    (
+        % model_det negation:
+        %       <not(Goal)>
+        %   ===>
+        %   {
+        %       MR_bool succeeded;
+        %       <succeeded = Goal>
+        %       /* now ignore the value of succeeded,
+        %        which we know will be MR_FALSE */
+        %   }
+
+        CodeModel = model_det,
+        ml_gen_goal_as_branch(model_semi, Cond, Decls, Statements, !Info)
+    ;
+        % model_semi negation, model_det goal:
+        %       <succeeded = not(Goal)>
+        %   ===>
+        %       <do Goal>
+        %       succeeded = MR_FALSE;
+
+        CodeModel = model_semi, CondCodeModel = model_det,
+        ml_gen_goal_as_branch(model_det, Cond, CondDecls, CondStatements,
+            !Info),
+        ml_gen_set_success(!.Info, ml_const(mlconst_false), Context,
+            SetSuccessFalse),
+        Decls = CondDecls,
+        Statements = CondStatements ++ [SetSuccessFalse]
+    ;
+        % model_semi negation, model_semi goal:
+        %       <succeeded = not(Goal)>
+        %   ===>
+        %       <succeeded = Goal>
+        %       succeeded = !succeeded;
+
+        CodeModel = model_semi, CondCodeModel = model_semi,
+        ml_gen_goal_as_branch(model_semi, Cond, CondDecls, CondStatements,
+            !Info),
+        ml_gen_test_success(!.Info, Succeeded),
+        ml_gen_set_success(!.Info, ml_unop(std_unop(logical_not), Succeeded),
+            Context, InvertSuccess),
+        Decls = CondDecls,
+        Statements = CondStatements ++ [InvertSuccess]
+    ;
+        CodeModel = model_semi, CondCodeModel = model_non,
+        unexpected($module, $pred, "nondet cond")
+    ;
+        CodeModel = model_non,
+        unexpected($module, $pred, "nondet negation")
+    ).
+
+%-----------------------------------------------------------------------------%
+%
+% Code for conjunctions.
+%
+
+:- pred ml_gen_conj(hlds_goals::in, code_model::in, prog_context::in,
+    list(mlds_defn)::out, list(statement)::out,
+    ml_gen_info::in, ml_gen_info::out) is det.
+
+ml_gen_conj(Conjuncts, CodeModel, Context, Decls, Statements, !Info) :-
+    (
+        Conjuncts = [],
+        ml_gen_success(CodeModel, Context, Statements, !Info),
+        Decls = []
+    ;
+        Conjuncts = [SingleGoal],
+        ml_gen_goal(CodeModel, SingleGoal, Decls, Statements, !Info)
+    ;
+        Conjuncts = [First | Rest],
+        Rest = [_ | _],
+        First = hlds_goal(_, FirstGoalInfo),
+        FirstDeterminism = goal_info_get_determinism(FirstGoalInfo),
+        ( if determinism_components(FirstDeterminism, _, at_most_zero) then
+            % the `Rest' code is unreachable
+            ml_gen_goal(CodeModel, First, Decls, Statements, !Info)
+        else
+            determinism_to_code_model(FirstDeterminism, FirstCodeModel),
+            DoGenFirst = ml_gen_goal(FirstCodeModel, First),
+            DoGenRest = ml_gen_conj(Rest, CodeModel, Context),
+            ml_combine_conj(FirstCodeModel, Context, DoGenFirst, DoGenRest,
+                Decls, Statements, !Info)
+        )
+    ).
+
+%-----------------------------------------------------------------------------%
 
 ml_gen_maybe_convert_goal_code_model(OuterCodeModel, InnerCodeModel, Context,
         !Statements, !Info) :-
     (
         % If the inner and outer code models are equal, we don't need to do
         % anything.
-        %
         (
             OuterCodeModel = model_det,
             InnerCodeModel = model_det
@@ -947,227 +1202,6 @@ ml_gen_local_var_decls(VarSet, VarTypes, Context, [Var | Vars], Defns,
         ml_gen_var_decl(VarName, Type, Context, Defn, !Info),
         ml_gen_local_var_decls(VarSet, VarTypes, Context, Vars, Defns0, !Info),
         Defns = [Defn | Defns0]
-    ).
-
-%-----------------------------------------------------------------------------%
-%
-% Code for if-then-else.
-%
-
-:- pred ml_gen_ite(code_model::in, hlds_goal::in, hlds_goal::in, hlds_goal::in,
-    prog_context::in, list(mlds_defn)::out, list(statement)::out,
-    ml_gen_info::in, ml_gen_info::out) is det.
-
-ml_gen_ite(CodeModel, Cond, Then, Else, Context, Decls, Statements, !Info) :-
-    Cond = hlds_goal(_, CondGoalInfo),
-    CondCodeModel = goal_info_get_code_model(CondGoalInfo),
-    (
-        %   model_det Cond:
-        %       <(Cond -> Then ; Else)>
-        %   ===>
-        %       <Cond>
-        %       <Then>
-
-        CondCodeModel = model_det,
-        ml_gen_goal_as_block(model_det, Cond, CondStatement, !Info),
-        ml_gen_goal_as_block(CodeModel, Then, ThenStatement, !Info),
-        Decls = [],
-        Statements = [CondStatement, ThenStatement]
-    ;
-        %   model_semi cond:
-        %       <(Cond -> Then ; Else)>
-        %   ===>
-        %       MR_bool succeeded;
-        %
-        %       <succeeded = Cond>
-        %       if (succeeded) {
-        %           <Then>
-        %       } else {
-        %           <Else>
-        %       }
-
-        CondCodeModel = model_semi,
-        ml_gen_info_get_const_var_map(!.Info, InitConstVarMap),
-        ml_gen_goal(model_semi, Cond, CondDecls, CondStatements, !Info),
-        ml_gen_test_success(!.Info, Succeeded),
-        ml_gen_goal_as_block(CodeModel, Then, ThenStatement, !Info),
-        ml_gen_info_set_const_var_map(InitConstVarMap, !Info),
-        ml_gen_goal_as_block(CodeModel, Else, ElseStatement, !Info),
-        ml_gen_info_set_const_var_map(InitConstVarMap, !Info),
-        IfStmt = ml_stmt_if_then_else(Succeeded, ThenStatement,
-            yes(ElseStatement)),
-        IfStatement = statement(IfStmt, mlds_make_context(Context)),
-        Decls = CondDecls,
-        Statements = CondStatements ++ [IfStatement]
-    ;
-        % XXX The following transformation does not do as good a job of GC
-        % as it could. Ideally we ought to ensure that stuff used only
-        % in the `Else' part will be reclaimed if a GC occurs during the `Then'
-        % part. But that is a bit tricky to achieve.
-        %
-        %   model_non cond:
-        %       <(Cond -> Then ; Else)>
-        %   ===>
-        %       MR_bool cond_<N>;
-        %
-        %       void then_func() {
-        %           cond_<N> = MR_TRUE;
-        %           <Then>
-        %       }
-        %
-        %       cond_<N> = MR_FALSE;
-        %       <Cond && then_func()>
-        %       if (!cond_<N>) {
-        %           <Else>
-        %       }
-        %
-        % except that we hoist any declarations generated for <Cond> to the top
-        % of the scope, so that they are in scope for the <Then> goal (this
-        % is needed for declarations of static consts)
-
-        CondCodeModel = model_non,
-        ml_gen_info_get_const_var_map(!.Info, InitConstVarMap),
-
-        % Generate the `cond_<N>' var and the code to initialize it to false.
-        ml_gen_info_new_cond_var(CondVar, !Info),
-        MLDS_Context = mlds_make_context(Context),
-        CondVarDecl = ml_gen_cond_var_decl(CondVar, MLDS_Context),
-        ml_gen_set_cond_var(!.Info, CondVar, ml_const(mlconst_false), Context,
-            SetCondFalse),
-
-        % Allocate a name for the `then_func'.
-        ml_gen_new_func_label(no, ThenFuncLabel, ThenFuncLabelRval, !Info),
-
-        % Generate <Cond && then_func()>.
-        ml_get_env_ptr(!.Info, EnvPtrRval),
-        SuccessCont = success_cont(ThenFuncLabelRval, EnvPtrRval, [], []),
-        ml_gen_info_push_success_cont(SuccessCont, !Info),
-        ml_gen_goal(model_non, Cond, CondDecls, CondStatements, !Info),
-        ml_gen_info_pop_success_cont(!Info),
-
-        % Generate the `then_func'.
-        % push nesting level
-        Then = hlds_goal(_, ThenGoalInfo),
-        ThenContext = goal_info_get_context(ThenGoalInfo),
-        ml_gen_set_cond_var(!.Info, CondVar, ml_const(mlconst_true),
-            ThenContext, SetCondTrue),
-        ml_gen_goal_as_block(CodeModel, Then, ThenStatement, !Info),
-        ThenFuncBody = statement(
-            ml_stmt_block([], [SetCondTrue, ThenStatement]),
-            mlds_make_context(ThenContext)),
-        % pop nesting level
-        ml_gen_nondet_label_func(!.Info, ThenFuncLabel, ThenContext,
-            ThenFuncBody, ThenFunc),
-
-        % Generate `if (!cond_<N>) { <Else> }'.
-        ml_gen_test_cond_var(!.Info, CondVar, CondSucceeded),
-        ml_gen_info_set_const_var_map(InitConstVarMap, !Info),
-        ml_gen_goal_as_block(CodeModel, Else, ElseStatement, !Info),
-        ml_gen_info_set_const_var_map(InitConstVarMap, !Info),
-        IfStmt = ml_stmt_if_then_else(
-            ml_unop(std_unop(logical_not), CondSucceeded),
-            ElseStatement, no),
-        IfStatement = statement(IfStmt, MLDS_Context),
-
-        % Package it all up in the right order.
-        Decls = [CondVarDecl | CondDecls] ++ [ThenFunc],
-        Statements = [SetCondFalse | CondStatements] ++ [IfStatement]
-    ).
-
-%-----------------------------------------------------------------------------%
-%
-% Code for negation.
-%
-
-:- pred ml_gen_negation(hlds_goal::in, code_model::in, prog_context::in,
-    list(mlds_defn)::out, list(statement)::out,
-    ml_gen_info::in, ml_gen_info::out) is det.
-
-ml_gen_negation(Cond, CodeModel, Context, Decls, Statements, !Info) :-
-    Cond = hlds_goal(_, CondGoalInfo),
-    CondCodeModel = goal_info_get_code_model(CondGoalInfo),
-    (
-        % model_det negation:
-        %       <not(Goal)>
-        %   ===>
-        %   {
-        %       MR_bool succeeded;
-        %       <succeeded = Goal>
-        %       /* now ignore the value of succeeded,
-        %        which we know will be MR_FALSE */
-        %   }
-
-        CodeModel = model_det,
-        ml_gen_goal_as_branch(model_semi, Cond, Decls, Statements, !Info)
-    ;
-        % model_semi negation, model_det goal:
-        %       <succeeded = not(Goal)>
-        %   ===>
-        %       <do Goal>
-        %       succeeded = MR_FALSE;
-
-        CodeModel = model_semi, CondCodeModel = model_det,
-        ml_gen_goal_as_branch(model_det, Cond, CondDecls, CondStatements,
-            !Info),
-        ml_gen_set_success(!.Info, ml_const(mlconst_false), Context,
-            SetSuccessFalse),
-        Decls = CondDecls,
-        Statements = CondStatements ++ [SetSuccessFalse]
-    ;
-        % model_semi negation, model_semi goal:
-        %       <succeeded = not(Goal)>
-        %   ===>
-        %       <succeeded = Goal>
-        %       succeeded = !succeeded;
-
-        CodeModel = model_semi, CondCodeModel = model_semi,
-        ml_gen_goal_as_branch(model_semi, Cond, CondDecls, CondStatements,
-            !Info),
-        ml_gen_test_success(!.Info, Succeeded),
-        ml_gen_set_success(!.Info, ml_unop(std_unop(logical_not), Succeeded),
-            Context, InvertSuccess),
-        Decls = CondDecls,
-        Statements = CondStatements ++ [InvertSuccess]
-    ;
-        CodeModel = model_semi, CondCodeModel = model_non,
-        unexpected($module, $pred, "nondet cond")
-    ;
-        CodeModel = model_non,
-        unexpected($module, $pred, "nondet negation")
-    ).
-
-%-----------------------------------------------------------------------------%
-%
-% Code for conjunctions.
-%
-
-:- pred ml_gen_conj(hlds_goals::in, code_model::in, prog_context::in,
-    list(mlds_defn)::out, list(statement)::out,
-    ml_gen_info::in, ml_gen_info::out) is det.
-
-ml_gen_conj(Conjuncts, CodeModel, Context, Decls, Statements, !Info) :-
-    (
-        Conjuncts = [],
-        ml_gen_success(CodeModel, Context, Statements, !Info),
-        Decls = []
-    ;
-        Conjuncts = [SingleGoal],
-        ml_gen_goal(CodeModel, SingleGoal, Decls, Statements, !Info)
-    ;
-        Conjuncts = [First | Rest],
-        Rest = [_ | _],
-        First = hlds_goal(_, FirstGoalInfo),
-        FirstDeterminism = goal_info_get_determinism(FirstGoalInfo),
-        ( determinism_components(FirstDeterminism, _, at_most_zero) ->
-            % the `Rest' code is unreachable
-            ml_gen_goal(CodeModel, First, Decls, Statements, !Info)
-        ;
-            determinism_to_code_model(FirstDeterminism, FirstCodeModel),
-            DoGenFirst = ml_gen_goal(FirstCodeModel, First),
-            DoGenRest = ml_gen_conj(Rest, CodeModel, Context),
-            ml_combine_conj(FirstCodeModel, Context, DoGenFirst, DoGenRest,
-                Decls, Statements, !Info)
-        )
     ).
 
 %-----------------------------------------------------------------------------%

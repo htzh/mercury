@@ -1,4 +1,6 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab
+#-----------------------------------------------------------------------------#
 # Copyright (C) 2013 The University of Melbourne.
 # This file may only be copied under the terms of the GNU General
 # Public Licence - see the file COPYING in the Mercury distribution.
@@ -49,7 +51,7 @@ endif
 
 #-----------------------------------------------------------------------------#
 
-ifneq ("$(filter il% csharp% java% erlang%,$(GRADE))","")
+ifneq ("$(filter csharp% java% erlang%,$(GRADE))","")
 MLOBJS =
 endif
 
@@ -71,7 +73,7 @@ all:	$(ALL_MODULES) $(TAGS_FILE_EXISTS)
 # Add some additional dependencies, so that Mmake knows to remake the
 # profiler if one of the libraries changes.
 
-ifeq ("$(filter il% csharp% java% erlang%,$(GRADE))","")
+ifeq ("$(filter csharp% java% erlang%,$(GRADE))","")
 mfilterjavac:		$(RUNTIME_DIR)/lib$(RT_LIB_NAME).$A
 mfilterjavac:		$(LIBRARY_DIR)/lib$(STD_LIB_NAME).$A
 endif
@@ -83,7 +85,7 @@ $(cs_subdir)mfilterjavac.c:			$(UTIL_DIR)/mkinit$(EXT_FOR_EXE)
 .PHONY: check
 check:	DEPEND=$(patsubst %,%.check,$(ALL_MODULES))
 
-.PHONY: ints 
+.PHONY: ints
 ints:	DEPEND=$(patsubst %,%.ints,$(ALL_MODULES))
 
 #-----------------------------------------------------------------------------#
@@ -115,7 +117,7 @@ tags_file_exists:
 
 .PHONY: dates
 dates:
-	touch 	$(mfilterjavac.dates)
+	touch $(mfilterjavac.dates)
 
 #-----------------------------------------------------------------------------#
 
@@ -133,10 +135,23 @@ realclean_local:
 
 # Installation target
 
-.PHONY: install
+# See the comment above the 'install_compiler' target in compiler/Mmakefile
+# for the reasons why we handle the java grade specially here.
+#
+ifeq ($(findstring java,$(GRADE)),java)
+INSTALL_PROGRAM=mfilterjavac.jar
+else
+INSTALL_PROGRAM=mfilterjavac$(EXT_FOR_EXE)
+endif
+
 install: mfilterjavac
 	-[ -d $(INSTALL_MERC_BIN_DIR) ] || mkdir -p $(INSTALL_MERC_BIN_DIR)
-	cp `vpath_find mfilterjavac$(EXT_FOR_EXE)` \
-		$(INSTALL_MERC_BIN_DIR)/mfilterjavac$(EXT_FOR_EXE)
+	cp `vpath_find $(INSTALL_PROGRAM)` $(INSTALL_MERC_BIN_DIR)/$(INSTALL_PROGRAM)
+
+#-----------------------------------------------------------------------------#
+
+.PHONY: uninstall
+uninstall:
+	-rm -f $(INSTALL_MERC_BIN_DIR)/$(INSTALL_PROGRAM)
 
 #-----------------------------------------------------------------------------#

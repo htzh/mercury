@@ -53,9 +53,9 @@ Options:
     --gradedir <grade>
         Same as '--grade <grade>', except that it also causes
         the grade name to be included in the names of the stage 2
-        and stage 3 directories.  This can be useful if you have
+        and stage 3 directories. This can be useful if you have
         lots of disk space and want to run bootchecks in several
-        grades at once.  Note however that the name of the tests
+        grades at once. Note however that the name of the tests
         directory doesn't include the grade, so you might also
         need to use --no-test-suite (see below) for this to work.
     --test-grade <grade>
@@ -302,7 +302,7 @@ while test $# -gt 0; do
 
     --target)
         case "$2" in
-        c|asm)  target="$2"; shift ;;
+        c|java)  target="$2"; shift ;;
         *)  echo "unknown target \`$2'" 1>&2; exit 1 ;;
         esac
         ;;
@@ -431,16 +431,25 @@ then
     test_grade="$grade"
 fi
 
+# For the Java grade we must use mmc --make and should disable the namespace
+# cleanliness check.
+#
+if test "$grade" = "java"
+then
+    target=java
+    use_mmc_make=yes
+    use_subdirs=yes
+    check_namespace=false
+fi
+
 case $use_subdirs in
    yes)
         cs_subdir=Mercury/cs/
-        ss_subdir=Mercury/ss/
-        ils_subdir=Mercury/ils/
+        javas_subdir=Mercury/javas/
         ;;
     no)
         cs_subdir=
-        ss_subdir=
-        ils_subdir=
+        javas_subdir=
         ;;
 esac
 
@@ -450,18 +459,11 @@ case $target in
         target_subdir=$cs_subdir
         target_opt=
         ;;
-esac
-case $grade in
-    il|ilc)
-        target_ext=il
-        target_subdir=$ils_subdir
+
+    java)
+        target_ext=java
+        target_subdir=$javas_subdir
         target_opt=
-        # See comment above
-        copy_slice=true
-        copy_profilers=true
-        # The IL back-end generates native Windows executables,
-        # which do not understand symlinks.  So we need to use cp.
-        use_cp=true
         ;;
 esac
 
@@ -505,12 +507,9 @@ fi
 
 echo "starting at `date`"
 
-set -x
+# set -x
 
-root=`/bin/pwd | sed '
-s:/mount/munkora/mercury:/home/mercury:
-s:/mount/munkora/home/mercury:/home/mercury:
-s:/mount/munkora/clp/mercury:/home/mercury:'`
+root=`/bin/pwd`
 root=`$CYGPATH $root`
 PATH=$root/tools:$PATH
 export PATH
@@ -672,6 +671,8 @@ then
         # See comment below for why we use $LN rather than $LN_S here
         $LN $root/library/library_strong_name.sn .
         $LN_S $root/library/print_extra_inits .
+        $LN_S $root/library/MODULES_DOC .
+        $LN_S $root/library/MODULES_UNDOC .
         cp $root/library/Mmake* $root/library/Mercury.options .
         cp $root/library/*_FLAGS.in .
         cp $root/library/INTER_FLAGS* .
@@ -709,7 +710,7 @@ then
         mkdir mfilterjavac
         cd mfilterjavac
         $LN_S $root/mfilterjavac/*.m .
-        cp $root/mfilterjavac/Mmake* $root/mfilterjavac/Mercury.options .
+        cp $root/mfilterjavac/Mmake* .
         cp $root/mfilterjavac/*_FLAGS.in .
         cp $root/mfilterjavac/.mgnu* .
         cd $root/$stage2dir
@@ -732,7 +733,6 @@ then
             # copies).
             rm -f mercury_conf*.h
             $LN $root/runtime/mercury_conf*.h .
-            $LN $root/runtime/mercury_il.il .
             $LN_S $root/runtime/*.in .
             cp $root/runtime/Mmake* .
             cp $root/runtime/.mgnu* .
@@ -775,17 +775,14 @@ then
             $LN_S $root/boehm_gc/include .
             cp $root/boehm_gc/Mmake* .
             cp $root/boehm_gc/Makefile.direct .
-            cp $root/boehm_gc/NT_MAKEFILE .
+            cp $root/boehm_gc/NT*_MAKEFILE .
             cp $root/boehm_gc/gc.mak .
-            cp $root/boehm_gc/ac* .
             cp $root/boehm_gc/gc_cpp.cc .
             cp $root/boehm_gc/gc_cpp.cpp .
-            cp $root/boehm_gc/build_atomic_ops.sh* .
             cp -r $root/boehm_gc/cord .
-            cp -r $root/boehm_gc/Mac_files .
-            cp -r $root/boehm_gc/libatomic_ops-*[0-9] .
             cp -r $root/boehm_gc/libatomic_ops .
             cp -r $root/boehm_gc/extra .
+            cp -r $root/boehm_gc/tools .
             cd $root/$stage2dir
         else
             $LN_S $root/boehm_gc .
@@ -899,7 +896,7 @@ then
         fi
         cd $root
 
-        set -x
+        # set -x
 
         MMAKE_VPATH=.
         export MMAKE_VPATH
@@ -1131,11 +1128,14 @@ then
             /bin/rm -f *.o *.pic_o
         done
 
-        for cleandir in runtime trace library mdbcomp browser ssdb
-        do
-            cd $root/$stage2dir/$cleandir
-            mmake clean_check
-        done
+        if $check_namespace
+        then
+            for cleandir in runtime trace library mdbcomp browser ssdb
+            do
+                cd $root/$stage2dir/$cleandir
+                mmake clean_check
+            done
+        fi
 
         cd $root
     fi
@@ -1183,6 +1183,8 @@ then
     $LN_S $root/library/*.hrl .
     $LN_S $root/library/print_extra_inits .
     $LN_S $root/library/library_strong_name.sn .
+    $LN_S $root/library/MODULES_DOC .
+    $LN_S $root/library/MODULES_UNDOC .
     cp $root/library/Mmake* $root/library/Mercury.options .
     cp $root/library/*_FLAGS.in .
     cp $root/library/INTER_FLAGS* .
@@ -1237,7 +1239,7 @@ then
     rm -f config*.log
     cp $root/$stage2dir/Mmake* $root/$stage2dir/Mercury.options .
     cd $root
-    set -x
+    # set -x
 
     MMAKE_VPATH=.
     export MMAKE_VPATH
@@ -1399,7 +1401,7 @@ then
 
     for dir in library mdbcomp browser ssdb compiler; do
         # `mmake cs' in the compiler directory doesn't build
-        # `top_level_init.c', so we only compare the `.c'
+        # `mercury_compile_init.c', so we only compare the `.c'
         # files present in the stage 3 directory.
         for file in $stage3dir/$dir/${target_subdir}*.${target_ext}; do
             diff -u $stage2dir/$dir/${cs_subdir}`basename $file` $file \
@@ -1509,7 +1511,7 @@ fi
 
 #-----------------------------------------------------------------------------#
 
-# Run the tests in the tests/* directories
+# Run the tests in the tests/* directories.
 
 if test -s $HOME/.bootcheck_diff_opts
 then
@@ -1520,6 +1522,8 @@ fi
 test_status=0
 if $runtests
 then
+    echo "starting the test suite at `date`"
+
     # We need to give tests/debugger access to the mdbrc and mdb_doc
     # files in the doc and scripts directories, without hardcoding their
     # pathnames. We must also compensate for scripts/mdbrc having hardcoded
@@ -1529,6 +1533,20 @@ then
     sed -e '/^source/d' $root/scripts/mdbrc >> $root/scripts/test_mdbrc
     MERCURY_DEBUGGER_INIT=$root/scripts/test_mdbrc
     export MERCURY_DEBUGGER_INIT
+
+    # If the workspace has been copied or moved since $root/tests/mdbrc
+    # has been created by an invocation of $root/configure, the
+    # $root/tests/mdbrc file will refer to the mdb_doc file in the OLD
+    # location of the workspace, which may not exist anymore.
+    # Override the settings in tests/mdbrc that refer to the current
+    # directory; keep the xml settings, which do not do so.
+    sed \
+        -e "s:@TESTS_MDB_DOC@:$root/doc/mdb_doc:" \
+        -e "s:@TESTS_MDB_INIT_DIR@:$root/scripts:" \
+        -e "/^xml_/d" \
+        < "$root/tests/mdbrc.in" > "$root/tests/mdbrc.tmp"
+    grep '^xml_' < "$root/tests/mdbrc" >> "$root/tests/mdbrc.tmp"
+    mv "$root/tests/mdbrc.tmp" "$root/tests/mdbrc"
 
     MERCURY_SUPPRESS_STACK_TRACE=yes
     export MERCURY_SUPPRESS_STACK_TRACE
@@ -1581,38 +1599,39 @@ then
             > ${tests_prefix}tests/.mgnuc_copts
 
         all_test_dirs="
+            accumulator
             analysis
-            analysis/ctgc
-            analysis/excp
-            analysis/ext
-            analysis/sharing
-            analysis/table
-            analysis/trail
-            analysis/unused_args
+            analysis_ctgc
+            analysis_excp
+            analysis_external
+            analysis_sharing
+            analysis_table
+            analysis_trail
+            analysis_unused_args
             benchmarks
             debugger
-            debugger/declarative
+            declarative_debugger
             dppd
+            exceptions
             general
-            general/accumulator
-            general/string_format
-            general/structure_reuse
             grade_subdirs
             hard_coded
-            hard_coded/exceptions
-            hard_coded/purity
-            hard_coded/sub-modules
-            hard_coded/typeclasses
             invalid
-            invalid/purity
+            invalid_purity
             misc_tests
             mmc_make
             par_conj
+            purity
             recompilation
+            string_format
+            structure_reuse
+            submodules
             tabling
             term
             trailing
+            typeclasses
             valid
+            valid_seq
             warnings"
 
         for d in $all_test_dirs
@@ -1671,7 +1690,7 @@ then
                 if test -d "$root/${tests_prefix}/tests/$specified_test_dir"
                 then
                     cd $root/${tests_prefix}tests/$specified_test_dir
-                    mmake $target_opt $jfactor $test_grade_opt \
+                    mmake $mmake_opts $target_opt $jfactor $test_grade_opt \
                         SPECIFIED_TESTS="$specified_test_base" runtests_local
                     if test "$?" -ne "0"
                     then
@@ -1684,21 +1703,26 @@ then
         else
             if test "$testdirs" = ""
             then
-                mmake $target_opt $jfactor $test_grade_opt \
-                    $test_log_opt runtests
-            else
-                for testdir in $testdirs
-                do
-                    cd $root/${tests_prefix}tests/$testdir
-                    mmake $target_opt $jfactor $test_grade_opt \
-                        $test_log_opt runtests
-                done
+                testdirs="$all_test_dirs"
             fi
-            test_status=$?
+
+            test_status=0
+            for testdir in $testdirs
+            do
+                cd $root/${tests_prefix}tests/$testdir
+                mmake $mmake_opts $target_opt $jfactor $test_grade_opt \
+                    $test_log_opt runtests
+                if test "$?" -ne 0
+                then
+                    test_status=1
+                fi
+            done
         fi
 
         case $failing_tests_only in
-            true)   rm -f ${tests_prefix}tests/runtests.$$ ;;
+            true)
+                rm -f ${tests_prefix}tests/runtests.$$
+                ;;
         esac
 
         if test "$type_stats" != ""
@@ -1724,7 +1748,7 @@ fi
 
 #-----------------------------------------------------------------------------#
 
-# Run the tests in the extras/* directories
+# Run the tests in the extras/* directories.
 
 extras_status=0
 if $extras
@@ -1758,11 +1782,11 @@ then
         if test -f $testdir/Mmakefile -a ! -f $testdir/NOBOOTTEST
         then
             (cd $testdir;
-            mmake realclean $jfactor;
-            mmake depend    $jfactor &&
-            mmake           $jfactor &&
-            mmake check     $jfactor &&
-            mmake realclean $jfactor ) ||
+            mmake $mmake_opts $jfactor realclean;
+            mmake $mmake_opts $jfactor depend &&
+            mmake $mmake_opts $jfactor &&
+            mmake $mmake_opts $jfactor check &&
+            mmake $mmake_opts $jfactor realclean ) ||
             extras_status=1
         fi
     done
@@ -1834,59 +1858,92 @@ then
     fi
 fi
 
+echo "-----------------------------------------------------------------------"
+
 if test "$diff_status" != 0
 then
-    echo "error exit: stages 2 and 3 differ"
+    echo "ERROR EXIT: stages 2 and 3 differ"
     exitstatus=1
 fi
 
 if test "$mdb_command_test_inp_status" != 0
 then
 
-    echo "error exit: unexpected change in" \
+    echo "ERROR EXIT: unexpected change in" \
         "${tests_prefix}tests/debugger/mdb_command_test.inp"
     exitstatus=1
 fi
 
 if test "$test_status" != 0
 then
-    echo "error exit: some tests failed"
+    echo "ERROR EXIT: some tests failed"
     exitstatus=1
 fi
 
 if test "$extras_status" != 0
 then
-    echo "error exit: some tests failed in extras"
+    echo "ERROR EXIT: some tests failed in extras"
     exitstatus=1
 fi
 
 if test "$check_namespace_status" != 0
 then
-    echo "error exit: some namespace isn't clean"
+    echo "ERROR EXIT: some namespace isn't clean"
     exitstatus=1
 fi
 
 if test -s $tests_dir/NOMAKE_DIRS
 then
-    echo "error exit: some test directories were left out"
+    echo "ERROR EXIT: some test directories were left out"
     cat $tests_dir/NOMAKE_DIRS
     exitstatus=1
 fi
 
 if test -s $tests_dir/FAILED_TESTS_SUMMARY
 then
-    if test -s $tests_dir/EXPECTED_FAILED_TESTS
-    then
-        echo expected test case failures:
-        cat $tests_dir/EXPECTED_FAILED_TESTS
-    fi
+    num_expected_failures=`cat $tests_dir/EXPECTED_FAILED_TESTS | wc -l`
+    case "${num_expected_failures}" in
+        0)
+            ;;
+        1)
+            echo "one expected test case failure:"
+            echo
+            cat $tests_dir/EXPECTED_FAILED_TESTS | sed -e 's/^/    /'
+            echo
+            ;;
+        *)
+            echo "${num_expected_failures} expected test case failures:"
+            echo
+            cat $tests_dir/EXPECTED_FAILED_TESTS | sed -e 's/^/    /'
+            echo
+            ;;
+    esac
 
-    if test -s $tests_dir/UNEXPECTED_FAILED_TESTS
-    then
-        echo unexpected test case failures:
-        cat $tests_dir/UNEXPECTED_FAILED_TESTS
-    fi
+    num_unexpected_failures=`cat $tests_dir/UNEXPECTED_FAILED_TESTS | wc -l`
+    case "${num_unexpected_failures}" in
+        0)
+            ;;
+        1)
+            echo "one unexpected test case failure:"
+            echo
+            cat $tests_dir/UNEXPECTED_FAILED_TESTS | sed -e 's/^/    /'
+            echo
+            ;;
+        *)
+            echo "${num_unexpected_failures} unexpected test case failures:"
+            echo
+            cat $tests_dir/UNEXPECTED_FAILED_TESTS | sed -e 's/^/    /'
+            echo
+            ;;
+    esac
 fi
+
+if test "$exitstatus" = "0"
+then
+    echo "SUCCESSFUL EXIT"
+fi
+
+echo "-----------------------------------------------------------------------"
 
 echo "finishing at `date`"
 exit $exitstatus

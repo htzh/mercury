@@ -23,14 +23,13 @@
 grade_usage="\
 Grade options:
 	-s <grade>, --grade <grade>
-	--target {il, c, csharp, java, erlang}
-	--il
+	--target {c, csharp, java, erlang}
 	--asm-labels
 	--gcc-non-local-gotos
 	--gcc-global-registers
 	-H, --high-level-code
 	--parallel
-	--gc {boehm, boehm_debug, hgc, mps, accurate, none}
+	--gc {boehm, boehm_debug, hgc, accurate, none}
 	-p, --profiling
 	--profile-calls
 	--profile-time
@@ -87,7 +86,6 @@ use_minimal_model_own_stacks=false
 minimal_model_debug=false
 pregenerated_dist=false
 single_prec_float=false
-pic_reg=false
 debug=false
 decl_debug=false
 ss_debug=false

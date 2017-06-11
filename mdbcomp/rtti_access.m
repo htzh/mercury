@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2005-2007, 2009-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: rtti_access.m.
 % Main authors: zs, maclarty
@@ -12,7 +12,7 @@
 % This module contains an interface to the label_layout and proc_layout
 % types which are used in the C backend of the debugger.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdbcomp.rtti_access.
 :- interface.
@@ -39,7 +39,7 @@
 :- pred get_context_from_label_layout(label_layout::in, string::out, int::out)
     is semidet.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type proc_layout.
 
@@ -72,7 +72,7 @@
 
 :- func proc_bytecode_bytes(proc_layout) = bytecode_bytes.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type string_table
     --->    string_table(
@@ -94,7 +94,7 @@
 
 :- func lookup_string_table(string_table, int) = string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type bytecode
     --->    bytecode(
@@ -169,7 +169,7 @@
 :- pred read_string_table(bytecode::in, string_table::out,
     int::in, int::out) is semidet.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred encode_byte(int::in, list(int)::out) is semidet.
 :- pred encode_byte_det(int::in, list(int)::out) is det.
@@ -190,9 +190,11 @@
 :- pred encode_len_string(string::in, list(int)::out) is det.
 :- func encode_len_string_func(string) = list(int).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
+
+:- import_module mdbcomp.sym_name.
 
 :- import_module char.
 :- import_module int.
@@ -251,7 +253,7 @@ get_path_port_from_label_layout(Label) = PathPort :-
     rev_goal_path_from_string_det(GoalPathStr, GoalPath),
     PathPort = make_path_port(GoalPath, Port).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_type("C", proc_layout, "const MR_ProcLayout *",
     [can_pass_as_mercury_type, stable]).
@@ -261,19 +263,19 @@ get_path_port_from_label_layout(Label) = PathPort :-
 :- pragma foreign_type("Erlang", proc_layout, "").
 
 get_proc_label_from_layout(Layout) = ProcLabel :-
-    ( proc_layout_is_uci(Layout) ->
+    ( if proc_layout_is_uci(Layout) then
         proc_layout_get_uci_fields(Layout, TypeName, TypeModule,
             DefModule, PredName, TypeArity, ModeNum),
         ( special_pred_name_arity(SpecialIdPrime, _, PredName, _) ->
             SpecialId = SpecialIdPrime
         ;
-            unexpected($module, $pred, "bad special_pred_id")
+            unexpected($pred, "bad special_pred_id")
         ),
         SymDefModule = string_to_sym_name(DefModule),
         SymTypeModule = string_to_sym_name(TypeModule),
         ProcLabel = special_proc_label(SymDefModule, SpecialId,
             SymTypeModule, TypeName, TypeArity, ModeNum)
-    ;
+    else
         proc_layout_get_non_uci_fields(Layout, PredOrFunc,
             DeclModule, DefModule, PredName, Arity, ModeNum),
         SymDefModule = string_to_sym_name(DefModule),
@@ -605,7 +607,7 @@ get_proc_name(special_proc_label(_, _, _, ProcName , _, _)) = ProcName.
     % Default version for non-C backends.
 proc_bytecode_bytes(_) = dummy_bytecode_bytes.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_type("C", module_layout, "const MR_ModuleLayout *",
     [can_pass_as_mercury_type, stable]).
@@ -664,7 +666,7 @@ lookup_string_table(StringTable, NameCode) = Str :-
     int             should_copy;
 
     str0 = MR_name_in_string_table(StringTableChars, StringTableSize,
-        NameCode, &should_copy);
+        (MR_uint_least32_t)NameCode, &should_copy);
     if (should_copy) {
         MR_make_aligned_string(Str, str0);
     } else {
@@ -672,7 +674,7 @@ lookup_string_table(StringTable, NameCode) = Str :-
     }
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 read_byte(ByteCode, Value, !Pos) :-
     ByteCode = bytecode(Bytes, Size),
@@ -729,10 +731,10 @@ read_num(ByteCode, Num, !Pos) :-
 read_num_2(ByteCode, Num0, Num, !Pos) :-
     read_byte(ByteCode, Byte, !Pos),
     Num1 = (Num0 << 7) \/ (Byte /\ 0x7F),
-    ( Byte /\ 0x80 \= 0 ->
-        read_num_2(ByteCode, Num1, Num, !Pos)
-    ;
+    ( if Byte /\ 0x80 = 0 then
         Num = Num1
+    else
+        read_num_2(ByteCode, Num1, Num, !Pos)
     ).
 
 read_string_via_offset(ByteCode, StringTable, String, !Pos) :-
@@ -749,9 +751,9 @@ read_line(ByteCode, Line, !Pos) :-
 read_line_2(ByteCode, !RevChars, !Pos) :-
     read_byte(ByteCode, Byte, !Pos),
     char.from_int(Byte, Char),
-    ( Char = '\n' ->
+    ( if Char = '\n' then
         !:RevChars = [Char | !.RevChars]
-    ;
+    else
         !:RevChars = [Char | !.RevChars],
         read_line_2(ByteCode, !RevChars, !Pos)
     ).
@@ -765,9 +767,9 @@ read_len_string(ByteCode, String, !Pos) :-
     list(char)::in, list(char)::out, int::in, int::out) is semidet.
 
 read_len_string_2(ByteCode, N, !RevChars, !Pos) :-
-    ( N =< 0 ->
+    ( if N =< 0 then
         true
-    ;
+    else
         read_byte(ByteCode, Byte, !Pos),
         char.from_int(Byte, Char),
         !:RevChars = [Char | !.RevChars],
@@ -790,9 +792,9 @@ read_string_table(ByteCode, StringTable, !Pos) :-
         StringTableChars::out),
     [will_not_call_mercury, thread_safe, promise_pure],
 "
-    char    *buf;
-    char    *table;
-    int     i;
+    char        *buf;
+    char        *table;
+    MR_Unsigned i;
 
     MR_allocate_aligned_string_msg(buf, Size, MR_ALLOC_ID);
     table = ((char *) Bytes) + Offset;
@@ -803,17 +805,17 @@ read_string_table(ByteCode, StringTable, !Pos) :-
     StringTableChars = (MR_ConstString) buf;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 encode_byte(Byte, [Byte]) :-
     Byte >= 0,
     Byte < 128.
 
 encode_byte_det(Byte, Bytes) :-
-    ( encode_byte(Byte, BytesPrime) ->
+    ( if encode_byte(Byte, BytesPrime) then
         Bytes = BytesPrime
-    ;
-        unexpected($module, $pred, "encode_byte failed")
+    else
+        unexpected($pred, "encode_byte failed")
     ).
 
 encode_byte_func(Byte) = Bytes :-
@@ -826,10 +828,10 @@ encode_short(Short, [Byte1, Byte2]) :-
     Byte1 < 128.
 
 encode_short_det(Short, Bytes) :-
-    ( encode_short(Short, BytesPrime) ->
+    ( if encode_short(Short, BytesPrime)then
         Bytes = BytesPrime
-    ;
-        unexpected($module, $pred, "encode_short failed")
+    else
+        unexpected($pred, "encode_short failed")
     ).
 
 encode_short_func(Short) = Bytes :-
@@ -846,10 +848,10 @@ encode_int32(Int32, [Byte1, Byte2, Byte3, Byte4]) :-
     Byte1 < 128.
 
 encode_int32_det(Int32, Bytes) :-
-    ( encode_int32(Int32, BytesPrime) ->
+    ( if encode_int32(Int32, BytesPrime) then
         Bytes = BytesPrime
-    ;
-        unexpected($module, $pred, "encode_int32 failed")
+    else
+        unexpected($pred, "encode_int32 failed")
     ).
 
 encode_int32_func(Int32) = Bytes :-
@@ -864,19 +866,19 @@ encode_num(Num, Bytes) :-
 :- pred encode_num_2(int::in, list(int)::in, list(int)::out) is det.
 
 encode_num_2(Num, RestBytes, Bytes) :-
-    ( Num = 0 ->
+    ( if Num = 0 then
         Bytes = RestBytes
-    ;
+    else
         CurByte = (Num /\ 127) \/ 128,
         NextNum = Num / 128,
         encode_num_2(NextNum, [CurByte | RestBytes], Bytes)
     ).
 
 encode_num_det(Num, Bytes) :-
-    ( encode_num(Num, BytesPrime) ->
+    ( if encode_num(Num, BytesPrime)then
         Bytes = BytesPrime
-    ;
-        unexpected($module, $pred, "encode_num failed")
+    else
+        unexpected($pred, "encode_num failed")
     ).
 
 encode_num_func(Num) = Bytes :-
@@ -892,6 +894,6 @@ encode_len_string(String, Bytes) :-
 encode_len_string_func(String) = Bytes :-
     encode_len_string(String, Bytes).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module mdbcomp.rtti_access.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

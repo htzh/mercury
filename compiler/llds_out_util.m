@@ -15,13 +15,19 @@
 :- module ll_backend.llds_out.llds_out_util.
 :- interface.
 
+:- import_module backend_libs.
 :- import_module backend_libs.rtti.
+:- import_module hlds.
 :- import_module hlds.hlds_pred.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.trace_params.
 :- import_module ll_backend.layout.
 :- import_module ll_backend.llds.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module bool.
@@ -34,15 +40,16 @@
     --->    llds_out_info(
                 lout_module_name                :: module_name,
                 lout_mangled_module_name        :: string,
+                lout_source_file_name           :: string,
                 lout_internal_label_to_layout   :: map(label,
                                                     layout_slot_name),
                 lout_entry_label_to_layout      :: map(label, data_id),
-                lout_table_io_decl_map          :: map(pred_proc_id,
+                lout_table_io_entry_map         :: map(pred_proc_id,
                                                     layout_slot_name),
                 lout_alloc_site_map             :: map(alloc_site_id,
                                                     layout_slot_name),
                 lout_auto_comments              :: bool,
-                lout_line_numbers               :: bool,
+                lout_foreign_line_numbers       :: bool,
                 lout_emit_c_loops               :: bool,
                 lout_generate_bytecode          :: bool,
                 lout_local_thread_engine_base   :: bool,
@@ -58,15 +65,15 @@
                 lout_globals                    :: globals
             ).
 
-:- func init_llds_out_info(module_name, globals,
+:- func init_llds_out_info(module_name, string, globals,
     map(label, layout_slot_name), map(label, data_id),
     map(pred_proc_id, layout_slot_name),
     map(alloc_site_id, layout_slot_name)) = llds_out_info.
 
-:- pred output_set_line_num(llds_out_info::in, prog_context::in,
+:- pred output_set_line_num(bool::in, prog_context::in,
     io::di, io::uo) is det.
 
-:- pred output_reset_line_num(llds_out_info::in, io::di, io::uo) is det.
+:- pred output_reset_line_num(bool::in, io::di, io::uo) is det.
 
 %----------------------------------------------------------------------------%
 
@@ -108,17 +115,19 @@
 :- import_module parse_tree.prog_foreign.
 
 :- import_module int.
+:- import_module maybe.
 :- import_module set_tree234.
 :- import_module term.
 
 %----------------------------------------------------------------------------%
 
-init_llds_out_info(ModuleName, Globals,
-        InternalLabelToLayoutMap, EntryLabelToLayoutMap, TableIoDeclMap,
+init_llds_out_info(ModuleName, SourceFileName, Globals,
+        InternalLabelToLayoutMap, EntryLabelToLayoutMap, TableIoEntryMap,
         AllocSiteMap) = Info :-
     MangledModuleName = sym_name_mangle(ModuleName),
     globals.lookup_bool_option(Globals, auto_comments, AutoComments),
-    globals.lookup_bool_option(Globals, line_numbers, LineNumbers),
+    globals.lookup_bool_option(Globals, line_numbers_around_foreign_code,
+        ForeignLineNumbers),
     globals.lookup_bool_option(Globals, emit_c_loops, EmitCLoops),
     globals.lookup_bool_option(Globals, generate_bytecode, GenerateBytecode),
     globals.lookup_bool_option(Globals, local_thread_engine_base,
@@ -134,33 +143,31 @@ init_llds_out_info(ModuleName, Globals,
     globals.lookup_bool_option(Globals, use_macro_for_redo_fail,
         UseMacroForRedoFail),
     globals.get_trace_level(Globals, TraceLevel),
-    Info = llds_out_info(ModuleName, MangledModuleName,
-        InternalLabelToLayoutMap, EntryLabelToLayoutMap, TableIoDeclMap,
+    Info = llds_out_info(ModuleName, MangledModuleName, SourceFileName,
+        InternalLabelToLayoutMap, EntryLabelToLayoutMap, TableIoEntryMap,
         AllocSiteMap,
-        AutoComments, LineNumbers,
+        AutoComments, ForeignLineNumbers,
         EmitCLoops, GenerateBytecode, LocalThreadEngineBase,
         ProfileCalls, ProfileTime, ProfileMemory, ProfileDeep,
         UnboxedFloat, DetStackDwordAligment, StaticGroundFloats,
         UseMacroForRedoFail, TraceLevel, Globals).
 
-output_set_line_num(Info, Context, !IO) :-
-    LineNumbers = Info ^ lout_line_numbers,
+output_set_line_num(OutputLineNumbers, Context, !IO) :-
     (
-        LineNumbers = yes,
+        OutputLineNumbers = yes,
         term.context_file(Context, File),
         term.context_line(Context, Line),
-        c_util.always_set_line_num(File, Line, !IO)
+        c_util.always_set_line_num_cur_stream(File, Line, !IO)
     ;
-        LineNumbers = no
+        OutputLineNumbers = no
     ).
 
-output_reset_line_num(Info, !IO) :-
-    LineNumbers = Info ^ lout_line_numbers,
+output_reset_line_num(OutputLineNumbers, !IO) :-
     (
-        LineNumbers = yes,
-        c_util.always_reset_line_num(!IO)
+        OutputLineNumbers = yes,
+        c_util.always_reset_line_num_cur_stream(no, !IO)
     ;
-        LineNumbers= no
+        OutputLineNumbers= no
     ).
 
 %----------------------------------------------------------------------------%
@@ -179,12 +186,12 @@ decl_set_is_member(DeclId, DeclSet) :-
 %----------------------------------------------------------------------------%
 
 output_indent(FirstIndent, LaterIndent, N0, !IO) :-
-    ( N0 > 0 ->
+    ( if N0 > 0 then
         io.write_string(LaterIndent, !IO)
-    ;
+    else
         io.write_string(FirstIndent, !IO)
     ).
 
 %---------------------------------------------------------------------------%
-:- end_module llds_out_util.
+:- end_module ll_backend.llds_out.llds_out_util.
 %---------------------------------------------------------------------------%

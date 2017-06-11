@@ -5,18 +5,32 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % File: timestamp.m.
 % Main author: stayl.
-% 
+%
 % Timestamp representation for smart recompilation.
-% 
+%
 %-----------------------------------------------------------------------------%
 
 :- module libs.timestamp.
 :- interface.
 
 :- import_module time.
+
+    % For use by predicates that do or do not return timestamps, as requested.
+:- type maybe_return_timestamp
+    --->    do_return_timestamp
+    ;       dont_return_timestamp.
+
+    % For use by predicates that already have a record of what a file's
+    % contents were at a particular point in time.
+:- type read_module_and_timestamps
+    --->    always_read_module(maybe_return_timestamp)
+            % Read the file regardless of its timestamp.
+    ;       dont_read_module_if_match(timestamp).
+            % If the file's timestamp matches the one given here, don't read
+            % the file; just return its timestamp (which is this timestamp).
 
     % A `timestamp' is similar to a `time_t' except that timestamps are system
     % independent. A timestamp string (obtained using timestamp_to_string)
@@ -64,9 +78,8 @@
     % A timestamp is a string formatted as "yyyy-mm-dd hh:mm:ss"
     % representing a time expressed as UTC (Universal Coordinated Time).
     %
-    % We use a no-tag type rather than an abstract equivalence type
-    % to avoid type errors with abstract equivalence types in the hlc
-    % back-end.
+    % We use a no-tag type rather than an abstract equivalence type to avoid
+    % type errors with abstract equivalence types in the hlc backend.
 :- type timestamp
     --->    timestamp(string).
 
@@ -96,15 +109,15 @@ gmtime_to_timestamp(tm(Year, Month, MD, Hrs, Min, Sec, YD, WD, DST)) =
     int size;
     struct tm t;
 
-    t.tm_sec = Sec;
-    t.tm_min = Min;
-    t.tm_hour = Hrs;
-    t.tm_mon = Mnt;
-    t.tm_year = Yr;
-    t.tm_wday = WD;
-    t.tm_mday = MD;
-    t.tm_yday = YD;
-    t.tm_isdst = N;
+    t.tm_sec = (int) Sec;
+    t.tm_min = (int) Min;
+    t.tm_hour = (int) Hrs;
+    t.tm_mon = (int) Mnt;
+    t.tm_year = (int) Yr;
+    t.tm_wday = (int) WD;
+    t.tm_mday = (int) MD;
+    t.tm_yday = (int) YD;
+    t.tm_isdst = (int) N;
 
     size = sizeof ""yyyy-mm-dd hh:mm:ss"";
     MR_allocate_aligned_string_msg(Result, size - 1, MR_ALLOC_ID);
@@ -143,11 +156,17 @@ gmtime_to_timestamp_2(_, _, _, _, _, _, _, _, _) = _ :-
 :- func maybe_dst_to_int(maybe(dst)) = int.
 
 maybe_dst_to_int(M) = N :-
-    ( M = yes(DST), DST = daylight_time,
-        N = 1
-    ; M = yes(DST), DST = standard_time,
-        N = 0
-    ; M = no,
+    (
+        M = yes(DST),
+        (
+            DST = daylight_time,
+            N = 1
+        ;
+            DST = standard_time,
+            N = 0
+        )
+    ;
+        M = no,
         N = -1
     ).
 
@@ -158,10 +177,12 @@ string_to_timestamp(Timestamp) = timestamp(Timestamp) :-
     % we need to ensure that the sanity checks occur before the
     % calls to unsafe_index. The offsets are only valid if the string
     % contains only ASCII characters, as expected.
-    (
+    ( if
         string.all_match(plausible_timestamp_char, Timestamp),
-        string.length(Timestamp) : int = string.length("yyyy-mm-dd hh:mm:ss")
-    ->
+        string.length(Timestamp, TimestampLength),
+        string.length("yyyy-mm-dd hh:mm:ss", ShouldBeTimestampLength),
+        TimestampLength = ShouldBeTimestampLength
+    then
         string.to_int(string.unsafe_between(Timestamp, 0, 4), _),
 
         string.unsafe_index(Timestamp, 4, '-'),
@@ -193,7 +214,7 @@ string_to_timestamp(Timestamp) = timestamp(Timestamp) :-
         string.to_int(string.unsafe_between(Timestamp, 17, 19), Second),
         Second >= 0,
         Second =< 61    % Seconds 60 and 61 are for leap seconds.
-    ;
+    else
         fail
     ).
 
@@ -203,3 +224,7 @@ plausible_timestamp_char(Char) :-
     char.to_int(Char, CharInt),
     char.to_int(':', HighestInt),
     CharInt =< HighestInt.
+
+%-----------------------------------------------------------------------------%
+:- end_module libs.timestamp.
+%-----------------------------------------------------------------------------%

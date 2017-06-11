@@ -1,21 +1,21 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2003, 2005-2007, 2011-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: array2d.m.
 % Author: Ralph Becket <rafe@cs.mu.oz.au>.
 % Stability: medium-low.
-% 
+%
 % Two-dimensional rectangular (i.e. not ragged) array ADT.
 %
 % XXX The same caveats re: uniqueness of arrays apply to array2ds.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module array2d.
 :- interface.
@@ -23,7 +23,7 @@
 :- import_module array.
 :- import_module list.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % A array2d is a two-dimensional array stored in row-major order
     % (that is, the elements of the first row in left-to-right
@@ -31,7 +31,8 @@
     %
 :- type array2d(T).
 
-:- inst array2d ---> array2d(ground, ground, array).
+:- inst array2d
+    --->    array2d(ground, ground, array).
 
     % XXX These are work-arounds until we get nested uniqueness working.
     %
@@ -44,7 +45,7 @@
     %
 :- func init(int, int, T) = array2d(T).
 :- mode init(in, in, in) = array2d_uo is det.
-    
+
     % array2d([[X11, ..., X1N], ..., [XM1, ..., XMN]]) constructs a array2d
     % of size M * N, with the special case that bounds(array2d([]), 0, 0).
     %
@@ -53,10 +54,30 @@
 :- func array2d(list(list(T))) = array2d(T).
 :- mode array2d(in) = array2d_uo is det.
 
+    % is_empty(Array):
+    % True iff Array contains zero elements.
+    %
+:- pred is_empty(array2d(T)).
+%:- mode is_empty(array2d_ui) is semidet.
+:- mode is_empty(in) is semidet.
+
     % A synonym for the above.
     %
 :- func from_lists(list(list(T))) = array2d(T).
 :- mode from_lists(in) = array2d_uo is det.
+
+    % bounds(array2d([[X11, ..., X1N], ..., [XM1, ..., XMN]), M, N)
+    %
+:- pred bounds(array2d(T), int, int).
+%:- mode bounds(array2d_ui, out, out) is det.
+:- mode bounds(in,       out, out) is det.
+
+    % in_bounds(array2d([[X11, ..., X1N], ..., [XM1, ..., XMN]), I, J)
+    % succeeds iff 0 =< I < M, 0 =< J < N.
+    %
+:- pred in_bounds(array2d(T), int, int).
+%:- mode in_bounds(array2d_ui, in,  in ) is semidet.
+:- mode in_bounds(in,       in,  in ) is semidet.
 
     % array2d([[X11, ..., X1N], ..., [XM1, ..., XMN]]) ^ elem(I, J) = X
     % where X is the J+1th element of the I+1th row (that is, indices
@@ -100,19 +121,6 @@
 :- pred unsafe_set(int, int, T,  array2d(T), array2d(T)).
 :- mode unsafe_set(in,  in,  in, array2d_di, array2d_uo) is det.
 
-    % bounds(array2d([[X11, ..., X1N], ..., [XM1, ..., XMN]), M, N)
-    %
-:- pred bounds(array2d(T), int, int).
-%:- mode bounds(array2d_ui, out, out) is det.
-:- mode bounds(in,       out, out) is det.
-
-    % in_bounds(array2d([[X11, ..., X1N], ..., [XM1, ..., XMN]), I, J)
-    % succeeds iff 0 =< I < M, 0 =< J < N.
-    %
-:- pred in_bounds(array2d(T), int, int).
-%:- mode in_bounds(array2d_ui, in,  in ) is semidet.
-:- mode in_bounds(in,       in,  in ) is semidet.
-
     % lists(array2d([[X11, ..., X1N], ..., [XM1, ..., XMN])) =
     %     [[X11, ..., X1N], ..., [XM1, ..., XMN]]
     %
@@ -120,8 +128,8 @@
 %:- mode lists(array2d_ui) = out is det.
 :- mode lists(in        ) = out is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -142,7 +150,7 @@
 :- implementation.
 
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 init(M, N, X) =
     ( if    M >= 0, N >= 0
@@ -150,7 +158,7 @@ init(M, N, X) =
       else  func_error("array2d.init: bounds must be non-negative")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 array2d([]) = array2d(0, 0, make_empty_array).
 array2d(Xss @ [Xs | _]) = T :-
@@ -162,19 +170,22 @@ array2d(Xss @ [Xs | _]) = T :-
           else  func_error("array2d.array2d/1: non-rectangular list of lists")
         ).
 
+is_empty(array2d(_, _, A)) :-
+    array.is_empty(A).
+
 from_lists(Xss) = array2d(Xss).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 bounds(array2d(M, N, _A), M, N).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 in_bounds(array2d(M, N, _A), I, J) :-
     0 =< I, I < M,
     0 =< J, J < N.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 T ^ elem(I, J) =
     ( if    in_bounds(T, I, J)
@@ -182,11 +193,11 @@ T ^ elem(I, J) =
       else  func_error("array2d.elem: indices out of bounds")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 array2d(_M, N, A) ^ unsafe_elem(I, J) = A ^ unsafe_elem(I * N + J).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 ( T ^ elem(I, J) := X ) =
     ( if    in_bounds(T, I, J)
@@ -196,14 +207,14 @@ array2d(_M, N, A) ^ unsafe_elem(I, J) = A ^ unsafe_elem(I * N + J).
 
 set(I, J, X, A, A ^ elem(I, J) := X).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 ( array2d(M, N, A) ^ unsafe_elem(I, J) := X ) =
     array2d(M, N, A ^ unsafe_elem(I * N + J) := X).
 
 unsafe_set(I, J, X, A, A ^ unsafe_elem(I, J) := X).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 lists(array2d(M, N, A)) = lists_2((M * N) - 1, N - 1, N, A, [], []).
 
@@ -222,6 +233,6 @@ lists_2(IJ, J, N, A, Xs, Xss) =
          [Xs | Xss]
      ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module array2d.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

@@ -5,16 +5,16 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % File: hlds_desc.m.
 % Main author: zs.
-% 
+%
 % This module's functions are intended to generate short descriptions
 % of parts of the HLDS for use in debugging messages. Whereas the code
 % in hlds_out.m is intended to completely describe a given construct,
 % the code here is intended to orient programmers about what part of the HLDS
 % is currently being processed.
-% 
+%
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -23,6 +23,7 @@
 
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
@@ -50,15 +51,12 @@
 
 :- implementation.
 
-:- import_module hlds.hlds_out.
-:- import_module hlds.hlds_out.hlds_out_util.
 :- import_module hlds.hlds_pred.
-:- import_module mdbcomp.prim_data.
-:- import_module parse_tree.mercury_to_mercury.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.parse_tree_out_term.
 :- import_module parse_tree.prog_out.
 
-:- import_module bool.
-:- import_module list.
 :- import_module string.
 :- import_module term.
 
@@ -130,6 +128,9 @@ describe_goal(ModuleInfo, VarSet, Goal) = FullDesc :-
     ;
         GoalExpr = scope(Reason, _),
         (
+            Reason = disable_warnings(_, _),
+            Desc = "disable warnings"
+        ;
             Reason = exist_quant(_),
             Desc = "scope exist quant"
         ;
@@ -144,6 +145,9 @@ describe_goal(ModuleInfo, VarSet, Goal) = FullDesc :-
         ;
             Reason = require_complete_switch(_),
             Desc = "scope require complete switch"
+        ;
+            Reason = require_switch_arms_detism(_, _),
+            Desc = "scope require switch arm detism"
         ;
             Reason = commit(_),
             Desc = "scope commit"
@@ -178,12 +182,13 @@ describe_args(VarSet, [HeadVar | TailVars]) =
     string.append_list(list.map(describe_comma_var(VarSet), TailVars)) ++
     ")".
 
-describe_var(VarSet, Var) = mercury_var_to_string(VarSet, yes, Var).
+describe_var(VarSet, Var) =
+    mercury_var_to_string(VarSet, print_name_and_num, Var).
 
 :- func describe_comma_var(prog_varset, prog_var) = string.
 
 describe_comma_var(VarSet, Var) =
-    ", " ++ mercury_var_to_string(VarSet, yes, Var).
+    ", " ++ mercury_var_to_string(VarSet, print_name_and_num, Var).
 
 %---------------------------------------------------------------------------%
 :- end_module hlds.hlds_desc.

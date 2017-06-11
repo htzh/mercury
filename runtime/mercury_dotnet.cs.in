@@ -300,45 +300,46 @@ public enum TypeCtorRep {
     MR_TYPECTOR_REP_EQUIV                   = 6,
     MR_TYPECTOR_REP_FUNC                    = 7,
     MR_TYPECTOR_REP_INT                     = 8,
-    MR_TYPECTOR_REP_CHAR                    = 9,
-    MR_TYPECTOR_REP_FLOAT                   = 10,
-    MR_TYPECTOR_REP_STRING                  = 11,
-    MR_TYPECTOR_REP_PRED                    = 12,
-    MR_TYPECTOR_REP_SUBGOAL                 = 13,
-    MR_TYPECTOR_REP_VOID                    = 14,
-    MR_TYPECTOR_REP_C_POINTER               = 15,
-    MR_TYPECTOR_REP_TYPEINFO                = 16,
-    MR_TYPECTOR_REP_TYPECLASSINFO           = 17,
-    MR_TYPECTOR_REP_ARRAY                   = 18,
-    MR_TYPECTOR_REP_SUCCIP                  = 19,
-    MR_TYPECTOR_REP_HP                      = 20,
-    MR_TYPECTOR_REP_CURFR                   = 21,
-    MR_TYPECTOR_REP_MAXFR                   = 22,
-    MR_TYPECTOR_REP_REDOFR                  = 23,
-    MR_TYPECTOR_REP_REDOIP                  = 24,
-    MR_TYPECTOR_REP_TRAIL_PTR               = 25,
-    MR_TYPECTOR_REP_TICKET                  = 26,
-    MR_TYPECTOR_REP_NOTAG_GROUND            = 27,
-    MR_TYPECTOR_REP_NOTAG_GROUND_USEREQ     = 28,
-    MR_TYPECTOR_REP_EQUIV_GROUND            = 29,
-    MR_TYPECTOR_REP_TUPLE                   = 30,
-    MR_TYPECTOR_REP_RESERVED_ADDR           = 31,
-    MR_TYPECTOR_REP_RESERVED_ADDR_USEREQ    = 32,
-    MR_TYPECTOR_REP_TYPECTORINFO            = 33,
-    MR_TYPECTOR_REP_BASETYPECLASSINFO       = 34,
-    MR_TYPECTOR_REP_TYPEDESC                = 35,
-    MR_TYPECTOR_REP_TYPECTORDESC            = 36,
-    MR_TYPECTOR_REP_FOREIGN                 = 37,
-    MR_TYPECTOR_REP_REFERENCE               = 38,
-    MR_TYPECTOR_REP_STABLE_C_POINTER        = 39,
-    MR_TYPECTOR_REP_STABLE_FOREIGN          = 40,
-    MR_TYPECTOR_REP_PSEUDOTYPEDESC          = 41,
-    MR_TYPECTOR_REP_DUMMY                   = 42,
-    MR_TYPECTOR_REP_BITMAP                  = 43,
-    MR_TYPECTOR_REP_FOREIGN_ENUM            = 44,
-    MR_TYPECTOR_REP_FOREIGN_ENUM_USEREQ     = 45,
-    MR_TYPECTOR_REP_UNKNOWN                 = 46,
-    MR_TYPECTOR_REP_MAX                     = 47
+    MR_TYPECTOR_REP_UINT                    = 9,
+    MR_TYPECTOR_REP_CHAR                    = 10,
+    MR_TYPECTOR_REP_FLOAT                   = 11,
+    MR_TYPECTOR_REP_STRING                  = 12,
+    MR_TYPECTOR_REP_PRED                    = 13,
+    MR_TYPECTOR_REP_SUBGOAL                 = 14,
+    MR_TYPECTOR_REP_VOID                    = 15,
+    MR_TYPECTOR_REP_C_POINTER               = 16,
+    MR_TYPECTOR_REP_TYPEINFO                = 17,
+    MR_TYPECTOR_REP_TYPECLASSINFO           = 18,
+    MR_TYPECTOR_REP_ARRAY                   = 19,
+    MR_TYPECTOR_REP_SUCCIP                  = 20,
+    MR_TYPECTOR_REP_HP                      = 21,
+    MR_TYPECTOR_REP_CURFR                   = 22,
+    MR_TYPECTOR_REP_MAXFR                   = 23,
+    MR_TYPECTOR_REP_REDOFR                  = 24,
+    MR_TYPECTOR_REP_REDOIP                  = 25,
+    MR_TYPECTOR_REP_TRAIL_PTR               = 26,
+    MR_TYPECTOR_REP_TICKET                  = 27,
+    MR_TYPECTOR_REP_NOTAG_GROUND            = 28,
+    MR_TYPECTOR_REP_NOTAG_GROUND_USEREQ     = 29,
+    MR_TYPECTOR_REP_EQUIV_GROUND            = 30,
+    MR_TYPECTOR_REP_TUPLE                   = 31,
+    MR_TYPECTOR_REP_RESERVED_ADDR           = 32,
+    MR_TYPECTOR_REP_RESERVED_ADDR_USEREQ    = 33,
+    MR_TYPECTOR_REP_TYPECTORINFO            = 34,
+    MR_TYPECTOR_REP_BASETYPECLASSINFO       = 35,
+    MR_TYPECTOR_REP_TYPEDESC                = 36,
+    MR_TYPECTOR_REP_TYPECTORDESC            = 37,
+    MR_TYPECTOR_REP_FOREIGN                 = 38,
+    MR_TYPECTOR_REP_REFERENCE               = 39,
+    MR_TYPECTOR_REP_STABLE_C_POINTER        = 40,
+    MR_TYPECTOR_REP_STABLE_FOREIGN          = 41,
+    MR_TYPECTOR_REP_PSEUDOTYPEDESC          = 42,
+    MR_TYPECTOR_REP_DUMMY                   = 43,
+    MR_TYPECTOR_REP_BITMAP                  = 44,
+    MR_TYPECTOR_REP_FOREIGN_ENUM            = 45,
+    MR_TYPECTOR_REP_FOREIGN_ENUM_USEREQ     = 46,
+    MR_TYPECTOR_REP_UNKNOWN                 = 47,
+    MR_TYPECTOR_REP_MAX                     = 48
 }
 
 public class PseudoTypeInfo {
@@ -669,6 +670,7 @@ public class DuFunctorDesc {
     public string[]         du_functor_arg_names;
     public DuArgLocn[]      du_functor_arg_locns;
     public DuExistInfo      du_functor_exist_info;
+    public FunctorSubtypeInfo   du_functor_subtype_info;
 
     public DuFunctorDesc() {
     }
@@ -685,7 +687,8 @@ public class DuFunctorDesc {
         object arg_types,
         object arg_names,
         object arg_locns,
-        object exist_info)
+        object exist_info,
+        FunctorSubtypeInfo functor_subtype_info)
     {
         du_functor_name = functor_name;
         du_functor_orig_arity = orig_arity;
@@ -699,6 +702,7 @@ public class DuFunctorDesc {
         du_functor_arg_names = (string[]) arg_names;
         du_functor_arg_locns = (DuArgLocn[]) arg_locns;
         du_functor_exist_info = (DuExistInfo) exist_info;
+        du_functor_subtype_info = functor_subtype_info;
     }
 }
 
@@ -707,6 +711,11 @@ public enum Sectag_Locn {
     MR_SECTAG_NONE_DIRECT_ARG   = 1,
     MR_SECTAG_LOCAL             = 2,
     MR_SECTAG_REMOTE            = 3
+}
+
+public enum FunctorSubtypeInfo {
+    MR_FUNCTOR_SUBTYPE_NONE     = 0,
+    MR_FUNCTOR_SUBTYPE_EXISTS   = 1
 }
 
 public class DuPtagLayout {
@@ -1071,6 +1080,73 @@ public class LowLevelData
 class PInvoke {
     [System.Runtime.InteropServices.DllImport("msvcrt.dll")]
     public static extern int _putenv(string env);
+}
+
+/*
+ * A bitmap class for bitmap.m and the rewind code in version_array.m
+ */
+[System.Serializable]
+public class MercuryBitmap {
+    public int num_bits;
+    public byte[] elements;
+    public static int BITS_PER_BYTE = 8;
+
+    public MercuryBitmap(int numBits) {
+        num_bits = numBits;
+        elements = new byte[numBits / 8 + (((numBits % 8) != 0) ? 1: 0)];
+    }
+
+    public override bool Equals(object that) {
+        MercuryBitmap other = that as MercuryBitmap;
+        if (other == null) {
+            return false;
+        }
+        if (num_bits != other.num_bits) {
+            return false;
+        }
+        for (int i = 0; i < elements.Length; i++) {
+            if (elements[i] != other.elements[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public override int GetHashCode() {
+        return num_bits ^ elements.GetHashCode();
+    }
+
+    public bool GetBit(int bit)
+    {
+        return (elements[ByteIndexForBit(bit)]
+            & (1 << BitIndexWithinByte(bit))) != 0;
+    }
+
+    public void SetBit(int bit)
+    {
+        byte b;
+
+        b = elements[ByteIndexForBit(bit)];
+        b |= (byte) (1 << BitIndexWithinByte(bit));
+        elements[ByteIndexForBit(bit)] = b;
+    }
+
+    public void ClearBit(int bit)
+    {
+        byte b;
+
+        b = elements[ByteIndexForBit(bit)];
+        b &= (byte) ~(1 << BitIndexWithinByte(bit));
+        elements[ByteIndexForBit(bit)] = b;
+    }
+
+    public int ByteIndexForBit(int bit) {
+        return bit / BITS_PER_BYTE;
+    }
+
+    public int BitIndexWithinByte(int bit) {
+        return bit % BITS_PER_BYTE;
+    }
 }
 
 }

@@ -40,19 +40,19 @@
 :- implementation.
 
 :- import_module analysis.
-:- import_module libs.handle_options.
+:- import_module libs.compute_grade.
 :- import_module libs.process_util.
 :- import_module parse_tree.file_names.
 :- import_module parse_tree.module_cmds.
-:- import_module parse_tree.modules.
+:- import_module parse_tree.module_deps_graph.
 :- import_module parse_tree.prog_foreign.
-:- import_module parse_tree.prog_item.
 :- import_module parse_tree.prog_out.
 :- import_module transform_hlds.
 :- import_module transform_hlds.mmc_analysis.
 
 :- import_module digraph.
 :- import_module dir.
+:- import_module int.
 :- import_module getopt_io.
 :- import_module require.
 
@@ -69,7 +69,7 @@ make_linked_target(Globals, LinkedTargetFile, LinkedTargetSucceeded,
         ; FileType = static_library
         ; FileType = csharp_executable
         ; FileType = csharp_library
-        ; FileType = java_launcher
+        ; FileType = java_executable
         ; FileType = java_archive
         ; FileType = erlang_launcher
         ; FileType = erlang_archive
@@ -77,7 +77,7 @@ make_linked_target(Globals, LinkedTargetFile, LinkedTargetSucceeded,
         ExtraOptions = []
     ),
     globals.lookup_accumulating_option(Globals, lib_linkages, LibLinkages),
-    (
+    ( if
         (
             FileType = static_library,
             not list.member("static", LibLinkages)
@@ -85,9 +85,9 @@ make_linked_target(Globals, LinkedTargetFile, LinkedTargetSucceeded,
             FileType = shared_library,
             not list.member("shared", LibLinkages)
         )
-    ->
+    then
         LinkedTargetSucceeded = yes
-    ;
+    else
         globals.lookup_bool_option(Globals, libgrade_install_check,
             LibgradeCheck),
         (
@@ -149,12 +149,12 @@ make_linked_target_2(LinkedTargetFile, Globals, _, Succeeded, !Info, !IO) :-
     find_reachable_local_modules(Globals, MainModuleName, DepsSuccess,
         AllModules, !Info, !IO),
     globals.lookup_bool_option(Globals, keep_going, KeepGoing),
-    (
+    ( if
         DepsSuccess = no,
         KeepGoing = no
-    ->
+    then
         Succeeded = no
-    ;
+    else
         get_object_code_type(Globals, FileType, PIC),
 
         % Build the `.c' files first so that errors are reported
@@ -165,10 +165,6 @@ make_linked_target_2(LinkedTargetFile, Globals, _, Succeeded, !Info, !IO) :-
             IntermediateTargetType = module_target_c_code,
             ObjectTargetType = module_target_object_code(PIC)
         ;
-            CompilationTarget = target_il,
-            IntermediateTargetType = module_target_il_code,
-            ObjectTargetType = module_target_il_asm
-        ;
             CompilationTarget = target_csharp,
             IntermediateTargetType = module_target_csharp_code,
             ObjectTargetType = module_target_csharp_code
@@ -176,9 +172,6 @@ make_linked_target_2(LinkedTargetFile, Globals, _, Succeeded, !Info, !IO) :-
             CompilationTarget = target_java,
             IntermediateTargetType = module_target_java_code,
             ObjectTargetType = module_target_java_class_code
-        ;
-            CompilationTarget = target_x86_64,
-            sorry($module, $pred, "mmc --make and target x86_64")
         ;
             CompilationTarget = target_erlang,
             IntermediateTargetType = module_target_erlang_code,
@@ -205,15 +198,18 @@ make_linked_target_2(LinkedTargetFile, Globals, _, Succeeded, !Info, !IO) :-
 
         make_all_interface_files(Globals, AllModulesList, IntsSucceeded,
             !Info, !IO),
-        ( IntsSucceeded = no, KeepGoing = no ->
+        ( if
+            IntsSucceeded = no,
+            KeepGoing = no
+        then
             BuildDepsSucceeded = no
-        ;
+        else
             foldl2_maybe_stop_at_error_maybe_parallel(KeepGoing,
                 make_module_target, Globals, IntermediateTargetsNonnested,
                 BuildDepsSucceeded0, !Info, !IO),
             (
                 BuildDepsSucceeded0 = yes,
-                ( ObjectTargetType = module_target_java_class_code ->
+                ( if ObjectTargetType = module_target_java_class_code then
                     make_java_files(Globals, MainModuleName, ObjModules,
                         BuildJavaSucceeded, !Info, !IO),
                     (
@@ -229,7 +225,7 @@ make_linked_target_2(LinkedTargetFile, Globals, _, Succeeded, !Info, !IO) :-
                         BuildJavaSucceeded = no,
                         BuildDepsSucceeded1 = no
                     )
-                ;
+                else
                     foldl2_maybe_stop_at_error_maybe_parallel(KeepGoing,
                         make_module_target, Globals, ObjTargets,
                         BuildDepsSucceeded1, !Info, !IO)
@@ -255,10 +251,10 @@ make_linked_target_2(LinkedTargetFile, Globals, _, Succeeded, !Info, !IO) :-
             MaybeTimestamp, !Info, !IO),
         check_dependencies(Globals, OutputFileName, MaybeTimestamp,
             BuildDepsSucceeded, ObjTargets, BuildDepsResult, !Info, !IO),
-        (
+        ( if
             DepsSuccess = yes,
             BuildDepsResult \= deps_error
-        ->
+        then
             globals.lookup_bool_option(Globals, very_verbose, VeryVerbose),
             build_with_check_for_interrupt(VeryVerbose,
                 build_with_output_redirect(Globals, MainModuleName,
@@ -269,7 +265,7 @@ make_linked_target_2(LinkedTargetFile, Globals, _, Succeeded, !Info, !IO) :-
                 linked_target_cleanup(Globals, MainModuleName, FileType,
                     OutputFileName),
                 Succeeded, !Info, !IO)
-        ;
+        else
             Succeeded = no
         )
     ).
@@ -280,12 +276,12 @@ make_linked_target_2(LinkedTargetFile, Globals, _, Succeeded, !Info, !IO) :-
 
 get_target_modules(Globals, TargetType, AllModules, TargetModules,
         !Info, !IO) :-
-    ( TargetType = module_target_errors ->
+    ( if TargetType = module_target_errors then
         % `.err' files are only produced for the top-level module
         % in each source file.
         list.foldl3(get_target_modules_2(Globals), AllModules,
             [], TargetModules, !Info, !IO)
-    ;
+    else
         TargetModules = AllModules
     ).
 
@@ -295,12 +291,12 @@ get_target_modules(Globals, TargetType, AllModules, TargetModules,
 
 get_target_modules_2(Globals, ModuleName, !TargetModules, !Info, !IO) :-
     get_module_dependencies(Globals, ModuleName, MaybeImports, !Info, !IO),
-    (
+    ( if
         MaybeImports = yes(Imports),
         ModuleName = Imports ^ mai_source_file_module_name
-    ->
+    then
         !:TargetModules = [ModuleName | !.TargetModules]
-    ;
+    else
         true
     ).
 
@@ -371,17 +367,9 @@ get_foreign_object_targets(Globals, PIC, ModuleName, ObjectTargets,
         MaybeImports = no,
         unexpected($module, $pred, "unknown imports")
     ),
-    (
-        CompilationTarget = target_il,
-        Imports ^ mai_has_foreign_code = contains_foreign_code(Langs)
-    ->
-        ForeignObjectTargets = list.map(
-            (func(L) = dep_target(target_file(ModuleName,
-                module_target_foreign_il_asm(L)))
-            ), set.to_sorted_list(Langs))
-    ;
-        ForeignObjectTargets = []
-    ),
+
+    % XXX only used by the IL backend.
+    ForeignObjectTargets = [],
 
     % Find out if any externally compiled foreign code files for fact tables
     % exist.
@@ -397,8 +385,6 @@ get_foreign_object_targets(Globals, PIC, ModuleName, ObjectTargets,
     ;
         ( CompilationTarget = target_java
         ; CompilationTarget = target_csharp
-        ; CompilationTarget = target_il
-        ; CompilationTarget = target_x86_64
         ; CompilationTarget = target_erlang
         ),
         ObjectTargets = ForeignObjectTargets
@@ -469,7 +455,7 @@ build_linked_target_2(Globals, MainModuleName, FileType, OutputFileName,
         ; FileType = shared_library
         ; FileType = csharp_executable
         ; FileType = csharp_library
-        ; FileType = java_launcher
+        ; FileType = java_executable
         ; FileType = java_archive
         ; FileType = erlang_archive
         ),
@@ -503,12 +489,12 @@ build_linked_target_2(Globals, MainModuleName, FileType, OutputFileName,
         list.map((func(F) = dep_file(F, no)), ObjectsToCheck),
             ExtraObjStatus, !Info, !IO),
 
-    ( list.member(deps_status_error, ExtraObjStatus) ->
+    ( if list.member(deps_status_error, ExtraObjStatus) then
         DepsResult3 = deps_error
-    ;
+    else
         DepsResult3 = DepsResult2
     ),
-    BuildDepsSuccess = ( DepsResult3 \= deps_error -> yes ; no ),
+    BuildDepsSuccess = ( if DepsResult3 = deps_error then no else yes ),
     list.map_foldl2(get_file_timestamp([dir.this_directory]),
         ObjectsToCheck, ExtraObjectTimestamps, !Info, !IO),
     check_dependency_timestamps(NoLinkObjsGlobals, OutputFileName,
@@ -537,9 +523,8 @@ build_linked_target_2(Globals, MainModuleName, FileType, OutputFileName,
             UseGradeSubdirs),
         (
             UseGradeSubdirs = yes,
-            post_link_make_symlink_or_copy(ErrorStream, FileType,
-                MainModuleName, NoLinkObjsGlobals, Succeeded,
-                MadeSymlinkOrCopy, !IO),
+            post_link_make_symlink_or_copy(NoLinkObjsGlobals, ErrorStream,
+                FileType, MainModuleName, Succeeded, MadeSymlinkOrCopy, !IO),
             (
                 MadeSymlinkOrCopy = yes,
                 maybe_symlink_or_copy_linked_target_message(NoLinkObjsGlobals,
@@ -565,7 +550,7 @@ build_linked_target_2(Globals, MainModuleName, FileType, OutputFileName,
         % timestamp checking above -- they will have been checked when the
         % module's object file was built.
         list.map_foldl2(
-            (pred(ModuleName::in, ForeignFiles::out,
+            ( pred(ModuleName::in, ForeignFiles::out,
                     MakeInfo0::in, MakeInfo::out, !.IO::di, !:IO::uo) is det :-
                 get_module_dependencies(Globals, ModuleName, MaybeImports,
                     MakeInfo0, MakeInfo, !IO),
@@ -584,14 +569,9 @@ build_linked_target_2(Globals, MainModuleName, FileType, OutputFileName,
             list.condense(ExtraForeignFiles)),
 
         (
-            ( CompilationTarget = target_c
-            ; CompilationTarget = target_x86_64
-            ),
+            CompilationTarget = target_c,
             maybe_pic_object_file_extension(NoLinkObjsGlobals, PIC,
                 ObjExtToUse)
-        ;
-            CompilationTarget = target_il,
-            ObjExtToUse = ".dll"
         ;
             CompilationTarget = target_csharp,
             % There is no separate object code step.
@@ -606,7 +586,7 @@ build_linked_target_2(Globals, MainModuleName, FileType, OutputFileName,
                 erlang_object_file_extension, ObjExtToUse)
         ),
         list.map_foldl(
-            (pred(ObjModule::in, ObjToLink::out, !.IO::di, !:IO::uo) is det :-
+            ( pred(ObjModule::in, ObjToLink::out, !.IO::di, !:IO::uo) is det :-
                 module_name_to_file_name(NoLinkObjsGlobals, ObjModule,
                     ObjExtToUse, do_not_create_dirs, ObjToLink, !IO)
             ), ObjModules, ObjList, !IO),
@@ -623,47 +603,23 @@ build_linked_target_2(Globals, MainModuleName, FileType, OutputFileName,
             % Run the link in a separate process so it can be killed
             % if an interrupt is received.
             call_in_forked_process(
-                compile_target_code.link(ErrorStream, FileType, MainModuleName,
-                    AllObjects, NoLinkObjsGlobals),
+                compile_target_code.link(NoLinkObjsGlobals, ErrorStream,
+                    FileType, MainModuleName, AllObjects),
                 Succeeded, !IO)
-        ;
-            CompilationTarget = target_x86_64,
-            sorry($module, $pred, "mmc --make and target x86_64")
-        ;
-            CompilationTarget = target_il,
-            Succeeded = yes
         ),
-        !Info ^ command_line_targets :=
-            set.delete(!.Info ^ command_line_targets,
-                MainModuleName - linked_target(FileType)),
+        CmdLineTargets0 = !.Info ^ command_line_targets,
+        set.delete(MainModuleName - linked_target(FileType),
+            CmdLineTargets0, CmdLineTargets),
+        !Info ^ command_line_targets := CmdLineTargets,
         (
             Succeeded = yes,
-            !Info ^ file_timestamps :=
-                map.delete(!.Info ^ file_timestamps, OutputFileName)
+            FileTimestamps0 = !.Info ^ file_timestamps,
+            map.delete(OutputFileName, FileTimestamps0, FileTimestamps),
+            !Info ^ file_timestamps := FileTimestamps
         ;
             Succeeded = no,
             file_error(!.Info, OutputFileName, !IO)
         )
-    ).
-
-    % join_string_list(Strings, Prefix, Suffix, Serarator, Result)
-    %
-    % Appends the strings in the list `Strings' together into the
-    % string Result. Each string is prefixed by Prefix, suffixed by
-    % Suffix and separated by Separator.
-    %
-:- pred join_string_list(list(string)::in, string::in, string::in,
-    string::in, string::out) is det.
-
-join_string_list([], _Prefix, _Suffix, _Separator, "").
-join_string_list([String | Strings], Prefix, Suffix, Separator, Result) :-
-    (
-        Strings = [],
-        Result = Prefix ++ String ++ Suffix
-    ;
-        Strings = [_ | _],
-        join_string_list(Strings, Prefix, Suffix, Separator, Result0),
-        Result = Prefix ++ String ++ Suffix ++ Separator ++ Result0
     ).
 
 :- pred linked_target_cleanup(globals::in, module_name::in,
@@ -681,7 +637,7 @@ linked_target_cleanup(Globals, MainModuleName, FileType, OutputFileName,
         ; FileType = shared_library
         ; FileType = csharp_executable
         ; FileType = csharp_library
-        ; FileType = java_launcher
+        ; FileType = java_executable
         ; FileType = java_archive
         ; FileType = erlang_launcher
         ; FileType = erlang_archive
@@ -691,7 +647,7 @@ linked_target_cleanup(Globals, MainModuleName, FileType, OutputFileName,
 %-----------------------------------------------------------------------------%
 
     % When compiling to Java we want to invoke `javac' just once, passing it a
-    % list of all out-of-date `.java' files.  This is a lot quicker than
+    % list of all out-of-date `.java' files. This is a lot quicker than
     % compiling each Java file individually.
     %
 :- pred make_java_files(globals::in, module_name::in, list(module_name)::in,
@@ -734,13 +690,13 @@ out_of_date_java_modules(Globals, ObjModules, OutOfDateModules, !Info, !IO) :-
             MaybeJavaTimestamp, !Info, !IO),
         get_target_timestamp(Globals, do_not_search, ClassTarget,
             MaybeClassTimestamp, !Info, !IO),
-        (
+        ( if
             MaybeJavaTimestamp = ok(JavaTimestamp),
             MaybeClassTimestamp = ok(ClassTimestamp),
             ClassTimestamp @>= JavaTimestamp
-        ->
+        then
             OutOfDateModules = OutOfDateModules0
-        ;
+        else
             OutOfDateModules = [ModuleName | OutOfDateModules0]
         )
     ).
@@ -750,9 +706,10 @@ out_of_date_java_modules(Globals, ObjModules, OutOfDateModules, !Info, !IO) :-
 
 build_java_files(Globals, MainModuleName, ModuleNames, Succeeded,
         !Info, !IO) :-
-    verbose_msg(Globals, io.write_string("Making Java class files\n"), !IO),
+    verbose_make_msg(Globals,
+        io.write_string("Making Java class files\n"), !IO),
     ToJavaFile =
-        (pred(ModuleName::in, JavaFile::out, !.IO::di, !:IO::uo) is det :-
+        ( pred(ModuleName::in, JavaFile::out, !.IO::di, !:IO::uo) is det :-
             module_name_to_file_name(Globals, ModuleName, ".java",
                 do_create_dirs, JavaFile, !IO)
         ),
@@ -766,16 +723,16 @@ build_java_files(Globals, MainModuleName, ModuleNames, Succeeded,
 
 build_java_files_2(JavaFiles, Globals, ErrorStream, Succeeded, !Info, !IO) :-
     call_in_forked_process(
-        compile_java_files(ErrorStream, JavaFiles, Globals),
+        compile_java_files(Globals, ErrorStream, JavaFiles),
         Succeeded, !IO).
 
 :- pred delete_java_class_timestamps(string::in, maybe_error(timestamp)::in,
     file_timestamps::in, file_timestamps::out) is det.
 
 delete_java_class_timestamps(FileName, MaybeTimestamp, !Timestamps) :-
-    ( string.suffix(FileName, ".class") ->
+    ( if string.suffix(FileName, ".class") then
         true
-    ;
+    else
         map.det_insert(FileName, MaybeTimestamp, !Timestamps)
     ).
 
@@ -795,13 +752,13 @@ make_misc_target_builder(MainModuleName - TargetType, Globals, _, Succeeded,
         !Info, !IO) :-
     % Don't rebuild .module_dep files when cleaning up.
     RebuildModuleDeps = !.Info ^ rebuild_module_deps,
-    (
+    ( if
         ( TargetType = misc_target_clean
         ; TargetType = misc_target_realclean
         )
-    ->
+    then
         !Info ^ rebuild_module_deps := do_not_rebuild_module_deps
-    ;
+    else
         true
     ),
     find_reachable_local_modules(Globals, MainModuleName, Succeeded0,
@@ -823,17 +780,17 @@ make_misc_target_builder(MainModuleName - TargetType, Globals, _, Succeeded,
         get_target_modules(Globals, ModuleTargetType, AllModules,
             TargetModules, !Info, !IO),
         globals.lookup_bool_option(Globals, keep_going, KeepGoing),
-        ( Succeeded0 = no, KeepGoing = no ->
+        ( if Succeeded0 = no, KeepGoing = no then
             Succeeded = no
-        ;
+        else
             % Ensure all interface files are present before continuing.
             % This prevents a problem when two parallel branches
             % try to generate the same missing interface file later.
             make_all_interface_files(Globals, AllModules, Succeeded1,
                 !Info, !IO),
-            ( Succeeded1 = no, KeepGoing = no ->
+            ( if Succeeded1 = no, KeepGoing = no then
                 Succeeded = no
-            ;
+            else
                 maybe_with_analysis_cache_dir(Globals,
                     foldl2_maybe_stop_at_error_maybe_parallel(KeepGoing,
                         make_module_target, Globals,
@@ -877,9 +834,9 @@ make_misc_target_builder(MainModuleName - TargetType, Globals, _, Succeeded,
         get_target_modules(Globals, module_target_xml_doc, AllModules,
             TargetModules, !Info, !IO),
         globals.lookup_bool_option(Globals, keep_going, KeepGoing),
-        ( Succeeded0 = no, KeepGoing = no ->
+        ( if Succeeded0 = no, KeepGoing = no then
             Succeeded = no
-        ;
+        else
             foldl2_maybe_stop_at_error(KeepGoing, make_module_target,
                 Globals,
                 make_dependency_list(TargetModules, module_target_xml_doc),
@@ -940,10 +897,9 @@ collect_modules_with_children(Globals, ModuleName, !ParentModules,
     (
         MaybeImports = yes(Imports),
         Children = Imports ^ mai_children,
-        (
-            Children = []
-        ;
-            Children = [_ | _],
+        ( if set.is_empty(Children) then
+            true
+        else
             !:ParentModules = [ModuleName | !.ParentModules]
         )
     ;
@@ -966,7 +922,7 @@ maybe_with_analysis_cache_dir(Globals, P, Succeeded, !Info, !IO) :-
     globals.lookup_bool_option(Globals, analysis_file_cache, Caching),
     globals.lookup_string_option(Globals, analysis_file_cache_dir, CacheDir0),
     CacheDirOption = "--analysis-file-cache-dir",
-    (
+    ( if
         (
             IntermodAnalysis = no
         ;
@@ -978,9 +934,9 @@ maybe_with_analysis_cache_dir(Globals, P, Succeeded, !Info, !IO) :-
             % Analysis file cache directory already set up in a parent call.
             list.member(CacheDirOption, !.Info ^ option_args)
         )
-    ->
+    then
         P(Succeeded, !Info, !IO)
-    ;
+    else
         create_analysis_cache_dir(Globals, Succeeded0, CacheDir, !IO),
         (
             Succeeded0 = yes,
@@ -1004,7 +960,7 @@ maybe_with_analysis_cache_dir(Globals, P, Succeeded, !Info, !IO) :-
 
 create_analysis_cache_dir(Globals, Succeeded, CacheDir, !IO) :-
     choose_cache_dir_name(Globals, CacheDir, !IO),
-    verbose_msg_option(Globals, verbose_make,
+    verbose_make_msg_option(Globals, verbose_make,
         io.format("Creating %s\n", [s(CacheDir)]), !IO),
     dir.make_directory(CacheDir, MakeRes, !IO),
     (
@@ -1024,11 +980,11 @@ create_analysis_cache_dir(Globals, Succeeded, CacheDir, !IO) :-
 
 choose_cache_dir_name(Globals, DirName, !IO) :-
     globals.lookup_bool_option(Globals, use_grade_subdirs, UseGradeSubdirs),
-    globals.lookup_string_option(Globals, fullarch, FullArch),
+    globals.lookup_string_option(Globals, target_arch, TargetArch),
     (
         UseGradeSubdirs = yes,
         grade_directory_component(Globals, Grade),
-        DirComponents = ["Mercury", Grade, FullArch, "Mercury",
+        DirComponents = ["Mercury", Grade, TargetArch, "Mercury",
             "analysis_cache"]
     ;
         UseGradeSubdirs = no,
@@ -1040,7 +996,7 @@ choose_cache_dir_name(Globals, DirName, !IO) :-
     make_info::in, make_info::out, io::di, io::uo) is det.
 
 remove_cache_dir(Globals, CacheDir, !Info, !IO) :-
-    verbose_msg_option(Globals, verbose_make,
+    verbose_make_msg_option(Globals, verbose_make,
         io.format("Removing %s\n", [s(CacheDir)]), !IO),
     io.remove_file_recursively(CacheDir, _, !IO).
 
@@ -1053,23 +1009,23 @@ remove_cache_dir(Globals, CacheDir, !Info, !IO) :-
 build_analysis_files(Globals, MainModuleName, AllModules,
         Succeeded0, Succeeded, !Info, !IO) :-
     globals.lookup_bool_option(Globals, keep_going, KeepGoing),
-    (
+    ( if
         Succeeded0 = no,
         KeepGoing = no
-    ->
+    then
         Succeeded = no
-    ;
-        % Ensure all interface files are present before continuing.  This
-        % prevents a problem when two parallel branches try to generate the
-        % same missing interface file later.
+    else
+        % Ensure all interface files are present before continuing.
+        % This prevents a problem when two parallel branches try to generate
+        % the same missing interface file later.
         % (Although we can't actually build analysis files in parallel yet.)
         make_all_interface_files(Globals, AllModules, Succeeded1, !Info, !IO),
-        (
+        ( if
             Succeeded1 = no,
             KeepGoing = no
-        ->
+        then
             Succeeded = no
-        ;
+        else
             build_analysis_files_1(Globals, MainModuleName, AllModules,
                 Succeeded, !Info, !IO)
         )
@@ -1121,44 +1077,69 @@ build_analysis_files_2(Globals, MainModuleName, TargetModules,
     ReanalyseSuboptimal = (if ReanalysisPasses > 1 then yes else no),
     modules_needing_reanalysis(ReanalyseSuboptimal, Globals, TargetModules,
         InvalidModules, SuboptimalModules, !IO),
-    ( list.is_not_empty(InvalidModules) ->
+    ( if list.is_not_empty(InvalidModules) then
         maybe_reanalyse_modules_message(Globals, !IO),
         list.foldl(reset_analysis_registry_dependency_status,
             InvalidModules, !Info),
         build_analysis_files_2(Globals, MainModuleName, TargetModules,
             LocalModulesOpts, Succeeded0, Succeeded, !Info, !IO)
-    ; list.is_not_empty(SuboptimalModules) ->
+    else if list.is_not_empty(SuboptimalModules) then
         list.foldl(reset_analysis_registry_dependency_status,
             SuboptimalModules, !Info),
         !Info ^ reanalysis_passes := ReanalysisPasses - 1,
         maybe_reanalyse_modules_message(Globals, !IO),
         build_analysis_files_2(Globals, MainModuleName, TargetModules,
             LocalModulesOpts, Succeeded0, Succeeded, !Info, !IO)
-    ;
+    else
         Succeeded = Succeeded0 `and` Succeeded1
     ).
 
+%-----------------------------------------------------------------------------%
+
     % Return a list of modules in reverse order of their dependencies, i.e.
-    % the list is the module dependency graph from bottom-up.  Mutually
+    % the list is the module dependency graph from bottom-up. Mutually
     % dependent modules (modules which form a clique in the dependency graph)
     % are returned adjacent in the list in arbitrary order.
     %
-:- pred reverse_ordered_modules(map(module_name,
-    maybe(module_and_imports))::in,
+:- pred reverse_ordered_modules(
+    map(module_name, maybe(module_and_imports))::in,
     list(module_name)::in, list(module_name)::out) is det.
 
 reverse_ordered_modules(ModuleDeps, Modules0, Modules) :-
-    list.foldl2(add_module_relations(lookup_module_and_imports(ModuleDeps)),
+    list.foldl2(add_module_relations(
+        lookup_module_and_imports_in_maybe_map(ModuleDeps)),
         Modules0, digraph.init, _IntDepsGraph, digraph.init, ImplDepsGraph),
     digraph.atsort(ImplDepsGraph, Order0),
     list.reverse(Order0, Order1),
     list.map(set.to_sorted_list, Order1, Order2),
     list.condense(Order2, Modules).
 
-:- func lookup_module_and_imports(map(module_name, maybe(module_and_imports)),
-    module_name) = module_and_imports.
+    % add_module_relations(LookupModuleImports, ModuleName,
+    %   !IntDepsRel, !ImplDepsRel)
+    %
+    % Add a module's interface and implementation dependencies to IntDepsRel
+    % and ImplDepsRel respectively. Dependencies are found using the
+    % LookupModuleImports function.
+    %
+:- pred add_module_relations(
+    lookup_module_and_imports::lookup_module_and_imports,
+    module_name::in, digraph(module_name)::in, digraph(module_name)::out,
+    digraph(module_name)::in, digraph(module_name)::out) is det.
 
-lookup_module_and_imports(ModuleDeps, ModuleName) = ModuleImports :-
+add_module_relations(LookupModuleImports, ModuleName,
+        !IntDepsGraph, !ImplDepsGraph) :-
+    ModuleImports = LookupModuleImports(ModuleName),
+    add_module_and_imports_to_deps_graph(ModuleImports, LookupModuleImports,
+        !IntDepsGraph, !ImplDepsGraph).
+
+%-----------------------------------------------------------------------------%
+
+:- func lookup_module_and_imports_in_maybe_map(
+    map(module_name, maybe(module_and_imports)), module_name)
+    = module_and_imports.
+
+lookup_module_and_imports_in_maybe_map(ModuleDeps, ModuleName)
+        = ModuleImports :-
     map.lookup(ModuleDeps, ModuleName, MaybeModuleImports),
     (
         MaybeModuleImports = yes(ModuleImports)
@@ -1216,17 +1197,11 @@ build_library(MainModuleName, AllModules, Globals, Succeeded, !Info, !IO) :-
         build_c_library(Globals, MainModuleName, AllModules, Succeeded,
             !Info, !IO)
     ;
-        Target = target_il,
-        sorry($module, $pred, "target IL not supported yet")
-    ;
         Target = target_csharp,
         build_csharp_library(Globals, MainModuleName, Succeeded, !Info, !IO)
     ;
         Target = target_java,
         build_java_library(Globals, MainModuleName, Succeeded, !Info, !IO)
-    ;
-        Target = target_x86_64,
-        sorry($module, $pred, "target x86_64 not supported yet")
     ;
         Target = target_erlang,
         build_erlang_library(Globals, MainModuleName, AllModules, Succeeded,
@@ -1315,10 +1290,10 @@ install_library(Globals, MainModuleName, Succeeded, !Info, !IO) :-
         AllModules0, !Info, !IO),
     AllModules = set.to_sorted_list(AllModules0),
     make_install_dirs(Globals, DirSucceeded, LinkSucceeded, !IO),
-    (
+    ( if
         DepsSuccess = yes,
         DirSucceeded = yes
-    ->
+    then
         list.map_foldl2(install_ints_and_headers(Globals, LinkSucceeded),
             AllModules, IntsSucceeded, !Info, !IO),
         install_extra_headers(Globals, ExtraHdrsSucceeded, !IO),
@@ -1326,10 +1301,10 @@ install_library(Globals, MainModuleName, Succeeded, !Info, !IO) :-
         grade_directory_component(Globals, Grade),
         install_library_grade_files(Globals, LinkSucceeded, Grade,
             MainModuleName, AllModules, GradeSucceeded, !Info, !IO),
-        (
+        ( if
             bool.and_list([ExtraHdrsSucceeded | IntsSucceeded]) = yes,
             GradeSucceeded = yes
-        ->
+        then
             % XXX With Mmake, LIBGRADES is target-specific.
             globals.lookup_accumulating_option(Globals, libgrades, LibGrades0),
             globals.lookup_bool_option(Globals, keep_going, KeepGoing),
@@ -1338,32 +1313,30 @@ install_library(Globals, MainModuleName, Succeeded, !Info, !IO) :-
                 install_library_grade(LinkSucceeded,
                     MainModuleName, AllModules),
                 Globals, LibGrades, Succeeded, !Info, !IO)
-        ;
+        else
             Succeeded = no
         )
-    ;
+    else
         Succeeded = no
     ).
-
 
 :- pred install_ints_and_headers(globals::in, bool::in, module_name::in,
     bool::out, make_info::in, make_info::out, io::di, io::uo) is det.
 
 install_ints_and_headers(Globals, SubdirLinkSucceeded, ModuleName, Succeeded,
         !Info, !IO) :-
-    get_module_dependencies(Globals, ModuleName, MaybeImports, !Info, !IO),
+    get_module_dependencies(Globals, ModuleName, MaybeModuleAndImports,
+        !Info, !IO),
     (
-        MaybeImports = yes(Imports),
+        MaybeModuleAndImports = yes(ModuleAndImports),
         globals.get_any_intermod(Globals, AnyIntermod),
         (
             AnyIntermod = yes,
             % `.int0' files are imported by `.opt' files.
-            (
-                Imports ^ mai_children = [_ | _],
-                Exts = ["int0", "opt"]
-            ;
-                Imports ^ mai_children = [],
+            ( if set.is_empty(ModuleAndImports ^ mai_children) then
                 Exts = ["opt"]
+            else
+                Exts = ["int0", "opt"]
             )
         ;
             AnyIntermod = no,
@@ -1388,7 +1361,8 @@ install_ints_and_headers(Globals, SubdirLinkSucceeded, ModuleName, Succeeded,
             % XXX If we ever phase out mmake we could revert this behaviour.
             Target = target_c,
             % XXX Should we test
-            % Imports ^ contains_foreign_export = contains_foreign_export?
+            % ModuleAndImports ^ contains_foreign_export
+            %   = contains_foreign_export?
             module_name_to_file_name(Globals, ModuleName, ".mh",
                 do_not_create_dirs, FileName, !IO),
             install_file(Globals, FileName, LibDir/"inc", HeaderSucceeded1,
@@ -1407,14 +1381,12 @@ install_ints_and_headers(Globals, SubdirLinkSucceeded, ModuleName, Succeeded,
         ;
             ( Target = target_java
             ; Target = target_csharp
-            ; Target = target_il
-            ; Target = target_x86_64
             ),
             HeaderSucceeded = yes
         ),
         Succeeded = bool.and_list([HeaderSucceeded | Results])
     ;
-        MaybeImports = no,
+        MaybeModuleAndImports = no,
         Succeeded = no
     ).
 
@@ -1451,8 +1423,8 @@ install_library_grade(LinkSucceeded0, ModuleName, AllModules, Globals, Grade,
     OptionArgs0 = !.Info ^ option_args,
     OptionArgs = OptionArgs0 ++ ["--grade", Grade, "--use-grade-subdirs"],
 
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.write_string("Installing grade ", !IO),
             io.write_string(Grade, !IO),
             io.nl(!IO)
@@ -1463,7 +1435,7 @@ install_library_grade(LinkSucceeded0, ModuleName, AllModules, Globals, Grade,
         MaybeMCFlags = yes(MCFlags),
         DetectedGradeFlags = !.Info ^ detected_grade_flags,
         AllFlags = DetectedGradeFlags ++ MCFlags ++ OptionArgs,
-        handle_given_options(AllFlags, _, _, _, OptionsErrors, LibGlobals, !IO)
+        handle_given_options(AllFlags, _, _, OptionsSpecs, LibGlobals, !IO)
     ;
         MaybeMCFlags = no,
         % Errors should have been caught before.
@@ -1471,11 +1443,11 @@ install_library_grade(LinkSucceeded0, ModuleName, AllModules, Globals, Grade,
     ),
 
     (
-        OptionsErrors = [_ | _],
-        usage_errors(OptionsErrors, !IO),
+        OptionsSpecs = [_ | _],
+        usage_errors(Globals, OptionsSpecs, !IO),
         Succeeded = no
     ;
-        OptionsErrors = [],
+        OptionsSpecs = [],
 
         % Remove the grade-dependent targets from the status map
         % (we need to rebuild them in the new grade).
@@ -1500,7 +1472,7 @@ install_library_grade(LinkSucceeded0, ModuleName, AllModules, Globals, Grade,
             ( pred(GradeSuccess::out, MInfo::in, MInfo::out,
                     !.IO::di, !:IO::uo) is det :-
                 call_in_forked_process(
-                    (pred(GradeSuccess0::out, !.IO::di, !:IO::uo) is det :-
+                    ( pred(GradeSuccess0::out, !.IO::di, !:IO::uo) is det :-
                         install_library_grade_2(LibGlobals, LinkSucceeded0,
                             ModuleName, AllModules, MInfo, CleanAfter,
                             GradeSuccess0, !IO)
@@ -1511,14 +1483,16 @@ install_library_grade(LinkSucceeded0, ModuleName, AllModules, Globals, Grade,
 :- func remove_grade_dependent_targets(dependency_file, dependency_status,
     version_hash_table(dependency_file, dependency_status)) =
     version_hash_table(dependency_file, dependency_status).
+% See the comment above for the reason why we don't use this predicate.
+:- pragma consider_used(remove_grade_dependent_targets/3).
 
 remove_grade_dependent_targets(File, _Status, StatusMap0) = StatusMap :-
-    (
+    ( if
         File = dep_target(target_file(_, Target)),
         target_is_grade_or_arch_dependent(Target)
-    ->
+    then
         StatusMap = delete(StatusMap0, File)
-    ;
+    else
         StatusMap = StatusMap0
     ).
 
@@ -1532,8 +1506,7 @@ install_library_grade_2(Globals, LinkSucceeded0, ModuleName, AllModules,
         LibSucceeded, Info0, Info1, !IO),
     (
         LibSucceeded = yes,
-        % `GradeDir' differs from `Grade' in that it is in canonical form,
-        % and it does not include any `.picreg' component.
+        % `GradeDir' differs from `Grade' in that it is in canonical form.
         grade_directory_component(Globals, GradeDir),
         install_library_grade_files(Globals, LinkSucceeded0, GradeDir,
             ModuleName, AllModules, Succeeded, Info1, Info2, !IO),
@@ -1573,30 +1546,30 @@ install_library_grade_files(Globals, LinkSucceeded0, GradeDir, ModuleName,
 
         globals.lookup_string_option(Globals, install_prefix, Prefix),
 
-        ( string.prefix(GradeDir, "csharp") ->
+        ( if string.prefix(GradeDir, "csharp") then
             GradeLibDir = Prefix/"lib"/"mercury"/"lib"/GradeDir,
             install_file(Globals, DllFileName, GradeLibDir, LibsSucceeded,
                 !IO),
             InitSucceeded = yes
-        ; string.prefix(GradeDir, "java") ->
+        else if string.prefix(GradeDir, "java") then
             GradeLibDir = Prefix/"lib"/"mercury"/"lib"/GradeDir,
             install_file(Globals, JarFileName, GradeLibDir, LibsSucceeded,
                 !IO),
             InitSucceeded = yes
-        ; string.prefix(GradeDir, "erlang") ->
+        else if string.prefix(GradeDir, "erlang") then
             GradeLibDir = Prefix/"lib"/"mercury"/"lib"/GradeDir,
             % Our "Erlang archives" are actually directories.
             install_directory(Globals, ErlangArchiveFileName, GradeLibDir,
                 LibsSucceeded, !IO),
             install_grade_init(Globals, GradeDir, ModuleName, InitSucceeded,
                 !IO)
-        ;
+        else
             GradeLibDir = Prefix/"lib"/"mercury"/"lib"/GradeDir,
             maybe_install_library_file(Globals, "static", LibFileName,
                 GradeLibDir, LibSuccess, !IO),
-            ( LibFileName = SharedLibFileName ->
+            ( if LibFileName = SharedLibFileName then
                 LibsSucceeded = LibSuccess
-            ;
+            else
                 maybe_install_library_file(Globals, "shared",
                     SharedLibFileName, GradeLibDir, SharedLibSuccess, !IO),
                 LibsSucceeded = LibSuccess `and` SharedLibSuccess
@@ -1643,10 +1616,10 @@ install_grade_ints_and_headers(Globals, LinkSucceeded, GradeDir, ModuleName,
 
         globals.get_target(Globals, Target),
         globals.lookup_bool_option(Globals, highlevel_code, HighLevelCode),
-        (
+        ( if
             Target = target_c,
             HighLevelCode = yes
-        ->
+        then
             GradeIncDir = LibDir/"lib"/GradeDir/"inc",
             install_subdir_file(Globals, LinkSucceeded, GradeIncDir,
                 ModuleName, "mih", HeaderSucceeded1, !IO),
@@ -1657,7 +1630,7 @@ install_grade_ints_and_headers(Globals, LinkSucceeded, GradeDir, ModuleName,
                 "mih", HeaderSucceeded2, !IO),
 
             HeaderSucceeded = HeaderSucceeded1 `and` HeaderSucceeded2
-        ;
+        else
             HeaderSucceeded = yes
         ),
 
@@ -1717,27 +1690,27 @@ install_subdir_file(Globals, SubdirLinkSucceeded, InstallDir, ModuleName, Ext,
 maybe_install_library_file(Globals, Linkage, FileName, InstallDir, Succeeded,
         !IO) :-
     globals.lookup_accumulating_option(Globals, lib_linkages, LibLinkages),
-    ( list.member(Linkage, LibLinkages) ->
+    ( if list.member(Linkage, LibLinkages) then
         install_file(Globals, FileName, InstallDir, Succeeded0, !IO),
 
         % We need to update the archive index after we copy a .a file to
         % the installation directory because the linkers on some OSs
         % complain if we don't.
-        (
+        ( if
             Linkage = "static",
             Succeeded0 = yes
-        ->
+        then
             % Since mmc --make uses --use-subdirs the above FileName will
-            % be directory qualified.  We don't care about the build
+            % be directory qualified. We don't care about the build
             % directory here so we strip that qualification off.
 
             BaseFileName = dir.det_basename(FileName),
             generate_archive_index(Globals, BaseFileName, InstallDir,
                 Succeeded, !IO)
-        ;
+        else
             Succeeded = Succeeded0
         )
-    ;
+    else
         Succeeded = yes
     ).
 
@@ -1745,8 +1718,8 @@ maybe_install_library_file(Globals, Linkage, FileName, InstallDir, Succeeded,
     io::di, io::uo) is det.
 
 install_file(Globals, FileName, InstallDir, Succeeded, !IO) :-
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.write_string("Installing file ", !IO),
             io.write_string(FileName, !IO),
             io.write_string(" in ", !IO),
@@ -1762,8 +1735,8 @@ install_file(Globals, FileName, InstallDir, Succeeded, !IO) :-
     io::di, io::uo) is det.
 
 install_directory(Globals, SourceDirName, InstallDir, Succeeded, !IO) :-
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.write_string("Installing directory ", !IO),
             io.write_string(SourceDirName, !IO),
             io.write_string(" in ", !IO),
@@ -1799,7 +1772,7 @@ make_install_dirs(Globals, Result, LinkResult, !IO) :-
     ;
         LinkResult = no,
         list.map_foldl(
-            (pred(Ext::in, MkDirResult::out, !.IO::di, !:IO::uo) is det:-
+            ( pred(Ext::in, MkDirResult::out, !.IO::di, !:IO::uo) is det:-
                 make_directory(IntsSubdir/(Ext ++ "s"), MkDirResult, !IO)
             ), Subdirs, MkDirResults, !IO),
         Results = Results0 ++ MkDirResults
@@ -1867,8 +1840,8 @@ make_install_symlink(Globals, Subdir, Ext, Succeeded, !IO) :-
     bool::out, io::di, io::uo) is det.
 
 generate_archive_index(Globals, FileName, InstallDir, Succeeded, !IO) :-
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.write_string("Generating archive index for file ", !IO),
             io.write_string(FileName, !IO),
             io.write_string(" in ", !IO),
@@ -1906,8 +1879,8 @@ maybe_make_grade_clean(Globals, Clean, ModuleName, AllModules, !Info, !IO) :-
     make_info::in, make_info::out, io::di, io::uo) is det.
 
 make_grade_clean(Globals, ModuleName, AllModules, !Info, !IO) :-
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.write_string("Cleaning up grade-dependent files for `", !IO),
             write_sym_name(ModuleName, !IO),
             io.write_string("'in grade ", !IO),
@@ -1923,8 +1896,8 @@ make_grade_clean(Globals, ModuleName, AllModules, !Info, !IO) :-
     make_info::in, make_info::out, io::di, io::uo) is det.
 
 make_main_module_realclean(Globals, ModuleName, !Info, !IO) :-
-    verbose_msg(Globals,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg(Globals,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.write_string("Removing executable and library files for `",
                 !IO),
             write_sym_name(ModuleName, !IO),
@@ -1937,7 +1910,7 @@ make_main_module_realclean(Globals, ModuleName, !Info, !IO) :-
         shared_library,
         csharp_executable,
         csharp_library,
-        java_launcher,
+        java_executable,
         java_archive,
         erlang_launcher,
         erlang_archive
@@ -1966,22 +1939,21 @@ remove_init_files(Globals, Verbose, ModuleName, !Info, !IO) :-
     globals.lookup_string_option(Globals, object_file_extension, ObjExt),
     globals.lookup_string_option(Globals, pic_object_file_extension,
         PicObjExt),
-    globals.lookup_string_option(Globals, link_with_pic_object_file_extension,
-        LinkWithPicObjExt),
     globals.lookup_string_option(Globals, erlang_object_file_extension,
         BeamExt),
     list.foldl2(make_remove_module_file(Globals, Verbose, ModuleName),
-        ["_init.c", "_init" ++ ObjExt,
-            "_init" ++ PicObjExt, "_init" ++ LinkWithPicObjExt,
+        ["_init.c", "_init" ++ ObjExt, "_init" ++ PicObjExt,
             "_init.erl", "_init" ++ BeamExt],
         !Info, !IO).
+
+%-----------------------------------------------------------------------------%
 
 :- pred make_module_clean(globals::in, module_name::in,
     make_info::in, make_info::out, io::di, io::uo) is det.
 
 make_module_clean(Globals, ModuleName, !Info, !IO) :-
-    verbose_msg_option(Globals, verbose_make,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg_option(Globals, verbose_make,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.write_string("Cleaning up target files for module `", !IO),
             write_sym_name(ModuleName, !IO),
             io.write_string("'.\n", !IO)
@@ -1992,7 +1964,6 @@ make_module_clean(Globals, ModuleName, !Info, !IO) :-
         [module_target_errors,
         module_target_c_code,
         module_target_c_header(header_mih),
-        module_target_il_code,
         module_target_csharp_code,
         module_target_java_code,
         module_target_java_class_code,
@@ -2014,41 +1985,51 @@ make_module_clean(Globals, ModuleName, !Info, !IO) :-
         FactTableFiles = []
     ),
 
-    list.foldl2(
-        (pred(FactTableFile::in, !.Info::in, !:Info::out, di, uo) is det -->
-            fact_table_file_name(Globals, ModuleName, FactTableFile,
-                ".c", do_not_create_dirs, FactTableCFile),
-            make_remove_file(Globals, very_verbose, FactTableCFile, !Info)
-        ), FactTableFiles, !Info, !IO),
+    list.foldl2(remove_fact_table_c_file(Globals, ModuleName),
+        FactTableFiles, !Info, !IO),
 
     CCodeModule = foreign_language_module_name(ModuleName, lang_c),
     make_remove_target_file_by_name(Globals, very_verbose, CCodeModule,
         module_target_c_code, !Info, !IO),
 
-    % Remove object and assembler files.
-    list.foldl2(
-        (pred(PIC::in, !.Info::in, !:Info::out, !.IO::di, !:IO::uo) is det :-
-            make_remove_target_file_by_name(Globals, very_verbose, ModuleName,
-                module_target_object_code(PIC), !Info, !IO),
-            make_remove_target_file_by_name(Globals, very_verbose, ModuleName,
-                module_target_foreign_object(PIC, lang_c), !Info, !IO),
-            list.foldl2(
-                (pred(FactTableFile::in, !.Info::in, !:Info::out,
-                        !.IO::di, !:IO::uo) is det :-
-                    make_remove_target_file_by_name(Globals, very_verbose,
-                        ModuleName,
-                        module_target_fact_table_object(PIC, FactTableFile),
-                        !Info, !IO)
-                ), FactTableFiles, !Info, !IO)
-        ),
-        [pic, link_with_pic, non_pic], !Info, !IO),
+    remove_object_and_assembler_files(Globals, ModuleName, pic,
+        FactTableFiles, !Info, !IO),
+    remove_object_and_assembler_files(Globals, ModuleName, non_pic,
+        FactTableFiles, !Info, !IO).
 
-    % Remove IL foreign code files.
-    CSharpModule = foreign_language_module_name(ModuleName, lang_csharp),
-    make_remove_module_file(Globals, very_verbose, CSharpModule,
-        foreign_language_file_extension(lang_csharp), !Info, !IO),
-    make_remove_target_file_by_name(Globals, very_verbose, CSharpModule,
-        module_target_foreign_il_asm(lang_csharp), !Info, !IO).
+:- pred remove_fact_table_c_file(globals::in, module_name::in, string::in,
+    make_info::in, make_info::out, io::di, io::uo) is det.
+
+remove_fact_table_c_file(Globals, ModuleName, FactTableFile, !Info, !IO) :-
+    fact_table_file_name(Globals, ModuleName, FactTableFile,
+        ".c", do_not_create_dirs, FactTableCFile, !IO),
+    make_remove_file(Globals, very_verbose, FactTableCFile, !Info, !IO).
+
+:- pred remove_object_and_assembler_files(globals::in, module_name::in,
+    pic::in, list(file_name)::in,
+    make_info::in, make_info::out, io::di, io::uo) is det.
+
+remove_object_and_assembler_files(Globals, ModuleName, PIC, FactTableFiles,
+        !Info, !IO) :-
+    make_remove_target_file_by_name(Globals, very_verbose, ModuleName,
+        module_target_object_code(PIC), !Info, !IO),
+    make_remove_target_file_by_name(Globals, very_verbose, ModuleName,
+        module_target_foreign_object(PIC, lang_c), !Info, !IO),
+    list.foldl2(
+        remove_fact_table_object_and_assembler_files(Globals, ModuleName, PIC),
+        FactTableFiles, !Info, !IO).
+
+:- pred remove_fact_table_object_and_assembler_files(globals::in,
+    module_name::in, pic::in, file_name::in,
+    make_info::in, make_info::out, io::di, io::uo) is det.
+
+remove_fact_table_object_and_assembler_files(Globals, ModuleName, PIC,
+        FactTableFile, !Info, !IO) :-
+    make_remove_target_file_by_name(Globals, very_verbose,
+        ModuleName, module_target_fact_table_object(PIC, FactTableFile),
+        !Info, !IO).
+
+%-----------------------------------------------------------------------------%
 
 :- pred make_module_realclean(globals::in, module_name::in,
     make_info::in, make_info::out, io::di, io::uo) is det.
@@ -2056,8 +2037,8 @@ make_module_clean(Globals, ModuleName, !Info, !IO) :-
 make_module_realclean(Globals, ModuleName, !Info, !IO) :-
     make_module_clean(Globals, ModuleName, !Info, !IO),
 
-    verbose_msg_option(Globals, verbose_make,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg_option(Globals, verbose_make,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.write_string("Cleaning up interface files for module `", !IO),
             write_sym_name(ModuleName, !IO),
             io.write_string("'.\n", !IO)
@@ -2108,8 +2089,8 @@ check_libraries_are_installed(Globals, Succeeded, !IO) :-
     io::di, io::uo) is det.
 
 check_stdlib_is_installed(Globals, Grade, Succeeded, !IO) :-
-    verbose_msg_option(Globals, debug_make,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg_option(Globals, debug_make,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.format("Checking that the Mercury standard library is " ++
                 "installed in grade `%s'.\n", [s(Grade)], !IO)
         ), !IO),
@@ -2119,7 +2100,7 @@ check_stdlib_is_installed(Globals, Grade, Succeeded, !IO) :-
         MaybeStdLibDir = yes(StdLibDir),
         % We check for the presence mer_std.init in the required grade.
         % Unless the installation is broken this implies the presence
-        % of the the other standard .init files in that grade.
+        % of the other standard .init files in that grade.
         StdLibInitFile = StdLibDir / "modules" / Grade / "mer_std.init",
         io.see(StdLibInitFile, Result, !IO),
         (
@@ -2145,21 +2126,20 @@ check_stdlib_is_installed(Globals, Grade, Succeeded, !IO) :-
     string::in, bool::in, bool::out, io::di, io::uo) is det.
 
 check_library_is_installed(Globals, Dirs, Grade, LibName, !Succeeded, !IO) :-
-    verbose_msg_option(Globals, debug_make,
-        (pred(!.IO::di, !:IO::uo) is det :-
+    verbose_make_msg_option(Globals, debug_make,
+        ( pred(!.IO::di, !:IO::uo) is det :-
             io.format("Checking that %s is installed in grade `%s'.\n",
                 [s(LibName), s(Grade)], !IO)
         ), !IO),
     % We check for the presence of a library in a particular grade by seeing
-    % whether its .init file exists.  This will work because all libraries
+    % whether its .init file exists. This will work because all libraries
     % have a grade dependent .init file.
     InitFileName = LibName ++ ".init",
-    search_for_file_returning_dir(do_not_open_file, Dirs, InitFileName,
-        SearchResult, !IO),
+    search_for_file_returning_dir(Dirs, InitFileName, MaybeDirName, !IO),
     (
-        SearchResult = ok(_)
+        MaybeDirName = ok(_)
     ;
-        SearchResult = error(_),
+        MaybeDirName = error(_),
         io.stderr_stream(Stderr, !IO),
         io.progname_base("mercury_compile", ProgName, !IO),
         io.format(Stderr,

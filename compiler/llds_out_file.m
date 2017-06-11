@@ -18,6 +18,7 @@
 :- module ll_backend.llds_out.llds_out_file.
 :- interface.
 
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module ll_backend.llds.
 
@@ -28,7 +29,8 @@
 
     % Given a c_file structure, output the LLDS code inside it into a .c file.
     %
-:- pred output_llds(globals::in, c_file::in, io::di, io::uo) is det.
+:- pred output_llds(globals::in, c_file::in, bool::out, io::di, io::uo)
+    is det.
 
 %----------------------------------------------------------------------------%
 
@@ -64,12 +66,15 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.c_util.
 :- import_module backend_libs.name_mangle.
 :- import_module backend_libs.proc_label.
 :- import_module backend_libs.rtti.
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module libs.file_util.
 :- import_module libs.options.
 :- import_module libs.trace_params.
 :- import_module ll_backend.exprn_aux.
@@ -81,8 +86,13 @@
 :- import_module ll_backend.llds_out.llds_out_instr.
 :- import_module ll_backend.llds_out.llds_out_util.
 :- import_module ll_backend.rtti_out.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.file_names.
+:- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.prog_foreign.
 :- import_module parse_tree.prog_out.
 
@@ -98,61 +108,28 @@
 :- import_module set.
 :- import_module set_tree234.
 :- import_module string.
+:- import_module term.
 
 %----------------------------------------------------------------------------%
 
-output_llds(Globals, CFile, !IO) :-
+output_llds(Globals, CFile, Succeeded, !IO) :-
     ModuleName = CFile ^ cfile_modulename,
     module_name_to_file_name(Globals, ModuleName, ".c", do_create_dirs,
         FileName, !IO),
-    io.open_output(FileName, Result, !IO),
-    (
-        Result = ok(FileStream),
-        decl_set_init(DeclSet0),
-        output_single_c_file(Globals, CFile, FileStream, DeclSet0, _, !IO),
-        io.close_output(FileStream, !IO)
-    ;
-        Result = error(Error),
-        io.progname_base("llds.m", ProgName, !IO),
-        io.format("\n%s: can't open `%s' for output:\n%s\n",
-            [s(ProgName), s(FileName), s(io.error_message(Error))], !IO),
-        io.set_exit_status(1, !IO)
-    ).
+    output_to_file(Globals, FileName, output_llds_2(Globals, CFile),
+        Succeeded, !IO).
 
-:- pred output_c_file_mercury_headers(llds_out_info::in,
-    io::di, io::uo) is det.
+:- pred output_llds_2(globals::in, c_file::in, io::di, io::uo) is det.
 
-output_c_file_mercury_headers(Info, !IO) :-
-    io.write_string("#define MR_ALLOW_RESET\n", !IO),
-    io.write_string("#include ""mercury_imp.h""\n", !IO),
-    TraceLevel = Info ^ lout_trace_level,
-    TraceLevelIsNone = given_trace_level_is_none(TraceLevel),
-    (
-        TraceLevelIsNone = no,
-        io.write_string("#include ""mercury_trace_base.h""\n", !IO)
-    ;
-        TraceLevelIsNone = yes
-    ),
-    DeepProfile = Info ^ lout_profile_deep,
-    (
-        DeepProfile = yes,
-        io.write_string("#include ""mercury_deep_profiling.h""\n", !IO)
-    ;
-        DeepProfile = no
-    ),
-    GenerateBytecode = Info ^ lout_generate_bytecode,
-    (
-        GenerateBytecode = yes,
-        io.write_string("#include ""mb_interface_stub.h""\n", !IO)
-    ;
-        GenerateBytecode = no
-    ).
+output_llds_2(Globals, CFile, !IO) :-
+    decl_set_init(DeclSet0),
+    output_single_c_file(Globals, CFile, DeclSet0, _, !IO).
 
-:- pred output_single_c_file(globals::in, c_file::in, io.output_stream::in,
+:- pred output_single_c_file(globals::in, c_file::in,
     decl_set::in, decl_set::out, io::di, io::uo) is det.
 
-output_single_c_file(Globals, CFile, FileStream, !DeclSet, !IO) :-
-    CFile = c_file(ModuleName, C_HeaderLines, UserForeignCode, Exports,
+output_single_c_file(Globals, CFile, !DeclSet, !IO) :-
+    CFile = c_file(ModuleName, C_HeaderLines, ForeignBodyCodes, Exports,
         TablingInfoStructs, ScalarCommonDatas, VectorCommonDatas,
         RttiDatas, PseudoTypeInfos, HLDSVarNums, ShortLocns, LongLocns,
         UserEventVarNums, UserEvents,
@@ -160,20 +137,18 @@ output_single_c_file(Globals, CFile, FileStream, !DeclSet, !IO) :-
         InternalLabelToLayoutMap, EntryLabelToLayoutMap,
         CallSiteStatics, CoveragePoints, ProcStatics,
         ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TSStringTable,
-        TableIoDecls, TableIoDeclMap, ProcEventLayouts, ExecTraces,
+        TableIoEntries, TableIoEntryMap, ProcEventLayouts, ExecTraces,
         ProcLayoutDatas, ModuleLayoutDatas, ClosureLayoutDatas,
         AllocSites, AllocSiteMap,
         Modules, UserInitPredCNames, UserFinalPredCNames, ComplexityProcs),
-    Info = init_llds_out_info(ModuleName, Globals,
-        InternalLabelToLayoutMap, EntryLabelToLayoutMap, TableIoDeclMap,
-        AllocSiteMap),
     library.version(Version, Fullarch),
-    io.set_output_stream(FileStream, OutputStream, !IO),
-    module_name_to_file_name(Globals, ModuleName, ".m", do_not_create_dirs,
-        SourceFileName, !IO),
+    module_source_filename(Globals, ModuleName, SourceFileName, !IO),
     output_c_file_intro_and_grade(Globals, SourceFileName, Version, Fullarch,
         !IO),
 
+    Info = init_llds_out_info(ModuleName, SourceFileName, Globals,
+        InternalLabelToLayoutMap, EntryLabelToLayoutMap, TableIoEntryMap,
+        AllocSiteMap),
     annotate_c_modules(Info, Modules, AnnotatedModules,
         cord.init, EntryLabelsCord, cord.init, InternalLabelsCord,
         set.init, EnvVarNameSet),
@@ -208,7 +183,7 @@ output_single_c_file(Globals, CFile, FileStream, !DeclSet, !IO) :-
         ShortLocns, LongLocns, UserEventVarNums, UserEvents,
         NoVarLabelLayouts, SVarLabelLayouts, LVarLabelLayouts,
         CallSiteStatics, CoveragePoints, ProcStatics,
-        ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TableIoDecls,
+        ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TableIoEntries,
         ProcEventLayouts, ExecTraces, AllocSites, !IO),
 
     list.foldl2(output_proc_layout_data_defn(Info), ProcLayoutDatas,
@@ -224,19 +199,54 @@ output_single_c_file(Globals, CFile, FileStream, !DeclSet, !IO) :-
         ShortLocns, LongLocns, UserEventVarNums, UserEvents,
         NoVarLabelLayouts, SVarLabelLayouts, LVarLabelLayouts,
         CallSiteStatics, CoveragePoints, ProcStatics,
-        ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TableIoDecls,
+        ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TableIoEntries,
         ProcEventLayouts, ExecTraces, TSStringTable, AllocSites,
         !DeclSet, !IO),
 
     list.foldl2(output_annotated_c_module(Info), AnnotatedModules,
         !DeclSet, !IO),
-    list.foldl(output_user_foreign_code(Info), UserForeignCode, !IO),
-    list.foldl(io.write_string, Exports, !IO),
+    list.foldl(output_foreign_body_code(Info), ForeignBodyCodes, !IO),
+    WriteForeignExportDefn =
+        (pred(ForeignExportDefn::in, IO0::di, IO::uo) is det :-
+            ForeignExportDefn = foreign_export_defn(ForeignExportCode),
+            io.write_string(ForeignExportCode, IO0, IO)
+        ),
+    list.foldl(WriteForeignExportDefn, Exports, !IO),
     io.write_string("\n", !IO),
     output_c_module_init_list(Info, ModuleName, AnnotatedModules, RttiDatas,
         ProcLayoutDatas, ModuleLayoutDatas, ComplexityProcs, TSStringTable,
-        AllocSites, UserInitPredCNames, UserFinalPredCNames, !DeclSet, !IO),
-    io.set_output_stream(OutputStream, _, !IO).
+        AllocSites, UserInitPredCNames, UserFinalPredCNames, !DeclSet, !IO).
+
+%-----------------------------------------------------------------------------%
+
+:- pred output_c_file_mercury_headers(llds_out_info::in,
+    io::di, io::uo) is det.
+
+output_c_file_mercury_headers(Info, !IO) :-
+    io.write_string("#define MR_ALLOW_RESET\n", !IO),
+    io.write_string("#include ""mercury_imp.h""\n", !IO),
+    TraceLevel = Info ^ lout_trace_level,
+    TraceLevelIsNone = given_trace_level_is_none(TraceLevel),
+    (
+        TraceLevelIsNone = no,
+        io.write_string("#include ""mercury_trace_base.h""\n", !IO)
+    ;
+        TraceLevelIsNone = yes
+    ),
+    DeepProfile = Info ^ lout_profile_deep,
+    (
+        DeepProfile = yes,
+        io.write_string("#include ""mercury_deep_profiling.h""\n", !IO)
+    ;
+        DeepProfile = no
+    ),
+    GenerateBytecode = Info ^ lout_generate_bytecode,
+    (
+        GenerateBytecode = yes,
+        io.write_string("#include ""mb_interface_stub.h""\n", !IO)
+    ;
+        GenerateBytecode = no
+    ).
 
 %----------------------------------------------------------------------------%
 
@@ -377,7 +387,7 @@ annotate_c_procedure(Info, Proc, AnnotatedProc,
 gather_labels_from_instrs_acc([], !RevEntryLabels, !RevInternalLabels).
 gather_labels_from_instrs_acc([Instr | Instrs],
         !RevEntryLabels, !RevInternalLabels) :-
-    ( Instr = llds_instr(label(Label), _) ->
+    ( if Instr = llds_instr(label(Label), _) then
         (
             Label = entry_label(_, _),
             !:RevEntryLabels = [Label | !.RevEntryLabels]
@@ -385,7 +395,7 @@ gather_labels_from_instrs_acc([Instr | Instrs],
             Label = internal_label(_, _),
             !:RevInternalLabels = [Label | !.RevInternalLabels]
         )
-    ;
+    else
         true
     ),
     gather_labels_from_instrs_acc(Instrs,
@@ -471,6 +481,10 @@ output_c_module_init_list(Info, ModuleName, AnnotatedModules, RttiDatas,
         output_init_name(ModuleName, !IO),
         io.write_string("required_final(void);\n", !IO)
     ),
+
+    io.write_string("const char *", !IO),
+    output_init_name(ModuleName, !IO),
+    io.write_string("grade_check(void);\n", !IO),
 
     io.write_string("\n", !IO),
 
@@ -599,14 +613,19 @@ output_c_module_init_list(Info, ModuleName, AnnotatedModules, RttiDatas,
         io.write_string("required_final(void)\n", !IO),
         io.write_string("{\n", !IO),
         output_required_init_or_final_calls(FinalPredNames, !IO),
-        io.write_string("}\n", !IO)
+        io.write_string("}\n", !IO),
+        io.nl(!IO)
     ),
 
     io.write_string(
-        "/* ensure everything is compiled with the same grade */\n",
+        "// Ensure everything is compiled with the same grade.\n",
         !IO),
-    io.write_string(
-        "static const void *const MR_grade = &MR_GRADE_VAR;\n", !IO).
+    io.write_string("const char *", !IO),
+    output_init_name(ModuleName, !IO),
+    io.write_string("grade_check(void)\n", !IO),
+    io.write_string("{\n", !IO),
+    io.write_string("    return &MR_GRADE_VAR;\n", !IO),
+    io.write_string("}\n", !IO).
 
 :- pred module_defines_label_with_layout(llds_out_info::in,
     annotated_c_module::in) is semidet.
@@ -755,7 +774,7 @@ output_debugger_init_list([Data | Datas], !IO) :-
 output_write_proc_static_list([], !IO).
 output_write_proc_static_list([ProcLayout | ProcLayouts], !IO) :-
     ProcLayout = proc_layout_data(RttiProcLabel, _, MaybeMore),
-    ( MaybeMore = proc_id_and_more(yes(_ProcStatic), _, _, _) ->
+    ( if MaybeMore = proc_id_and_more(yes(_ProcStatic), _, _, _) then
         ProcLabel = make_proc_label_from_rtti(RttiProcLabel),
         UserOrUCI = proc_label_user_or_uci(ProcLabel),
         Kind = proc_layout_proc_id(UserOrUCI),
@@ -772,7 +791,7 @@ output_write_proc_static_list([ProcLayout | ProcLayouts], !IO) :-
         ),
         output_layout_name(proc_layout(RttiProcLabel, Kind), !IO),
         io.write_string(");\n", !IO)
-    ;
+    else
         true
     ),
     output_write_proc_static_list(ProcLayouts, !IO).
@@ -866,33 +885,18 @@ output_static_linkage_define(!IO) :-
 
 %----------------------------------------------------------------------------%
 
-:- pred output_user_foreign_code(llds_out_info::in, user_foreign_code::in,
+:- pred output_foreign_body_code(llds_out_info::in, foreign_body_code::in,
     io::di, io::uo) is det.
 
-output_user_foreign_code(Info, UserForeignCode, !IO) :-
-    UserForeignCode = user_foreign_code(Lang, Foreign_Code, Context),
+output_foreign_body_code(Info, ForeignBodyCode, !IO) :-
+    ForeignBodyCode = foreign_body_code(Lang, LiteralOrInclude, Context),
     (
         Lang = lang_c,
-        AutoComments = Info ^ lout_auto_comments,
-        LineNumbers = Info ^ lout_line_numbers,
-        (
-            AutoComments = yes,
-            LineNumbers = yes
-        ->
-            io.write_string("/* ", !IO),
-            prog_out.write_context(Context, !IO),
-            io.write_string(" pragma foreign_code */\n", !IO)
-        ;
-            true
-        ),
-        output_set_line_num(Info, Context, !IO),
-        io.write_string(Foreign_Code, !IO),
-        io.write_string("\n", !IO),
-        output_reset_line_num(Info, !IO)
+        output_foreign_decl_or_code(Info, "foreign_code", Lang,
+            LiteralOrInclude, Context, !IO)
     ;
         ( Lang = lang_java
         ; Lang = lang_csharp
-        ; Lang = lang_il
         ; Lang = lang_erlang
         ),
         unexpected($module, $pred,
@@ -907,45 +911,65 @@ output_foreign_header_include_lines(Info, Decls, !IO) :-
         set.init, _, !IO).
 
 :- pred output_foreign_header_include_line(llds_out_info::in,
-    foreign_decl_code::in, set(string)::in, set(string)::out,
+    foreign_decl_code::in,
+    set(foreign_literal_or_include)::in, set(foreign_literal_or_include)::out,
     io::di, io::uo) is det.
 
 output_foreign_header_include_line(Info, Decl, !AlreadyDone, !IO) :-
-    Decl = foreign_decl_code(Lang, _IsLocal, Code, Context),
+    Decl = foreign_decl_code(Lang, _IsLocal, LiteralOrInclude, Context),
     (
         Lang = lang_c,
-        ( set.member(Code, !.AlreadyDone) ->
+        % This will not deduplicate the content of included files.
+        ( if set.insert_new(LiteralOrInclude, !AlreadyDone) then
+            output_foreign_decl_or_code(Info, "foreign_decl", Lang,
+                LiteralOrInclude, Context, !IO)
+        else
             true
-        ;
-            set.insert(Code, !AlreadyDone),
-            AutoComments = Info ^ lout_auto_comments,
-            LineNumbers = Info ^ lout_line_numbers,
-            (
-                AutoComments = yes,
-                LineNumbers = yes
-            ->
-                io.write_string("/* ", !IO),
-                prog_out.write_context(Context, !IO),
-                io.write_string(" pragma foreign_decl_code(", !IO),
-                io.write(Lang, !IO),
-                io.write_string(") */\n", !IO)
-            ;
-                true
-            ),
-            output_set_line_num(Info, Context, !IO),
-            io.write_string(Code, !IO),
-            io.write_string("\n", !IO),
-            output_reset_line_num(Info, !IO)
         )
     ;
         ( Lang = lang_java
         ; Lang = lang_csharp
-        ; Lang = lang_il
         ; Lang = lang_erlang
         ),
         unexpected($module, $pred,
             "unexpected: foreign decl code other than C")
     ).
+
+:- pred output_foreign_decl_or_code(llds_out_info::in, string::in,
+    foreign_language::in, foreign_literal_or_include::in, prog_context::in,
+    io::di, io::uo) is det.
+
+output_foreign_decl_or_code(Info, PragmaType, Lang, LiteralOrInclude, Context,
+        !IO) :-
+    AutoComments = Info ^ lout_auto_comments,
+    ForeignLineNumbers = Info ^ lout_foreign_line_numbers,
+    ( if
+        AutoComments = yes,
+        ForeignLineNumbers = yes
+    then
+        io.write_string("/* ", !IO),
+        prog_out.write_context(Context, !IO),
+        io.write_string(" pragma ", !IO),
+        io.write_string(PragmaType, !IO),
+        io.write_string("(", !IO),
+        io.write(Lang, !IO),
+        io.write_string(") */\n", !IO)
+    else
+        true
+    ),
+    (
+        LiteralOrInclude = floi_literal(Code),
+        output_set_line_num(ForeignLineNumbers, Context, !IO),
+        io.write_string(Code, !IO)
+    ;
+        LiteralOrInclude = floi_include_file(IncludeFileName),
+        SourceFileName = Info ^ lout_source_file_name,
+        make_include_file_path(SourceFileName, IncludeFileName, IncludePath),
+        output_set_line_num(ForeignLineNumbers, context(IncludePath, 1), !IO),
+        write_include_file_contents_cur_stream(IncludePath, !IO)
+    ),
+    io.nl(!IO),
+    output_reset_line_num(ForeignLineNumbers, !IO).
 
 :- pred output_record_c_label_decls(llds_out_info::in,
     list(label)::in, list(label)::in,
@@ -1033,12 +1057,6 @@ output_record_entry_label_decl(_Info, Label, !DeclSet, !IO) :-
     io.write_string(")\n", !IO),
     decl_set_insert(decl_code_addr(code_label(Label)), !DeclSet).
 
-:- pred output_record_stack_layout_decl(llds_out_info::in, data_id::in,
-    decl_set::in, decl_set::out, io::di, io::uo) is det.
-
-output_record_stack_layout_decl(Info, DataId, !DeclSet, !IO) :-
-    output_record_data_id_decls(Info, DataId, !DeclSet, !IO).
-
 %----------------------------------------------------------------------------%
 
 :- pred output_c_label_inits(llds_out_info::in,
@@ -1087,9 +1105,9 @@ group_init_c_labels(InternalLabelToLayoutMap, [Label | Labels],
         !NoLayoutMap, !NoVarLayoutMap, !SVarLayoutMap, !LVarLayoutMap) :-
     (
         Label = internal_label(LabelNum, ProcLabel),
-        ( map.search(InternalLabelToLayoutMap, Label, Slot) ->
+        ( if map.search(InternalLabelToLayoutMap, Label, Slot) then
             Slot = layout_slot(ArrayName, SlotNum),
-            ( ArrayName = label_layout_array(Vars) ->
+            ( if ArrayName = label_layout_array(Vars) then
                 Pair = {LabelNum, SlotNum},
                 (
                     Vars = label_has_no_var_info,
@@ -1101,10 +1119,10 @@ group_init_c_labels(InternalLabelToLayoutMap, [Label | Labels],
                     Vars = label_has_long_var_info,
                     multi_map.set(ProcLabel, Pair, !LVarLayoutMap)
                 )
-            ;
+            else
                 unexpected($module, $pred, "bad slot type")
             )
-        ;
+        else
             multi_map.set(ProcLabel, LabelNum, !NoLayoutMap)
         )
     ;
@@ -1181,9 +1199,9 @@ write_int_pair({LabelNum, SlotNum}, !IO) :-
     io::di, io::uo) is det.
 
 output_c_entry_label_init(EntryLabelToLayoutMap, Label, !IO) :-
-    ( map.search(EntryLabelToLayoutMap, Label, _LayoutId) ->
+    ( if map.search(EntryLabelToLayoutMap, Label, _LayoutId) then
         SuffixOpen = "_sl("
-    ;
+    else
         SuffixOpen = "("
         % This label has no stack layout to initialize.
     ),
@@ -1229,9 +1247,9 @@ output_record_c_procedure_decls(Info, AnnotatedProc, !DeclSet, !IO) :-
 
 output_c_global_var_decl(VarName, !DeclSet, !IO) :-
     GlobalVar = env_var_ref(VarName),
-    ( decl_set_is_member(decl_c_global_var(GlobalVar), !.DeclSet) ->
+    ( if decl_set_is_member(decl_c_global_var(GlobalVar), !.DeclSet) then
         true
-    ;
+    else
         decl_set_insert(decl_c_global_var(GlobalVar), !DeclSet),
         io.write_string("extern MR_Word ", !IO),
         io.write_string(c_global_var_name(GlobalVar), !IO),
@@ -1296,7 +1314,7 @@ output_annotated_c_procedure(Info, AnnotatedProc, !IO) :-
 find_caller_label([], _) :-
     unexpected($module, $pred, "cannot find caller label").
 find_caller_label([llds_instr(Uinstr, _) | Instrs], CallerLabel) :-
-    ( Uinstr = label(Label) ->
+    ( if Uinstr = label(Label) then
         (
             Label = internal_label(_, _),
             unexpected($module, $pred, "caller label is internal label")
@@ -1304,7 +1322,7 @@ find_caller_label([llds_instr(Uinstr, _) | Instrs], CallerLabel) :-
             Label = entry_label(_, _),
             CallerLabel = Label
         )
-    ;
+    else
         find_caller_label(Instrs, CallerLabel)
     ).
 
@@ -1317,7 +1335,7 @@ find_caller_label([llds_instr(Uinstr, _) | Instrs], CallerLabel) :-
 find_cont_labels([], !ContLabels).
 find_cont_labels([Instr | Instrs], !ContLabels) :-
     Instr = llds_instr(Uinstr, _),
-    (
+    ( if
         (
             Uinstr = llcall(_, code_label(ContLabel), _, _, _, _)
         ;
@@ -1328,17 +1346,17 @@ find_cont_labels([Instr | Instrs], !ContLabels) :-
             Uinstr = assign(redoip_slot(_), const(Const)),
             Const = llconst_code_addr(code_label(ContLabel))
         )
-    ->
+    then
         set_tree234.insert(ContLabel, !ContLabels)
-    ;
+    else if
         Uinstr = fork_new_child(_, Label1)
-    ->
+    then
         set_tree234.insert(Label1, !ContLabels)
-    ;
+    else if
         Uinstr = block(_, _, Block)
-    ->
+    then
         find_cont_labels(Block, !ContLabels)
-    ;
+    else
         true
     ),
     find_cont_labels(Instrs, !ContLabels).
@@ -1366,14 +1384,14 @@ find_cont_labels([Instr | Instrs], !ContLabels) :-
 
 find_while_labels([], !WhileSet).
 find_while_labels([llds_instr(Uinstr0, _) | Instrs0], !WhileSet) :-
-    (
+    ( if
         Uinstr0 = label(Label),
         is_while_label(Label, Instrs0, Instrs1, 0, UseCount),
         UseCount > 0
-    ->
+    then
         set_tree234.insert(Label, !WhileSet),
         find_while_labels(Instrs1, !WhileSet)
-    ;
+    else
         find_while_labels(Instrs0, !WhileSet)
     ).
 
@@ -1383,16 +1401,16 @@ find_while_labels([llds_instr(Uinstr0, _) | Instrs0], !WhileSet) :-
 is_while_label(_, [], [], !Count).
 is_while_label(Label, [Instr0 | Instrs0], Instrs, !Count) :-
     Instr0 = llds_instr(Uinstr0, _),
-    ( Uinstr0 = label(_) ->
+    ( if Uinstr0 = label(_) then
         Instrs = [Instr0 | Instrs0]
-    ;
-        ( Uinstr0 = goto(code_label(Label)) ->
+    else
+        ( if Uinstr0 = goto(code_label(Label)) then
             !:Count = !.Count + 1
-        ; Uinstr0 = if_val(_, code_label(Label)) ->
+        else if Uinstr0 = if_val(_, code_label(Label)) then
             !:Count = !.Count + 1
-        ; Uinstr0 = block(_, _, BlockInstrs) ->
+        else if Uinstr0 = block(_, _, BlockInstrs) then
             count_while_label_in_block(Label, BlockInstrs, !Count)
-        ;
+        else
             true
         ),
         is_while_label(Label, Instrs0, Instrs, !Count)
@@ -1404,16 +1422,16 @@ is_while_label(Label, [Instr0 | Instrs0], Instrs, !Count) :-
 count_while_label_in_block(_, [], !Count).
 count_while_label_in_block(Label, [Instr0 | Instrs0], !Count) :-
     Instr0 = llds_instr(Uinstr0, _),
-    ( Uinstr0 = label(_) ->
+    ( if Uinstr0 = label(_) then
         unexpected($module, $pred, "label in block")
-    ;
-        ( Uinstr0 = goto(code_label(Label)) ->
+    else
+        ( if Uinstr0 = goto(code_label(Label)) then
             !:Count = !.Count + 1
-        ; Uinstr0 = if_val(_, code_label(Label)) ->
+        else if Uinstr0 = if_val(_, code_label(Label)) then
             !:Count = !.Count + 1
-        ; Uinstr0 = block(_, _, _) ->
+        else if Uinstr0 = block(_, _, _) then
             unexpected($module, $pred, "block in block")
-        ;
+        else
             true
         ),
         count_while_label_in_block(Label, Instrs0, !Count)
@@ -1442,31 +1460,31 @@ find_while_labels_to_define([Instr0 | Instrs0], MaybeCurWhileLabel0,
     Instr0 = llds_instr(Uinstr0, _) ,
     (
         Uinstr0 = label(Label),
-        ( set_tree234.contains(WhileLabels, Label) ->
+        ( if set_tree234.contains(WhileLabels, Label) then
             MaybeCurWhileLabel = yes(Label)
-        ;
+        else
             MaybeCurWhileLabel = no
         )
     ;
         Uinstr0 = if_val(Rval, Target),
         rval_addrs(Rval, RvalCodeAddrs, _),
         delete_any_labels(RvalCodeAddrs, !UndefWhileLabels),
-        ( Target = code_label(TargetLabel) ->
-            ( MaybeCurWhileLabel0 = yes(TargetLabel) ->
+        ( if Target = code_label(TargetLabel) then
+            ( if MaybeCurWhileLabel0 = yes(TargetLabel) then
                 % This reference will be turned into a continue statement.
                 true
-            ;
+            else
                 set_tree234.delete(TargetLabel, !UndefWhileLabels)
             )
-        ;
+        else
             true
         ),
         MaybeCurWhileLabel = no
     ;
         Uinstr0 = goto(Target),
-        ( Target = code_label(TargetLabel) ->
+        ( if Target = code_label(TargetLabel) then
             set_tree234.delete(TargetLabel, !UndefWhileLabels)
-        ;
+        else
             true
         ),
         MaybeCurWhileLabel = no
@@ -1613,9 +1631,9 @@ find_while_labels_to_define([Instr0 | Instrs0], MaybeCurWhileLabel0,
     set_tree234(label)::in, set_tree234(label)::out) is det.
 
 delete_any_label(CodeAddr, !UndefWhileLabels) :-
-    ( CodeAddr = code_label(Label) ->
+    ( if CodeAddr = code_label(Label) then
         set_tree234.delete(Label, !UndefWhileLabels)
-    ;
+    else
         true
     ).
 
@@ -1670,39 +1688,14 @@ c_data_linkage_string(DefaultLinkage, BeingDefined) = LinkageStr :-
     ).
 
 c_data_const_string(Globals, InclCodeAddr) =
-    (
+    ( if
         InclCodeAddr = yes,
         globals.lookup_bool_option(Globals, static_code_addresses, no)
-    ->
+    then
         ""
-    ;
+    else
         "const "
     ).
-
-%----------------------------------------------------------------------------%
-
-:- pred output_label_defn(label::in, io::di, io::uo) is det.
-
-output_label_defn(entry_label(entry_label_exported, ProcLabel), !IO) :-
-    io.write_string("MR_define_entry(", !IO),
-    output_label(entry_label(entry_label_exported, ProcLabel), !IO),
-    io.write_string(");\n", !IO).
-output_label_defn(entry_label(entry_label_local, ProcLabel), !IO) :-
-    io.write_string("MR_def_static(", !IO),
-    output_proc_label_no_prefix(ProcLabel, !IO),
-    io.write_string(")\n", !IO).
-output_label_defn(entry_label(entry_label_c_local, ProcLabel), !IO) :-
-    io.write_string("MR_def_local(", !IO),
-    output_proc_label_no_prefix(ProcLabel, !IO),
-    io.write_string(")\n", !IO).
-output_label_defn(internal_label(Num, ProcLabel), !IO) :-
-    io.write_string("MR_def_label(", !IO),
-    output_proc_label_no_prefix(ProcLabel, !IO),
-    io.write_string(",", !IO),
-    io.write_int(Num, !IO),
-    io.write_string(")\n", !IO).
-
-%----------------------------------------------------------------------------%
 
 %---------------------------------------------------------------------------%
 :- end_module ll_backend.llds_out.llds_out_file.

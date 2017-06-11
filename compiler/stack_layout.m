@@ -30,6 +30,7 @@
 :- module ll_backend.stack_layout.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
@@ -38,8 +39,11 @@
 :- import_module ll_backend.layout.
 :- import_module ll_backend.llds.
 :- import_module ll_backend.prog_rep.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
 :- import_module mdbcomp.program_representation.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module assoc_list.
@@ -62,7 +66,7 @@
     list(call_site_static_data)::out, list(coverage_point_info)::out,
     list(proc_layout_proc_static)::out,
     list(int)::out, list(int)::out, list(int)::out,
-    list(table_io_decl_data)::out, map(pred_proc_id, layout_slot_name)::out,
+    list(table_io_entry_data)::out, map(pred_proc_id, layout_slot_name)::out,
     list(layout_slot_name)::out, list(proc_layout_exec_trace)::out,
     list(proc_layout_data)::out, list(module_layout_data)::out) is det.
 
@@ -95,38 +99,38 @@
 
 :- implementation.
 
-:- import_module backend_libs.bytecode_data.
+:- import_module backend_libs.
 :- import_module backend_libs.proc_label.
 :- import_module backend_libs.rtti.
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
 :- import_module hlds.code_model.
 :- import_module hlds.goal_util.
 :- import_module hlds.hlds_llds.
-:- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_rtti.
+:- import_module hlds.vartypes.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
 :- import_module libs.trace_params.
-:- import_module ll_backend.layout.
 :- import_module ll_backend.layout_out.
 :- import_module ll_backend.ll_pseudo_type_info.
 :- import_module ll_backend.prog_rep_tables.
 :- import_module ll_backend.trace_gen.
 :- import_module mdbcomp.goal_path.
 :- import_module mdbcomp.rtti_access.
+:- import_module parse_tree.prog_data_event.
+:- import_module parse_tree.prog_data_pragma.
 :- import_module parse_tree.prog_event.
 :- import_module parse_tree.set_of_var.
 
 :- import_module bool.
-:- import_module char.
 :- import_module cord.
 :- import_module counter.
 :- import_module int.
-:- import_module map.
 :- import_module pair.
 :- import_module require.
 :- import_module set.
-:- import_module string.
 :- import_module term.
 :- import_module varset.
 
@@ -139,7 +143,7 @@ generate_llds_layout_data(ModuleInfo, !GlobalData,
         InternalLabelToLayoutMap, ProcLabelToLayoutMap,
         CallSiteStatics, CoveragePoints, ProcStatics,
         ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes,
-        TableIoDecls, TableIoDeclMap, ProcEventLayouts, ExecTraces,
+        TableIoEntries, TableIoEntryMap, ProcEventLayouts, ExecTraces,
         ProcLayouts, ModuleLayouts) :-
 
     Params = init_stack_layout_params(ModuleInfo),
@@ -179,17 +183,18 @@ generate_llds_layout_data(ModuleInfo, !GlobalData,
         ProcLayoutInfo ^ pli_exec_traces ^ eti_rev_proc_var_names,
     RevProcEventLayouts =
         ProcLayoutInfo ^ pli_exec_traces ^ eti_rev_proc_event_layouts,
-    RevTableIoDecls =
-        ProcLayoutInfo ^ pli_exec_traces ^ eti_rev_table_io_decl_datas,
+    RevTableIoEntries =
+        ProcLayoutInfo ^ pli_exec_traces ^ eti_rev_table_io_entry_datas,
     RevExecTraces =
         ProcLayoutInfo ^ pli_exec_traces ^ eti_rev_exec_traces,
     list.reverse(RevProcHeadVarNums, ProcHeadVarNums),
     list.reverse(RevProcVarNames, ProcVarNames),
     list.reverse(RevProcEventLayouts, ProcEventLayouts),
-    list.reverse(RevTableIoDecls, TableIoDecls),
+    list.reverse(RevTableIoEntries, TableIoEntries),
     list.reverse(RevExecTraces, ExecTraces),
 
-    TableIoDeclMap = ProcLayoutInfo ^ pli_exec_traces ^ eti_table_io_decl_map,
+    TableIoEntryMap =
+        ProcLayoutInfo ^ pli_exec_traces ^ eti_table_io_entry_map,
 
     RevProcBodyBytecodes = ProcLayoutInfo ^ pli_rev_proc_bytes,
     RevProcLayouts = ProcLayoutInfo ^ pli_rev_proc_layouts,
@@ -303,12 +308,12 @@ generate_llds_layout_data(ModuleInfo, !GlobalData,
         StaticCellInfo = StaticCellInfo1,
         MaybeDebugInfo = no
     ),
-    (
+    ( if
         MaybeDeepProfInfo = no,
         MaybeDebugInfo = no
-    ->
+    then
         ModuleLayouts = []
-    ;
+    else
         module_info_get_name(ModuleInfo, ModuleName),
         get_string_table_contents(StringTable, StringList, StringTableSize),
         StringTableContents = string_with_0s(StringList),
@@ -326,7 +331,7 @@ valid_proc_layout(ProcLayoutInfo) :-
     ProcLabel = get_proc_label(EntryLabel),
     (
         ProcLabel = ordinary_proc_label(_, _, DeclModule, Name, Arity, _),
-        \+ no_type_info_builtin(DeclModule, Name, Arity)
+        not no_type_info_builtin(DeclModule, Name, Arity)
     ;
         ProcLabel = special_proc_label(_, _, _, _, _, _)
     ).
@@ -436,36 +441,36 @@ construct_proc_and_label_layouts_for_proc(Params, PLI, !LabelTables,
         _MaybeCallLabel, _MaxTraceRegR, _MaxTraceRegF, HeadVars, _ArgModes,
         Goal, _NeedGoalRep, _InstMap,
         _TraceSlotInfo, ForceProcIdLayout, VarSet, _VarTypes,
-        InternalMap, MaybeTableIoDecl, _NeedsAllNames, _OISUKindFors,
+        InternalMap, MaybeTableIoEntry, _NeedsAllNames, _OISUKindFors,
         _MaybeDeepProfInfo),
     map.to_assoc_list(InternalMap, Internals),
     compute_var_number_map(HeadVars, VarSet, Internals, Goal, VarNumMap),
 
     ProcLabel = get_proc_label(EntryLabel),
     bool.or(Params ^ slp_procid_stack_layout, ForceProcIdLayout, ProcIdLayout),
-    (
+    ( if
         ( ProcIdLayout = yes
-        ; MaybeTableIoDecl = yes(_)
+        ; MaybeTableIoEntry = yes(_)
         )
-    ->
+    then
         UserOrUci = proc_label_user_or_uci(ProcLabel),
         Kind = proc_layout_proc_id(UserOrUci)
-    ;
+    else
         Kind = proc_layout_traversal
     ),
     ProcLayoutName = proc_layout(RttiProcLabel, Kind),
-    (
+    ( if
         ( Params ^ slp_agc_stack_layout = yes
         ; Params ^ slp_trace_stack_layout = yes
         ),
         valid_proc_layout(PLI)
-    ->
+    then
         list.map_foldl3(
             construct_internal_layout(Params, ProcLabel, ProcLayoutName,
                 VarNumMap),
             Internals, InternalLabelInfos,
             !StringTable, !StaticCellInfo, !LabelLayoutInfo)
-    ;
+    else
         InternalLabelInfos = []
     ),
     list.foldl(update_label_table, InternalLabelInfos, !LabelTables),
@@ -494,23 +499,23 @@ update_label_table(InternalLabelInfo, !LabelTables) :-
     InternalLabelInfo = internal_label_info(_ProcLabel, _LabelNum, LabelVars,
         Slot, InternalInfo),
     InternalInfo = internal_layout_info(Port, _, Return),
-    (
+    ( if
         Return = yes(return_layout_info(TargetsContexts, _)),
         find_valid_return_context(TargetsContexts, Target, Context, _GoalPath)
-    ->
-        ( Target = code_label(TargetLabel) ->
+    then
+        ( if Target = code_label(TargetLabel) then
             IsReturn = known_callee(TargetLabel)
-        ;
+        else
             IsReturn = unknown_callee
         ),
         update_label_table_2(LabelVars, Slot, Context, IsReturn, !LabelTables)
-    ;
+    else if
         Port = yes(trace_port_layout_info(Context, _, _, _, _, _)),
         context_is_valid(Context)
-    ->
+    then
         update_label_table_2(LabelVars, Slot, Context, not_a_return,
             !LabelTables)
-    ;
+    else
         true
     ).
 
@@ -522,24 +527,24 @@ update_label_table(InternalLabelInfo, !LabelTables) :-
 update_label_table_2(LabelVars, Slot, Context, IsReturn, !LabelTables) :-
     term.context_file(Context, File),
     term.context_line(Context, Line),
-    ( map.search(!.LabelTables, File, LabelTable0) ->
+    ( if map.search(!.LabelTables, File, LabelTable0) then
         LabelLayout = layout_slot(label_layout_array(LabelVars), Slot),
-        ( map.search(LabelTable0, Line, LineInfo0) ->
+        ( if map.search(LabelTable0, Line, LineInfo0) then
             LineInfo = [LabelLayout - IsReturn | LineInfo0],
             map.det_update(Line, LineInfo, LabelTable0, LabelTable),
             map.det_update(File, LabelTable, !LabelTables)
-        ;
+        else
             LineInfo = [LabelLayout - IsReturn],
             map.det_insert(Line, LineInfo, LabelTable0, LabelTable),
             map.det_update(File, LabelTable, !LabelTables)
         )
-    ;
-        ( context_is_valid(Context) ->
+    else
+        ( if context_is_valid(Context) then
             LabelLayout = layout_slot(label_layout_array(LabelVars), Slot),
             LineInfo = [LabelLayout - IsReturn],
             LabelTable = map.singleton(Line, LineInfo),
             map.det_insert(File, LabelTable, !LabelTables)
-        ;
+        else
             % We don't have a valid context for this label,
             % so we don't enter it into any tables.
             true
@@ -553,11 +558,11 @@ update_label_table_2(LabelVars, Slot, Context, IsReturn, !LabelTables) :-
 find_valid_return_context([TargetContext | TargetContexts],
         ValidTarget, ValidContext, ValidGoalPath) :-
     TargetContext = Target - (Context - GoalPath),
-    ( context_is_valid(Context) ->
+    ( if context_is_valid(Context) then
         ValidTarget = Target,
         ValidContext = Context,
         ValidGoalPath = GoalPath
-    ;
+    else
         find_valid_return_context(TargetContexts, ValidTarget, ValidContext,
             ValidGoalPath)
     ).
@@ -617,11 +622,11 @@ construct_proc_layout(Params, PLI, ProcLayoutName, Kind, InternalLabelInfos,
     ;
         Kind = proc_layout_proc_id(_),
         TraceStackLayout = Params ^ slp_trace_stack_layout,
-        (
+        ( if
             TraceStackLayout = yes,
             not map.is_empty(InternalMap),
             valid_proc_layout(PLI)
-        ->
+        then
             ExecTraceInfo0 = !.ProcLayoutInfo ^ pli_exec_traces,
             construct_exec_trace_layout(Params, RttiProcLabel,
                 EvalMethod, EffTraceLevel, MaybeCallLabel, MaybeTableSlotName,
@@ -632,17 +637,17 @@ construct_proc_layout(Params, PLI, ProcLayoutName, Kind, InternalLabelInfos,
                 ExecTraceInfo0, ExecTraceInfo),
             !ProcLayoutInfo ^ pli_exec_traces := ExecTraceInfo,
             MaybeExecTraceSlotName = yes(ExecTraceSlotName)
-        ;
+        else
             MaybeExecTraceSlotName = no
         ),
         ModuleInfo = Params ^ slp_module_info,
         module_info_get_name(ModuleInfo, ModuleName),
         DeepProfiling = Params ^ slp_deep_profiling,
-        (
+        ( if
             ( NeedGoalRep = trace_needs_body_rep
             ; DeepProfiling = yes
             )
-        ->
+        then
             (
                 DeepProfiling = yes,
                 IncludeVarNameTable = include_var_name_table,
@@ -709,7 +714,7 @@ construct_proc_layout(Params, PLI, ProcLayoutName, Kind, InternalLabelInfos,
             ProcBytesSlotName = layout_slot(proc_body_bytecodes_array,
                 ProcByteSlot),
             MaybeProcBytesSlotName = yes(ProcBytesSlotName)
-        ;
+        else
             (
                 MaybeDeepProfInfo = yes(DeepProfInfo),
                 ProcStaticInfo0 = !.ProcLayoutInfo ^ pli_proc_statics,
@@ -751,9 +756,9 @@ construct_proc_traversal(Params, EntryLabel, Detism, NumStackSlots,
         MaybeSuccipLoc, Traversal) :-
     (
         MaybeSuccipLoc = yes(Location),
-        ( determinism_components(Detism, _, at_most_many) ->
+        ( if determinism_components(Detism, _, at_most_many) then
             SuccipLval = framevar(Location)
-        ;
+        else
             SuccipLval = stackvar(Location)
         ),
         represent_locn_as_int(locn_direct(SuccipLval), SuccipInt),
@@ -949,7 +954,7 @@ construct_exec_trace_layout(Params, RttiProcLabel, EvalMethod,
     ;
         MaybeTableInfo = yes(TableInfo),
         (
-            TableInfo = proc_table_io_decl(_),
+            TableInfo = proc_table_io_entry(_),
             (
                 MaybeTableSlotName = yes(TableSlotName),
                 MaybeTable = yes(data_or_slot_is_slot(TableSlotName))
@@ -988,7 +993,7 @@ construct_exec_trace_layout(Params, RttiProcLabel, EvalMethod,
         NextHeadVarNum0 = !.ExecTraceInfo ^ eti_next_proc_head_var_num,
         list.reverse(HeadVarNumVector, RevHeadVarNumVector),
         list.length(HeadVarNumVector, NumHeadVars),
-        (
+        ( if
             some [CompressionLimit] (
                 CompressArrays = yes(CompressionLimit),
                 !.ExecTraceInfo ^ eti_next_proc_head_var_num =<
@@ -996,10 +1001,10 @@ construct_exec_trace_layout(Params, RttiProcLabel, EvalMethod,
             ),
             find_sequence(RevHeadVarNumVector, RevHeadVarNums0,
                 0, OldHeadVarNumOffset)
-        ->
+        then
             HeadVarNumSlot =
                 NextHeadVarNum0 - OldHeadVarNumOffset - NumHeadVars
-        ;
+        else
             RevHeadVarNums = RevHeadVarNumVector ++ RevHeadVarNums0,
             !ExecTraceInfo ^ eti_rev_proc_head_var_nums := RevHeadVarNums,
 
@@ -1022,15 +1027,15 @@ construct_exec_trace_layout(Params, RttiProcLabel, EvalMethod,
         NextVarName0 = !.ExecTraceInfo ^ eti_next_proc_var_name,
         list.reverse(VarNameVector, RevVarNameVector),
         list.length(VarNameVector, NumVarNames),
-        (
+        ( if
             some [CompressionLimit] (
                 CompressArrays = yes(CompressionLimit),
                 !.ExecTraceInfo ^ eti_next_proc_var_name =< CompressionLimit
             ),
             find_sequence(RevVarNameVector, RevVarNames0, 0, OldVarNameOffset)
-        ->
+        then
             VarNameSlot = NextVarName0 - OldVarNameOffset - NumVarNames
-        ;
+        else
             RevVarNames = RevVarNameVector ++ RevVarNames0,
             !ExecTraceInfo ^ eti_rev_proc_var_names := RevVarNames,
 
@@ -1072,29 +1077,36 @@ construct_exec_trace_layout(Params, RttiProcLabel, EvalMethod,
 construct_exec_trace_table_data(PredProcId, ProcLayoutName, TableInfo,
         MaybeTableSlotName, !StaticCellInfo, !ExecTraceInfo) :-
     (
-        TableInfo = proc_table_io_decl(TableIOInfo),
-        TableIOInfo = proc_table_io_info(TableArgInfos),
-        convert_table_arg_info(TableArgInfos, NumPTIs, PTIVectorRval,
-            TVarVectorRval, !StaticCellInfo),
+        TableInfo = proc_table_io_entry(TableIOInfo),
+        TableIOInfo = proc_table_io_info(MaybeTableArgInfos),
+        (
+            MaybeTableArgInfos = no,
+            TableIoEntryData = table_io_entry_data(ProcLayoutName, no)
+        ;
+            MaybeTableArgInfos = yes(TableArgInfos),
+            convert_table_arg_info(TableArgInfos, NumPTIs, PTIVectorRval,
+                TVarVectorRval, !StaticCellInfo),
+            TableIoArgsData = table_io_args_data(NumPTIs, PTIVectorRval,
+                TVarVectorRval),
+            TableIoEntryData = table_io_entry_data(ProcLayoutName,
+                yes(TableIoArgsData))
+        ),
 
-        TableIoDeclData = table_io_decl_data(ProcLayoutName,
-            NumPTIs, PTIVectorRval, TVarVectorRval),
+        RevTableIoEntryDatas0 = !.ExecTraceInfo ^ eti_rev_table_io_entry_datas,
+        RevTableIoEntryDatas = [TableIoEntryData | RevTableIoEntryDatas0],
+        !ExecTraceInfo ^ eti_rev_table_io_entry_datas := RevTableIoEntryDatas,
 
-        RevTableIoDeclDatas0 = !.ExecTraceInfo ^ eti_rev_table_io_decl_datas,
-        RevTableIoDeclDatas = [TableIoDeclData | RevTableIoDeclDatas0],
-        !ExecTraceInfo ^ eti_rev_table_io_decl_datas := RevTableIoDeclDatas,
-
-        TableDataCounter0 = !.ExecTraceInfo ^ eti_next_table_io_decl_data,
+        TableDataCounter0 = !.ExecTraceInfo ^ eti_next_table_io_entry_data,
         counter.allocate(Slot, TableDataCounter0, TableDataCounter),
-        !ExecTraceInfo ^ eti_next_table_io_decl_data := TableDataCounter,
+        !ExecTraceInfo ^ eti_next_table_io_entry_data := TableDataCounter,
 
-        TableDataSlotName = layout_slot(proc_table_io_decl_array, Slot),
+        TableDataSlotName = layout_slot(proc_table_io_entry_array, Slot),
         MaybeTableSlotName = yes(TableDataSlotName),
 
-        TableIoDeclMap0 = !.ExecTraceInfo ^ eti_table_io_decl_map,
+        TableIoEntryMap0 = !.ExecTraceInfo ^ eti_table_io_entry_map,
         map.det_insert(PredProcId, TableDataSlotName,
-            TableIoDeclMap0, TableIoDeclMap),
-        !ExecTraceInfo ^ eti_table_io_decl_map := TableIoDeclMap
+            TableIoEntryMap0, TableIoEntryMap),
+        !ExecTraceInfo ^ eti_table_io_entry_map := TableIoEntryMap
     ;
         TableInfo = proc_table_struct(_TableStructInfo),
         % This structure is generated by add_tabling_info_struct in proc_gen.m.
@@ -1190,20 +1202,20 @@ encode_exec_trace_flags(ModuleInfo, HeadVars, ArgModes, VarTypes, !:Flags) :-
     % The values of the flags are defined in runtime/mercury_stack_layout.h;
     % look for the reference to this function.
     !:Flags = 0,
-    (
+    ( if
         proc_info_has_io_state_pair_from_details(ModuleInfo, HeadVars,
             ArgModes, VarTypes, _, _)
-    ->
+    then
         !:Flags = !.Flags + 1
-    ;
+    else
         true
     ),
-    (
+    ( if
         proc_info_has_higher_order_arg_from_details(ModuleInfo, VarTypes,
             HeadVars)
-    ->
+    then
         !:Flags = !.Flags + 2
-    ;
+    else
         true
     ).
 
@@ -1224,11 +1236,13 @@ construct_var_name_vector(VarNumMap, NeedsAllNames, MaxVarNum, Offsets,
         list.filter(var_has_name, VarNames0, VarNames)
     ),
     list.sort(VarNames, SortedVarNames),
-    ( SortedVarNames = [FirstVarNum - _ | _] ->
+    (
+        SortedVarNames = [FirstVarNum - _ | _],
         MaxVarNum0 = FirstVarNum,
         construct_var_name_rvals(SortedVarNames, 1, MaxVarNum0, MaxVarNum,
             Offsets, !StringTable)
     ;
+        SortedVarNames = [],
         % Since variable numbers start at 1, MaxVarNum = 0 implies
         % an empty array.
         MaxVarNum = 0,
@@ -1247,11 +1261,11 @@ var_has_name(_VarNum - VarName) :-
 construct_var_name_rvals([], _CurNum, MaxNum, MaxNum, [], !StringTable).
 construct_var_name_rvals(VarNamesHeadTail @ [Var - Name | VarNamesTail],
         CurNum, !MaxNum, [Offset | OffsetsTail], !StringTable) :-
-    ( Var = CurNum ->
+    ( if Var = CurNum then
         lookup_string_in_table(Name, Offset, !StringTable),
         !:MaxNum = Var,
         VarNames = VarNamesTail
-    ;
+    else
         Offset = 0,
         VarNames = VarNamesHeadTail
     ),
@@ -1340,9 +1354,9 @@ user_attribute_var_num_map(VarSet, MaybeAttribute, !VarNumMap, !Counter) :-
     var_num_map::in, var_num_map::out, counter::in, counter::out) is det.
 
 add_var_to_var_number_map(VarSet, Var, !VarNumMap, !Counter) :-
-    ( varset.search_name(VarSet, Var, VarName) ->
+    ( if varset.search_name(VarSet, Var, VarName) then
         Name = VarName
-    ;
+    else
         Name = ""
     ),
     add_named_var_to_var_number_map(Var - Name, !VarNumMap, !Counter).
@@ -1351,10 +1365,10 @@ add_var_to_var_number_map(VarSet, Var, !VarNumMap, !Counter) :-
     var_num_map::in, var_num_map::out, counter::in, counter::out) is det.
 
 add_named_var_to_var_number_map(Var - Name, !VarNumMap, !Counter) :-
-    ( map.search(!.VarNumMap, Var, _) ->
+    ( if map.search(!.VarNumMap, Var, _) then
         % Name shouldn't differ from the name recorded in !.VarNumMap.
         true
-    ;
+    else
         counter.allocate(VarNum, !Counter),
         map.det_insert(Var, VarNum - Name, !VarNumMap)
     ).
@@ -1364,20 +1378,20 @@ add_named_var_to_var_number_map(Var - Name, !VarNumMap, !Counter) :-
 :- type exec_traces_info
     --->    exec_traces_info(
                 % The arrays that hold (components of) exec trace structures.
-                eti_next_proc_head_var_num  :: int,
-                eti_next_proc_var_name      :: int,
-                eti_next_proc_event_layout  :: int,
-                eti_next_table_io_decl_data :: counter,
-                eti_next_exec_trace         :: counter,
+                eti_next_proc_head_var_num      :: int,
+                eti_next_proc_var_name          :: int,
+                eti_next_proc_event_layout      :: int,
+                eti_next_table_io_entry_data    :: counter,
+                eti_next_exec_trace             :: counter,
 
-                eti_rev_proc_head_var_nums  :: list(int),
-                eti_rev_proc_var_names      :: list(int),
-                eti_rev_proc_event_layouts  :: list(layout_slot_name),
-                eti_rev_table_io_decl_datas :: list(table_io_decl_data),
-                eti_rev_exec_traces         :: list(proc_layout_exec_trace),
+                eti_rev_proc_head_var_nums      :: list(int),
+                eti_rev_proc_var_names          :: list(int),
+                eti_rev_proc_event_layouts      :: list(layout_slot_name),
+                eti_rev_table_io_entry_datas    :: list(table_io_entry_data),
+                eti_rev_exec_traces             :: list(proc_layout_exec_trace),
 
-                eti_table_io_decl_map       :: map(pred_proc_id,
-                                                layout_slot_name)
+                eti_table_io_entry_map          :: map(pred_proc_id,
+                                                    layout_slot_name)
             ).
 
 :- func init_exec_traces_info = exec_traces_info.
@@ -1442,11 +1456,11 @@ construct_internal_layout(Params, ProcLabel, ProcLayoutName, VarNumMap,
         % We only ever use the goal path fields of these layout structures
         % when we process "fail" commands in the debugger.
         ReturnInfo = return_layout_info(TargetsContexts, _),
-        ( find_valid_return_context(TargetsContexts, _, _, GoalPath) ->
+        ( if find_valid_return_context(TargetsContexts, _, _, GoalPath) then
             GoalPathStr = goal_path_to_string(GoalPath),
             lookup_string_in_table(GoalPathStr, GoalPathNum, !StringTable),
             MaybeGoalPath = yes(GoalPathNum)
-        ;
+        else
             % If tracing is enabled, then exactly one of the calls for which
             % this label is a return site would have had a valid context.
             % If none do, then tracing is not enabled, and therefore the goal
@@ -1492,13 +1506,13 @@ construct_internal_layout(Params, ProcLabel, ProcLayoutName, VarNumMap,
                 ReturnLiveVarSet0, ReturnLiveVarSet)
         )
     ),
-    (
+    ( if
         Trace = no,
         Resume = no,
         Return = no
-    ->
+    then
         MaybeVarInfo = no_var_info
-    ;
+    else
         % XXX Ignore differences in insts inside layout_var_infos.
         set.union(TraceLiveVarSet, ResumeLiveVarSet, LiveVarSet0),
         set.union(LiveVarSet0, ReturnLiveVarSet, LiveVarSet),
@@ -1556,9 +1570,9 @@ construct_internal_layout(Params, ProcLabel, ProcLayoutName, VarNumMap,
         % MR_ml_label_exec_count[0] is never written out; it is reserved for
         % cases like this, for labels without events, and for handwritten
         % labels.
-        ( LabelNumber0 < (1 << 16) ->
+        ( if LabelNumber0 < (1 << 16) then
             LabelNumber = LabelNumber0
-        ;
+        else
             LabelNumber = 0
         )
     ;
@@ -1742,9 +1756,9 @@ sort_livevals(OrigInfos, FinalInfos) :-
     string::out) is det.
 
 get_name_from_live_value_type(LiveType, Name) :-
-    ( LiveType = live_value_var(_, NamePrime, _, _) ->
+    ( if LiveType = live_value_var(_, NamePrime, _, _) then
         Name = NamePrime
-    ;
+    else
         Name = ""
     ).
 
@@ -1764,21 +1778,21 @@ construct_type_param_locn_vector([TVar - Locns | TVarLocns], CurSlot,
         Vector) :-
     term.var_to_int(TVar, TVarNum),
     NextSlot = CurSlot + 1,
-    ( TVarNum = CurSlot ->
-        ( set.remove_least(LeastLocn, Locns, _) ->
+    ( if TVarNum = CurSlot then
+        ( if set.remove_least(LeastLocn, Locns, _) then
             Locn = LeastLocn
-        ;
+        else
             unexpected($module, $pred, "tvar has empty set of locations")
         ),
         represent_locn_as_int_rval(Locn, Rval),
         construct_type_param_locn_vector(TVarLocns, NextSlot, VectorTail),
         Vector = [typed_rval(Rval, lt_unsigned) | VectorTail]
-    ; TVarNum > CurSlot ->
+    else if TVarNum > CurSlot then
         construct_type_param_locn_vector([TVar - Locns | TVarLocns], NextSlot,
             VectorTail),
         % This slot will never be referred to.
         Vector = [typed_rval(const(llconst_int(0)), lt_unsigned) | VectorTail]
-    ;
+    else
         unexpected($module, $pred, "unsorted tvars")
     ).
 
@@ -1859,19 +1873,19 @@ construct_label_var_info(Params, VarInfoSet, VarNumMap, TVarLocnMap,
     % whether those arrays already contain the required sequences.
 
     CompressArrays = Params ^ slp_compress_arrays,
-    ( NumPTIs > 0 ->
+    ( if NumPTIs > 0 then
         AllRevPTIs0 = !.LabelLayoutInfo ^ lli_rev_ptis,
         NextPTISlot0 = !.LabelLayoutInfo ^ lli_next_pti,
         list.reverse(PTIs, RevPTIs),
-        (
+        ( if
             some [CompressionLimit] (
                 CompressArrays = yes(CompressionLimit),
                 !.LabelLayoutInfo ^ lli_next_pti =< CompressionLimit
             ),
             find_sequence(RevPTIs, AllRevPTIs0, 0, OldPTIOffset)
-        ->
+        then
             PTISlot = NextPTISlot0 - OldPTIOffset - NumPTIs
-        ;
+        else
             AllRevPTIs = RevPTIs ++ AllRevPTIs0,
             !LabelLayoutInfo ^ lli_rev_ptis := AllRevPTIs,
 
@@ -1879,29 +1893,29 @@ construct_label_var_info(Params, VarInfoSet, VarNumMap, TVarLocnMap,
             NextPTISlot = NextPTISlot0 + NumPTIs,
             !LabelLayoutInfo ^ lli_next_pti := NextPTISlot
         )
-    ;
+    else
         PTISlot = -1
     ),
     % The garbage collector does not need HLDS variable numbers; only the
     % debugger does.
-    (
+    ( if
         NumHLDSVarNums > 0,
         Params ^ slp_trace_stack_layout = yes
-    ->
+    then
         AllRevHLDSVarNums0 = !.LabelLayoutInfo ^ lli_rev_hlds_var_nums,
         NextHLDSVarNumSlot0 = !.LabelLayoutInfo ^ lli_next_hlds_var_num,
         list.reverse(HLDSVarNums, RevHLDSVarNums),
-        (
+        ( if
             some [CompressionLimit] (
                 CompressArrays = yes(CompressionLimit),
                 !.LabelLayoutInfo ^ lli_next_hlds_var_num =< CompressionLimit
             ),
             find_sequence(RevHLDSVarNums, AllRevHLDSVarNums0,
                 0, OldHLDSVarNumsOffset)
-        ->
+        then
             HLDSVarNumSlot = NextHLDSVarNumSlot0 - OldHLDSVarNumsOffset -
                 NumHLDSVarNums
-        ;
+        else
             AllRevHLDSVarNums = RevHLDSVarNums ++ AllRevHLDSVarNums0,
             !LabelLayoutInfo ^ lli_rev_hlds_var_nums := AllRevHLDSVarNums,
 
@@ -1909,24 +1923,24 @@ construct_label_var_info(Params, VarInfoSet, VarNumMap, TVarLocnMap,
             NextHLDSVarNumSlot = NextHLDSVarNumSlot0 + NumHLDSVarNums,
             !LabelLayoutInfo ^ lli_next_hlds_var_num := NextHLDSVarNumSlot
         )
-    ;
+    else
         HLDSVarNumSlot = -1
     ),
-    ( NumShortLocns > 0 ->
+    ( if NumShortLocns > 0 then
         AllRevShortLocns0 = !.LabelLayoutInfo ^ lli_rev_short_locns,
         NextShortLocnSlot0 = !.LabelLayoutInfo ^ lli_next_short_locn,
         list.reverse(ShortLocns, RevShortLocns),
-        (
+        ( if
             some [CompressionLimit] (
                 CompressArrays = yes(CompressionLimit),
                 !.LabelLayoutInfo ^ lli_next_short_locn =< CompressionLimit
             ),
             find_sequence(RevShortLocns, AllRevShortLocns0,
                 0, OldShortLocnsOffset)
-        ->
+        then
             ShortLocnSlot = NextShortLocnSlot0 - OldShortLocnsOffset -
                 NumShortLocns
-        ;
+        else
             AllRevShortLocns = RevShortLocns ++ AllRevShortLocns0,
             !LabelLayoutInfo ^ lli_rev_short_locns := AllRevShortLocns,
 
@@ -1934,24 +1948,24 @@ construct_label_var_info(Params, VarInfoSet, VarNumMap, TVarLocnMap,
             NextShortLocnSlot = NextShortLocnSlot0 + NumShortLocns,
             !LabelLayoutInfo ^ lli_next_short_locn := NextShortLocnSlot
         )
-    ;
+    else
         ShortLocnSlot = -1
     ),
-    ( NumLongLocns > 0 ->
+    ( if NumLongLocns > 0 then
         AllRevLongLocns0 = !.LabelLayoutInfo ^ lli_rev_long_locns,
         NextLongLocnSlot0 = !.LabelLayoutInfo ^ lli_next_long_locn,
         list.reverse(LongLocns, RevLongLocns),
-        (
+        ( if
             some [CompressionLimit] (
                 CompressArrays = yes(CompressionLimit),
                 !.LabelLayoutInfo ^ lli_next_long_locn =< CompressionLimit
             ),
             find_sequence(RevLongLocns, AllRevLongLocns0,
                 0, OldLongLocnsOffset)
-        ->
+        then
             LongLocnSlot = NextLongLocnSlot0 - OldLongLocnsOffset -
                 NumLongLocns
-        ;
+        else
             AllRevLongLocns = RevLongLocns ++ AllRevLongLocns0,
             !LabelLayoutInfo ^ lli_rev_long_locns := AllRevLongLocns,
 
@@ -1963,7 +1977,7 @@ construct_label_var_info(Params, VarInfoSet, VarNumMap, TVarLocnMap,
         LVarInfo = label_long_var_info(EncodedLength, TypeParamsRval,
             PTISlot, HLDSVarNumSlot, ShortLocnSlot, LongLocnSlot),
         MaybeVarInfo = long_var_info(LVarInfo)
-    ;
+    else
         SVarInfo = label_short_var_info(EncodedLength, TypeParamsRval,
             PTISlot, HLDSVarNumSlot, ShortLocnSlot),
         MaybeVarInfo = short_var_info(SVarInfo)
@@ -1981,25 +1995,25 @@ construct_liveval_array_slots([VarInfo | VarInfos], ModuleInfo, VarNumMap,
     VarInfo = layout_var_info(Locn, LiveValueType, _),
     represent_live_value_type_and_var_num(VarNumMap, LiveValueType,
         TypeRval, VarNum, !StaticCellInfo),
-    (
+    ( if
         LiveValueType = live_value_var(_, _, Type, _),
         check_dummy_type(ModuleInfo, Type) = is_dummy_type,
         % We want to preserve I/O states in registers.
-        \+ (
+        not (
             Locn = locn_direct(reg(_, _))
         )
-    ->
+    then
         unexpected($module, $pred, "unexpected reference to dummy value")
-    ;
+    else if
         BytesSoFar < BytesLimit,
         represent_locn_as_byte(Locn, ShortLocn)
-    ->
+    then
         ArraySlot = liveval_array_slot(TypeRval, VarNum, ShortLocn),
         construct_liveval_array_slots(VarInfos, ModuleInfo, VarNumMap,
             BytesSoFar + 1, BytesLimit, LongArraySlots, ShortArraySlots0,
             !StaticCellInfo),
         ShortArraySlots = [ArraySlot | ShortArraySlots0]
-    ;
+    else
         represent_locn_as_int(Locn, LongLocn),
         ArraySlot = liveval_array_slot(TypeRval, VarNum, LongLocn),
         construct_liveval_array_slots(VarInfos, ModuleInfo, VarNumMap,
@@ -2012,9 +2026,9 @@ construct_liveval_array_slots([VarInfo | VarInfos], ModuleInfo, VarNumMap,
     rval::out, static_cell_info::in, static_cell_info::out) is det.
 
 construct_tvar_vector(TVarLocnMap, TypeParamRval, !StaticCellInfo) :-
-    ( map.is_empty(TVarLocnMap) ->
+    ( if map.is_empty(TVarLocnMap) then
         TypeParamRval = const(llconst_int(0))
-    ;
+    else
         construct_tvar_rvals(TVarLocnMap, Vector),
         add_scalar_static_cell(Vector, DataAddr, !StaticCellInfo),
         TypeParamRval = const(llconst_data_addr(DataAddr, no))
@@ -2306,9 +2320,8 @@ represent_lval(global_var_ref(_), _) :-
 represent_lval(lvar(_), _) :-
     unexpected($module, $pred, "continuation live value stored in lvar").
 
-    % Some things in this module are encoded using a low tag.  This is not
-    % done using the normal compiler mkword, but by doing the bit shifting
-    % here.
+    % Some things in this module are encoded using a low tag. This is not done
+    % using the normal compiler mkword, but by doing the bit shifting here.
     %
     % This allows us to use more than the usual 2 or 3 bits, but we have to
     % use low tags and cannot tag pointers this way.
@@ -2524,9 +2537,9 @@ init_label_layouts_info = Info :-
 :- pragma type_spec(find_sequence/4, T = rval).
 
 find_sequence(Search, [Head | Tail], CurOffset, FoundAtOffset) :-
-    ( find_sequence_attempt(Search, [Head | Tail]) ->
+    ( if find_sequence_attempt(Search, [Head | Tail]) then
         FoundAtOffset = CurOffset
-    ;
+    else
         find_sequence(Search, Tail, CurOffset + 1, FoundAtOffset)
     ).
 

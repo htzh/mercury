@@ -1,48 +1,43 @@
-/*
-** vim: ts=4 sw=4 expandtab
-*/
-/*
-** Copyright (C) 1994-2000,2002-2004, 2006, 2008, 2011 The University of Melbourne.
-** This file may only be copied under the terms of the GNU Library General
-** Public License - see the file COPYING.LIB in the Mercury distribution.
-*/
+// vim: ts=4 sw=4 expandtab ft=c
 
-/*
-** This module defines the register array and data regions of the
-** execution algorithm.
-** They are defined together here to allow us to control how they map
-** onto direct mapped caches.
-** We allocate a large arena, preferably aligned on a boundary that
-** is a multiple of both the page size and the primary cache size.
-**
-** We then allocate the heap and the stacks in such a way that
-**
-**  the register array
-**  the bottom of the heap
-**  the bottom of the detstack
-**  the bottom of the nondetstack
-**
-** all start at different offsets from multiples of the primary cache size.
-** This should reduce cache conflicts (especially for small programs).
-**
-** If the operating system of the machine supports the mprotect syscall,
-** we also protect a chunk at the end of each area against access,
-** thus detecting area overflow.
-**
-** The code for handling the allocation and management of different
-** memory zones is in mercury_memory_zones.{c,h}.
-** The code for handling overflows and memory access errors in general
-** is in mercury_memory_handlers.{c,h}.
-*/
+// Copyright (C) 1994-2000,2002-2004, 2006, 2008, 2011 The University of Melbourne.
+// Copyright (C) 2014 The Mercury Team.
+// This file may only be copied under the terms of the GNU Library General
+// Public License - see the file COPYING.LIB in the Mercury distribution.
 
-/*---------------------------------------------------------------------------*/
+// This module defines the register array and data regions of the
+// execution algorithm.
+// They are defined together here to allow us to control how they map
+// onto direct mapped caches.
+// We allocate a large arena, preferably aligned on a boundary that
+// is a multiple of both the page size and the primary cache size.
+//
+// We then allocate the heap and the stacks in such a way that
+//
+//  the register array
+//  the bottom of the heap
+//  the bottom of the detstack
+//  the bottom of the nondetstack
+//
+// all start at different offsets from multiples of the primary cache size.
+// This should reduce cache conflicts (especially for small programs).
+//
+// If the operating system of the machine supports the mprotect syscall,
+// we also protect a chunk at the end of each area against access,
+// thus detecting area overflow.
+//
+// The code for handling the allocation and management of different
+// memory zones is in mercury_memory_zones.{c,h}.
+// The code for handling overflows and memory access errors in general
+// is in mercury_memory_handlers.{c,h}.
+
+////////////////////////////////////////////////////////////////////////////
 
 #include "mercury_imp.h"
 
-/*
-** This include must come before anything else that might include <signal.h>.
-** See the commments in mercury_signal.h.
-*/
+// This include must come before anything else that might include <signal.h>.
+// See the comments in mercury_signal.h.
+
 #include "mercury_signal.h"
 
 #ifdef MR_HAVE_UNISTD_H
@@ -72,15 +67,12 @@
 #include "mercury_trace_base.h"
 #include "mercury_memory_handlers.h"
 
-/*---------------------------------------------------------------------------*/
+////////////////////////////////////////////////////////////////////////////
 
-/*
-** NOTE: getpagesize() is not officially supported on MinGW (there is no
-** declaration in the system headers), but one of the supporting libraries
-** used by GCC does define a symbol with that name.  Consequently on MinGW,
-** we need to use GetSystemInfo() even though MR_HAVE_GETPAGESIZE is
-** defined.
-*/
+// NOTE: getpagesize() is not officially supported on MinGW (there is no
+// declaration in the system headers), but one of the supporting libraries
+// used by GCC does define a symbol with that name. Consequently on MinGW,
+// we need to use GetSystemInfo() even though MR_HAVE_GETPAGESIZE is defined.
 
 #if defined(MR_HAVE_SYSCONF) && defined(_SC_PAGESIZE)
   #define   getpagesize()   sysconf(_SC_PAGESIZE)
@@ -90,10 +82,9 @@
 
     #define getpagesize() MR_win32_getpagesize()
 
-    /*
-    ** NOTE: we avoid naming the following getpagesize() since that
-    ** name is already used on MinGW.
-    */
+    // NOTE: we avoid naming the following getpagesize() since that name
+    // is already used on MinGW.
+
     static size_t
     MR_win32_getpagesize(void)
     {
@@ -106,18 +97,11 @@
   #endif
 #endif
 
-/*---------------------------------------------------------------------------*/
+////////////////////////////////////////////////////////////////////////////
 
-#ifdef  MR_HAVE_SIGINFO
-  static    MR_bool try_munprotect(void *address, void *context);
-  static    char    *explain_context(void *context);
-#endif /* MR_HAVE_SIGINFO */
-
-/*
-** Define the memory zones used by the Mercury runtime.
-** (The trail zone is declared in mercury_trail.c.)
-** XXX All the zones should be in mercury_engine.h
-*/
+// Define the memory zones used by the Mercury runtime.
+// (The trail zone is declared in mercury_trail.c.)
+// XXX All the zones should be in mercury_engine.h
 
 #ifdef  MR_USE_MINIMAL_MODEL_STACK_COPY
   MR_MemoryZone *MR_genstack_zone;
@@ -139,11 +123,9 @@ MR_init_memory(void)
 
     already_initialized = MR_TRUE;
 
-    /*
-    ** Convert all the sizes are from kilobytes to bytes and
-    ** make sure they are multiples of the page size and at least as big as the
-    ** cache size.
-    */
+    // Convert all the sizes are from kilobytes to bytes and make sure
+    // (a) they are multiples of the page size, and (b) at least as big
+    // as the cache size.
 
     MR_page_size = getpagesize();
     MR_unit = MR_round_up(MR_max(MR_page_size, MR_pcache_size), MR_page_size);
@@ -167,7 +149,7 @@ MR_init_memory(void)
     MR_kilobytes_to_bytes_and_round_up(MR_global_heap_zone_size);
     MR_kilobytes_to_bytes_and_round_up(MR_debug_heap_size);
     MR_kilobytes_to_bytes_and_round_up(MR_debug_heap_zone_size);
-    /* Note that there's no need for the heap margin to be rounded up */
+    // Note that there is no need for the heap margin to be rounded up.
     MR_heap_margin_size  = MR_heap_margin_size * 1024;
 #endif
     MR_kilobytes_to_bytes_and_round_up(MR_detstack_size);
@@ -216,10 +198,8 @@ MR_init_memory(void)
     MR_trail_zone_size   = 0;
 #endif
 
-    /*
-    ** If the zone sizes were set to something too big, then
-    ** set them to a single unit.
-    */
+    // If the zone sizes were set to something too big, then
+    // set them to a single unit.
 
 #ifndef MR_CONSERVATIVE_GC
     if (MR_heap_zone_size >= MR_heap_size) {
@@ -250,21 +230,19 @@ MR_init_memory(void)
     }
 #endif
 
-    if (MR_stack_margin_size >= MR_detstack_size) {
+    if (MR_stack_margin_size_words >= (sizeof(MR_Word) * MR_detstack_size)) {
         MR_fatal_error("MR_init_memory: stack margin size far too big");
     }
 
     MR_init_zones();
 
-} /* end MR_init_memory() */
+} // end MR_init_memory()
 
-/*---------------------------------------------------------------------------*/
+////////////////////////////////////////////////////////////////////////////
 
-/*
-** These routines allocate memory that will NOT be scanned by the conservative
-** garbage collector. You MUST NOT use these to store pointers into GC'ed
-** memory.
-*/
+// These routines allocate memory that will NOT be scanned by the conservative
+// garbage collector. You MUST NOT use these to store pointers into GC'ed
+// memory.
 
 void *
 MR_malloc(size_t n)
@@ -295,7 +273,7 @@ MR_realloc(void *old_ptr, size_t num_bytes)
 char *
 MR_copy_string(const char *s)
 {
-    int     len;
+    size_t  len;
     char    *copy;
 
     if (s == NULL) {
@@ -322,16 +300,14 @@ MR_ensure_big_enough_buffer(char **buffer_ptr, int *buffer_size_ptr,
     }
 }
 
-/*---------------------------------------------------------------------------*/
+////////////////////////////////////////////////////////////////////////////
 
-/*
-** These routines allocate memory that will be scanned by the
-** conservative garbage collector.
-**
-** XXX This is inefficient. If MR_BOEHM_GC is enabled, we should set
-** `GC_oom_fn' (see boehm_gc/gc.h) rather than testing the return value
-** from GC_MALLOC() or GC_MALLOC_UNCOLLECTABLE().
-*/
+// These routines allocate memory that will be scanned by the
+// conservative garbage collector.
+//
+// XXX This is inefficient. If MR_BOEHM_GC is enabled, we should set
+// `GC_oom_fn' (see boehm_gc/gc.h) rather than testing the return value
+// from GC_MALLOC() or GC_MALLOC_UNCOLLECTABLE().
 
 void *
 MR_GC_malloc(size_t num_bytes)
@@ -340,6 +316,24 @@ MR_GC_malloc(size_t num_bytes)
 
 #ifdef  MR_CONSERVATIVE_GC
     ptr = GC_MALLOC(num_bytes);
+#else
+    ptr = malloc(num_bytes);
+#endif
+
+    if (ptr == NULL && num_bytes != 0) {
+        MR_fatal_error("could not allocate memory");
+    }
+
+    return ptr;
+}
+
+void *
+MR_GC_malloc_atomic(size_t num_bytes)
+{
+    void    *ptr;
+
+#ifdef  MR_CONSERVATIVE_GC
+    ptr = GC_MALLOC_ATOMIC(num_bytes);
 #else
     ptr = malloc(num_bytes);
 #endif
@@ -386,7 +380,23 @@ MR_GC_realloc(void *old_ptr, size_t num_bytes)
     return ptr;
 }
 
-/*---------------------------------------------------------------------------*/
+#ifdef MR_BOEHM_GC
+void*
+MR_weak_ptr_read_unsafe(void* weak_ptr_) {
+    MR_weak_ptr *weak_ptr = weak_ptr_;
+
+    // Even though we check for NULL in the macro we must re-check here
+    // while holding the GC's allocation lock.
+
+    if (MR_NULL_WEAK_PTR != *weak_ptr) {
+        return GC_REVEAL_POINTER(*weak_ptr);
+    } else {
+        return NULL;
+    }
+}
+#endif
+
+////////////////////////////////////////////////////////////////////////////
 
 void *
 MR_GC_malloc_attrib(size_t num_bytes, void *attrib)
@@ -444,7 +454,7 @@ MR_GC_free_attrib(void *ptr)
     MR_GC_free(ptr);
 }
 
-/*---------------------------------------------------------------------------*/
+////////////////////////////////////////////////////////////////////////////
 
 void *
 MR_new_object_func(size_t num_bytes, MR_AllocSiteInfoPtr alloc_id,
@@ -470,4 +480,4 @@ MR_new_object_atomic_func(size_t num_bytes, MR_AllocSiteInfoPtr alloc_id,
     return (void *) dest;
 }
 
-/*---------------------------------------------------------------------------*/
+////////////////////////////////////////////////////////////////////////////

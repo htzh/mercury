@@ -1,17 +1,15 @@
-/*
-** vim: ts=4 sw=4 expandtab
-*/
-/*
-** Copyright (C) 1997-2001, 2003, 2005-2007, 2009-2011 The University of Melbourne.
-** This file may only be copied under the terms of the GNU Library General
-** Public License - see the file COPYING.LIB in the Mercury distribution.
-*/
+// vim: ts=4 sw=4 expandtab ft=c
+
+// Copyright (C) 1997-2001, 2003, 2005-2007, 2009-2011 The University of Melbourne.
+// Copyright (C) 2014 The Mercury team.
+// This file may only be copied under the terms of the GNU Library General
+// Public License - see the file COPYING.LIB in the Mercury distribution.
 
 #include "mercury_imp.h"
 #include "mercury_regs.h"
 #include "mercury_engine.h"
 #include "mercury_memory.h"
-#include "mercury_context.h"    /* for MR_do_runnext */
+#include "mercury_context.h"    // for MR_do_runnext
 #include "mercury_thread.h"
 #include "mercury_threadscope.h"
 
@@ -28,14 +26,11 @@
     MercuryThreadKey MR_engine_base_key;
   #endif
   MercuryLock       MR_global_lock;
-  #ifndef MR_HIGHLEVEL_CODE
-  static MercuryLock      MR_next_engine_id_lock;
-  static MR_EngineId      MR_next_engine_id = 0;
 
-  /*
-  ** This array is indexed by engine id.  No locking is necessary.
-  */
-  MercuryEngine **MR_all_engine_bases = NULL;
+  #ifndef MR_HIGHLEVEL_CODE
+    static MercuryLock  MR_all_engine_bases_lock;
+    MercuryEngine       **MR_all_engine_bases = NULL;
+    static MR_EngineId  MR_highest_engine_id;
   #endif
 #endif
 
@@ -55,12 +50,18 @@ MR_Integer          MR_thread_barrier_count;
 #endif
 
 #ifdef MR_THREAD_SAFE
+static MR_bool
+MR_setup_engine_for_threads(MercuryEngine *eng, MR_EngineType engine_type);
+static void
+MR_shutdown_engine_for_threads(MercuryEngine *eng);
+#endif
 
+#ifdef MR_LL_PARALLEL_CONJ
 static void *
-MR_create_thread_2(void *goal);
+MR_create_worksteal_thread_2(void *goal);
 
 MercuryThread *
-MR_create_thread(MR_ThreadGoal *goal)
+MR_create_worksteal_thread(void)
 {
     MercuryThread   *thread;
     pthread_attr_t  attrs;
@@ -68,15 +69,14 @@ MR_create_thread(MR_ThreadGoal *goal)
 
     assert(!MR_thread_equal(MR_primordial_thread, MR_null_thread()));
 
-    /*
-    ** Create threads in the detached state so that resources will be
-    ** automatically freed when threads terminate (we don't call
-    ** pthread_join() anywhere).
-    */
+    // Create threads in the detached state so that resources will be
+    // automatically freed when threads terminate (we don't call
+    // pthread_join() anywhere).
+
     thread = MR_GC_NEW_ATTRIB(MercuryThread, MR_ALLOC_SITE_RUNTIME);
     pthread_attr_init(&attrs);
     pthread_attr_setdetachstate(&attrs, PTHREAD_CREATE_DETACHED);
-    err = pthread_create(thread, &attrs, MR_create_thread_2, (void *) goal);
+    err = pthread_create(thread, &attrs, MR_create_worksteal_thread_2, NULL);
     pthread_attr_destroy(&attrs);
 
 #if 0
@@ -91,84 +91,60 @@ MR_create_thread(MR_ThreadGoal *goal)
 }
 
 static void *
-MR_create_thread_2(void *goal0)
+MR_create_worksteal_thread_2(void *arg)
 {
-    MR_ThreadGoal   *goal;
+  #ifdef MR_HAVE_THREAD_PINNING
+     // TODO: We may use the cpu value returned to determine which CPUs
+     // which engines are on. This can help with some interesting work
+     // stealing algorithms.
 
-    goal = (MR_ThreadGoal *) goal0;
-    if (goal != NULL) {
-        MR_init_thread(MR_use_now);
-        (goal->func)(goal->arg);
-        /* XXX: We should clean up the engine here */
-    } else {
-        MR_init_thread(MR_use_later);
+    MR_pin_thread();
+  #endif
+    if (! MR_init_thread_inner(MR_use_later, MR_ENGINE_TYPE_SHARED)) {
+        MR_fatal_error("Unable to init shared engine thread.");
     }
-
     return NULL;
 }
 
-#endif /* MR_THREAD_SAFE */
+#endif // MR_LL_PARALLEL_CONJ
+
+// This interface is used by generated code and thread.m.
+// Internal code should call MR_init_thread_inner.
 
 MR_bool
 MR_init_thread(MR_when_to_use when_to_use)
 {
-    MercuryEngine   *eng;
-
 #ifdef MR_THREAD_SAFE
-  #if defined(MR_LL_PARALLEL_CONJ) && defined(MR_HAVE_THREAD_PINNING)
-    unsigned        cpu;
-  #endif
+    // Check to see whether there is already an engine that is initialized
+    // in this thread. If so we just return, there is nothing for us to do.
 
-    /*
-    ** Check to see whether there is already an engine that is initialized
-    ** in this thread.  If so we just return, there's nothing for us to do.
-    */
     if (MR_thread_engine_base != NULL) {
         return MR_FALSE;
     }
-  #ifdef MR_LL_PARALLEL_CONJ
-    switch (when_to_use) {
-        case MR_use_later:
-#ifdef MR_HAVE_THREAD_PINNING
-            cpu = MR_pin_thread();
-#endif
-            break;
-        case MR_use_now:
-            /*
-            ** Don't pin the primordial thread here, it's already been done.
-            */
-#ifdef MR_HAVE_THREAD_PINNING
-            cpu = MR_primordial_thread_cpu;
-#endif
-            break;
-        /*
-        ** TODO: We may use the cpu value here to determine which CPUs which
-        ** engines are on.  This can help with some interesting work stealing
-        ** algorithms.
-        */
-    }
-  #endif
-#endif
+#endif // MR_THREAD_SAFE
+    assert(when_to_use == MR_use_now);
+    return MR_init_thread_inner(when_to_use, MR_ENGINE_TYPE_EXCLUSIVE);
+}
+
+// Set up a Mercury engine in the current thread.
+
+MR_bool
+MR_init_thread_inner(MR_when_to_use when_to_use, MR_EngineType engine_type)
+{
+    MercuryEngine   *eng;
+
     eng = MR_create_engine();
 
 #ifdef MR_THREAD_SAFE
+    if (MR_setup_engine_for_threads(eng, engine_type) == MR_FALSE) {
+        MR_destroy_engine(eng);
+        return MR_FALSE;
+    }
+    assert(MR_thread_engine_base == NULL);
     MR_set_thread_engine_base(eng);
     MR_restore_registers();
   #ifdef MR_ENGINE_BASE_REGISTER
     MR_engine_base_word = (MR_Word) eng;
-  #endif
-  #ifndef MR_HIGHLEVEL_CODE
-    MR_LOCK(&MR_next_engine_id_lock, "MR_init_thread");
-    eng->MR_eng_id = MR_next_engine_id++;
-    MR_UNLOCK(&MR_next_engine_id_lock, "MR_init_thread");
-
-    eng->MR_eng_victim_counter = (eng->MR_eng_id + 1) % MR_num_threads;
-
-    MR_all_engine_bases[eng->MR_eng_id] = eng;
-    MR_spark_deques[eng->MR_eng_id] = &(eng->MR_eng_spark_deque);
-    #ifdef MR_THREADSCOPE
-        MR_threadscope_setup_engine(eng);
-    #endif
   #endif
 #else
     MR_memcpy(&MR_engine_base, eng, sizeof(MercuryEngine));
@@ -176,20 +152,14 @@ MR_init_thread(MR_when_to_use when_to_use)
 #endif
     MR_load_engine_regs(MR_cur_engine());
 
-#ifdef MR_THREAD_SAFE
-    MR_ENGINE(MR_eng_owner_thread) = pthread_self();
-  #ifdef MR_LL_PARALLEL_CONJ
-    #ifdef MR_THREADSCOPE
-    /*
-    ** TSC Synchronization is not used, support is commented out.  See
-    ** runtime/mercury_threadscope.h for an explanation.
-    **
+#if defined(MR_LL_PARALLEL_CONJ) && defined(MR_THREADSCOPE)
+    // TSC Synchronization is not used, support is commented out.
+    // See runtime/mercury_threadscope.h for an explanation.
+    //
     if (when_to_use == MR_use_later) {
         MR_threadscope_sync_tsc_slave();
     }
-    */
-    #endif
-  #endif
+
 #endif
 
     switch (when_to_use) {
@@ -198,16 +168,14 @@ MR_init_thread(MR_when_to_use when_to_use)
             MR_fatal_error("Sorry, not implemented: "
                 "--high-level-code and multiple engines");
 #else
-            /* This call never returns */
+            // This call never returns.
             (void) MR_call_engine(MR_ENTRY(MR_do_idle), MR_FALSE);
 #endif
             return MR_FALSE;
 
         case MR_use_now :
-            /*
-            ** The following is documented in mercury_engine.h, so any
-            ** changes here may need changes there as well.
-            */
+            // The following is documented in mercury_engine.h, so any
+            // changes here may need changes there as well.
 
             if (MR_ENGINE(MR_eng_this_context) == NULL) {
                 MR_ENGINE(MR_eng_this_context) =
@@ -226,9 +194,7 @@ MR_init_thread(MR_when_to_use when_to_use)
     }
 }
 
-/*
-** Release resources associated with this thread.
-*/
+// Release resources associated with the Mercury engine for this thread.
 
 void
 MR_finalize_thread_engine(void)
@@ -238,33 +204,112 @@ MR_finalize_thread_engine(void)
 
     eng = MR_thread_engine_base;
     MR_set_thread_engine_base(NULL);
+    MR_shutdown_engine_for_threads(eng);
     MR_destroy_engine(eng);
 #endif
 }
 
-#ifdef  MR_THREAD_SAFE
+#ifdef MR_THREAD_SAFE
+// Additional setup/shutdown of the engine for threads support.
 
-void
-MR_destroy_thread(void *eng0)
+static MR_bool
+MR_setup_engine_for_threads(MercuryEngine *eng, MR_EngineType engine_type)
 {
-    MercuryEngine *eng = eng0;
-    MR_destroy_engine(eng);
+    MR_bool     ok = MR_TRUE;
+  #ifndef MR_HIGHLEVEL_CODE
+    MR_EngineId min;
+    MR_EngineId max;
+    MR_EngineId id;
+
+    MR_LOCK(&MR_all_engine_bases_lock, "MR_setup_engine_for_threads");
+
+    // Allocate an engine id.
+    if (engine_type == MR_ENGINE_TYPE_SHARED) {
+        min = 0;
+        max = MR_num_ws_engines;
+    } else {
+        min = MR_num_ws_engines;
+        max = MR_max_engines;
+    }
+    for (id = min; id < max; id++) {
+        if (MR_all_engine_bases[id] == NULL) {
+            break;
+        }
+    }
+
+    if (id < max) {
+        if (MR_highest_engine_id < id) {
+            MR_highest_engine_id = id;
+        }
+
+        eng->MR_eng_id = id;
+        eng->MR_eng_type = engine_type;
+        eng->MR_eng_victim_counter = (id + 1) % MR_num_ws_engines;
+
+        MR_all_engine_bases[id] = eng;
+        MR_spark_deques[id] = eng->MR_eng_spark_deque;
+
+        MR_verify_initial_engine_sleep_sync(id);
+
+      #ifdef MR_THREADSCOPE
+        MR_threadscope_setup_engine(eng);
+      #endif
+    } else {
+      #ifdef MR_DEBUG_THREADS
+        if (MR_debug_threads) {
+            fprintf(stderr, "Exhausted engine ids.\n");
+        }
+      #endif
+        ok = MR_FALSE;
+    }
+
+    MR_UNLOCK(&MR_all_engine_bases_lock, "MR_setup_engine_for_threads");
+  #endif
+
+    return ok;
 }
 
-#endif
+static void
+MR_shutdown_engine_for_threads(MercuryEngine *eng)
+{
+  #ifndef MR_HIGHLEVEL_CODE
+    MR_EngineId id = eng->MR_eng_id;
+
+    MR_LOCK(&MR_all_engine_bases_lock, "MR_shutdown_engine_for_threads");
+
+    MR_verify_final_engine_sleep_sync(eng->MR_eng_id, eng->MR_eng_type);
+
+    assert(MR_all_engine_bases[id] == eng);
+    MR_all_engine_bases[id] = NULL;
+
+    if (MR_highest_engine_id == id) {
+        int i;
+        for (i = id - 1; i >= 0; i--) {
+            if (MR_all_engine_bases[i] != NULL) {
+                MR_highest_engine_id = (MR_EngineId) i;
+                break;
+            }
+        }
+    }
+
+    assert(MR_spark_deques[id] == eng->MR_eng_spark_deque);
+    MR_spark_deques[id] = NULL;
+
+    MR_UNLOCK(&MR_all_engine_bases_lock, "MR_shutdown_engine_for_threads");
+  #endif
+}
+#endif // MR_THREAD_SAFE
 
 #if defined(MR_THREAD_SAFE)
-/*
-** XXX: maybe these should only be conditionally compiled when MR_DEBUG_THREADS
-** is also set. - pbone
-*/
+// XXX: maybe these should only be conditionally compiled when MR_DEBUG_THREADS
+// is also set. - pbone
 
 int
 MR_mutex_lock(MercuryLock *lock, const char *from)
 {
     int err;
 
-    fprintf(stderr, 
+    fprintf(stderr,
         "%" MR_INTEGER_LENGTH_MODIFIER "d locking on %p (%s)\n",
         MR_SELF_THREAD_ID, lock, from);
     fflush(stderr);
@@ -367,6 +412,25 @@ MR_cond_timed_wait(MercuryCond *cond, MercuryLock *lock,
     return err;
 }
 
+void
+MR_sem_init(MercurySem *sem, unsigned int value)
+{
+#if defined(MR_USE_LIBDISPATCH)
+    *sem = dispatch_semaphore_create(value);
+    if (*sem == NULL) {
+        MR_perror("cannot initialize semaphore");
+        exit(EXIT_FAILURE);
+    }
+#else // !MR_USE_LIBDISPATCH
+    // XXX we should check errno and say *why* we could not initialize
+    // the semaphore.
+    if (sem_init(sem, 0, value) == -1) {
+        MR_perror("cannot initialize semaphore");
+        exit(EXIT_FAILURE);
+    }
+#endif
+}
+
 int
 MR_sem_wait(MercurySem *sem, const char *from)
 {
@@ -376,9 +440,36 @@ MR_sem_wait(MercurySem *sem, const char *from)
         "%" MR_INTEGER_LENGTH_MODIFIER "d waiting on sem: %p (%s)\n",
         MR_SELF_THREAD_ID, sem, from);
     fflush(stderr);
+#if defined(MR_USE_LIBDISPATCH)
+    err = dispatch_semaphore_wait(*sem, DISPATCH_TIME_FOREVER);
+#else
     err = sem_wait(sem);
+#endif
     fprintf(stderr,
         "%" MR_INTEGER_LENGTH_MODIFIER "d wait returned %d\n",
+        MR_SELF_THREAD_ID, err);
+    fflush(stderr);
+
+    return err;
+}
+
+int
+MR_sem_timed_wait(MercurySem *sem, const struct timespec *abstime,
+        const char *from)
+{
+    int err;
+
+    fprintf(stderr,
+        "%" MR_INTEGER_LENGTH_MODIFIER "d timed wait on sem: %p (%s)\n",
+            MR_SELF_THREAD_ID, sem, from);
+    fflush(stderr);
+#if defined(MR_USE_LIBDISPATCH)
+    err = dispatch_semaphore_wait(*sem, dispatch_walltime(abstime, 0));
+#else
+    err = sem_timedwait(sem, abstime);
+#endif
+    fprintf(stderr,
+        "%" MR_INTEGER_LENGTH_MODIFIER "d timed wait returned %d\n",
         MR_SELF_THREAD_ID, err);
     fflush(stderr);
 
@@ -394,7 +485,11 @@ MR_sem_post(MercurySem *sem, const char *from)
         "%" MR_INTEGER_LENGTH_MODIFIER "d posting to sem: %p (%s)\n",
         MR_SELF_THREAD_ID, sem, from);
     fflush(stderr);
+#if defined(MR_USE_LIBDISPATCH)
+    err = dispatch_semaphore_signal(*sem);
+#else
     err = sem_post(sem);
+#endif
     fprintf(stderr,
         "%" MR_INTEGER_LENGTH_MODIFIER "d post returned %d\n",
         MR_SELF_THREAD_ID, err);
@@ -403,10 +498,22 @@ MR_sem_post(MercurySem *sem, const char *from)
     return err;
 }
 
-/*
-** For pthreads-win32 MR_null_thread() is defined as follows.  For other
-** pthread implementations it is defined as a macro in mercury_thread.h.
-*/
+void
+MR_sem_destroy(MercurySem *sem)
+{
+#if defined(MR_USE_LIBDISPATCH)
+   dispatch_release(*sem);
+#else
+   if (sem_destroy(sem) == -1) {
+        MR_perror("cannot destroy semaphore");
+        exit(EXIT_FAILURE);
+    }
+#endif
+}
+
+// For pthreads-win32 MR_null_thread() is defined as follows. For other
+// pthread implementations it is defined as a macro in mercury_thread.h.
+
 #if defined(MR_PTHREADS_WIN32)
 MercuryThread
 MR_null_thread(void)
@@ -414,9 +521,9 @@ MR_null_thread(void)
     const MercuryThread null_thread = {NULL, 0};
     return null_thread;
 }
-#endif /* MR_PTHREADS_WIN32 */
+#endif // MR_PTHREADS_WIN32
 
-#endif  /* MR_THREAD_SAFE */
+#endif  // MR_THREAD_SAFE
 
 MR_Unsigned
 MR_new_thread_local_mutable_index(void)
@@ -476,9 +583,10 @@ MR_init_thread_stuff(void)
   #endif
 
   #ifndef MR_HIGHLEVEL_CODE
-    pthread_mutex_init(&MR_next_engine_id_lock, MR_MUTEX_ATTR);
-    MR_all_engine_bases = MR_GC_malloc(sizeof(MercuryEngine*)*MR_num_threads);
-    for (i = 0; i < MR_num_threads; i++) {
+    pthread_mutex_init(&MR_all_engine_bases_lock, MR_MUTEX_ATTR);
+    MR_all_engine_bases =
+        MR_GC_malloc(sizeof(MercuryEngine *) * MR_max_engines);
+    for (i = 0; i < MR_max_engines; i++) {
         MR_all_engine_bases[i] = NULL;
     }
   #endif

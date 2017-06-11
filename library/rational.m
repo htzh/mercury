@@ -1,29 +1,37 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1997-1998, 2003-2006 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: rational.m.
 % Authors: aet Apr 1998. (with plagiarism from rat.m)
 % Stability: high.
-% 
+%
 % Implements a rational number type and a set of basic operations on
 % rational numbers.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module rational.
 :- interface.
 
 :- import_module integer.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type rational.
+
+:- func numer(rational) = integer.
+
+:- func denom(rational) = integer.
+
+:- func zero = rational.
+
+:- func one = rational.
 
 :- pred '<'(rational::in, rational::in) is semidet.
 
@@ -33,13 +41,13 @@
 
 :- pred '>='(rational::in, rational::in) is semidet.
 
-:- func rational.rational(int) = rational.
+:- func rational(int) = rational.
 
-:- func rational.rational(int, int) = rational.
+:- func rational(int, int) = rational.
 
-:- func rational.from_integer(integer) = rational.
+:- func from_integer(integer) = rational.
 
-:- func rational.from_integers(integer, integer) = rational.
+:- func from_integers(integer, integer) = rational.
 
 % :- func float(rational) = float.
 
@@ -55,43 +63,44 @@
 
 :- func rational / rational = rational.
 
-:- func rational.numer(rational) = integer.
+:- func reciprocal(rational) = rational.
 
-:- func rational.denom(rational) = integer.
+:- func abs(rational) = rational.
 
-:- func rational.abs(rational) = rational.
-
-:- func rational.reciprocal(rational) = rational.
-
-:- func rational.one = rational.
-
-:- func rational.zero = rational.
-
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module require.
 
-    % The normal form of a rational number has the following
-    % properties:
-    %   - numerator and denominator have no common factors.
-    %   - denominator is positive.
-    %   - denominator is not zero.
-    %   - if numerator is zero, then denominator is one.
+    % The normal form of a rational number has the following properties:
+    %
+    % - numerator and denominator have no common factors.
+    % - denominator is positive.
+    % - denominator is not zero.
+    % - if numerator is zero, then denominator is one.
     %
     % These invariants must be preserved by any rational number
-    % constructed using this module since the equality predicate
+    % constructed using this module, since the equality predicate
     % on rationals is simply Mercury's default unification
     % predicate =/2. If the invariants were not maintained,
     % we would have pathologies like r(-1,2) \= r(1,-2).
     %
-    % The rational_norm/2 function generates rationals in this
-    % normal form.
+    % The rational_norm/2 function generates rationals in this normal form.
     %
 :- type rational
     --->    r(integer, integer).
+
+%---------------------------------------------------------------------------%
+
+numer(r(Num, _)) = Num.
+
+denom(r(_, Den)) = Den.
+
+zero = r(integer.zero, integer.one).
+
+one = r(integer.one, integer.one).
 
 '<'(R1, R2) :-
     Cmp = cmp(R1, R2),
@@ -109,22 +118,18 @@
     Cmp = cmp(R1, R2),
     (Cmp = (>) ; Cmp = (=)).
 
-rational.rational(Int) = rational_norm(integer(Int), integer.one).
+rational(Int) = rational_norm(integer(Int), integer.one).
 
-rational.rational(Num, Den) = rational_norm(integer(Num), integer(Den)).
+rational(Num, Den) = rational_norm(integer(Num), integer(Den)).
 
-rational.from_integer(Integer) = rational_norm(Integer, integer.one).
+from_integer(Integer) = rational_norm(Integer, integer.one).
 
-rational.from_integers(Num, Den) = rational_norm(Num, Den).
+from_integers(Num, Den) = rational_norm(Num, Den).
 
 %% XXX: There are ways to do this in some cases even if the
 %% float conversions would overflow.
 % rational.float(r(Num, Den)) =
 %   float:'/'(integer.float(Num), integer.float(Den)).
-
-rational.one = r(integer.one, integer.one).
-
-rational.zero = r(integer.zero, integer.one).
 
 '+'(Rat) = Rat.
 
@@ -147,27 +152,23 @@ r(An, Ad) * r(Bn, Bd) = rational_norm(Numer, Denom) :-
 
 R1 / R2 = R1 * reciprocal(R2).
 
-rational.reciprocal(r(Num, Den)) =
-    ( Num = integer.zero ->
+reciprocal(r(Num, Den)) =
+    ( if Num = integer.zero then
         func_error("rational.reciprocal: division by zero")
-    ;
+    else
         r(signum(Num) * Den, integer.abs(Num))
     ).
 
-rational.numer(r(Num, _)) = Num.
-
-rational.denom(r(_, Den)) = Den.
-
-rational.abs(r(Num, Den)) = r(integer.abs(Num), Den).
+abs(r(Num, Den)) = r(integer.abs(Num), Den).
 
 :- func rational_norm(integer, integer) = rational.
 
 rational_norm(Num, Den) = Rat :-
-    ( Den = integer.zero ->
+    ( if Den = integer.zero then
         error("rational.rational_norm: division by zero")
-    ; Num = integer.zero ->
+    else if Num = integer.zero then
         Rat = r(integer.zero, integer.one)
-    ;
+    else
         G    = gcd(Num, Den),
         Num2 = Num * signum(Den),
         Den2 = integer.abs(Den),
@@ -180,33 +181,39 @@ gcd(A, B) = gcd_2(integer.abs(A), integer.abs(B)).
 
 :- func gcd_2(integer, integer) = integer.
 
-gcd_2(A, B) = ( B = integer.zero -> A ; gcd_2(B, A rem B) ).
+gcd_2(A, B) = ( if B = integer.zero then A else gcd_2(B, A rem B) ).
 
 :- func lcm(integer, integer) = integer.
 
 lcm(A, B) =
-    ( A = integer.zero -> integer.zero
-    ; B = integer.zero -> integer.zero
-    ; integer.abs((A // gcd(A, B)) * B)
+    ( if A = integer.zero then
+        integer.zero
+    else if B = integer.zero then
+        integer.zero
+    else
+        integer.abs((A // gcd(A, B)) * B)
     ).
 
 :- func signum(integer) = integer.
 
 signum(N) =
-    ( N = integer.zero -> integer.zero
-    ; N < integer.zero -> -integer.one
-    ; integer.one
+    ( if N = integer.zero then
+        integer.zero
+    else if N < integer.zero then
+        -integer.one
+    else
+        integer.one
     ).
 
 :- func cmp(rational, rational) = comparison_result.
 
 cmp(R1, R2) = Cmp :-
     Diff = R1 - R2,
-    ( is_zero(Diff) ->
+    ( if is_zero(Diff) then
         Cmp = (=)
-    ; is_negative(Diff) ->
+    else if is_negative(Diff) then
         Cmp = (<)
-    ;
+    else
         Cmp = (>)
     ).
 
@@ -219,6 +226,6 @@ is_zero(r(integer.zero, _)).
 is_negative(r(Num, _)) :-
     Num < integer.zero.
 
-%------------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module rational.
-%------------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

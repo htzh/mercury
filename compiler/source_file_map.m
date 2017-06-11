@@ -5,24 +5,26 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % File: source_file_map.m.
 % Author: stayl.
-% 
+%
 % Maintain a mapping from module name to source file name.
-% 
+%
 % The reason why this module is in the parse_tree package is that discovering
 % what module is stored in a file requires reading the ":- module" declaration
 % in that file.
-% 
+%
 %-----------------------------------------------------------------------------%
 
 :- module parse_tree.source_file_map.
 :- interface.
 
-:- import_module mdbcomp.prim_data.
+:- import_module libs.
 :- import_module libs.file_util.
 :- import_module libs.globals.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
 
 :- import_module bool.
 :- import_module io.
@@ -54,7 +56,7 @@
 :- implementation.
 
 :- import_module parse_tree.file_names.
-:- import_module parse_tree.prog_io.
+:- import_module parse_tree.find_module.
 :- import_module parse_tree.prog_out.
 
 :- import_module char.
@@ -67,9 +69,9 @@
 
 lookup_module_source_file(ModuleName, FileName, !IO) :-
     get_source_file_map(SourceFileMap, !IO),
-    ( map.search(SourceFileMap, ModuleName, FileName0) ->
+    ( if map.search(SourceFileMap, ModuleName, FileName0) then
         FileName = FileName0
-    ;
+    else
         FileName = default_source_file(ModuleName)
     ).
 
@@ -77,9 +79,9 @@ default_source_file(ModuleName) = sym_name_to_string(ModuleName) ++ ".m".
 
 have_source_file_map(HaveMap, !IO) :-
     get_source_file_map(SourceFileMap, !IO),
-    ( map.is_empty(SourceFileMap) ->
+    ( if map.is_empty(SourceFileMap) then
         HaveMap = no
-    ;
+    else
         HaveMap = yes
     ).
 
@@ -156,9 +158,9 @@ read_until_char(EndChar, Chars0, Result, !IO) :-
     io.read_char(CharRes, !IO),
     (
         CharRes = ok(Char),
-        ( Char = EndChar ->
+        ( if Char = EndChar then
             Result = ok(Chars0)
-        ;
+        else
             read_until_char(EndChar, [Char | Chars0], Result, !IO)
         )
     ;
@@ -202,10 +204,10 @@ write_source_file_map_2(Globals, MapStream, FileName,
     find_module_name(Globals, FileName, MaybeModuleName, !IO),
     (
         MaybeModuleName = yes(ModuleName),
-        (
+        ( if
             map.search(SeenModules0, ModuleName, PrevFileName),
             PrevFileName \= FileName
-        ->
+        then
             io.write_string("mercury_compile: module `", !IO),
             io.write_string(sym_name_to_string(ModuleName), !IO),
             io.write_string("' defined in multiple files: ", !IO),
@@ -215,24 +217,24 @@ write_source_file_map_2(Globals, MapStream, FileName,
             io.write_string(".\n", !IO),
             io.set_exit_status(1, !IO),
             SeenModules = SeenModules0
-        ;
+        else
             map.set(ModuleName, FileName, SeenModules0, SeenModules)
         ),
-        ( string.remove_suffix(FileName, ".m", PartialFileName0) ->
+        ( if string.remove_suffix(FileName, ".m", PartialFileName0) then
             PartialFileName = PartialFileName0
-        ;
+        else
             PartialFileName = FileName
         ),
         file_name_to_module_name(dir.det_basename(PartialFileName),
             DefaultModuleName),
-        (
+        ( if
             % Only include a module in the mapping if the name doesn't match
             % the default.
             dir.dirname(PartialFileName) = dir.this_directory : string,
             ModuleName = DefaultModuleName
-        ->
+        then
             true
-        ;
+        else
             io.set_output_stream(MapStream, OldStream, !IO),
             prog_out.write_sym_name(ModuleName, !IO),
             io.write_string("\t", !IO),
@@ -249,4 +251,6 @@ write_source_file_map_2(Globals, MapStream, FileName,
 
 modules_file_name = "Mercury.modules".
 
+%-----------------------------------------------------------------------------%
+:- end_module parse_tree.source_file_map.
 %-----------------------------------------------------------------------------%

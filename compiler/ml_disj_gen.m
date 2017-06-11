@@ -103,10 +103,12 @@
 :- module ml_backend.ml_disj_gen.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_goal.
 :- import_module ml_backend.mlds.
 :- import_module ml_backend.ml_gen_info.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
@@ -120,20 +122,21 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
 :- import_module hlds.goal_form.
 :- import_module hlds.hlds_module.
+:- import_module hlds.vartypes.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
 :- import_module ml_backend.ml_code_gen.
 :- import_module ml_backend.ml_code_util.
-:- import_module ml_backend.ml_gen_info.
 :- import_module ml_backend.ml_global_data.
 :- import_module ml_backend.ml_util.
 :- import_module parse_tree.set_of_var.
 
 :- import_module bool.
-:- import_module map.
 :- import_module maybe.
 :- import_module require.
 
@@ -154,7 +157,7 @@ ml_gen_disj(Disjuncts, GoalInfo, CodeModel, Context, Statements, !Info) :-
             LaterDisjuncts = [_ | _],
             (
                 CodeModel = model_non,
-                (
+                ( if
                     ml_gen_info_get_target(!.Info, Target),
                     allow_lookup_disj(Target) = yes,
 
@@ -166,7 +169,7 @@ ml_gen_disj(Disjuncts, GoalInfo, CodeModel, Context, Statements, !Info) :-
 
                     DisjNonLocals = goal_info_get_nonlocals(GoalInfo),
                     all_disjuncts_are_conj_of_unify(DisjNonLocals, Disjuncts)
-                ->
+                then
                     % Since the MLDS backend implements trailing by a
                     % HLDS-to-HLDS transform (which is in add_trail_ops.m),
                     % if we get here, then trailing is not enabled, and we do
@@ -178,7 +181,7 @@ ml_gen_disj(Disjuncts, GoalInfo, CodeModel, Context, Statements, !Info) :-
                         Disjuncts, Solns, !Info),
                     ml_gen_lookup_disj(OutVars, Solns, Context,
                         Statements, !Info)
-                ;
+                else
                     ml_gen_ordinary_model_non_disj(FirstDisjunct,
                         LaterDisjuncts, Context, Statements, !Info)
                 )
@@ -199,10 +202,8 @@ ml_gen_disj(Disjuncts, GoalInfo, CodeModel, Context, Statements, !Info) :-
 :- func allow_lookup_disj(compilation_target) = bool.
 
 allow_lookup_disj(target_c) = yes.
-allow_lookup_disj(target_il) = no.
 allow_lookup_disj(target_csharp) = yes.
 allow_lookup_disj(target_java) = yes.
-allow_lookup_disj(target_x86_64) = no.
 allow_lookup_disj(target_erlang) = no.
 
 %-----------------------------------------------------------------------------%
@@ -329,7 +330,7 @@ ml_gen_lookup_disj(OutVars, Solns, Context, Statements, !Info) :-
         VectorCommon, GlobalData1, GlobalData),
     ml_gen_info_set_global_data(GlobalData, !Info),
 
-    ml_gen_info_new_aux_var_name("slot", SlotVar, !Info),
+    ml_gen_info_new_aux_var_name(mcav_slot, SlotVar, !Info),
     SlotVarType = mlds_native_int_type,
     % We never need to trace ints.
     SlotVarGCStatement = gc_no_stmt,
@@ -359,7 +360,9 @@ ml_gen_lookup_disj(OutVars, Solns, Context, Statements, !Info) :-
     LoopStmt = ml_stmt_while(loop_at_least_once, LoopCond, LoopBodyStatement),
     LoopStatement = statement(LoopStmt, MLDS_Context),
 
-    Stmt = ml_stmt_block([SlotVarDefn], [InitSlotVarStatement, LoopStatement]),
+    % XXX MLDS_DEFN
+    Stmt = ml_stmt_block([mlds_data(SlotVarDefn)],
+        [InitSlotVarStatement, LoopStatement]),
     Statement = statement(Stmt, MLDS_Context),
     Statements = [Statement].
 

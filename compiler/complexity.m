@@ -18,6 +18,7 @@
 :- module transform_hlds.complexity.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
 
@@ -58,6 +59,7 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module check_hlds.polymorphism.
 :- import_module hlds.code_model.
@@ -66,11 +68,18 @@
 :- import_module hlds.instmap.
 :- import_module hlds.passes_aux.
 :- import_module hlds.pred_table.
+:- import_module hlds.vartypes.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.builtin_lib_types.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.prog_mode.
 :- import_module parse_tree.prog_out.
 :- import_module parse_tree.prog_type.
@@ -83,7 +92,6 @@
 :- import_module list.
 :- import_module map.
 :- import_module require.
-:- import_module set.
 :- import_module string.
 :- import_module term.
 :- import_module varset.
@@ -127,10 +135,10 @@ read_spec_file_lines(Stream, CurLineNum, NumLines, MaybeError, !ProcMap,
         ResLine = ok(Chars0),
         list.filter(unify('\n'), Chars0, _, Chars),
         string.from_char_list(Chars, ProcName),
-        ( map.insert(ProcName, CurLineNum, !ProcMap) ->
+        ( if map.insert(ProcName, CurLineNum, !ProcMap) then
             read_spec_file_lines(Stream, CurLineNum + 1,
                 NumLines, MaybeError, !ProcMap, !IO)
-        ;
+        else
             NumLines = CurLineNum,
             MaybeError = yes("repeated line: " ++ ProcName)
         )
@@ -144,15 +152,16 @@ complexity_proc_name(ModuleInfo, PredId, ProcId) = FullName :-
     PredName = pred_info_name(PredInfo),
     QualifiedName = qualified(ModuleSymName, PredName),
     Arity = pred_info_orig_arity(PredInfo),
-    NameAndArity = sym_name_and_arity_to_string(QualifiedName / Arity),
+    NameAndArity =
+        sym_name_and_arity_to_string(sym_name_arity(QualifiedName, Arity)),
     proc_id_to_int(ProcId, ProcIdInt),
     FullName = NameAndArity ++ "-" ++ int_to_string(ProcIdInt).
 
 is_in_complexity_proc_map(ProcMap, ModuleInfo, PredId, ProcId) = IsInMap :-
     FullName = complexity_proc_name(ModuleInfo, PredId, ProcId),
-    ( map.search(ProcMap, FullName, ProcNum) ->
+    ( if map.search(ProcMap, FullName, ProcNum) then
         IsInMap = yes(ProcNum)
-    ;
+    else
         IsInMap = no
     ).
 
@@ -283,9 +292,11 @@ complexity_process_proc(NumProcs, ProcNum, FullName, PredId,
         SlotGoals),
 
     IsActiveOutputArg = foreign_arg(IsActiveVar,
-        yes(IsActiveVarName - out_mode), is_active_type, native_if_possible),
+        yes(foreign_arg_name_mode(IsActiveVarName, out_mode)),
+        is_active_type, bp_native_if_possible),
     SlotInputArg = foreign_arg(SlotVar,
-        yes(SlotVarName - in_mode), int_type, native_if_possible),
+        yes(foreign_arg_name_mode(SlotVarName, in_mode)),
+        int_type, bp_native_if_possible),
 
     ProcNumStr = int_to_string(ProcNum),
 
@@ -413,7 +424,8 @@ generate_slot_goals(ProcNum, NumberedVars, NumProfiledVars, Context, PredId,
         ProcVarName, SlotVarName, PredId, !ProcInfo, !ModuleInfo,
         PrefixGoals, ForeignArgs, FillCodeStr),
     SlotVarArg = foreign_arg(SlotVar,
-        yes(SlotVarName - out_mode), int_type, native_if_possible),
+        yes(foreign_arg_name_mode(SlotVarName, out_mode)),
+        int_type, bp_native_if_possible),
     PredName = "complexity_call_proc",
     DeclCodeStr = "\tMR_ComplexityProc *" ++ ProcVarName ++ ";\n",
     PredCodeStr = "\tMR_" ++ PredName ++ "(" ++
@@ -461,9 +473,11 @@ generate_size_goal(ArgVar, VarSeqNum, Context, NumProfiledVars, ProcVarName,
     ArgName = "arg" ++ int_to_string(VarSeqNum),
     TypeInfoArgName = "input_typeinfo" ++ int_to_string(VarSeqNum),
     ForeignArg = foreign_arg(ArgVar,
-        yes(ArgName - in_mode), VarType, native_if_possible),
+        yes(foreign_arg_name_mode(ArgName, in_mode)),
+        VarType, bp_native_if_possible),
     ForeignTypeInfoArg = foreign_arg(TypeInfoVar,
-        yes(TypeInfoArgName - in_mode), TypeInfoType, native_if_possible),
+        yes(foreign_arg_name_mode(TypeInfoArgName, in_mode)),
+        TypeInfoType, bp_native_if_possible),
     ForeignArgs = [ForeignTypeInfoArg, ForeignArg],
     CodeStr = "\t" ++ MacroName ++ "(" ++
         ProcVarName ++ ", " ++
@@ -516,19 +530,19 @@ classify_args([], [_ | _], _, _, _, _) :-
 classify_args([Var | Vars], [Mode | Modes], ModuleInfo, VarSet, VarTypes,
         [Var - complexity_arg_info(MaybeName, Kind) | VarInfos]) :-
     classify_args(Vars, Modes, ModuleInfo, VarSet, VarTypes, VarInfos),
-    ( varset.search_name(VarSet, Var, Name) ->
+    ( if varset.search_name(VarSet, Var, Name) then
         MaybeName = yes(Name)
-    ;
+    else
         MaybeName = no
     ),
-    ( mode_is_fully_input(ModuleInfo, Mode) ->
+    ( if mode_is_fully_input(ModuleInfo, Mode) then
         lookup_var_type(VarTypes, Var, VarType),
-        ( zero_size_type(ModuleInfo, VarType) ->
+        ( if zero_size_type(ModuleInfo, VarType) then
             Kind = complexity_input_fixed_size
-        ;
+        else
             Kind = complexity_input_variable_size
         )
-    ;
+    else
         Kind = complexity_output
     ).
 
@@ -574,8 +588,10 @@ make_type_info_var(Type, Context, PredId, !ProcInfo, !ModuleInfo,
     create_poly_info(!.ModuleInfo, PredInfo0, !.ProcInfo, PolyInfo0),
     polymorphism_make_type_info_var(Type, Context, TypeInfoVar,
         TypeInfoGoals, PolyInfo0, PolyInfo),
-    poly_info_extract(PolyInfo, PredInfo0, PredInfo,
+    poly_info_extract(PolyInfo, PolySpecs, PredInfo0, PredInfo,
         !ProcInfo, !:ModuleInfo),
+    expect(unify(PolySpecs, []), $module, $pred,
+        "got errors while making type_info_var"),
     expect(unify(PredInfo0, PredInfo), $module, $pred, "modified pred_info").
 
 %-----------------------------------------------------------------------------%

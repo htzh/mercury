@@ -80,7 +80,7 @@
 % the cell could potentially be reused.
 %
 % Note that cells being deconstructed in the different branches of a
-% disjunction can now also be reused after the the disjunction.
+% disjunction can now also be reused after the disjunction.
 %
 % e.g.:
 %   (
@@ -98,6 +98,7 @@
 :- module transform_hlds.ctgc.structure_reuse.direct.choose_reuse.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_module.
@@ -113,9 +114,13 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
 :- import_module hlds.hlds_data.
+:- import_module hlds.vartypes.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_pragma.
 
 :- import_module float.
 :- import_module int.
@@ -181,7 +186,7 @@ background_info_init(Strategy, ModuleInfo, ProcInfo) = Background :-
 %
 % (1) extend deconstruction_spec with a field of type may_use_atomic_alloc,
 %     indicating whether the potentially reused cell may be atomic or not, and
-% (2) ensure that we reuse atomically-created cells only for connstructions
+% (2) ensure that we reuse atomically-created cells only for constructions
 %     in which all arguments can be put into atomic cells.
 %
 % These will require applying type_may_use_atomic_alloc to the arguments of
@@ -379,9 +384,9 @@ reverse_compare_matches_value_degree(MatchA, MatchB, Result) :-
 :- func match_value_degree(match) = float.
 
 match_value_degree(Match) =
-    ( Match ^ match_value \= 0.0 ->
+    ( if Match ^ match_value \= 0.0 then
         Match ^ match_value / float(Match ^ match_degree)
-    ;
+    else
         0.0
     ).
 
@@ -470,9 +475,9 @@ choose_reuse_in_goal(Background, !DeadCellTable, !Goal, !ReuseAs) :-
     % highest value, annotate the goal accordingly, and repeat the procedure.
     % If the match table is empty, the work is finished.
 
-    ( multi_map.is_empty(MatchTable) ->
+    ( if multi_map.is_empty(MatchTable) then
         true
-    ;
+    else
         % Select the deconstructions-constructions with highest value.
 
         Match = highest_match_degree_ratio(MatchTable),
@@ -507,10 +512,10 @@ choose_reuse_in_goal(Background, !DeadCellTable, !Goal, !ReuseAs) :-
             % by taking the reuse opportunity, just drop it.
             globals.lookup_int_option(Globals, structure_reuse_max_conditions,
                 MaxConditions),
-            ( reuse_as_count_conditions(!.ReuseAs) > MaxConditions ->
+            ( if reuse_as_count_conditions(!.ReuseAs) > MaxConditions then
                 !:Goal = OldGoal,
                 !:ReuseAs = OldReuseAs
-            ;
+            else
                 true
             ),
 
@@ -571,12 +576,12 @@ compute_match_table_with_continuation(Background, DeadCellTable,
     CurrentGoal = hlds_goal(GoalExpr, GoalInfo),
     (
         GoalExpr = unify(_, _, _, Unification, _),
-        ( Unification = deconstruct(Var, ConsId, Args, _, _, _) ->
+        ( if Unification = deconstruct(Var, ConsId, Args, _, _, _) then
 
             ProgramPoint = program_point_init(GoalInfo),
-            (
+            ( if
                 Condition = dead_cell_table_search(ProgramPoint, DeadCellTable)
-            ->
+            then
                 ReuseAs = reuse_as_init_with_one_condition(Condition),
                 DeconstructionSpec = deconstruction_spec_init(Var,
                     ProgramPoint, ConsId, Args, ReuseAs),
@@ -584,10 +589,10 @@ compute_match_table_with_continuation(Background, DeadCellTable,
                 find_best_match_in_conjunction(Background, Cont,
                     Match0, Match),
                 multi_map.set(Var, Match, !Table)
-            ;
+            else
                 true
             )
-        ;
+        else
             true
         ),
         compute_match_table_goal_list(Background, DeadCellTable, Cont, !Table)
@@ -813,19 +818,19 @@ find_match_in_goal_2(Background, Goal, !Match) :-
         GoalExpr = unify(_, _, _, Unification, _),
         (
             Unification = construct(Var, Cons, Args, _, _, _, _),
-            (
-                lookup_var_type(Background ^ back_vartypes, Var, VarType),
+            lookup_var_type(Background ^ back_vartypes, Var, VarType),
+            ( if
                 top_cell_may_be_reusable(Background ^ back_module_info,
                     VarType),
 
                 % Is the construction still looking for reuse-possibilities...
                 empty_reuse_description(goal_info_get_reuse(GoalInfo))
-            ->
+            then
                 % Is it possible for the construction to reuse the dead cell
                 % specified by the match?
                 verify_match(Background, Var, Cons, Args,
                     program_point_init(GoalInfo), !Match)
-            ;
+            else
                 true
             )
         ;
@@ -919,17 +924,17 @@ beta_value = 1.
 
 verify_match(Background, NewVar, NewCons, NewArgs, PP, !Match) :-
     DeconSpecs = !.Match ^ decon_specs,
-    (
+    ( if
         % The construction must be compatible with *all* deconstruction specs.
         % Otherwise we may try to reuse a cell which is only compatible through
         % one code path but not another.
         list.map(compute_reuse_type(Background, NewVar, NewCons, NewArgs),
             DeconSpecs, ReuseTypes),
         ReuseType = glb_reuse_types(ReuseTypes) % Can Fail.
-    ->
+    then
         ConSpec = con(PP, ReuseType),
         match_add_construction(ConSpec, !Match)
-    ;
+    else
         true
     ).
 
@@ -953,9 +958,9 @@ compute_reuse_type(Background, NewVar, NewCons, NewCellArgs, DeconSpec,
     ModuleInfo = Background ^ back_module_info,
     VarTypes = Background ^ back_vartypes,
 
-    ( NewCons = DeadCons ->
+    ( if NewCons = DeadCons then
         SameCons = yes
-    ;
+    else
         SameCons = no,
         % XXX All the reuse code was written before packed and double word
         % arguments were introduced. For now only allow reuse of cells with
@@ -974,8 +979,8 @@ compute_reuse_type(Background, NewVar, NewCons, NewCellArgs, DeconSpec,
     % Include the space needed for secondary tags.
     has_secondary_tag(ModuleInfo, VarTypes, NewVar, NewCons, SecTag),
     has_secondary_tag(ModuleInfo, VarTypes, DeadVar, DeadCons, DeadSecTag),
-    NewArity = NewNumArgs + (SecTag = yes -> 1 ; 0),
-    DeadArity = DeadNumArgs + (DeadSecTag = yes -> 1 ; 0),
+    NewArity = NewNumArgs + (if SecTag = yes then 1 else 0),
+    DeadArity = DeadNumArgs + (if DeadSecTag = yes then 1 else 0),
 
     % The new cell must not be bigger than the dead cell.
     NewArity =< DeadArity,
@@ -1000,11 +1005,9 @@ compute_reuse_type(Background, NewVar, NewCons, NewCellArgs, DeconSpec,
         DeadSecTag, DeadCellArgs),
     UpToDateFields = list.length(
         list.delete_all(ReuseFields, needs_update)),
-    %
-    % Finally, compute the value of this reuse-configuration.
-    %
-    ( SameCons = yes -> SameConsV = 0; SameConsV = 1),
 
+    % Finally, compute the value of this reuse-configuration.
+    (if SameCons = yes then SameConsV = 0 else SameConsV = 1),
     Weight = ( (alfa_value + gamma_value) * NewArity + beta_value
         - gamma_value * (NewArity - UpToDateFields)
         - beta_value * SameConsV
@@ -1029,6 +1032,7 @@ cons_has_normal_fields(ModuleInfo, Cons) :-
     ;
         ( Cons = closure_cons(_, _)
         ; Cons = int_const(_)
+        ; Cons = uint_const(_)
         ; Cons = float_const(_)
         ; Cons = char_const(_)
         ; Cons = string_const(_)
@@ -1038,7 +1042,7 @@ cons_has_normal_fields(ModuleInfo, Cons) :-
         ; Cons = type_info_cell_constructor(_)
         ; Cons = typeclass_info_cell_constructor
         ; Cons = tabling_info_const(_)
-        ; Cons = table_io_decl(_)
+        ; Cons = table_io_entry_desc(_)
         ; Cons = deep_profiling_proc_layout(_)
         ),
         unexpected($module, $pred, "unusual cons_id")
@@ -1060,12 +1064,10 @@ glb_reuse_types_2(R1, R2) = R :-
 :- func ands(list(needs_update), list(needs_update)) = list(needs_update).
 
 ands(L1, L2) = L :-
-    (
-        length(L1) =< length(L2)
-    ->
+    ( if length(L1) =< length(L2) then
         L1b = L1,
         L2b = take_upto(length(L1), L2)
-    ;
+    else
         L1b = take_upto(length(L2), L1),
         L2b = L2
     ),
@@ -1089,16 +1091,16 @@ needs_update_and(does_not_need_update, does_not_need_update) =
     prog_var::in, cons_id::in, bool::out) is det.
 
 has_secondary_tag(ModuleInfo, VarTypes, Var, ConsId, SecondaryTag) :-
-    (
-        lookup_var_type(VarTypes, Var, Type),
+    lookup_var_type(VarTypes, Var, Type),
+    ( if
         type_to_type_defn_body(ModuleInfo, Type, TypeBody),
         TypeBody = hlds_du_type(_, ConsTagValues, _, _, _, _, _, _, _),
         map.search(ConsTagValues, ConsId, ConsTag),
         MaybeSecondaryTag = get_secondary_tag(ConsTag),
         MaybeSecondaryTag = yes(_)
-    ->
+    then
         SecondaryTag = yes
-    ;
+    else
         SecondaryTag = no
     ).
 
@@ -1146,9 +1148,9 @@ equals([], []) = [].
 equals([], [_|_]) = [].
 equals([_|_], []) = [].
 equals([X | Xs], [Y | Ys]) = [NeedsUpdate | equals(Xs, Ys)] :-
-    ( X = Y ->
+    ( if X = Y then
         NeedsUpdate = does_not_need_update
-    ;
+    else
         NeedsUpdate = needs_update
     ).
 
@@ -1241,29 +1243,29 @@ annotate_reuse_for_unification(Background, Match, Unification, !GoalInfo) :-
     CurrentProgramPoint = program_point_init(!.GoalInfo),
     (
         Unification = deconstruct(_, _, _, _, _, _),
-        (
+        ( if
             match_find_deconstruction_spec(Match, CurrentProgramPoint,
                 _DeconSpec)
-        ->
+        then
             goal_info_set_reuse(potential_reuse(cell_died), !GoalInfo)
-        ;
+        else
             true
         )
     ;
         Unification = construct(_, _, _, _, _, _, _),
-        (
+        ( if
             match_find_construction_spec(Match, CurrentProgramPoint, ConSpec)
-        ->
+        then
             DeadVar = match_get_dead_var(Match),
             DeadConsIds = match_get_dead_cons_ids(Match),
             ReuseAs = match_get_condition(Background, Match),
             ReuseFields = ConSpec ^ con_reuse ^ reuse_fields,
 
-            ( reuse_as_conditional_reuses(ReuseAs) ->
+            ( if reuse_as_conditional_reuses(ReuseAs) then
                 Kind = conditional_reuse
-            ; reuse_as_all_unconditional_reuses(ReuseAs) ->
+            else if reuse_as_all_unconditional_reuses(ReuseAs) then
                 Kind = unconditional_reuse
-            ;
+            else
                 % reuse_as_no_reuses(ReuseAs)
                 unexpected($module, $pred, "no reuse conditions")
             ),
@@ -1279,7 +1281,7 @@ annotate_reuse_for_unification(Background, Match, Unification, !GoalInfo) :-
                 KindReuse = reuse(CellReused)
             ),
             goal_info_set_reuse(KindReuse, !GoalInfo)
-        ;
+        else
             true
         )
     ;
@@ -1359,12 +1361,10 @@ dump_match(Prefix, Match, !IO) :-
     io.write_int(term.var_to_int(match_get_dead_var(Match)), !IO),
     io.write_string("\t|\t", !IO),
     Val = Match ^ match_value,
-    (
-        Val \= 0.0
-    ->
-        io.format("%.2f", [f(Val)], !IO)
-    ;
+    ( if Val = 0.0 then
         io.write_string("-", !IO)
+    else
+        io.format("%.2f", [f(Val)], !IO)
     ),
     Degree = Match ^ match_degree,
     io.write_string("\t|\t", !IO),
@@ -1378,9 +1378,9 @@ dump_match(Prefix, Match, !IO) :-
 dump_match_details(Match, !IO) :-
     Conds = list.map((func(DeconSpec) = DeconSpec ^ decon_conds),
         Match ^ decon_specs),
-    ( list.takewhile(reuse_as_all_unconditional_reuses, Conds, _, []) ->
+    ( if all_true(reuse_as_all_unconditional_reuses, Conds) then
         CondsString = "A"
-    ;
+    else
         CondsString = "C"
     ),
 
@@ -1394,9 +1394,9 @@ dump_match_details(Match, !IO) :-
 :- pred dump_full_table(match_table::in, io::di, io::uo) is det.
 
 dump_full_table(MatchTable, !IO) :-
-    ( multi_map.is_empty(MatchTable) ->
+    ( if multi_map.is_empty(MatchTable) then
         dump_line("empty match table", !IO)
-    ;
+    else
         dump_line("full table (start)", !IO),
         multi_map.values(MatchTable, Matches),
         list.foldl(dump_match("%-----"), Matches, !IO),
@@ -1426,12 +1426,12 @@ maybe_dump_full_table(yes, M, !IO) :-
 
 check_for_cell_caching(VeryVerbose, DeadCellTable0, !Goal) :-
     dead_cell_table_remove_conditionals(DeadCellTable0, DeadCellTable),
-    ( dead_cell_table_is_empty(DeadCellTable) ->
+    ( if dead_cell_table_is_empty(DeadCellTable) then
         trace [io(!IO)] (
             maybe_write_string(VeryVerbose,
                 "% No cells to be cached/freed.\n", !IO)
         )
-    ;
+    else
         trace [io(!IO)] (
             maybe_write_string(VeryVerbose,
                 "% Marking cacheable/freeable cells.\n", !IO)
@@ -1516,18 +1516,18 @@ check_for_cell_caching_in_case(DeadCellTable, !Case) :-
 
 check_for_cell_caching_in_unification(DeadCellTable, !Unification,
         !GoalInfo) :-
-    (
+    ( if
         !.Unification = deconstruct(Var, ConsId, Args, ArgModes, CanFail, _),
         Condition = dead_cell_table_search(program_point_init(!.GoalInfo),
             DeadCellTable),
-        \+ reuse_condition_is_conditional(Condition)
-    ->
+        not reuse_condition_is_conditional(Condition)
+    then
         !:Unification = deconstruct(Var, ConsId, Args, ArgModes, CanFail,
             can_cgc),
-        % XXX Why potential_reuse and not simply "reuse" ?
+        % XXX Why potential_reuse and not simply "reuse"?
         ReuseInfo = potential_reuse(cell_died),
         goal_info_set_reuse(ReuseInfo, !GoalInfo)
-    ;
+    else
         true
     ).
 

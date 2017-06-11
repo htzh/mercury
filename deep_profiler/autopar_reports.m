@@ -1,17 +1,17 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: autopar_reports.m
 % Author: pbone.
 %
 % This module contains code for creating reports for debugging.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdprof_fb.automatic_parallelism.autopar_reports.
 :- interface.
@@ -24,14 +24,13 @@
 :- import_module cord.
 :- import_module io.
 
-:- pred print_feedback_report(string::in, feedback_info::in, io::di, io::uo)
-    is det.
+:- pred print_feedback_report(feedback_info::in, io::di, io::uo) is det.
 
 :- pred create_candidate_parallel_conj_report(var_name_table::in,
     candidate_par_conjunction(pard_goal)::in, cord(string)::out) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -51,43 +50,52 @@
 :- import_module std_util.
 :- import_module string.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-print_feedback_report(ProgName, Feedback, !IO) :-
-    get_all_feedback_data(Feedback, AllFeedback),
-    list.map(create_feedback_report, AllFeedback, Reports),
-    ReportStr = string.append_list(Reports),
-    io.format("Feedback report for %s:\n\n%s", [s(ProgName), s(ReportStr)],
-        !IO).
-
-:- pred create_feedback_report(feedback_data::in, string::out) is det.
-
-create_feedback_report(FeedbackData, Report) :-
+print_feedback_report(FeedbackInfo, !IO) :-
+    get_all_feedback_info(FeedbackInfo, ProfiledProgramName,
+        MaybeCandidateParConjs),
+    % This code is structured like this to make it easy to add
+    % new feedback components.
+    some [!RevReports] (
+        !:RevReports = [],
+        (
+            MaybeCandidateParConjs = no
+        ;
+            MaybeCandidateParConjs = yes(CandidateParConjs),
+            create_feedback_autopar_report(CandidateParConjs,
+                CandidateParConjsReport),
+            !:RevReports = [CandidateParConjsReport | !.RevReports]
+        ),
+        list.reverse(!.RevReports, Reports)
+    ),
     (
-        FeedbackData = feedback_data_calls_above_threshold_sorted(_, _, _),
-        Report =
-            "  feedback_data_calls_above_threshold_sorted is not supported\n"
+        Reports = [],
+        Report = "no report available.\n"
     ;
-        FeedbackData = feedback_data_candidate_parallel_conjunctions(
-            Parameters, Conjs),
-        create_feedback_autopar_report(Parameters, Conjs, Report)
-    ).
+        Reports = [_ | _],
+        string.append_list(Reports, Report)
+    ),
+    io.format("Feedback report for %s:\n\n%s",
+        [s(ProfiledProgramName), s(Report)], !IO).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- pred create_feedback_autopar_report(candidate_par_conjunctions_params::in,
-    assoc_list(string_proc_label, candidate_par_conjunctions_proc)::in,
-    string::out) is det.
+:- pred create_feedback_autopar_report(
+    feedback_info_candidate_parallel_conjunctions::in, string::out) is det.
 
-create_feedback_autopar_report(Parameters, ProcConjs, Report) :-
+create_feedback_autopar_report(CandidateParConjs, Report) :-
+    CandidateParConjs =
+        feedback_info_candidate_parallel_conjunctions(Parameters, ProcConjs),
     NumProcConjs = length(ProcConjs),
     foldl(count_conjunctions_in_procs, ProcConjs, 0, NumConjs),
     Parameters = candidate_par_conjunctions_params(DesiredParallelism,
         IntermoduleVarUse, SparkingCost, SparkingDelay, BarrierCost,
         SignalCost, WaitCost, ContextWakeupDelay, CliqueThreshold,
         CallSiteThreshold, SpeedupThreshold,
-        ParalleliseDepConjs, BestParAlgorithm),
-    best_par_algorithm_string(BestParAlgorithm, BestParAlgorithmStr),
+        ParalleliseDepConjs, AlgForFindingBestPar),
+    AlgForFindingBestParStr =
+        alg_for_finding_best_par_to_string(AlgForFindingBestPar),
     ReportHeader = singleton(format(
         "  Candidate parallel conjunctions:\n" ++
         "    Desired parallelism:       %f\n" ++
@@ -118,7 +126,7 @@ create_feedback_autopar_report(Parameters, ProcConjs, Report) :-
          i(CallSiteThreshold),
          f(SpeedupThreshold),
          s(ParalleliseDepConjsStr),
-         s(BestParAlgorithmStr),
+         s(AlgForFindingBestParStr),
          i(NumProcConjs),
          i(NumConjs)])),
     (
@@ -126,10 +134,6 @@ create_feedback_autopar_report(Parameters, ProcConjs, Report) :-
         (
             SpeedupAlg = estimate_speedup_naively,
             ParalleliseDepConjsStr = "yes, pretend they're independent"
-        ;
-            SpeedupAlg = estimate_speedup_by_num_vars,
-            ParalleliseDepConjsStr =
-                "yes, the more shared variables the less overlap there is"
         ;
             SpeedupAlg = estimate_speedup_by_overlap,
             ParalleliseDepConjsStr = "yes, use overlap calculation"
@@ -149,22 +153,26 @@ count_conjunctions_in_procs(_ - Cands, !NumConjs) :-
     Cands = candidate_par_conjunctions_proc(_VarNameTable, _Pushes, Conjs),
     !:NumConjs = !.NumConjs + length(Conjs).
 
-:- pred best_par_algorithm_string(best_par_algorithm::in, string::out) is det.
+:- func alg_for_finding_best_par_to_string(alg_for_finding_best_par) = string.
 
-best_par_algorithm_string(Alg, Str) :-
+alg_for_finding_best_par_to_string(Alg) = Str :-
     (
-        Alg = bpa_greedy,
+        Alg = affbp_greedy,
         Str = "greedy"
     ;
-        Alg = bpa_complete_branches(N),
+        Alg = affbp_complete_branches(N),
         Str = string.format("complete-branches(%d)", [i(N)])
     ;
-        Alg = bpa_complete_size(N),
+        Alg = affbp_complete_size(N),
         Str = string.format("complete-size(%d)", [i(N)])
     ;
-        Alg = bpa_complete,
+        Alg = affbp_complete,
         Str = "complete"
     ).
+
+:- pred create_candidate_parallel_conj_proc_report(
+    pair(string_proc_label, candidate_par_conjunctions_proc)::in,
+    cord(string)::out) is det.
 
 create_candidate_parallel_conj_proc_report(Proc - CandidateParConjunctionProc,
         Report) :-
@@ -193,10 +201,6 @@ create_push_goal_report(PushGoal, Report) :-
     TailPushGoalStrs = list.map(FormatPushedGoals, PushedGoalPathStrs),
     Report = cord.from_list([HeadPushGoalStr | TailPushGoalStrs]).
 
-:- pred create_candidate_parallel_conj_proc_report(
-    pair(string_proc_label, candidate_par_conjunctions_proc)::in,
-    cord(string)::out) is det.
-
 create_candidate_parallel_conj_report(VarNameTable, CandidateParConjunction,
         Report) :-
     CandidateParConjunction = candidate_par_conjunction(GoalPathString,
@@ -208,12 +212,12 @@ create_candidate_parallel_conj_report(VarNameTable, CandidateParConjunction,
     ParOverheads = parallel_exec_metrics_get_overheads(ParExecMetrics),
     (
         IsDependent = conjuncts_are_independent,
-        DependanceString = "no"
+        DependenceString = "no"
     ;
         IsDependent = conjuncts_are_dependent(Vars),
         map(lookup_var_name(VarNameTable), Vars, VarNames),
         VarsString = join_list(", ", to_sorted_list(VarNames)),
-        DependanceString = format("on %s", [s(VarsString)])
+        DependenceString = format("on %s", [s(VarsString)])
     ),
     Speedup = parallel_exec_metrics_get_speedup(ParExecMetrics),
     TimeSaving = parallel_exec_metrics_get_time_saving(ParExecMetrics),
@@ -253,7 +257,7 @@ create_candidate_parallel_conj_report(VarNameTable, CandidateParConjunction,
         "      First conj dead time: %s\n" ++
         "      Future dead time: %s\n" ++
         "      Total dead time: %s\n\n",
-        [s(DependanceString),
+        [s(DependenceString),
          s(commas(NumCalls)),
          s(two_decimal_fraction(SeqTime)),
          s(two_decimal_fraction(ParTime)),
@@ -270,10 +274,10 @@ create_candidate_parallel_conj_report(VarNameTable, CandidateParConjunction,
         Header2Str),
     Header3 = cord.singleton(Header2Str),
 
-    ( rev_goal_path_from_string(GoalPathString, RevGoalPathPrime) ->
+    ( if rev_goal_path_from_string(GoalPathString, RevGoalPathPrime) then
         RevGoalPath = RevGoalPathPrime
-    ;
-        unexpected($module, $pred, "couldn't parse goal path")
+    else
+        unexpected($pred, "couldn't parse goal path")
     ),
     some [!ConjNum] (
         !:ConjNum = FirstConjNum,
@@ -321,7 +325,7 @@ format_parallel_conjuncts(VarNameTable, Indent, RevGoalPath, ConjNum0,
     Conj = seq_conj(Goals),
     (
         Goals = [],
-        unexpected($module, $pred, "empty conjunct in parallel conjunction")
+        unexpected($pred, "empty conjunct in parallel conjunction")
     ;
         Goals = [Goal | GoalsTail],
         RevInnerGoalPath = rgp_cons(RevGoalPath, step_conj(ConjNum0)),
@@ -345,7 +349,7 @@ format_parallel_conjuncts(VarNameTable, Indent, RevGoalPath, ConjNum0,
         Conjs = []
     ;
         Conjs = [_ | _],
-        !:Report = snoc(!.Report ++ indent(Indent), "&\n")
+        !:Report = cord.snoc(!.Report ++ indent(Indent), "&\n")
     ),
     ConjNum = ConjNum0 + 1,
     format_parallel_conjuncts(VarNameTable, Indent, RevGoalPath, ConjNum,
@@ -358,7 +362,7 @@ format_parallel_conjuncts(VarNameTable, Indent, RevGoalPath, ConjNum0,
 format_sequential_conjunction(VarNameTable, Indent, RevGoalPath, Goals, Cost,
         FirstConjNum, !:Report) :-
     !:Report = empty,
-    ( FirstConjNum = 1 ->
+    ( if FirstConjNum = 1 then
         !:Report = !.Report ++
             indent(Indent) ++
             singleton(format("%% conjunction: %s",
@@ -367,7 +371,7 @@ format_sequential_conjunction(VarNameTable, Indent, RevGoalPath, Goals, Cost,
             singleton(format("%% Cost: %s",
                 [s(two_decimal_fraction(Cost))])) ++
             nl ++ nl
-    ;
+    else
         true
     ),
     format_sequential_conjuncts(VarNameTable, Indent, RevGoalPath, Goals,
@@ -443,7 +447,8 @@ format_var_use_report(VarNameTable, Label, List, Report) :-
     cord(string)::out) is det.
 
 format_var_use_line(VarNameTable, Var - Use, singleton(String)) :-
-    format("    %s: %s", [s(VarName), s(two_decimal_fraction(Use))], String),
+    string.format("    %s: %s", [s(VarName), s(two_decimal_fraction(Use))],
+        String),
     lookup_var_name(VarNameTable, Var, VarName).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

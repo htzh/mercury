@@ -1,4 +1,6 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
 
 :- module lexer_zero.
 :- interface.
@@ -7,14 +9,13 @@
 
 :- pred main(io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module lexer.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 main(!IO) :-
     % Read from the current input stream.
@@ -34,23 +35,19 @@ main(!IO) :-
             write_token_list(StringTokens, !IO)
         ;
             ReadRes = error(_, Error),
-            io.write(Error, !IO),
-            io.nl(!IO)
+            io.write_line(Error, !IO)
         ),
         io.close_input(Stream, !IO)
     ;
         OpenRes = error(Error),
-        io.write(Error, !IO),
-        io.nl(!IO)
+        io.write_line(Error, !IO)
     ).
 
 :- pred write_token_list(token_list::in, io::di, io::uo) is det.
 
 write_token_list(token_nil, !IO).
-write_token_list(token_cons(Token, _Context, List), !IO) :-
-    io.write(Token, !IO),
-    io.nl(!IO),
+write_token_list(token_cons(Token, Context, List), !IO) :-
+    io.write_int(Context, !IO),
+    io.write_string(": ", !IO),
+    io.write_line(Token, !IO),
     write_token_list(List, !IO).
-
-%-----------------------------------------------------------------------------%
-% vim: ft=mercury ts=4 sts=4 sw=4 et

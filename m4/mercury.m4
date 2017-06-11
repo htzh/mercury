@@ -492,7 +492,7 @@ if test "$JAVAC" != "" -a "$JAVA_INTERPRETER" != "" -a "$JAR" != ""; then
 	cat > conftest.java << EOF
 		// This program simply retrieves the constant
 		// specifying the version number of the Java SDK and
-		// checks it is at least 1.5, printing "Hello, world"
+		// checks it is at least 1.6, printing "Hello, world"
 		// if successful.
 		public class conftest {
 		    public static void main (String[[]] args) {
@@ -512,7 +512,7 @@ if test "$JAVAC" != "" -a "$JAVA_INTERPRETER" != "" -a "$JAR" != ""; then
 				version = 0f;
 			}
 
-			if (version >= 1.5f) {
+			if (version >= 1.6) {
 				System.out.println("Hello, world\n");
 			} else {
 				System.out.println("Nope, sorry.\n");
@@ -560,12 +560,18 @@ AC_CACHE_VAL([mercury_cv_javac_flags_for_heap_size], [
 if test "$mercury_cv_java" = "yes"
 then
 	AC_MSG_CHECKING([if the Java compiler accepts the max heap size option])
-	# There are two versions of this.  The _test version is the one we test
-	# here.  The second one, with the escaped quotes, is the one that gets
-	# included in the output files.  The quotes are necessary in order for
-	# --restricted-command-line to work with the Java backend.
+	# There are three versions of this.  The '_test' version is the one we
+	# test here; the '_mmake' version is the one that gets included in
+	# in the Mmake.vars file and the '_config' verison is the version that
+	# gets in included in the Mercury.config file.
+	# The difference between the three versions is how much we need to
+	# escape the double quotes; in particular we need to ensure that they
+	# are *not* escaped in Mmake.vars and *are* escaped in Mercury.config.
+	# The latter is necessary in order for --restricted-command-line to
+	# work.
 	mercury_cv_javac_flags_for_heap_size_test="-J-Xmx256m"
-	mercury_cv_javac_flags_for_heap_size="-J\"-Xmx1024m\""
+	mercury_cv_javac_flags_for_heap_size_mmake="-J\"-Xmx1024m\""
+	mercury_cv_javac_flags_for_heap_size_config="-J\\\"-Xmx1024m\\\""
 	if "$JAVAC" "$mercury_cv_javac_flags_for_heap_size_test" -version \
                 2> /dev/null
         then
@@ -657,7 +663,6 @@ mercury_cv_gcc_version=`$CC -dumpversion | tr . ' ' | {
 
 # Work out the C compiler type using a stronger test than AC_PROG_CC to
 # distinguish between clang and gcc.
-# (We don't handle lcc here - I don't think that it's possible to.)
 
 AC_DEFUN([MERCURY_CC_TYPE], [
 AC_REQUIRE([AC_PROG_CC])
@@ -774,38 +779,22 @@ fi
 #
 
 AC_DEFUN([MERCURY_HAVE_PTHREADS_WIN32], [
-
 AC_MSG_CHECKING([if we are using pthreads-win32])
 
-cat > conftest.c << EOF
-
-#include <pthread.h>
-#include <stdio.h>
-
-int main(int argc, char **argv)
-{
-
-#if defined(PTW32_VERSION)
-    return 0;
-#else
-    return 1;
-#endif
-
-}
-
-EOF
-
-echo "$CC -o conftest contest.c" >&AC_FD_CC 2>&1
-if
-    $CC -o conftest conftest.c
-then
-    mercury_cv_have_pthreads_win32="yes"
-else
-    mercury_cv_have_pthreads_win32="no"
-fi
+AC_TRY_COMPILE([#include <pthread.h>],
+    [
+        #ifndef PTW32_VERSION
+            #error I suppose not
+        #endif
+        int self_id(void)
+        {
+            return (int) pthread_self().p;
+        }
+    ],
+    [mercury_cv_have_pthreads_win32=yes],
+    [mercury_cv_have_pthreads_win32=no])
 
 AC_MSG_RESULT($mercury_cv_have_pthreads_win32)
-
 ])
 
 #-----------------------------------------------------------------------------#

@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2009-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: message.m.
 % Author: pbone.
@@ -13,7 +13,7 @@
 % mdprof_create_feedback tool. These messages can represent information such as
 % warnings and errors. Code is also included here to print them out.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module message.
 :- interface.
@@ -26,7 +26,7 @@
 :- import_module cord.
 :- import_module io.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 	% A message to be displayed to the user.
     %
@@ -52,7 +52,7 @@
     ;       pl_clique(clique_ptr)
     ;       pl_csd(call_site_dynamic_ptr).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func message_get_level(message) = message_level.
 
@@ -70,11 +70,8 @@
 :- pred append_message(program_location::in, message_type::in,
     cord(message)::in, cord(message)::out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-	% A type of message, values of type 'message' are instances of values of
-    % type 'message_type'.
-    %
 :- type message_type
     --->    info_found_candidate_conjunction
             % A candidate parallel conjunction has been found.
@@ -90,9 +87,9 @@
             % we are considering them for parallelisation against one another.
 
     ;       info_split_conjunction_into_partitions(int)
-            % The conjunction being consdered for parallelisation had to be
-            % split into several 'partitions' because it contains some non
-            % atomic goals, this can limit the amount of parallelism
+            % The conjunction being considered for parallelisation had to be
+            % split into several 'partitions' because it contains some
+            % nonatomic goals; this can limit the amount of parallelism
             % available.
 
     ;       info_found_n_conjunctions_with_positive_speedup(int)
@@ -124,7 +121,7 @@
 
     ;       notice_candidate_conjunction_not_det(detism_rep)
             % The candidate conjunction has goals that are not
-            % determinstic or cc_multi amongst the costly calls.
+            % deterministic or cc_multi amongst the costly calls.
 
     ;       warning_cannot_lookup_proc_defn
             % Couldn't find the proc defn in the progrep data, maybe the
@@ -155,7 +152,7 @@
 
     ;       error_exception_thrown(string).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Create an indentation of the appropriate amount.  Indentation is two
     % spaces per indentation level.
@@ -173,7 +170,7 @@
     %
 :- func indent_size(int) = int.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Write out messages.
     %
@@ -189,8 +186,8 @@
     %
 :- func default_verbosity_level = int.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -201,12 +198,19 @@
 :- import_module require.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 message_get_level(message(_, Type)) =
     message_type_to_level(Type).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+
+message_level_to_int(message_info) = 4.
+message_level_to_int(message_notice) = 3.
+message_level_to_int(message_warning) = 2.
+message_level_to_int(message_error) = 1.
+
+%---------------------------------------------------------------------------%
 
 message_to_string(message(Location, MessageType), String) :-
     location_to_string(1, Location, LocationString),
@@ -247,13 +251,13 @@ location_to_string(Level, Location, String) :-
         String = indent(Level) ++ singleton(String0)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 append_message(Location, MessageType, !Messages) :-
     Message = message(Location, MessageType),
     !:Messages = cord.snoc(!.Messages, Message).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func message_level_to_string(message_level) = cord(string).
 
@@ -262,14 +266,7 @@ message_level_to_string(message_notice) = singleton("Notice").
 message_level_to_string(message_warning) = singleton("Warning").
 message_level_to_string(message_error) = singleton("Error").
 
-%-----------------------------------------------------------------------------%
-
-message_level_to_int(message_info) = 4.
-message_level_to_int(message_notice) = 3.
-message_level_to_int(message_warning) = 2.
-message_level_to_int(message_error) = 1.
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func message_type_to_level(message_type) = message_level.
 
@@ -304,7 +301,7 @@ message_type_to_level(MsgType) = MsgLevel :-
         MsgLevel = message_error
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func message_type_to_string(message_type) = cord(string).
 
@@ -318,7 +315,7 @@ message_type_to_string(MessageType) = Cord :-
     ;
         (
             MessageType = info_found_conjs_above_callsite_threshold(Num),
-            MessageStr = "Found %d conjuncts above callsite threashold"
+            MessageStr = "Found %d conjuncts above callsite threshold"
         ;
             MessageType = info_found_n_conjunctions_with_positive_speedup(Num),
             MessageStr = "Found %d conjunctions with a positive speedup due"
@@ -331,7 +328,7 @@ message_type_to_string(MessageType) = Cord :-
         string.format(MessageStr, [i(Num)], String)
     ;
         MessageType = info_found_pushed_conjs_above_callsite_threshold,
-        String = "Found pushed conjuncts above callsite threashold"
+        String = "Found pushed conjuncts above callsite threshold"
     ;
         MessageType = notice_duplicate_instantiation(CandidateConjuncts),
         string.format(
@@ -349,8 +346,8 @@ message_type_to_string(MessageType) = Cord :-
             [i(PartNum), i(NumCalls)], String)
     ;
         MessageType = notice_candidate_conjunction_not_det(Detism),
-        string.format("There are %d goals amoungst goals above the "
-                ++ "parallelisation overhead.",
+        string.format("There are %s goals amongst goals"
+                ++ " above the parallelisation overhead.",
             [s(string(Detism))], String)
     ;
         MessageType = warning_cannot_lookup_proc_defn,
@@ -362,7 +359,7 @@ message_type_to_string(MessageType) = Cord :-
             ++ "\n  falling back to some other method"
     ;
         MessageType = error_extra_proc_dynamics_in_clique_proc,
-        String = "extra proc dynamnics for a clique proc are not currenty"
+        String = "extra proc dynamics for a clique proc are not currently"
             ++ " handled."
     ;
         (
@@ -382,14 +379,14 @@ message_type_to_string(MessageType) = Cord :-
     ),
     Cord = singleton(String).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 indent(N) = Indent :-
-    ( N < 0 ->
+    ( if N < 0 then
         error("automatic_parallelism: Negative indent")
-    ; N = 0 ->
+    else if N = 0 then
         Indent = empty
-    ;
+    else
         Indent = snoc(indent(N - 1), "  ")
     ).
 
@@ -399,7 +396,7 @@ nl = singleton("\n").
 
 indent_size(N) = 2 * N.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- mutable(verbosity_level_mut, int, default_verbosity_level, ground,
     [attach_to_io_state, untrailed]).
@@ -413,11 +410,11 @@ write_out_messages(Stream, Messages, !IO) :-
 write_out_message(Stream, Message, !IO) :-
     Level = message_get_level(Message),
     get_verbosity_level_mut(VerbosityLevel, !IO),
-    ( message_level_to_int(Level) =< VerbosityLevel ->
+    ( if message_level_to_int(Level) =< VerbosityLevel then
         message_to_string(Message, MessageStr),
         io.write_string(Stream, MessageStr, !IO),
         io.nl(Stream, !IO)
-    ;
+    else
         true
     ).
 
@@ -426,6 +423,6 @@ set_verbosity_level(VerbosityLevel, !IO) :-
 
 default_verbosity_level = 2.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module message.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

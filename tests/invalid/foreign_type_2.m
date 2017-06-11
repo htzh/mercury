@@ -1,3 +1,7 @@
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
+
 :- module foreign_type_2.
 
 :- interface.
@@ -8,12 +12,11 @@
 
 :- implementation.
 
-:- pragma foreign_type(il, foreign, "class [mscorlib]System.Object").
+:- pragma foreign_type(java, foreign, "java.lang.Object").
 
 :- type foreign
-	---> foreign(int).
+    --->    foreign(int).
 
 % There are no foreign clauses for this function, so the use
 % of the foreign/1 constructor is an error.
 unwrap_foreign(foreign(Int)) = Int.
-

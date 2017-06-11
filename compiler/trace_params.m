@@ -5,10 +5,10 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % File: trace_params.m.
 % Author: zs.
-% 
+%
 % This module defines the parameters of execution tracing at various trace
 % levels and with various settings of the --suppress-trace option.
 %
@@ -29,7 +29,7 @@
 % effective trace levels. Most of the other functions defined in this module
 % convert the given (global) trace level into the effective trace level of
 % the relevant procedure before calculating their result.
-% 
+%
 %-----------------------------------------------------------------------------%
 
 :- module libs.trace_params.
@@ -128,13 +128,12 @@
 
 :- implementation.
 
+:- import_module hlds.status.
 :- import_module mdbcomp.
-:- import_module mdbcomp.prim_data.
 
 :- import_module char.
 :- import_module int.
 :- import_module list.
-:- import_module pair.
 :- import_module set.
 :- import_module string.
 
@@ -211,12 +210,12 @@ convert_trace_level("default", yes, no,  yes(deep)).
 convert_trace_level("default", _,   yes, yes(decl_rep)).
 
 eff_trace_level(ModuleInfo, PredInfo, ProcInfo, TraceLevel) = EffTraceLevel :-
-    ( TraceLevel = none ->
+    ( if TraceLevel = none then
         EffTraceLevel = none
-    ;
+    else
         pred_info_get_origin(PredInfo, Origin),
         (
-            Origin = origin_special_pred(SpecialPred - _),
+            Origin = origin_special_pred(SpecialPred, _),
             % Unify and compare predicates can be called from the generic
             % unify and compare predicates in builtin.m, so they can be called
             % from outside this module even if they don't have their address
@@ -237,9 +236,6 @@ eff_trace_level(ModuleInfo, PredInfo, ProcInfo, TraceLevel) = EffTraceLevel :-
             ;
                 SpecialPred = spec_pred_index,
                 EffTraceLevel = none
-            ;
-                SpecialPred = spec_pred_init,
-                EffTraceLevel = TraceLevel
             )
         ;
             Origin = origin_created(PredCreation),
@@ -262,6 +258,9 @@ eff_trace_level(ModuleInfo, PredInfo, ProcInfo, TraceLevel) = EffTraceLevel :-
             ; Origin = origin_transformed(_, _, _)
             ; Origin = origin_assertion(_, _)
             ; Origin = origin_lambda(_, _, _)
+            ; Origin = origin_solver_type(_, _, _)
+            ; Origin = origin_tabling(_, _)
+            ; Origin = origin_mutable(_, _, _)
             ; Origin = origin_user(_)
             ),
             EffTraceLevel = usual_eff_trace_level(ModuleInfo,
@@ -274,29 +273,28 @@ eff_trace_level(ModuleInfo, PredInfo, ProcInfo, TraceLevel) = EffTraceLevel :-
 
 usual_eff_trace_level(ModuleInfo, PredInfo, ProcInfo, TraceLevel)
         = EffTraceLevel :-
-    pred_info_get_import_status(PredInfo, Status),
-    (
+    pred_info_get_status(PredInfo, PredStatus),
+    ( if
         TraceLevel = shallow,
-        status_is_exported(Status) = no,
+        pred_status_is_exported(PredStatus) = no,
         proc_info_get_is_address_taken(ProcInfo, address_is_not_taken)
-    ->
+    then
         proc_info_get_has_user_event(ProcInfo, ProcHasUserEvent),
         (
-            ProcHasUserEvent = yes,
+            ProcHasUserEvent = has_user_event,
             EffTraceLevel = basic_user
         ;
-            ProcHasUserEvent = no,
-            module_info_get_contains_user_event(ModuleInfo,
-                ModuleHasUserEvent),
+            ProcHasUserEvent = has_no_user_event,
+            module_info_get_has_user_event(ModuleInfo, ModuleHasUserEvent),
             (
-                ModuleHasUserEvent = yes,
+                ModuleHasUserEvent = has_user_event,
                 EffTraceLevel = basic
             ;
-                ModuleHasUserEvent = no,
+                ModuleHasUserEvent = has_no_user_event,
                 EffTraceLevel = none
             )
         )
-    ;
+    else
         EffTraceLevel = TraceLevel
     ).
 
@@ -400,32 +398,32 @@ trace_level_allows_tail_rec(deep) = yes.
 trace_level_allows_tail_rec(decl_rep) = no.
 
 trace_needs_return_info(TraceLevel, TraceSuppressItems) = Need :-
-    (
+    ( if
         trace_level_has_return_info(TraceLevel) = yes,
-        \+ set.member(suppress_return_info, TraceSuppressItems)
-    ->
+        not set.member(suppress_return_info, TraceSuppressItems)
+    then
         Need = yes
-    ;
+    else
         Need = no
     ).
 
 trace_needs_all_var_names(TraceLevel, TraceSuppressItems) = Need :-
-    (
+    ( if
         trace_level_has_all_var_names(TraceLevel) = yes,
-        \+ set.member(suppress_all_var_names, TraceSuppressItems)
-    ->
+        not set.member(suppress_all_var_names, TraceSuppressItems)
+    then
         Need = yes
-    ;
+    else
         Need = no
     ).
 
 trace_needs_proc_body_reps(TraceLevel, TraceSuppressItems) = Need :-
-    (
+    ( if
         trace_level_has_proc_body_reps(TraceLevel) = yes,
-        \+ set.member(suppress_proc_body_reps, TraceSuppressItems)
-    ->
+        not set.member(suppress_proc_body_reps, TraceSuppressItems)
+    then
         Need = yes
-    ;
+    else
         Need = no
     ).
 
@@ -522,13 +520,13 @@ convert_other_name("proc_body_reps") = suppress_proc_body_reps.
     is semidet.
 
 convert_item_name(String, Names) :-
-    ( convert_port_name(String) = PortName ->
+    ( if convert_port_name(String) = PortName then
         Names = [suppress_port(PortName)]
-    ; convert_port_class_name(String) = PortNames ->
+    else if convert_port_class_name(String) = PortNames then
         list.map(wrap_port, PortNames, Names)
-    ; convert_other_name(String) = OtherName ->
+    else if convert_other_name(String) = OtherName then
         Names = [OtherName]
-    ;
+    else
         fail
     ).
 
@@ -604,16 +602,16 @@ trace_level_allows_port_suppression(deep) = yes.
 trace_level_allows_port_suppression(decl_rep) = no.
 
 trace_needs_port(TraceLevel, TraceSuppressItems, Port) = NeedsPort :-
-    (
+    ( if
         trace_port_category(Port) = Category,
         list.member(Category, trace_level_port_categories(TraceLevel)),
-        \+ (
+        not (
             trace_level_allows_port_suppression(TraceLevel) = yes,
             set.member(suppress_port(Port), TraceSuppressItems)
         )
-    ->
+    then
         NeedsPort = yes
-    ;
+    else
         NeedsPort = no
     ).
 
@@ -655,3 +653,7 @@ port_number(port_disj_first) = 12.
 port_number(port_disj_later) = 13.
 port_number(port_switch) = 14.
 port_number(port_user) = 15.
+
+%-----------------------------------------------------------------------------%
+:- end_module libs.trace_params.
+%-----------------------------------------------------------------------------%

@@ -21,7 +21,9 @@
 
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module libs.
 :- import_module libs.globals.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module parse_tree.error_util.
 
@@ -115,15 +117,17 @@
 :- implementation.
 
 :- import_module hlds.special_pred.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
-:- import_module parse_tree.mercury_to_mercury.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.parse_tree_out_info.
+:- import_module parse_tree.parse_tree_out_inst.
 :- import_module parse_tree.prog_mode.
 :- import_module parse_tree.prog_out.
 :- import_module parse_tree.prog_util.
 
 :- import_module int.
 :- import_module string.
-:- import_module list.
 :- import_module require.
 :- import_module term.
 
@@ -143,7 +147,7 @@ describe_one_pred_info_name(ShouldModuleQualify, PredInfo) = Pieces :-
     adjust_func_arity(PredOrFunc, OrigArity, Arity),
     pred_info_get_markers(PredInfo, Markers),
     pred_info_get_origin(PredInfo, Origin),
-    ( Origin = origin_special_pred(SpecialId - TypeCtor) ->
+    ( if Origin = origin_special_pred(SpecialId, TypeCtor) then
         special_pred_description(SpecialId, Descr),
         TypeCtor = type_ctor(TypeSymName0, TypeArity),
         (
@@ -153,32 +157,34 @@ describe_one_pred_info_name(ShouldModuleQualify, PredInfo) = Pieces :-
             ShouldModuleQualify = should_not_module_qualify,
             TypeSymName = unqualified(unqualify_name(TypeSymName0))
         ),
-        ( TypeArity = 0 ->
+        ( if TypeArity = 0 then
             Pieces = [words(Descr), words("for type"),
-                sym_name(TypeSymName)]
-        ;
+                qual_sym_name(TypeSymName)]
+        else
             Pieces = [words(Descr), words("for type constructor"),
-                sym_name(TypeSymName)]
+                qual_sym_name(TypeSymName)]
         )
-    ; check_marker(Markers, marker_class_instance_method) ->
+    else if check_marker(Markers, marker_class_instance_method) then
         Pieces = [words("type class method implementation")]
-    ; pred_info_is_promise(PredInfo, PromiseType) ->
-        Pieces = [words("`" ++ promise_to_string(PromiseType) ++ "'"),
+    else if pred_info_is_promise(PredInfo, PromiseType) then
+        Pieces = [quote(promise_to_string(PromiseType)),
             words("declaration")]
-    ;
-        ( check_marker(Markers, marker_class_method) ->
+    else
+        ( if check_marker(Markers, marker_class_method) then
             Prefix = [words("type class"), p_or_f(PredOrFunc), words("method")]
-        ;
+        else
             Prefix = [p_or_f(PredOrFunc)]
         ),
+        PredSymName = qualified(ModuleName, PredName),
+        PredSymNameAndArity = sym_name_arity(PredSymName, OrigArity),
         (
             ShouldModuleQualify = should_module_qualify,
-            PredSymName = qualified(ModuleName, PredName)
+            PredSymNamePiece = qual_sym_name_and_arity(PredSymNameAndArity)
         ;
             ShouldModuleQualify = should_not_module_qualify,
-            PredSymName = unqualified(PredName)
+            PredSymNamePiece = unqual_sym_name_and_arity(PredSymNameAndArity)
         ),
-        Pieces = Prefix ++ [sym_name_and_arity(PredSymName / OrigArity)]
+        Pieces = Prefix ++ [PredSymNamePiece]
     ).
 
 describe_one_pred_name_mode(ModuleInfo, ShouldModuleQualify, PredId,
@@ -191,9 +197,9 @@ describe_one_pred_name_mode(ModuleInfo, ShouldModuleQualify, PredId,
     list.length(ArgModes0, NumArgModes),
     % We need to strip off the extra type_info arguments inserted at the
     % front by polymorphism.m - we only want the last `Arity' of them.
-    ( list.drop(NumArgModes - Arity, ArgModes0, ArgModes) ->
+    ( if list.drop(NumArgModes - Arity, ArgModes0, ArgModes) then
         strip_builtin_qualifiers_from_mode_list(ArgModes, StrippedArgModes)
-    ;
+    else
         unexpected($module, $pred, "bad argument list")
     ),
     (
@@ -202,8 +208,8 @@ describe_one_pred_name_mode(ModuleInfo, ShouldModuleQualify, PredId,
     ;
         PredOrFunc = pf_function,
         pred_args_to_func_args(StrippedArgModes, FuncArgModes, FuncRetMode),
-        ArgModesPart = arg_modes_to_string(InstVarSet, FuncArgModes)
-            ++ " = " ++ mercury_mode_to_string(FuncRetMode, InstVarSet)
+        ArgModesPart = arg_modes_to_string(InstVarSet, FuncArgModes) ++ " = "
+            ++ mercury_mode_to_string(output_debug, InstVarSet, FuncRetMode)
     ),
     string.append_list([
         "`",
@@ -277,7 +283,8 @@ arg_modes_to_string(InstVarSet, ArgModes) = Str :-
         Str = ""
     ;
         ArgModes = [_ | _],
-        ArgsStr = mercury_mode_list_to_string(ArgModes, InstVarSet),
+        ArgsStr = mercury_mode_list_to_string(output_debug, InstVarSet,
+            ArgModes),
         Str = "(" ++ ArgsStr ++ ")"
     ).
 

@@ -21,9 +21,8 @@
 :- import_module libs.file_util.
 :- import_module parse_tree.
 :- import_module parse_tree.module_imports.
-:- import_module parse_tree.prog_data.
 :- import_module mdbcomp.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 
 :- import_module bool.
 :- import_module io.
@@ -38,52 +37,35 @@
     %
 :- type pic
     --->    pic
-    ;       link_with_pic
     ;       non_pic.
 
-    % compile_c_file(ErrorStream, PIC, ModuleName, Globals, Succeeded, !IO)
+    % compile_c_file(Globals, ErrorStream, PIC, ModuleName, Succeeded, !IO)
     %
-:- pred compile_c_file(io.output_stream::in, pic::in, module_name::in,
-    globals::in, bool::out, io::di, io::uo) is det.
+:- pred compile_c_file(globals::in, io.output_stream::in, pic::in,
+    module_name::in, bool::out, io::di, io::uo) is det.
 
     % do_compile_c_file(Globals, ErrorStream, PIC, CFile, ObjFile, Succeeded,
     %   !IO)
     %
-:- pred do_compile_c_file(io.output_stream::in, pic::in,
-    string::in, string::in, globals::in, bool::out, io::di, io::uo) is det.
+:- pred do_compile_c_file(globals::in, io.output_stream::in, pic::in,
+    string::in, string::in, bool::out, io::di, io::uo) is det.
 
-    % assemble(ErrorStream, PIC, ModuleName, Globals, Succeeded, !IO)
+    % compile_java_files(Globals, ErrorStream, JavaFiles, Succeeded, !IO)
     %
-:- pred assemble(io.output_stream::in, pic::in, module_name::in,
-    globals::in, bool::out, io::di, io::uo) is det.
+:- pred compile_java_files(globals::in, io.output_stream::in, list(string)::in,
+    bool::out, io::di, io::uo) is det.
 
-    % compile_java_files(ErrorStream, JavaFiles, Succeeded, Globals, !IO)
-    %
-:- pred compile_java_files(io.output_stream::in, list(string)::in,
-    globals::in, bool::out, io::di, io::uo) is det.
-
-    % il_assemble(ErrorStream, ModuleName, HasMain, Globals, Succeeded, !IO)
-    %
-:- pred il_assemble(io.output_stream::in, module_name::in, has_main::in,
-    globals::in, bool::out, io::di, io::uo) is det.
-
-    % do_il_assemble(ErrorStream, ILFile, DLLFile, HasMain, Globals, Succeeded,
+    % compile_csharp_file(Globals, ErrorStream, C#File, DLLFile, Succeeded,
     %   !IO)
     %
-:- pred do_il_assemble(io.output_stream::in, file_name::in, file_name::in,
-    has_main::in, globals::in, bool::out, io::di, io::uo) is det.
+:- pred compile_csharp_file(globals::in, io.output_stream::in,
+    module_and_imports::in, file_name::in, file_name::in, bool::out,
+    io::di, io::uo) is det.
 
-    % compile_csharp_file(ErrorStream, C#File, DLLFile, Globals, Succeeded,
-    %   !IO)
+    % compile_erlang_file(Globals, ErrorStream, ErlangFile, Succeeded, !IO)
     %
-:- pred compile_csharp_file(io.output_stream::in, module_and_imports::in,
-    file_name::in, file_name::in, globals::in, bool::out, io::di, io::uo)
-    is det.
-
-    % compile_erlang_file(ErrorStream, ErlangFile, Globals, Succeeded, !IO)
-    %
-:- pred compile_erlang_file(io.output_stream::in, file_name::in,
-    globals::in, bool::out, io::di, io::uo) is det.
+:- pred compile_erlang_file(globals::in, io.output_stream::in, file_name::in,
+    bool::out, io::di, io::uo) is det.
 
     % make_library_init_file(Globals, ErrorStream, MainModuleName, ModuleNames,
     %   Succeeded, !IO):
@@ -121,16 +103,16 @@
     ;       shared_library
     ;       csharp_executable
     ;       csharp_library
-    ;       java_launcher
+    ;       java_executable
     ;       java_archive
     ;       erlang_launcher
     ;       erlang_archive.
 
-    % link(TargetType, MainModuleName, ObjectFileNames, Globals, Succeeded,
+    % link(Globals, TargetType, MainModuleName, ObjectFileNames, Succeeded,
     %   !IO)
     %
-:- pred link(io.output_stream::in, linked_target_type::in, module_name::in,
-    list(string)::in, globals::in, bool::out, io::di, io::uo) is det.
+:- pred link(globals::in, io.output_stream::in, linked_target_type::in,
+    module_name::in, list(string)::in, bool::out, io::di, io::uo) is det.
 
     % post_link_make_symlink_or_copy(TargetType, MainModuleName,
     %   Globals, Succeeded, MadeSymlinkOrCopy, !IO)
@@ -139,16 +121,18 @@
     % library into the user's directory after having successfully built it,
     % if the target does not exist or is not up-to-date.
     %
-:- pred post_link_make_symlink_or_copy(io.output_stream::in,
-    linked_target_type::in, module_name::in, globals::in, bool::out, bool::out,
+:- pred post_link_make_symlink_or_copy(globals::in, io.output_stream::in,
+    linked_target_type::in, module_name::in, bool::out, bool::out,
     io::di, io::uo) is det.
 
-    % link_module_list(ModulesToLink, ExtraObjFiles, Globals, Succeeded,
-    %   !IO):
+    % link_module_list(ModulesToLink, ExtraObjFiles, Globals, Succeeded, !IO):
     %
     % The elements of ModulesToLink are the output of
     % `module_name_to_filename(ModuleName, "", no, ModuleToLink)'
     % for each module in the program.
+    %
+    % The Globals are supplied late to allow mercury_compile.m to partially
+    % apply the ModuleToLink and ExtraObjFiles arguments.
     %
 :- pred link_module_list(list(string)::in, list(string)::in,
     globals::in, bool::out, io::di, io::uo) is det.
@@ -247,93 +231,25 @@
 
 :- implementation.
 
-:- import_module libs.globals.
-:- import_module libs.handle_options.
+:- import_module libs.compute_grade.
 :- import_module libs.options.
 :- import_module libs.trace_params.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.file_names.
 :- import_module parse_tree.module_cmds.
-:- import_module parse_tree.write_deps_file.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.prog_foreign.
 
 :- import_module dir.
 :- import_module getopt_io.
 :- import_module require.
+:- import_module set.
 :- import_module string.
 
 %-----------------------------------------------------------------------------%
 
-il_assemble(ErrorStream, ModuleName, HasMain, Globals, Succeeded, !IO) :-
-    module_name_to_file_name(Globals, ModuleName, ".il",
-        do_not_create_dirs, IL_File, !IO),
-    module_name_to_file_name(Globals, ModuleName, ".dll",
-        do_create_dirs, DllFile, !IO),
-
-    % If the module contains main/2 then we it should be built as an
-    % executable. Unfortunately C# code may refer to the dll
-    % so we always need to build the dll.
-
-    do_il_assemble(ErrorStream, IL_File, DllFile, no_main,
-        Globals, DllSucceeded, !IO),
-    (
-        HasMain = has_main,
-        module_name_to_file_name(Globals, ModuleName, ".exe",
-            do_create_dirs, ExeFile, !IO),
-        do_il_assemble(ErrorStream, IL_File, ExeFile, HasMain,
-            Globals, ExeSucceeded, !IO),
-        Succeeded = DllSucceeded `and` ExeSucceeded
-    ;
-        HasMain = no_main,
-        Succeeded = DllSucceeded
-    ).
-
-do_il_assemble(ErrorStream, IL_File, TargetFile, HasMain, Globals, Succeeded,
-        !IO) :-
-    globals.lookup_bool_option(Globals, verbose, Verbose),
-    globals.lookup_bool_option(Globals, sign_assembly, SignAssembly),
-    maybe_write_string(Verbose, "% Assembling `", !IO),
-    maybe_write_string(Verbose, IL_File, !IO),
-    maybe_write_string(Verbose, "':\n", !IO),
-    globals.lookup_string_option(Globals, il_assembler, ILASM),
-    globals.lookup_accumulating_option(Globals, ilasm_flags, ILASMFlagsList),
-    join_string_list(ILASMFlagsList, "", "", " ", ILASMFlags),
-    (
-        SignAssembly = yes,
-        SignOpt = "/keyf=mercury.sn "
-    ;
-        SignAssembly = no,
-        SignOpt = ""
-    ),
-    (
-        Verbose = yes,
-        VerboseOpt = ""
-    ;
-        Verbose = no,
-        VerboseOpt = "/quiet "
-    ),
-    globals.lookup_bool_option(Globals, target_debug, Debug),
-    (
-        Debug = yes,
-        DebugOpt = "/debug "
-    ;
-        Debug = no,
-        DebugOpt = ""
-    ),
-    (
-        HasMain = has_main,
-        TargetOpt = ""
-    ;
-        HasMain = no_main,
-        TargetOpt = "/dll "
-    ),
-    string.append_list([ILASM, " ", SignOpt, VerboseOpt, DebugOpt,
-        TargetOpt, ILASMFlags, " /out=", TargetFile, " ", IL_File], Command),
-    invoke_system_command(Globals, ErrorStream, cmd_verbose_commands, Command,
-        Succeeded, !IO).
-
-compile_csharp_file(ErrorStream, Imports, CSharpFileName0, DLLFileName,
-        Globals, Succeeded, !IO) :-
+compile_csharp_file(Globals, ErrorStream, ModuleAndImports,
+        CSharpFileName0, DLLFileName, Succeeded, !IO) :-
     globals.lookup_bool_option(Globals, verbose, Verbose),
     maybe_write_string(Verbose, "% Compiling `", !IO),
     maybe_write_string(Verbose, CSharpFileName, !IO),
@@ -368,24 +284,28 @@ compile_csharp_file(ErrorStream, Imports, CSharpFileName0, DLLFileName,
         string.append_list(list.condense(list.map(
             (func(DLLDir) = ["-lib:", DLLDir, " "]), DLLDirs))),
 
-    ( mercury_std_library_module_name(Imports ^ mai_module_name) ->
+    ModuleName = ModuleAndImports ^ mai_module_name,
+    ( if mercury_std_library_module_name(ModuleName) then
         Prefix = "-addmodule:"
-    ;
+    else
         Prefix = "-r:"
     ),
+    ForeignImportModules = ModuleAndImports ^ mai_foreign_import_modules,
     ForeignDeps = list.map(
-        (func(M) =
-            foreign_import_module_name_from_module(M,
-                Imports ^ mai_module_name)),
-        Imports ^ mai_foreign_import_modules),
-    ReferencedDlls = referenced_dlls(Imports ^ mai_module_name,
-        Imports ^ mai_int_deps ++ Imports ^ mai_impl_deps ++ ForeignDeps),
+        (func(FI) = foreign_import_module_name_from_module(FI, ModuleName)),
+        set.to_sorted_list(
+            get_all_foreign_import_module_infos(ForeignImportModules))),
+    IntDeps = ModuleAndImports ^ mai_int_deps,
+    ImpDeps = ModuleAndImports ^ mai_imp_deps,
+    set.union(IntDeps, ImpDeps, IntImpDeps),
+    set.insert_list(ForeignDeps, IntImpDeps, IntImpForeignDeps),
+    ReferencedDlls = referenced_dlls(ModuleName, IntImpForeignDeps),
     list.map_foldl(
-        (pred(Mod::in, Result::out, IO0::di, IO::uo) is det :-
+        ( pred(Mod::in, Result::out, IO0::di, IO::uo) is det :-
             module_name_to_file_name(Globals, Mod, ".dll",
                 do_not_create_dirs, FileName, IO0, IO),
             Result = [Prefix, FileName, " "]
-        ), ReferencedDlls, ReferencedDllsList, !IO),
+        ), set.to_sorted_list(ReferencedDlls), ReferencedDllsList, !IO),
     ReferencedDllsStr = string.append_list(
         list.condense(ReferencedDllsList)),
 
@@ -395,21 +315,53 @@ compile_csharp_file(ErrorStream, Imports, CSharpFileName0, DLLFileName,
     invoke_system_command(Globals, ErrorStream, cmd_verbose_commands, Command,
         Succeeded, !IO).
 
+    % Generate the list of .NET DLLs which could be referred to by this module
+    % (including the module itself).
+    %
+    % If we are compiling a module within the standard library we should
+    % reference the runtime DLLs and all other library DLLs. If we are
+    % outside the library we should just reference mercury.dll (which will
+    % contain all the DLLs).
+    %
+:- func referenced_dlls(module_name, set(module_name)) = set(module_name).
+
+referenced_dlls(Module, DepModules0) = Modules :-
+    set.insert(Module, DepModules0, DepModules),
+
+    % If we are not compiling a module in the mercury std library, then
+    % replace all the std library dlls with one reference to mercury.dll.
+    ( if mercury_std_library_module_name(Module) then
+        % In the standard library we need to add the runtime dlls.
+        AddedModules =
+            [unqualified("mercury_dotnet"), unqualified("mercury_il")],
+        set.insert_list(AddedModules, DepModules, Modules)
+    else
+        F = ( func(M) =
+                ( if mercury_std_library_module_name(M) then
+                    unqualified("mercury")
+                else
+                    % A sub module is located in the top level assembly.
+                    unqualified(outermost_qualifier(M))
+                )
+            ),
+        Modules = set.map(F, DepModules)
+    ).
+
 %-----------------------------------------------------------------------------%
 
 % WARNING: The code here duplicates the functionality of scripts/mgnuc.in.
 % Any changes there may also require changes here, and vice versa.
 
-compile_c_file(ErrorStream, PIC, ModuleName, Globals, Succeeded, !IO) :-
+compile_c_file(Globals, ErrorStream, PIC, ModuleName, Succeeded, !IO) :-
     module_name_to_file_name(Globals, ModuleName, ".c",
         do_create_dirs, C_File, !IO),
     maybe_pic_object_file_extension(Globals, PIC, ObjExt),
     module_name_to_file_name(Globals, ModuleName, ObjExt,
         do_create_dirs, O_File, !IO),
-    do_compile_c_file(ErrorStream, PIC, C_File, O_File, Globals, Succeeded,
+    do_compile_c_file(Globals, ErrorStream, PIC, C_File, O_File, Succeeded,
         !IO).
 
-do_compile_c_file(ErrorStream, PIC, C_File, O_File, Globals, Succeeded, !IO) :-
+do_compile_c_file(Globals, ErrorStream, PIC, C_File, O_File, Succeeded, !IO) :-
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_string_option(Globals, c_flag_to_name_object_file,
         NameObjectFile),
@@ -449,7 +401,7 @@ gather_c_compiler_flags(Globals, PIC, AllCFlags) :-
 
     gather_c_include_dir_flags(Globals, InclOpt),
     get_framework_directories(Globals, FrameworkInclOpt),
-    gather_grade_defines(Globals, PIC, GradeDefinesOpts),
+    gather_grade_defines(Globals, GradeDefinesOpts),
 
     globals.lookup_bool_option(Globals, gcc_global_registers, GCC_Regs),
     (
@@ -482,9 +434,7 @@ gather_c_compiler_flags(Globals, PIC, AllCFlags) :-
         PIC = pic,
         globals.lookup_string_option(Globals, cflags_for_pic, CFLAGS_FOR_PIC)
     ;
-        ( PIC = link_with_pic
-        ; PIC = non_pic
-        ),
+        PIC = non_pic,
         CFLAGS_FOR_PIC = ""
     ),
     globals.lookup_bool_option(Globals, target_debug, Target_Debug),
@@ -497,6 +447,8 @@ gather_c_compiler_flags(Globals, PIC, AllCFlags) :-
         Target_Debug = no,
         Target_DebugOpt = ""
     ),
+    globals.lookup_string_option(Globals, cflags_for_sanitizers,
+        SanitizerOpts),
     globals.lookup_bool_option(Globals, use_trail, UseTrail),
     (
         UseTrail = yes,
@@ -519,7 +471,6 @@ gather_c_compiler_flags(Globals, PIC, AllCFlags) :-
         ;
             % XXX Check whether we need to do anything for these C compilers?
             ( C_CompilerType = cc_clang(_)
-            ; C_CompilerType = cc_lcc
             ; C_CompilerType = cc_cl(_)
             ),
             C_FnAlignOpt = ""
@@ -580,26 +531,26 @@ gather_c_compiler_flags(Globals, PIC, AllCFlags) :-
     % See the hard_coded/ppc_bug test case for an example
     % program which fails with this optimization.
 
-    globals.lookup_string_option(Globals, fullarch, FullArch),
-    (
+    globals.lookup_string_option(Globals, target_arch, TargetArch),
+    ( if
         globals.lookup_bool_option(Globals, highlevel_code, no),
         globals.lookup_bool_option(Globals, gcc_global_registers, yes),
-        string.prefix(FullArch, "powerpc-apple-darwin")
-    ->
+        string.prefix(TargetArch, "powerpc-apple-darwin")
+    then
         AppleGCCRegWorkaroundOpt = "-fno-loop-optimize "
-    ;
+    else
         AppleGCCRegWorkaroundOpt = ""
     ),
 
     % Workaround performance problem(s) with gcc that causes the C files
     % generated in debugging grades to compile very slowly at -O1 and above.
     % (Changes here need to be reflected in scripts/mgnuc.in.)
-    (
+    ( if
         globals.lookup_bool_option(Globals, exec_trace, yes),
-        arch_is_apple_darwin(FullArch)
-    ->
+        arch_is_apple_darwin(TargetArch)
+    then
         OverrideOpts = "-O0"
-    ;
+    else
         OverrideOpts = ""
     ),
 
@@ -624,6 +575,7 @@ gather_c_compiler_flags(Globals, PIC, AllCFlags) :-
         CFLAGS_FOR_REGS, " ", CFLAGS_FOR_GOTOS, " ",
         CFLAGS_FOR_THREADS, " ", CFLAGS_FOR_PIC, " ",
         Target_DebugOpt,
+        SanitizerOpts, " ",
         TypeLayoutOpt,
         InlineAllocOpt,
         AnsiOpt, " ",
@@ -636,9 +588,9 @@ gather_c_compiler_flags(Globals, PIC, AllCFlags) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred gather_grade_defines(globals::in, pic::in, string::out) is det.
+:- pred gather_grade_defines(globals::in, string::out) is det.
 
-gather_grade_defines(Globals, PIC, GradeDefines) :-
+gather_grade_defines(Globals, GradeDefines) :-
     globals.lookup_bool_option(Globals, highlevel_code, HighLevelCode),
     (
         HighLevelCode = yes,
@@ -723,9 +675,6 @@ gather_grade_defines(Globals, PIC, GradeDefines) :-
         GC_Method = gc_hgc,
         GC_Opt = "-DMR_CONSERVATIVE_GC -DMR_HGC "
     ;
-        GC_Method = gc_mps,
-        GC_Opt = "-DMR_CONSERVATIVE_GC -DMR_MPS_GC "
-    ;
         GC_Method = gc_accurate,
         GC_Opt = "-DMR_NATIVE_GC "
     ),
@@ -783,25 +732,6 @@ gather_grade_defines(Globals, PIC, GradeDefines) :-
         RecordTermSizesAsWords = no,
         RecordTermSizesAsCells = no,
         RecordTermSizesOpt = ""
-    ),
-    (
-        PIC = pic,
-        PIC_Reg = yes
-    ;
-        PIC = link_with_pic,
-        PIC_Reg = yes
-    ;
-        PIC = non_pic,
-        globals.lookup_bool_option(Globals, pic_reg, PIC_Reg)
-    ),
-    (
-        PIC_Reg = yes,
-        % This will be ignored for architectures/grades where use of position
-        % independent code does not reserve a register.
-        PIC_Reg_Opt = "-DMR_PIC_REG "
-    ;
-        PIC_Reg = no,
-        PIC_Reg_Opt = ""
     ),
 
     globals.get_tags_method(Globals, Tags_Method),
@@ -864,6 +794,11 @@ gather_grade_defines(Globals, PIC, GradeDefines) :-
     globals.lookup_bool_option(Globals, low_level_debug, LL_Debug),
     (
         LL_Debug = yes,
+        % This is grade option tells the C compiler to turn on the generation
+        % of debugging symbols and to disable the optimizations that
+        % would make the executable harder to debug in a C debugger
+        % such as gdb. However, here we gather only *macro* definitions,
+        % not general compiler flags.
         LL_DebugOpt = "-DMR_LL_DEBUG "
     ;
         LL_Debug = no,
@@ -912,10 +847,10 @@ gather_grade_defines(Globals, PIC, GradeDefines) :-
         MinimalModelDebug),
     (
         MinimalModelDebug = yes,
-        ( MinimalModelBaseOpt = "" ->
+        ( if MinimalModelBaseOpt = "" then
             % We ignore the debug flag unless one of the base flags is set.
             MinimalModelOpt = MinimalModelBaseOpt
-        ;
+        else
             MinimalModelOpt = MinimalModelBaseOpt ++
                 "-DMR_MINIMAL_MODEL_DEBUG "
         )
@@ -978,7 +913,6 @@ gather_grade_defines(Globals, PIC, GradeDefines) :-
         ProfileCallsOpt, ProfileTimeOpt,
         ProfileMemoryOpt, ProfileDeepOpt,
         RecordTermSizesOpt,
-        PIC_Reg_Opt,
         TagsOpt, NumTagBitsOpt,
         ExtendOpt,
         LL_DebugOpt, DeclDebugOpt,
@@ -1017,9 +951,7 @@ gather_compiler_specific_flags(Globals, Flags) :-
         C_CompilerType = cc_cl(_),
         globals.lookup_accumulating_option(Globals, msvc_flags, FlagsList)
     ;
-        ( C_CompilerType = cc_lcc
-        ; C_CompilerType = cc_unknown
-        ),
+        C_CompilerType = cc_unknown,
         FlagsList = []
     ),
     join_string_list(FlagsList, "", "", " ", Flags).
@@ -1030,19 +962,19 @@ get_maybe_filtercc_command(Globals, MaybeFilterCmd) :-
     % At this time we only need to filter the compiler output when using
     % assembler labels with gcc 4.x. Mercury.config.bootstrap doesn't specify
     % the gcc version so we don't check for it.
-    (
+    ( if
         globals.lookup_bool_option(Globals, asm_labels, yes),
         globals.lookup_string_option(Globals, filtercc_command, FilterCmd),
         FilterCmd \= ""
-    ->
+    then
         MaybeFilterCmd = yes(FilterCmd)
-    ;
+    else
         MaybeFilterCmd = no
     ).
 
 %-----------------------------------------------------------------------------%
 
-compile_java_files(ErrorStream, JavaFiles, Globals, Succeeded, !IO) :-
+compile_java_files(Globals, ErrorStream, JavaFiles, Succeeded, !IO) :-
     globals.lookup_bool_option(Globals, verbose, Verbose),
     (
         JavaFiles = [JavaFile | MoreFiles],
@@ -1067,7 +999,23 @@ compile_java_files(ErrorStream, JavaFiles, Globals, Succeeded, !IO) :-
 
     globals.lookup_string_option(Globals, java_compiler, JavaCompiler),
     globals.lookup_accumulating_option(Globals, java_flags, JavaFlagsList),
-    join_string_list(JavaFlagsList, "", "", " ", JAVAFLAGS),
+    globals.lookup_bool_option(Globals, restricted_command_line,
+        RestrictedCommandLine),
+    (
+        RestrictedCommandLine = yes,
+        % NOTE: the '-J' flag must not occur inside @files, so we need
+        % to ensure that it is always passed on the command line.
+        list.filter(is_minus_j_flag, JavaFlagsList,
+            JRT_JavaFlagsList, NonJRT_JavaFlagsList),
+        join_string_list(JRT_JavaFlagsList, "", "", " ",
+            NonAtFileJAVAFLAGS),
+        join_string_list(NonJRT_JavaFlagsList, "", "", " ",
+            JAVAFLAGS)
+    ;
+        RestrictedCommandLine = no,
+        join_string_list(JavaFlagsList, "", "", " ", JAVAFLAGS),
+        NonAtFileJAVAFLAGS = ""
+    ),
 
     get_mercury_std_libs_for_java(Globals, MercuryStdLibs),
     globals.lookup_accumulating_option(Globals, java_classpath, UserClasspath),
@@ -1075,15 +1023,15 @@ compile_java_files(ErrorStream, JavaFiles, Globals, Succeeded, !IO) :-
     % We prepend the current CLASSPATH (if any) to preserve the accumulating
     % nature of this variable.
     get_env_classpath(EnvClasspath, !IO),
-    ( EnvClasspath = "" ->
+    ( if EnvClasspath = "" then
         ClassPathList = Java_Incl_Dirs
-    ;
+    else
         ClassPathList = [EnvClasspath | Java_Incl_Dirs]
     ),
     ClassPath = string.join_list(java_classpath_separator, ClassPathList),
-    ( ClassPath = "" ->
+    ( if ClassPath = "" then
         InclOpt = ""
-    ;
+    else
         InclOpt = string.append_list([
             "-classpath ", quote_arg(ClassPath), " "])
     ),
@@ -1099,14 +1047,14 @@ compile_java_files(ErrorStream, JavaFiles, Globals, Succeeded, !IO) :-
 
     globals.lookup_bool_option(Globals, use_subdirs, UseSubdirs),
     globals.lookup_bool_option(Globals, use_grade_subdirs, UseGradeSubdirs),
-    globals.lookup_string_option(Globals, fullarch, FullArch),
+    globals.lookup_string_option(Globals, target_arch, TargetArch),
     (
         UseSubdirs = yes,
         (
             UseGradeSubdirs = yes,
             grade_directory_component(Globals, Grade),
-            SourceDirName = "Mercury"/Grade/FullArch/"Mercury"/"javas",
-            DestDirName = "Mercury"/Grade/FullArch/"Mercury"/"classs"
+            SourceDirName = "Mercury"/Grade/TargetArch/"Mercury"/"javas",
+            DestDirName = "Mercury"/Grade/TargetArch/"Mercury"/"classs"
         ;
             UseGradeSubdirs = no,
             SourceDirName = "Mercury"/"javas",
@@ -1126,81 +1074,44 @@ compile_java_files(ErrorStream, JavaFiles, Globals, Succeeded, !IO) :-
     ),
 
     globals.lookup_string_option(Globals, filterjavac_command, MFilterJavac),
-    ( MFilterJavac = "" ->
+    ( if MFilterJavac = "" then
         MaybeMFilterJavac = no
-    ;
+    else
         MaybeMFilterJavac = yes(MFilterJavac)
     ),
 
+    NonAtFileCommandArgs = NonAtFileJAVAFLAGS,
     % Be careful with the order here!  Some options may override others.
     % Also be careful that each option is separated by spaces.
     JoinedJavaFiles = string.join_list(" ", JavaFiles),
     string.append_list([InclOpt, DirOpts,
         Target_DebugOpt, JAVAFLAGS, " ", JoinedJavaFiles], CommandArgs),
     invoke_long_system_command_maybe_filter_output(Globals, ErrorStream,
-        cmd_verbose_commands, JavaCompiler, CommandArgs, MaybeMFilterJavac,
+        cmd_verbose_commands, JavaCompiler, NonAtFileCommandArgs,
+        CommandArgs, MaybeMFilterJavac,
         Succeeded, !IO).
 
 :- func java_classpath_separator = string.
 
 java_classpath_separator = PathSeparator :-
-    (
+    ( if
         ( dir.use_windows_paths
         ; io.have_cygwin
         )
-    ->
+    then
         PathSeparator = ";"
-    ;
+    else
         PathSeparator = ":"
     ).
 
-%-----------------------------------------------------------------------------%
+:- pred is_minus_j_flag(string::in) is semidet.
 
-assemble(ErrorStream, PIC, ModuleName, Globals, Succeeded, !IO) :-
-    (
-        PIC = pic,
-        AsmExt = ".pic_s",
-        GCCFLAGS_FOR_ASM = "-x assembler ",
-        GCCFLAGS_FOR_PIC = "-fpic "
-    ;
-        PIC = link_with_pic,
-        % `--target asm' doesn't support any grades for
-        % which `.lpic_o' files are needed.
-        unexpected($module, $pred, "link_with_pic")
-    ;
-        PIC = non_pic,
-        AsmExt = ".s",
-        GCCFLAGS_FOR_ASM = "",
-        GCCFLAGS_FOR_PIC = ""
-    ),
-    module_name_to_file_name(Globals, ModuleName, AsmExt,
-        do_not_create_dirs, AsmFile, !IO),
-    maybe_pic_object_file_extension(Globals, PIC, ObjExt),
-    module_name_to_file_name(Globals, ModuleName, ObjExt,
-        do_create_dirs, ObjFile, !IO),
-
-    globals.lookup_bool_option(Globals, verbose, Verbose),
-    maybe_write_string(Verbose, "% Assembling `", !IO),
-    maybe_write_string(Verbose, AsmFile, !IO),
-    maybe_write_string(Verbose, "':\n", !IO),
-    % XXX should we use new asm_* options rather than
-    % reusing cc, cflags, c_flag_to_name_object_file?
-    globals.lookup_string_option(Globals, cc, CC),
-    globals.lookup_string_option(Globals, c_flag_to_name_object_file,
-        NameObjectFile),
-    globals.lookup_accumulating_option(Globals, cflags, C_Flags_List),
-    join_string_list(C_Flags_List, "", "", " ", CFLAGS),
-    % Be careful with the order here.
-    % Also be careful that each option is separated by spaces.
-    string.append_list([CC, " ", CFLAGS, " ", GCCFLAGS_FOR_PIC,
-        GCCFLAGS_FOR_ASM, "-c ", AsmFile, " ", NameObjectFile, ObjFile],
-        Command),
-    invoke_system_command(Globals, ErrorStream, cmd_verbose_commands, Command,
-        Succeeded, !IO).
+is_minus_j_flag(FlagStr) :-
+    string.prefix(FlagStr, "-J").
 
 %-----------------------------------------------------------------------------%
 
-compile_erlang_file(ErrorStream, ErlangFile, Globals, Succeeded, !IO) :-
+compile_erlang_file(Globals, ErrorStream, ErlangFile, Succeeded, !IO) :-
     globals.lookup_bool_option(Globals, verbose, Verbose),
     maybe_write_string(Verbose, "% Compiling `", !IO),
     maybe_write_string(Verbose, ErlangFile, !IO),
@@ -1235,13 +1146,13 @@ compile_erlang_file(ErrorStream, ErlangFile, Globals, Succeeded, !IO) :-
 
     globals.lookup_bool_option(Globals, use_subdirs, UseSubdirs),
     globals.lookup_bool_option(Globals, use_grade_subdirs, UseGradeSubdirs),
-    globals.lookup_string_option(Globals, fullarch, FullArch),
+    globals.lookup_string_option(Globals, target_arch, TargetArch),
     (
         UseSubdirs = yes,
         (
             UseGradeSubdirs = yes,
             grade_directory_component(Globals, Grade),
-            DirName = "Mercury"/Grade/FullArch/"Mercury"/"beams"
+            DirName = "Mercury"/Grade/TargetArch/"Mercury"/"beams"
         ;
             UseGradeSubdirs = no,
             DirName = "Mercury"/"beams"
@@ -1376,10 +1287,9 @@ invoke_mkinit(Globals, InitFileStream, Verbosity,
     % mkinit expects unquoted file names.
     join_string_list(FileNames, "", "\n", "", TargetFileNames),
 
-    io.make_temp(TmpFile, !IO),
-    io.open_output(TmpFile, OpenResult, !IO),
+    open_temp_output(TmpFileResult, !IO),
     (
-        OpenResult = ok(TmpStream),
+        TmpFileResult = ok({TmpFile, TmpStream}),
         io.write_string(TmpStream, TargetFileNames, !IO),
         io.close_output(TmpStream, !IO),
 
@@ -1396,7 +1306,9 @@ invoke_mkinit(Globals, InitFileStream, Verbosity,
             MkInitOK = no
         )
     ;
-        OpenResult = error(_),
+        TmpFileResult = error(ErrorMessage),
+        io.write_string(io.stderr_stream, ErrorMessage, !IO),
+        io.nl(!IO),
         MkInitOK = no
     ).
 
@@ -1404,7 +1316,7 @@ invoke_mkinit(Globals, InitFileStream, Verbosity,
 
 link_module_list(Modules, ExtraObjFiles, Globals, Succeeded, !IO) :-
     globals.lookup_string_option(Globals, output_file_name, OutputFileName0),
-    ( OutputFileName0 = "" ->
+    ( if OutputFileName0 = "" then
         (
             Modules = [Module | _],
             OutputFileName = Module
@@ -1412,7 +1324,7 @@ link_module_list(Modules, ExtraObjFiles, Globals, Succeeded, !IO) :-
             Modules = [],
             unexpected($module, $pred, "no modules")
         )
-    ;
+    else
         OutputFileName = OutputFileName0
     ),
 
@@ -1451,13 +1363,13 @@ link_module_list(Modules, ExtraObjFiles, Globals, Succeeded, !IO) :-
         globals.lookup_accumulating_option(Globals, link_objects,
             ExtraLinkObjectsList),
         AllObjects0 = ObjectsList ++ ExtraLinkObjectsList ++ ExtraObjFiles,
-        ( InitObjFileName = "" ->
+        ( if InitObjFileName = "" then
             AllObjects = AllObjects0
-        ;
+        else
             AllObjects = [InitObjFileName | AllObjects0]
         ),
-        link(OutputStream, TargetType, MainModuleName, AllObjects,
-            Globals, Succeeded, !IO)
+        link(Globals, OutputStream, TargetType, MainModuleName, AllObjects,
+            Succeeded, !IO)
     ;
         InitObjResult = no,
         Succeeded = no
@@ -1517,8 +1429,8 @@ do_make_init_obj_file(Globals, ErrorStream, MustCompile, ModuleName,
         do_create_dirs, InitObjFileName, !IO),
     CompileCInitFile =
         (pred(InitTargetFileName::in, Res::out, IO0::di, IO::uo) is det :-
-            do_compile_c_file(ErrorStream, PIC, InitTargetFileName,
-                InitObjFileName, Globals, Res, IO0, IO)
+            do_compile_c_file(Globals, ErrorStream, PIC, InitTargetFileName,
+                InitObjFileName, Res, IO0, IO)
         ),
     maybe_compile_init_obj_file(Globals, MaybeInitTargetFile, MustCompile,
         CompileCInitFile, InitObjFileName, Result, !IO).
@@ -1526,7 +1438,6 @@ do_make_init_obj_file(Globals, ErrorStream, MustCompile, ModuleName,
 make_erlang_program_init_file(Globals, ErrorStream, ModuleName, ModuleNames,
         Result, !IO) :-
     globals.lookup_bool_option(Globals, rebuild, MustCompile),
-
     globals.lookup_maybe_string_option(Globals,
         mercury_standard_library_directory, MaybeStdLibDir),
     grade_directory_component(Globals, GradeDir),
@@ -1560,7 +1471,7 @@ make_erlang_program_init_file(Globals, ErrorStream, ModuleName, ModuleNames,
         do_create_dirs, InitObjFileName, !IO),
     CompileErlangInitFile =
         (pred(InitTargetFileName::in, Res::out, IO0::di, IO::uo) is det :-
-            compile_erlang_file(ErrorStream, InitTargetFileName, Globals, Res,
+            compile_erlang_file(Globals, ErrorStream, InitTargetFileName, Res,
                 IO0, IO)
         ),
     maybe_compile_init_obj_file(Globals, MaybeInitTargetFile, MustCompile,
@@ -1606,10 +1517,13 @@ make_init_target_file(Globals, ErrorStream, MkInit, ModuleName, ModuleNames,
     TraceInitFileNamesList = StdTraceInitFileNames ++ TraceInitFileNamesList0,
 
     globals.get_trace_level(Globals, TraceLevel),
-    ( given_trace_level_is_none(TraceLevel) = no ->
+    TraceLevelIsNone = given_trace_level_is_none(TraceLevel),
+    (
+        TraceLevelIsNone = no,
         TraceOpt = "-t",
         InitFileNamesList3 = InitFileNamesList2 ++ TraceInitFileNamesList
     ;
+        TraceLevelIsNone = yes,
         TraceOpt = "",
         InitFileNamesList3 = InitFileNamesList2
     ),
@@ -1648,9 +1562,9 @@ make_init_target_file(Globals, ErrorStream, MkInit, ModuleName, ModuleNames,
 
     globals.lookup_string_option(Globals, experimental_complexity,
         ExperimentalComplexity),
-    ( ExperimentalComplexity = "" ->
+    ( if ExperimentalComplexity = "" then
         ExperimentalComplexityOpt = ""
-    ;
+    else
         ExperimentalComplexityOpt = "-X " ++ ExperimentalComplexity
     ),
 
@@ -1702,12 +1616,12 @@ maybe_compile_init_obj_file(Globals, MaybeInitTargetFile, MustCompile, Compile,
     (
         MaybeInitTargetFile = yes(InitTargetFileName),
         file_as_new_as(InitObjFileName, Rel, InitTargetFileName, !IO),
-        (
+        ( if
             ( MustCompile = yes
             ; Rel = is_not_as_new_as
             ; Rel = missing_timestamp
             )
-        ->
+        then
             maybe_write_string(Verbose,
                 "% Compiling initialization file...\n", !IO),
             Compile(InitTargetFileName, CompileOk, !IO),
@@ -1719,7 +1633,7 @@ maybe_compile_init_obj_file(Globals, MaybeInitTargetFile, MustCompile, Compile,
                 CompileOk = no,
                 Result = no
             )
-        ;
+        else
             Result = yes(InitObjFileName)
         )
     ;
@@ -1762,13 +1676,13 @@ file_as_new_as(FileNameA, Rel, FileNameB, !IO) :-
 compare_file_timestamps(FileNameA, FileNameB, MaybeCompare, !IO) :-
     io.file_modification_time(FileNameA, TimeResultA, !IO),
     io.file_modification_time(FileNameB, TimeResultB, !IO),
-    (
+    ( if
         TimeResultA = ok(TimeA),
         TimeResultB = ok(TimeB)
-    ->
+    then
         compare(Compare, TimeA, TimeB),
         MaybeCompare = yes(Compare)
-    ;
+    else
         MaybeCompare = no
     ).
 
@@ -1777,7 +1691,7 @@ compare_file_timestamps(FileNameA, FileNameB, MaybeCompare, !IO) :-
 % WARNING: The code here duplicates the functionality of scripts/ml.in.
 % Any changes there may also require changes here, and vice versa.
 
-link(ErrorStream, LinkTargetType, ModuleName, ObjectsList, Globals, Succeeded,
+link(Globals, ErrorStream, LinkTargetType, ModuleName, ObjectsList, Succeeded,
         !IO) :-
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_bool_option(Globals, statistics, Stats),
@@ -1805,12 +1719,11 @@ link(ErrorStream, LinkTargetType, ModuleName, ObjectsList, Globals, Succeeded,
         create_csharp_exe_or_lib(Globals, ErrorStream, LinkTargetType,
             ModuleName, OutputFileName, ObjectsList, LinkSucceeded, !IO)
     ;
-        LinkTargetType = java_launcher,
-        create_java_shell_script(Globals, ModuleName, LinkSucceeded, !IO)
-    ;
-        LinkTargetType = java_archive,
-        create_java_archive(Globals, ErrorStream, OutputFileName, ObjectsList,
-            LinkSucceeded, !IO)
+        ( LinkTargetType = java_executable
+        ; LinkTargetType = java_archive
+        ),
+        create_java_exe_or_lib(Globals, ErrorStream, LinkTargetType,
+            ModuleName, OutputFileName, ObjectsList, LinkSucceeded, !IO)
     ;
         LinkTargetType = erlang_launcher,
         create_erlang_shell_script(Globals, ModuleName, LinkSucceeded, !IO)
@@ -1822,8 +1735,8 @@ link(ErrorStream, LinkTargetType, ModuleName, ObjectsList, Globals, Succeeded,
     maybe_report_stats(Stats, !IO),
     (
         LinkSucceeded = yes,
-        post_link_make_symlink_or_copy(ErrorStream, LinkTargetType,
-            ModuleName, Globals, Succeeded, _MadeSymlinkOrCopy, !IO)
+        post_link_make_symlink_or_copy(Globals, ErrorStream, LinkTargetType,
+            ModuleName, Succeeded, _MadeSymlinkOrCopy, !IO)
     ;
         LinkSucceeded = no,
         Succeeded = no
@@ -1860,24 +1773,13 @@ link_output_filename(Globals, LinkTargetType, ModuleName, Ext, OutputFileName,
         module_name_to_file_name(Globals, ModuleName, Ext,
             do_create_dirs, OutputFileName, !IO)
     ;
-        ( LinkTargetType = java_launcher
-        ; LinkTargetType = erlang_launcher
-        ),
-        % These may be shell scripts or batch files.
-        globals.get_target_env_type(Globals, TargetEnvType),
-        (
-            % XXX we should actually generate a .ps1 file for PowerShell.
-            ( TargetEnvType = env_type_win_cmd
-            ; TargetEnvType = env_type_powershell
-            ),
-            Ext = ".bat"
-        ;
-            ( TargetEnvType = env_type_posix
-            ; TargetEnvType = env_type_cygwin
-            ; TargetEnvType = env_type_msys
-            ),
-            Ext = ""
-        ),
+        LinkTargetType = erlang_launcher,
+        Ext = get_launcher_script_extension(Globals),
+        module_name_to_file_name(Globals, ModuleName, Ext,
+            do_create_dirs, OutputFileName, !IO)
+    ;
+        LinkTargetType = java_executable,
+        Ext = ".jar",
         module_name_to_file_name(Globals, ModuleName, Ext,
             do_create_dirs, OutputFileName, !IO)
     ;
@@ -1892,13 +1794,31 @@ link_output_filename(Globals, LinkTargetType, ModuleName, Ext, OutputFileName,
             do_create_dirs, OutputFileName, !IO)
     ).
 
+:- func get_launcher_script_extension(globals) = string.
+
+get_launcher_script_extension(Globals) = Ext :-
+    globals.get_target_env_type(Globals, TargetEnvType),
+    (
+        % XXX we should actually generate a .ps1 file for PowerShell.
+        ( TargetEnvType = env_type_win_cmd
+        ; TargetEnvType = env_type_powershell
+        ),
+        Ext = ".bat"
+    ;
+        ( TargetEnvType = env_type_posix
+        ; TargetEnvType = env_type_cygwin
+        ; TargetEnvType = env_type_msys
+        ),
+        Ext = ""
+    ).
+
 :- pred link_exe_or_shared_lib(globals::in, io.output_stream::in,
     linked_target_type::in(bound(executable ; shared_library)),
     module_name::in, file_name::in, list(string)::in, bool::out,
     io::di, io::uo) is det.
 
 link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
-        OutputFileName, ObjectsList, LinkSucceeded, !IO) :-
+        OutputFileName, ObjectsList, Succeeded, !IO) :-
     (
         LinkTargetType = shared_library,
         CommandOpt = link_shared_lib_command,
@@ -1934,13 +1854,26 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
 
     % Should the executable be stripped?
     globals.lookup_bool_option(Globals, strip, Strip),
-    (
+    ( if
         LinkTargetType = executable,
         Strip = yes
-    ->
-        globals.lookup_string_option(Globals, linker_strip_flag, StripOpt)
-    ;
-        StripOpt = ""
+    then
+        globals.lookup_string_option(Globals, linker_strip_flag,
+            LinkerStripOpt),
+        globals.lookup_string_option(Globals, strip_executable_command,
+            StripExeCommand),
+        globals.lookup_string_option(Globals, mercury_linkage,
+            MercuryLinkage),
+        ( if MercuryLinkage = "shared" then
+            StripExeFlagsOpt = strip_executable_shared_flags
+        else
+            StripExeFlagsOpt = strip_executable_static_flags
+        ),
+        globals.lookup_string_option(Globals, StripExeFlagsOpt, StripExeFlags)
+    else
+        LinkerStripOpt = "",
+        StripExeCommand = "",
+        StripExeFlags = ""
     ),
 
     globals.lookup_bool_option(Globals, target_debug, TargetDebug),
@@ -1952,14 +1885,17 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
         DebugOpts = ""
     ),
 
+    globals.lookup_string_option(Globals, linker_sanitizer_flags,
+        SanitizerOpts),
+
     % Should the executable be statically linked?
     globals.lookup_string_option(Globals, linkage, Linkage),
-    (
+    ( if
         LinkTargetType = executable,
         Linkage = "static"
-    ->
+    then
         globals.lookup_string_option(Globals, linker_static_flags, StaticOpts)
-    ;
+    else
         StaticOpts = ""
     ),
 
@@ -1969,23 +1905,16 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
         UseThreadLibs = yes,
         globals.lookup_string_option(Globals, ThreadFlagsOpt, ThreadOpts),
 
-        % Determine which options are needed to link to libhwloc, if libhwloc
-        % is used at all.
-        globals.lookup_bool_option(Globals, highlevel_code, HighLevelCode),
-        (
-            HighLevelCode = yes,
-            HwlocOpts = ""
-        ;
-            HighLevelCode = no,
-            ( Linkage = "shared" ->
-                HwlocFlagsOpt = hwloc_libs
-            ; Linkage = "static" ->
-                HwlocFlagsOpt = hwloc_static_libs
-            ;
-                unexpected($module, $pred, "Invalid linkage")
-            ),
-            globals.lookup_string_option(Globals, HwlocFlagsOpt, HwlocOpts)
-        )
+        % Determine which options are needed to link to libhwloc, if
+        % libhwloc is not used then the string option will be empty.
+        ( if Linkage = "shared" then
+            HwlocFlagsOpt = hwloc_libs
+        else if Linkage = "static" then
+            HwlocFlagsOpt = hwloc_static_libs
+        else
+            unexpected($module, $pred, "Invalid linkage")
+        ),
+        globals.lookup_string_option(Globals, HwlocFlagsOpt, HwlocOpts)
     ;
         UseThreadLibs = no,
         ThreadOpts = "",
@@ -2023,10 +1952,10 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
     % Set up the install name for shared libraries.
     globals.lookup_bool_option(Globals, shlib_linker_use_install_name,
         UseInstallName),
-    (
+    ( if
         UseInstallName = yes,
         LinkTargetType = shared_library
-    ->
+    then
         % NOTE: `ShLibFileName' must *not* be prefixed with a directory.
         %       get_install_name_option will prefix it with the correct
         %       directory which is the one where the library is going to
@@ -2037,14 +1966,17 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
             SharedLibExt),
         ShLibFileName = "lib" ++ BaseFileName ++ SharedLibExt,
         get_install_name_option(Globals, ShLibFileName, InstallNameOpt)
-    ;
+    else
         InstallNameOpt = ""
     ),
 
     globals.get_trace_level(Globals, TraceLevel),
-    ( given_trace_level_is_none(TraceLevel) = yes ->
+    TraceLevelIsNone = given_trace_level_is_none(TraceLevel),
+    (
+        TraceLevelIsNone = yes,
         TraceOpts = ""
     ;
+        TraceLevelIsNone = no,
         globals.lookup_string_option(Globals, TraceFlagsOpt, TraceOpts)
     ),
 
@@ -2063,15 +1995,33 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
             % that following link command will call sub-commands itself
             % and thus overflow the command line, so in this case
             % we first create an archive of all of the object files.
-            %
             RestrictedCommandLine = yes,
-            io.make_temp(TmpFile, !IO),
             globals.lookup_string_option(Globals, library_extension, LibExt),
-            TmpArchive = TmpFile ++ LibExt,
-            create_archive(Globals, ErrorStream, TmpArchive, yes, ObjectsList,
-                ArchiveSucceeded, !IO),
-            MaybeDeleteTmpArchive = yes(TmpArchive),
-            Objects = TmpArchive
+            io.get_temp_directory(TempDir, !IO),
+            io.make_temp_file(TempDir, "mtmp", LibExt, TmpArchiveResult, !IO),
+            (
+                TmpArchiveResult = ok(TmpArchive),
+                % Only include actual object files in the temporary archive,
+                % not other files such as other archives.
+                filter_object_files(Globals, ObjectsList,
+                    ProperObjectFiles, NonObjectFiles),
+                % Delete the currently empty output file first, otherwise ar
+                % will fail to recognise its file format.
+                remove_file(TmpArchive, _, !IO),
+                create_archive(Globals, ErrorStream, TmpArchive, yes,
+                    ProperObjectFiles, ArchiveSucceeded, !IO),
+                MaybeDeleteTmpArchive = yes(TmpArchive),
+                join_quoted_string_list([TmpArchive | NonObjectFiles],
+                    "", "", " ", Objects)
+            ;
+                TmpArchiveResult = error(Error),
+                io.format(stderr_stream,
+                    "Could not create temporary file: %s\n",
+                    [s(error_message(Error))], !IO),
+                ArchiveSucceeded = no,
+                MaybeDeleteTmpArchive = no,
+                join_quoted_string_list(ObjectsList, "", "", " ", Objects)
+            )
         ;
             RestrictedCommandLine = no,
             ArchiveSucceeded = yes,
@@ -2089,7 +2039,7 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
             string.append_list([
                     Command, " ",
                     StaticOpts, " ",
-                    StripOpt, " ",
+                    LinkerStripOpt, " ",
                     UndefOpt, " ",
                     ThreadOpts, " ",
                     TraceOpts, " ",
@@ -2102,6 +2052,7 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
                     FrameworkDirectories, " ",
                     InstallNameOpt, " ",
                     DebugOpts, " ",
+                    SanitizerOpts, " ",
                     Frameworks, " ",
                     ResCmdLinkOpts, " ",
                     LDFlags, " ",
@@ -2123,10 +2074,25 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
 
             invoke_system_command_maybe_filter_output(Globals, ErrorStream,
                 cmd_verbose_commands, LinkCmd, MaybeDemangleCmd,
-                LinkSucceeded, !IO)
+                LinkSucceeded, !IO),
+            % Invoke strip utility separately if required.
+            ( if
+                LinkSucceeded = yes,
+                LinkerStripOpt = "",
+                StripExeCommand \= ""
+            then
+                string.append_list([
+                    StripExeCommand, " ", StripExeFlags, " ",
+                    quote_arg(OutputFileName)
+                ], StripCmd),
+                invoke_system_command_maybe_filter_output(Globals, ErrorStream,
+                    cmd_verbose_commands, StripCmd, no, Succeeded, !IO)
+            else
+                Succeeded = LinkSucceeded
+            )
         ;
             ArchiveSucceeded = no,
-            LinkSucceeded = no
+            Succeeded = no
         ),
         (
             MaybeDeleteTmpArchive = yes(FileToDelete),
@@ -2136,7 +2102,7 @@ link_exe_or_shared_lib(Globals, ErrorStream, LinkTargetType, ModuleName,
         )
     ;
         MaybeLinkLibraries = no,
-        LinkSucceeded = no
+        Succeeded = no
     ).
 
     % Find the standard Mercury libraries, and the system
@@ -2169,7 +2135,7 @@ get_mercury_std_libs(Globals, TargetType, StdLibs) :-
             LibExt = ".dll",
             MercuryLinkage = "csharp"
         ;
-            ( TargetType = java_launcher
+            ( TargetType = java_executable
             ; TargetType = java_archive
             ; TargetType = erlang_launcher
             ; TargetType = erlang_archive
@@ -2210,13 +2176,13 @@ get_mercury_std_libs(Globals, TargetType, StdLibs) :-
             ),
             globals.lookup_bool_option(Globals, profile_time, ProfTime),
             globals.lookup_bool_option(Globals, profile_deep, ProfDeep),
-            (
+            ( if
                 ( ProfTime = yes
                 ; ProfDeep = yes
                 )
-            ->
+            then
                 GCGrade2 = GCGrade1 ++ "_prof"
-            ;
+            else
                 GCGrade2 = GCGrade1
             ),
             globals.lookup_bool_option(Globals, parallel, Parallel),
@@ -2230,10 +2196,6 @@ get_mercury_std_libs(Globals, TargetType, StdLibs) :-
             link_lib_args(Globals, TargetType, StdLibDir, "", LibExt,
                 GCGrade, StaticGCLibs, SharedGCLibs)
         ;
-            GCMethod = gc_mps,
-            link_lib_args(Globals, TargetType, StdLibDir, "", LibExt,
-                "mps", StaticGCLibs, SharedGCLibs)
-        ;
             GCMethod = gc_accurate,
             StaticGCLibs = "",
             SharedGCLibs = ""
@@ -2241,10 +2203,13 @@ get_mercury_std_libs(Globals, TargetType, StdLibs) :-
 
         % Trace libraries.
         globals.get_trace_level(Globals, TraceLevel),
-        ( given_trace_level_is_none(TraceLevel) = yes ->
+        TraceLevelIsNone = given_trace_level_is_none(TraceLevel),
+        (
+            TraceLevelIsNone = yes,
             StaticTraceLibs = "",
             SharedTraceLibs = ""
         ;
+            TraceLevelIsNone = no,
             link_lib_args(Globals, TargetType, StdLibDir, GradeDir, LibExt,
                 "mer_trace", StaticTraceLib, TraceLib),
             link_lib_args(Globals, TargetType, StdLibDir, GradeDir, LibExt,
@@ -2284,7 +2249,7 @@ get_mercury_std_libs(Globals, TargetType, StdLibs) :-
             "mer_std", StaticStdLib, StdLib),
         link_lib_args(Globals, TargetType, StdLibDir, GradeDir, LibExt,
             "mer_rt", StaticRuntimeLib, RuntimeLib),
-        ( MercuryLinkage = "static" ->
+        ( if MercuryLinkage = "static" then
             StdLibs = string.join_list(" ", [
                 StaticTraceLibs,
                 StaticSourceDebugLibs,
@@ -2292,7 +2257,7 @@ get_mercury_std_libs(Globals, TargetType, StdLibs) :-
                 StaticRuntimeLib,
                 StaticGCLibs
             ])
-        ; MercuryLinkage = "shared" ->
+        else if MercuryLinkage = "shared" then
             StdLibs = string.join_list(" ", [
                 SharedTraceLibs,
                 SharedSourceDebugLibs,
@@ -2300,13 +2265,13 @@ get_mercury_std_libs(Globals, TargetType, StdLibs) :-
                 RuntimeLib,
                 SharedGCLibs
             ])
-        ; MercuryLinkage = "csharp" ->
+        else if MercuryLinkage = "csharp" then
             StdLibs = string.join_list(" ", [
                 SharedTraceLibs,
                 SharedSourceDebugLibs,
                 StdLib
             ])
-        ;
+        else
             unexpected($module, $pred, "unknown linkage " ++ MercuryLinkage)
         )
     ;
@@ -2331,7 +2296,7 @@ link_lib_args(Globals, TargetType, StdLibDir, GradeDir, LibExt, Name,
         ),
         LibPrefix = ""
     ;
-        ( TargetType = java_launcher
+        ( TargetType = java_executable
         ; TargetType = java_archive
         ; TargetType = erlang_launcher
         ; TargetType = erlang_archive
@@ -2393,7 +2358,7 @@ make_link_lib(Globals, TargetType, LibName, LinkOpt) :-
         LinkOpt = quote_arg(LinkLibOpt ++ LibName ++ Suffix)
     ;
         ( TargetType = static_library
-        ; TargetType = java_launcher
+        ; TargetType = java_executable
         ; TargetType = java_archive
         ; TargetType = erlang_launcher
         ; TargetType = erlang_archive
@@ -2412,13 +2377,13 @@ get_runtime_library_path_opts(Globals, LinkTargetType,
         UseInstallName),
     shared_libraries_supported(Globals, SharedLibsSupported),
     globals.lookup_string_option(Globals, linkage, Linkage),
-    (
+    ( if
         UseInstallName = no,
         SharedLibsSupported = yes,
         ( Linkage = "shared"
         ; LinkTargetType = shared_library
         )
-    ->
+    then
         globals.lookup_accumulating_option(Globals,
             runtime_link_library_directories, RpathDirs0),
         RpathDirs = list.map(quote_arg, RpathDirs0),
@@ -2432,7 +2397,7 @@ get_runtime_library_path_opts(Globals, LinkTargetType,
             RpathOpts0 = string.join_list(RpathSep, RpathDirs),
             RpathOpts = RpathFlag ++ RpathOpts0
         )
-    ;
+    else
         RpathOpts = ""
     ).
 
@@ -2442,9 +2407,12 @@ get_runtime_library_path_opts(Globals, LinkTargetType,
 get_system_libs(Globals, TargetType, SystemLibs) :-
     % System libraries used when tracing.
     globals.get_trace_level(Globals, TraceLevel),
-    ( given_trace_level_is_none(TraceLevel) = yes ->
+    TraceLevelIsNone = given_trace_level_is_none(TraceLevel),
+    (
+        TraceLevelIsNone = yes,
         SystemTraceLibs = ""
     ;
+        TraceLevelIsNone = no,
         globals.lookup_string_option(Globals, trace_libs, SystemTraceLibs0),
         globals.lookup_bool_option(Globals, use_readline, UseReadline),
         (
@@ -2478,7 +2446,7 @@ get_system_libs(Globals, TargetType, SystemLibs) :-
         ( TargetType = static_library
         ; TargetType = csharp_executable
         ; TargetType = csharp_library
-        ; TargetType = java_launcher
+        ; TargetType = java_executable
         ; TargetType = java_archive
         ; TargetType = erlang_launcher
         ; TargetType = erlang_archive
@@ -2492,9 +2460,7 @@ get_system_libs(Globals, TargetType, SystemLibs) :-
 :- pred use_thread_libs(globals::in, bool::out) is det.
 
 use_thread_libs(Globals, UseThreadLibs) :-
-    globals.lookup_bool_option(Globals, parallel, Parallel),
-    globals.get_gc_method(Globals, GCMethod),
-    UseThreadLibs = ( ( Parallel = yes ; GCMethod = gc_mps ) -> yes ; no ).
+    globals.lookup_bool_option(Globals, parallel, UseThreadLibs).
 
     % When using --restricted-command-line with Visual C we add all the object
     % files to a temporary archive before linking an executable.
@@ -2530,7 +2496,6 @@ get_restricted_command_line_link_opts(Globals, LinkTargetType,
             ;
                 ( C_CompilerType = cc_gcc(_, _, _)
                 ; C_CompilerType = cc_clang(_)
-                ; C_CompilerType = cc_lcc
                 ; C_CompilerType = cc_unknown
                 ),
                 ResCmdLinkOpts = ""
@@ -2540,7 +2505,7 @@ get_restricted_command_line_link_opts(Globals, LinkTargetType,
             ; LinkTargetType = shared_library
             ; LinkTargetType = csharp_executable
             ; LinkTargetType = csharp_library
-            ; LinkTargetType = java_launcher
+            ; LinkTargetType = java_executable
             ; LinkTargetType = java_archive
             ; LinkTargetType = erlang_launcher
             ; LinkTargetType = erlang_archive
@@ -2552,8 +2517,29 @@ get_restricted_command_line_link_opts(Globals, LinkTargetType,
         ResCmdLinkOpts = ""
     ).
 
-post_link_make_symlink_or_copy(ErrorStream, LinkTargetType, ModuleName,
-        Globals, Succeeded, MadeSymlinkOrCopy, !IO) :-
+    % Filter list of files into those with and without known object file
+    % extensions.
+    %
+:- pred filter_object_files(globals::in, list(string)::in,
+    list(string)::out, list(string)::out) is det.
+
+filter_object_files(Globals, Files, ObjectFiles, NonObjectFiles) :-
+    globals.lookup_string_option(Globals, object_file_extension, ObjExt),
+    globals.lookup_string_option(Globals, pic_object_file_extension,
+        PicObjExt),
+    list.filter(has_object_file_extension(ObjExt, PicObjExt), Files,
+        ObjectFiles, NonObjectFiles).
+
+:- pred has_object_file_extension(string::in, string::in, string::in)
+    is semidet.
+
+has_object_file_extension(ObjExt, PicObjExt, FileName) :-
+    ( string.suffix(FileName, ObjExt)
+    ; string.suffix(FileName, PicObjExt)
+    ).
+
+post_link_make_symlink_or_copy(Globals, ErrorStream, LinkTargetType,
+        ModuleName, Succeeded, MadeSymlinkOrCopy, !IO) :-
     globals.lookup_bool_option(Globals, use_grade_subdirs, UseGradeSubdirs),
     (
         UseGradeSubdirs = yes,
@@ -2568,7 +2554,7 @@ post_link_make_symlink_or_copy(ErrorStream, LinkTargetType, ModuleName,
             ( LinkTargetType = executable
             ; LinkTargetType = csharp_executable
             ; LinkTargetType = csharp_library
-            ; LinkTargetType = java_launcher
+            ; LinkTargetType = java_executable
             ; LinkTargetType = java_archive
             ; LinkTargetType = erlang_launcher
             ),
@@ -2586,7 +2572,7 @@ post_link_make_symlink_or_copy(ErrorStream, LinkTargetType, ModuleName,
         same_timestamp(OutputFileName, UserDirFileName, SameTimestamp, !IO),
         (
             SameTimestamp = yes,
-            Succeeded = yes,
+            Succeeded0 = yes,
             MadeSymlinkOrCopy = no
         ;
             SameTimestamp = no,
@@ -2599,13 +2585,53 @@ post_link_make_symlink_or_copy(ErrorStream, LinkTargetType, ModuleName,
             % (on systems on which symbolic links are not available).
             ( if LinkTargetType = erlang_archive then
                 make_symlink_or_copy_dir(Globals, OutputFileName,
-                    UserDirFileName, Succeeded, !IO)
-              else
+                    UserDirFileName, Succeeded0, !IO)
+            else
                 make_symlink_or_copy_file(Globals, OutputFileName,
-                    UserDirFileName, Succeeded, !IO)
+                    UserDirFileName, Succeeded0, !IO)
             ),
             io.set_output_stream(OutputStream, _, !IO),
             MadeSymlinkOrCopy = yes
+        ),
+
+        % For the Java and C# grades we also need to symlink or copy the
+        % launcher scripts or batch files.
+        ( if
+            Succeeded0 = yes,
+            (
+                LinkTargetType = csharp_executable,
+                % NOTE: we don't generate a launcher script for C# executables
+                % on Windows -- it isn't necessary since they can be executed
+                % directly.
+                globals.get_target_env_type(Globals, TargetEnvType),
+                TargetEnvType = env_type_posix
+            ;
+                LinkTargetType = java_executable
+            )
+        then
+            ScriptExt = get_launcher_script_extension(Globals),
+            module_name_to_file_name(Globals, ModuleName, ScriptExt,
+                do_not_create_dirs, OutputScriptName, !IO),
+            module_name_to_file_name(NoSubdirGlobals, ModuleName, ScriptExt,
+                do_not_create_dirs, UserDirScriptName, !IO),
+
+            same_timestamp(OutputScriptName, UserDirScriptName,
+                ScriptSameTimestamp, !IO),
+            (
+                ScriptSameTimestamp = yes,
+                Succeeded = yes
+            ;
+                ScriptSameTimestamp = no,
+                io.set_output_stream(ErrorStream, ScriptOutputStream, !IO),
+                % Remove the target of the symlink/copy in case
+                % it already exists.
+                io.remove_file_recursively(UserDirScriptName, _, !IO),
+                make_symlink_or_copy_file(Globals, OutputScriptName,
+                    UserDirScriptName, Succeeded, !IO),
+                io.set_output_stream(ScriptOutputStream, _, !IO)
+            )
+        else
+            Succeeded = Succeeded0
         )
     ;
         UseGradeSubdirs = no,
@@ -2631,9 +2657,9 @@ get_frameworks(Globals, FrameworkOpts) :-
 
 same_timestamp(FileNameA, FileNameB, SameTimestamp, !IO) :-
     compare_file_timestamps(FileNameA, FileNameB, MaybeCompare, !IO),
-    ( MaybeCompare = yes(=) ->
+    ( if MaybeCompare = yes(=) then
         SameTimestamp = yes
-    ;
+    else
         SameTimestamp = no
     ).
 
@@ -2661,7 +2687,7 @@ get_linker_output_option(Globals, LinkTargetType, OutputOpt) :-
             % whitspace; the lack of a trailing space in the following
             % is deliberate.
             OutputOpt = " -Fe"
-          else
+        else
             % XXX This is almost certainly wrong, but we don't currently
             % support building shared libraries with mmc on Windows
             % anyway.
@@ -2670,7 +2696,6 @@ get_linker_output_option(Globals, LinkTargetType, OutputOpt) :-
     ;
         ( C_CompilerType = cc_gcc(_, _, _)
         ; C_CompilerType = cc_clang(_)
-        ; C_CompilerType = cc_lcc
         ; C_CompilerType = cc_unknown
         ),
         OutputOpt = " -o "
@@ -2682,12 +2707,11 @@ reserve_stack_size_flags(Globals) = Flags :-
     globals.lookup_int_option(Globals, cstack_reserve_size, ReserveStackSize),
     ( if ReserveStackSize = -1 then
         Flags = ""
-    else 
+    else
         get_c_compiler_type(Globals, C_CompilerType),
         (
             ( C_CompilerType = cc_gcc(_, _, _)
             ; C_CompilerType = cc_clang(_)
-            ; C_CompilerType = cc_lcc
             ; C_CompilerType = cc_unknown
             ),
             string.format("-Wl,--stack=%d", [i(ReserveStackSize)], Flags)
@@ -2706,20 +2730,26 @@ process_link_library(Globals, MercuryLibDirs, LibName, LinkerOpt, !Succeeded,
         !IO) :-
     globals.get_target(Globals, Target),
     (
-        ( Target = target_c
-        ; Target = target_x86_64
-        ),
+        Target = target_c,
         globals.lookup_string_option(Globals, mercury_linkage, MercuryLinkage),
-        LinkOpt = "-l",
-        LibSuffix = ""
+        globals.get_c_compiler_type(Globals, CCompilerType),
+        (
+            ( CCompilerType = cc_gcc(_, _, _)
+            ; CCompilerType = cc_clang(_)
+            ; CCompilerType = cc_unknown
+            ),
+            LinkOpt = "-l",
+            LibSuffix = ""
+        ;
+            CCompilerType = cc_cl(_),
+            LinkOpt = "",
+            LibSuffix = ".lib"
+        )
     ;
         Target = target_csharp,
         MercuryLinkage = "shared",
         LinkOpt = "-r:",
         LibSuffix = ".dll"
-    ;
-        Target = target_il,
-        unexpected($module, $pred, "target_java")
     ;
         Target = target_java,
         unexpected($module, $pred, "target_java")
@@ -2730,10 +2760,10 @@ process_link_library(Globals, MercuryLibDirs, LibName, LinkerOpt, !Succeeded,
 
     globals.lookup_accumulating_option(Globals, mercury_libraries,
         MercuryLibs),
-    (
+    ( if
         MercuryLinkage = "static",
         list.member(LibName, MercuryLibs)
-    ->
+    then
         % If we are linking statically with Mercury libraries, pass the
         % absolute pathname of the `.a' file for the library.
         file_name_to_module_name(LibName, LibModuleName),
@@ -2744,19 +2774,19 @@ process_link_library(Globals, MercuryLibDirs, LibName, LinkerOpt, !Succeeded,
         module_name_to_lib_file_name(NoSubDirGlobals, "lib", LibModuleName,
             LibExt, do_not_create_dirs, LibFileName, !IO),
 
-        search_for_file_returning_dir(do_not_open_file, MercuryLibDirs,
-            LibFileName, SearchResult, !IO),
+        search_for_file_returning_dir(MercuryLibDirs,
+            LibFileName, MaybeDirName, !IO),
         (
-            SearchResult = ok(DirName),
+            MaybeDirName = ok(DirName),
             LinkerOpt = DirName/LibFileName
         ;
-            SearchResult = error(Error),
+            MaybeDirName = error(Error),
             LinkerOpt = "",
             write_error_pieces_maybe_with_context(Globals, no, 0,
                 [words(Error)], !IO),
             !:Succeeded = no
         )
-    ;
+    else
         LinkerOpt = LinkOpt ++ LibName ++ LibSuffix
     ).
 
@@ -2797,7 +2827,6 @@ create_archive(Globals, ErrorStream, LibFileName, Quote, ObjectList,
     ;
         ( C_CompilerType = cc_gcc(_, _, _)
         ; C_CompilerType = cc_clang(_)
-        ; C_CompilerType = cc_lcc
         ; C_CompilerType = cc_unknown
         ),
         ArOutputSpace = " "
@@ -2812,13 +2841,13 @@ create_archive(Globals, ErrorStream, LibFileName, Quote, ObjectList,
     invoke_long_system_command(Globals, ErrorStream, cmd_verbose_commands,
         ArCmd, MakeLibCmdArgs, MakeLibCmdSucceeded, !IO),
 
-    (
+    ( if
         ( RanLib = ""
         ; MakeLibCmdSucceeded = no
         )
-    ->
+    then
         Succeeded = MakeLibCmdSucceeded
-    ;
+    else
         RanLibCmd = string.append_list([RanLib, " ", LibFileName]),
         invoke_system_command(Globals, ErrorStream, cmd_verbose_commands,
             RanLibCmd, Succeeded, !IO)
@@ -2851,9 +2880,9 @@ create_csharp_exe_or_lib(Globals, ErrorStream, LinkTargetType, MainModuleName,
 
     globals.lookup_bool_option(Globals, line_numbers, LineNumbers),
     (
-        % If we output line numbers the mono C# compiler outputs lots of
+        % If we output line numbers, the mono C# compiler outputs lots of
         % spurious warnings about unused variables and unreachable code,
-        % so disable these warnings. It also confuses #pragma warning
+        % so disable these warnings. It also confuses #pragma warning,
         % which is why we make the options global.
         LineNumbers = yes,
         NoWarnLineNumberOpt = "-nowarn:162,219 "
@@ -2898,7 +2927,7 @@ create_csharp_exe_or_lib(Globals, ErrorStream, LinkTargetType, MainModuleName,
         ( LinkTargetType = executable
         ; LinkTargetType = static_library
         ; LinkTargetType = shared_library
-        ; LinkTargetType = java_launcher
+        ; LinkTargetType = java_executable
         ; LinkTargetType = java_archive
         ; LinkTargetType = erlang_launcher
         ; LinkTargetType = erlang_archive
@@ -2950,16 +2979,15 @@ create_csharp_exe_or_lib(Globals, ErrorStream, LinkTargetType, MainModuleName,
     % Also create a shell script to launch it if necessary.
     globals.get_target_env_type(Globals, TargetEnvType),
     globals.lookup_string_option(Globals, cli_interpreter, CLI),
-    (
+    ( if
         Succeeded0 = yes,
         LinkTargetType = csharp_executable,
         CLI \= "",
         TargetEnvType = env_type_posix
-    ->
+    then
         create_launcher_shell_script(Globals, MainModuleName,
-            write_cli_shell_script(Globals, OutputFileName),
-            Succeeded, !IO)
-    ;
+            write_cli_shell_script(Globals, OutputFileName), Succeeded, !IO)
+    else
         Succeeded = Succeeded0
     ).
 
@@ -3014,17 +3042,25 @@ write_cli_shell_script(Globals, ExeFileName, Stream, !IO) :-
         ":", LinkLibraryDirectories),
     list.foldl(io.write_string(Stream), [
         "#!/bin/sh\n",
+        "DIR=${0%/*}\n",
         "MONO_PATH=$MONO_PATH:", LinkLibraryDirectories, "\n",
         "export MONO_PATH\n",
         "CLI_INTERPRETER=${CLI_INTERPRETER:-", CLI, "}\n",
-        "exec $CLI_INTERPRETER ", ExeFileName, " \"$@\"\n"
+        "exec \"$CLI_INTERPRETER\" \"$DIR/", ExeFileName, "\" \"$@\"\n"
     ], !IO).
 
-:- pred create_java_archive(globals::in, io.output_stream::in, file_name::in,
-    list(file_name)::in, bool::out, io::di, io::uo) is det.
+%-----------------------------------------------------------------------------%
+%
+% Create Java "executables" or archives.
+%
 
-create_java_archive(Globals, ErrorStream, JarFileName, ObjectList, Succeeded,
-        !IO) :-
+:- pred create_java_exe_or_lib(globals::in, io.text_output_stream::in,
+    linked_target_type::in,
+    module_name::in, file_name::in, list(file_name)::in, bool::out,
+    io::di, io::uo) is det.
+
+create_java_exe_or_lib(Globals, ErrorStream, LinkTargetType, MainModuleName,
+        JarFileName, ObjectList, Succeeded, !IO) :-
     globals.lookup_string_option(Globals, java_archive_command, Jar),
 
     list_class_files_for_jar(Globals, ObjectList, ClassSubDir, ListClassFiles,
@@ -3041,47 +3077,47 @@ create_java_archive(Globals, ErrorStream, JarFileName, ObjectList, Succeeded,
     % extremely long. We create the temporary file in the current directory to
     % avoid problems under Cygwin, where absolute paths will be interpreted
     % incorrectly when passed to a non-Cygwin jar program.
-    io.make_temp(".", "mtmp", TempFileName, !IO),
-    io.open_output(TempFileName, OpenResult, !IO),
+    open_temp_output(".", "mtmp", "", TempFileResult, !IO),
     (
-        OpenResult = ok(Stream),
+        TempFileResult = ok({TempFileName, Stream}),
         list.foldl(write_jar_class_argument(Stream, ClassSubDir),
             ListClassFiles, !IO),
         io.close_output(Stream, !IO),
 
         Cmd = string.append_list(
             [Jar, " cf ", JarFileName, " @", TempFileName]),
-        invoke_system_command(Globals, ErrorStream, cmd_verbose_commands, Cmd,
-            Succeeded, !IO),
+        invoke_system_command(Globals, ErrorStream,
+            cmd_verbose_commands, Cmd, Succeeded0, !IO),
         io.remove_file(TempFileName, _, !IO),
-
         (
-            Succeeded = yes,
-            % Add an index, which is supposed to speed up class loading.
-            IndexCmd = string.append_list([Jar, " i ", JarFileName]),
-            invoke_system_command(Globals, ErrorStream, cmd_verbose_commands,
-                IndexCmd, _, !IO)
+            Succeeded0 = yes
         ;
-            Succeeded = no,
+            Succeeded0 = no,
             io.remove_file(JarFileName, _, !IO)
         )
     ;
-        OpenResult = error(Error),
-        io.write_string(ErrorStream, "Error creating `", !IO),
-        io.write_string(ErrorStream, TempFileName, !IO),
-        io.write_string(ErrorStream, "': ", !IO),
-        io.write_string(ErrorStream, io.error_message(Error), !IO),
-        io.nl(ErrorStream, !IO),
-        Succeeded = no
+        TempFileResult = error(ErrorMessage),
+        io.write_string(ErrorStream, ErrorMessage, !IO),
+        io.nl(!IO),
+        Succeeded0 = no
+    ),
+    ( if
+        Succeeded0 = yes,
+        LinkTargetType = java_executable
+    then
+        create_java_shell_script(Globals, MainModuleName,
+            Succeeded, !IO)
+    else
+        Succeeded = Succeeded0
     ).
 
 :- pred write_jar_class_argument(io.output_stream::in, string::in, string::in,
     io::di, io::uo) is det.
 
 write_jar_class_argument(Stream, ClassSubDir, ClassFileName, !IO) :-
-    ( dir.path_name_is_absolute(ClassFileName) ->
+    ( if dir.path_name_is_absolute(ClassFileName) then
         true
-    ;
+    else
         io.write_string(Stream, "-C ", !IO),
         io.write_string(Stream, ClassSubDir, !IO),
         io.write_string(Stream, " ", !IO)
@@ -3142,20 +3178,12 @@ copy_erlang_archive_files(Globals, ErrorStream, ErlangArchiveFileName,
 %-----------------------------------------------------------------------------%
 
 get_object_code_type(Globals, FileType, ObjectCodeType) :-
-    globals.lookup_string_option(Globals, pic_object_file_extension,
-        PicObjExt),
-    globals.lookup_string_option(Globals, link_with_pic_object_file_extension,
-        LinkWithPicObjExt),
-    globals.lookup_string_option(Globals, object_file_extension, ObjExt),
-    globals.lookup_string_option(Globals, mercury_linkage, MercuryLinkage),
-    globals.lookup_bool_option(Globals, gcc_global_registers, GCCGlobals),
-    globals.lookup_bool_option(Globals, highlevel_code, HighLevelCode),
-    globals.get_target(Globals, Target),
     (
-        ( FileType = static_library
+        ( FileType = executable
+        ; FileType = static_library
         ; FileType = csharp_executable
         ; FileType = csharp_library
-        ; FileType = java_launcher
+        ; FileType = java_executable
         ; FileType = java_archive
         ; FileType = erlang_launcher
         ; FileType = erlang_archive
@@ -3163,34 +3191,10 @@ get_object_code_type(Globals, FileType, ObjectCodeType) :-
         ObjectCodeType = non_pic
     ;
         FileType = shared_library,
+        globals.lookup_string_option(Globals, pic_object_file_extension,
+            PicObjExt),
+        globals.lookup_string_option(Globals, object_file_extension, ObjExt),
         ObjectCodeType = ( if PicObjExt = ObjExt then non_pic else pic )
-    ;
-        FileType = executable,
-        ( MercuryLinkage = "shared" ->
-            (
-                % We only need to create `.lpic' files if `-DMR_PIC_REG'
-                % has an effect, which is currently nowhere.
-                ( LinkWithPicObjExt = ObjExt
-                ; HighLevelCode = yes
-                ; GCCGlobals = no
-                ; Target \= target_c
-                )
-            ->
-                ObjectCodeType = non_pic
-            ;
-                LinkWithPicObjExt = PicObjExt
-            ->
-                ObjectCodeType = pic
-            ;
-                ObjectCodeType = link_with_pic
-            )
-        ; MercuryLinkage = "static" ->
-            ObjectCodeType = non_pic
-        ;
-            % The linkage string is checked by options.m.
-            unexpected($module, $pred,
-                "unknown linkage " ++ MercuryLinkage)
-        )
     ).
 
 get_linked_target_type(Globals, LinkedTargetType) :-
@@ -3281,35 +3285,26 @@ maybe_pic_object_file_extension(Globals::in, PIC::in, Ext::out) :-
     ;
         PIC = pic,
         globals.lookup_string_option(Globals, pic_object_file_extension, Ext)
-    ;
-        PIC = link_with_pic,
-        globals.lookup_string_option(Globals,
-            link_with_pic_object_file_extension, Ext)
     ).
 maybe_pic_object_file_extension(Globals::in, PIC::out, Ext::in) :-
-    (
+    ( if
         % This test must come first -- if the architecture doesn't need
         % special treatment for PIC, we should always return `non_pic'.
         % `mmc --make' depends on this.
         globals.lookup_string_option(Globals, object_file_extension, Ext)
-    ->
+    then
         PIC = non_pic
-    ;
+    else if
         globals.lookup_string_option(Globals, pic_object_file_extension, Ext)
-    ->
+    then
         PIC = pic
-    ;
-        globals.lookup_string_option(Globals,
-            link_with_pic_object_file_extension, Ext)
-    ->
-        PIC = link_with_pic
-    ;
+    else
         fail
     ).
 
 %-----------------------------------------------------------------------------%
 %
-% Standalone interfaces
+% Standalone interfaces.
 %
 
 % NOTE: the following code is similar to that of make_init_obj/7.
@@ -3398,10 +3393,13 @@ make_standalone_int_body(Globals, Basename, !IO) :-
         SourceDebugInitFiles = []
     ),
     globals.get_trace_level(Globals, TraceLevel),
-    ( given_trace_level_is_none(TraceLevel) = no ->
+    TraceLevelIsNone = given_trace_level_is_none(TraceLevel),
+    (
+        TraceLevelIsNone = no,
         TraceOpt = "-t",
         InitFiles3 = InitFiles2 ++ TraceInitFiles
     ;
+        TraceLevelIsNone = yes,
         TraceOpt = "",
         InitFiles3 = InitFiles2
     ),
@@ -3421,9 +3419,9 @@ make_standalone_int_body(Globals, Basename, !IO) :-
     join_quoted_string_list(InitFileDirsList, "-I ", "", " ", InitFileDirs),
     globals.lookup_string_option(Globals, experimental_complexity,
         ExperimentalComplexity),
-    ( ExperimentalComplexity = "" ->
+    ( if ExperimentalComplexity = "" then
         ExperimentalComplexityOpt = ""
-    ;
+    else
         ExperimentalComplexityOpt = "-X " ++ ExperimentalComplexity
     ),
     compute_grade(Globals, Grade),
@@ -3447,8 +3445,8 @@ make_standalone_int_body(Globals, Basename, !IO) :-
         get_object_code_type(Globals, executable, PIC),
         maybe_pic_object_file_extension(Globals, PIC, ObjExt),
         ObjFileName = Basename ++ ObjExt,
-        do_compile_c_file(ErrorStream, PIC, CFileName, ObjFileName,
-            Globals, CompileOk, !IO),
+        do_compile_c_file(Globals, ErrorStream, PIC, CFileName, ObjFileName,
+            CompileOk, !IO),
         (
             CompileOk = yes
         ;
@@ -3483,24 +3481,23 @@ make_standalone_int_body(Globals, Basename, !IO) :-
 invoke_long_system_command(Globals, ErrorStream, Verbosity, Cmd, Args,
         Succeeded, !IO) :-
     invoke_long_system_command_maybe_filter_output(Globals, ErrorStream,
-        Verbosity, Cmd, Args, no, Succeeded, !IO).
+        Verbosity, Cmd, "", Args, no, Succeeded, !IO).
 
 :- pred invoke_long_system_command_maybe_filter_output(globals::in,
     io.output_stream::in, command_verbosity::in, string::in, string::in,
-    maybe(string)::in, bool::out, io::di, io::uo) is det.
+    string::in, maybe(string)::in, bool::out, io::di, io::uo) is det.
 
 invoke_long_system_command_maybe_filter_output(Globals, ErrorStream, Verbosity,
-        Cmd, Args, MaybeProcessOutput, Succeeded, !IO) :-
+        Cmd, NonAtArgs, Args, MaybeProcessOutput, Succeeded, !IO) :-
     globals.lookup_bool_option(Globals, restricted_command_line,
         RestrictedCommandLine),
     (
         RestrictedCommandLine = yes,
 
         % Avoid generating very long command lines by using @files.
-        io.make_temp(TmpFile, !IO),
-        io.open_output(TmpFile, OpenResult, !IO),
+        open_temp_output(TmpFileResult, !IO),
         (
-            OpenResult = ok(TmpStream),
+            TmpFileResult = ok({TmpFile, TmpStream}),
 
             % We need to escape any \ before writing them to the file,
             % otherwise we lose them.
@@ -3510,18 +3507,22 @@ invoke_long_system_command_maybe_filter_output(Globals, ErrorStream, Verbosity,
             io.close_output(TmpStream, !IO),
 
             globals.lookup_bool_option(Globals, very_verbose, VeryVerbose),
+            AtFileName = at_file_name(Globals, TmpFile),
             (
                 VeryVerbose = yes,
-                io.write_string("% Args placed in ", !IO),
-                io.write_string(at_file_name(Globals, TmpFile) ++ ": `", !IO),
-                io.write_string(TmpFileArgs, !IO),
-                io.write_string("'\n", !IO),
+                io.format("%% Args placed in %s: `%s'\n",
+                    [s(AtFileName), s(TmpFileArgs)], !IO),
                 io.flush_output(!IO)
             ;
                 VeryVerbose = no
             ),
 
-            FullCmd = Cmd ++ " " ++ at_file_name(Globals, TmpFile),
+            ( if NonAtArgs = "" then
+                FullCmd = Cmd ++ " " ++ AtFileName
+            else
+                string.append_list([Cmd, " ", NonAtArgs, " ", AtFileName],
+                    FullCmd)
+            ),
             invoke_system_command_maybe_filter_output(Globals, ErrorStream,
                 Verbosity, FullCmd, MaybeProcessOutput, Succeeded0, !IO),
 
@@ -3534,13 +3535,18 @@ invoke_long_system_command_maybe_filter_output(Globals, ErrorStream, Verbosity,
                 Succeeded = no
             )
         ;
-            OpenResult = error(_),
+            TmpFileResult = error(ErrorMessage),
+            io.write_string(stderr_stream, ErrorMessage, !IO),
+            io.nl(!IO),
             Succeeded = no
         )
-
     ;
         RestrictedCommandLine = no,
-        FullCmd = Cmd ++ " " ++ Args,
+        ( if NonAtArgs = "" then
+            FullCmd = Cmd ++ " " ++ Args
+        else
+            string.append_list([Cmd, " ", NonAtArgs, " ", Args], FullCmd)
+        ),
         invoke_system_command_maybe_filter_output(Globals, ErrorStream,
             Verbosity, FullCmd, MaybeProcessOutput, Succeeded, !IO)
     ).
@@ -3580,8 +3586,8 @@ output_c_compiler_flags(Globals, Stream, !IO) :-
 %
 
 output_grade_defines(Globals, Stream, !IO) :-
-    get_object_code_type(Globals, executable, PIC),
-    gather_grade_defines(Globals, PIC, GradeDefines),
+    get_object_code_type(Globals, executable, _PIC),
+    gather_grade_defines(Globals, GradeDefines),
     io.write_string(Stream, GradeDefines, !IO),
     io.nl(Stream, !IO).
 

@@ -14,7 +14,8 @@
 @ifnottex
 This file is an aid for people porting Prolog programs to Mercury.
 
-Copyright (C) 1995-2014 The University of Melbourne.
+Copyright @copyright{} 1995--2012 The University of Melbourne.@*
+Copyright @copyright{} 2013--2017 The Mercury team.
 
 Permission is granted to make and distribute verbatim copies of
 this manual provided the copyright notice and this permission notice
@@ -44,7 +45,8 @@ into another language, under the above conditions for modified versions.
 @author Fergus Henderson
 @page
 @vskip 0pt plus 1filll
-Copyright @copyright{} 1995--2014 The University of Melbourne.
+Copyright @copyright{} 1995--2012 The University of Melbourne.@*
+Copyright @copyright{} 2013--2017 The Mercury team.
 
 Permission is granted to make and distribute verbatim copies of
 this manual provided the copyright notice and this permission notice
@@ -72,7 +74,8 @@ translating Prolog programs into Mercury.
 * Introduction::    Introduction.
 * Syntax::          Syntax.
 * IO::              Input and output.
-* FailLoops::       Failure driven loops, @code{assert} and @code{retract}.
+* AssertRetract::   @code{assert} and @code{retract}.
+* FailLoops::       Failure driven loops.
 * Commits::         Cuts.
 * Accumulators::    Accumulators and difference lists.
 * Determinism::     Determinism.
@@ -106,7 +109,7 @@ Although there are a few differences,
 by and large if a program is accepted by a Prolog system,
 it will be accepted by Mercury.
 There are however a few extra operators defined by the Mercury term parser
-(see the ``Builtin Operators'' section of the ``Syntax'' chapter of the
+(see the ``Builtin operators'' section of the ``Syntax'' chapter of the
 Mercury Language Reference Manual).
 
 In addition, Mercury implements both existential and universal quantification
@@ -140,65 +143,143 @@ Therefore it cannot use Prolog's mechanism for doing
 input and output with side-effects.
 The mechanism that Mercury uses is the threading of an object
 that represents the state of the world through the computation.
-The type of this structure is @samp{io.state}.
+The type of this object is @code{io.state}, or just @code{io} for short.
+Each operation that affects the state of the world
+must have two arguments of this type,
+representing respectively the state of the world before the operation,
+and the state of the world after the operation.
 The modes of the two arguments that are added to calls are
-@samp{di} for ``destructive input'' and @samp{uo} for ``unique output''.
+@code{di} for ``destructive input'' and @code{uo} for ``unique output''.
 The first means that the input variable
 must be the last reference to the original state of the world,
-and that the output variable will be the only reference
-to the state of the world produced by this predicate.
+and the latter means that the output variable is guaranteed to be the
+only reference to the state of the world produced by this predicate.
 
-Predicates that do input or output must have these arguments added.
-For example the Prolog predicate:
+For example, the direct translation of the Prolog predicate
 
 @example
+@group
 write_total(Total) :-
     write('The total is '),
     write(Total),
     write('.'),
     nl.
+@end group
 @end example
 
 @noindent
-in Mercury becomes
+into Mercury yields this Mercury predicate:
 
 @example
-:- pred write_total(int, io.state, io.state).
-:- mode write_total(in, di, uo) is det.
+@group
+:- pred write_total(int::in, io::di, io::uo) is det.
 
 write_total(Total, IO0, IO) :-
     print("The total is ", IO0, IO1),
     print(Total, IO1, IO2),
     print('.', IO2, IO3),
     nl(IO3, IO).
+@end group
 @end example
 
-Definite Clause Grammars (DCGs) are convenient syntactic sugar
-to use in such situations.
-The above clause can also be written
+The variables @code{IO0}, @code{IO1} etc each represent
+one version of the state of the world.
+@code{IO0} represents the state before the total is printed,
+@code{IO1} represents the state after just @code{The total is} is printed,
+and so on.
+However, programmers usually don't want to give specific names
+to all these different versions;
+they want to name only the entities
+that all these variables represent different versions of.
+That is why Mercury supports state variable notation.
+This is syntactic sugar
+designed to make it easier to thread a sequence of variables
+holding the successive states of an entity through a clause.
+You as the programmer name only the entity,
+and let the compiler name the various versions.
+With state variables, the above clause would be written as
 
 @example
-write_total(Total) -->
-    print("The total is "),
-    print(Total),
-    print('.'),
-    nl.
+@group
+write_total(Total, !IO) :-
+    print("The total is ", !IO),
+    print(Total, !IO),
+    print('.', !IO),
+    nl(!IO).
+@end group
 @end example
 
-In DCGs, any calls (including unifications)
-that do not need the extra DCG arguments
-are escaped in the usual way by surrounding them in curly braces
-(@code{ @{ @} }).
+and the compiler will internally convert this clause
+into code that looks like the previous clause.
+(The usual convention in Mercury programs
+is to name the state variable representing the state of the world @code{!IO}.)
 
-Note that in Mercury you normally use strings (@code{"..."})
-rather than atoms (@code{'...'}) for messages like @code{"The total is"}.
-(It is possible to use atoms, but you have to declare each
-such atom before-hand, so it is more convenient to use strings.)
-However, for strings and characters, @samp{write} prints out the quotes;
-to avoid this, you need to use @samp{print} instead of @samp{write}.
+In the head of a clause,
+what looks like an argument that consists of
+a variable name prefixed by an exclamation mark
+actually stands for two arguments which are both variables,
+holding the initial and final state
+of whatever entity the state variable stands for.
+In this case, they stand for the state of the world,
+respectively before and after the line about the total has been printed.
+In calls in the body of a clause,
+what looks like an argument that consists of
+a variable name prefixed by an exclamation mark
+also stands for two arguments which are both variables,
+but these hold respectively, the current and the next state.
 
-Both @samp{write} and @samp{print} are defined in the @samp{io}
-module in the Mercury standard library.
+In Prolog, it is quite normal to give to @code{print}
+an argument that is an atom that is not used anywhere else in the program,
+or at least not in code related to the code that does the printing.
+This is because the term being printed does not have to belong to a defined
+type.
+Since Mercury is strongly typed, the atom being printed
+@emph{would} have to be a data constructor of a defined type.
+A Mercury programmer @emph{could} define a meaningless type
+just to give one of its data constructors to a call to @code{print},
+but it is far better to simply call a predicate specifically designed
+to print the string you want printed:
+
+@example
+@group
+write_total(Total, !IO) :-
+    io.write_string("The total is ", !IO),
+    io.print(Total, !IO),
+    io.write_char('.', !IO),
+    io.nl(!IO).
+@end group
+@end example
+
+The @code{io.} prefix on the predicates called in the body indicates that
+the callees are in the @code{io} module of the Mercury standard library.
+This module contains all of Mercury's primitive I/O operations.
+These @emph{module qualifications} are not strictly necessary
+(unless two or more modules define predicates
+with the same names and argument types,
+the Mercury compiler can figure out which modules called predicates are in),
+but Mercury convention is to make write the module qualifier explicitly
+in order to make the intent of the code crystal clear to readers.
+
+The above could also be written more compactly like this:
+@example
+write_total(Total, !IO) :-
+    io.format("The total is %d.\n", [i(Total)], !IO).
+@end example
+
+The first argument of @code{io.format} is a format string
+modelled directly on the format strings supported by @code{printf} in C,
+while the second is a list of the values to be printed,
+which should have one value for each conversion specifier.
+In this case, there is one conversion specifier, @samp{%d},
+which calls for the printing of an integer as a decimal number,
+and the corresponding value is the integer @code{Total}.
+Since Mercury is strongly typed,
+and different arguments may have different types,
+in the argument list
+integers must be wrapped inside @code{i()},
+floats must be wrapped inside @code{f()},
+strings must be wrapped inside @code{s()}, and
+chars must be wrapped inside @code{c()}.
 
 One of the important consequences of our model for input and output
 is that predicates that can fail may not do input or output.
@@ -215,109 +296,244 @@ In some circumstances, Prolog programs that suffer from this problem
 can be fixed by moving the I/O out of the failing context.
 For example
 
-@example
-    ...
+@example 
+@group
+    @dots{}
     ( solve(Goal) ->
-        ...
+        @dots{}
     ;
-        ...
+        @dots{}
     ),
     ...
+@end group
 @end example
 
 @noindent
-where @samp{solve(Goal)} does some I/O can be transformed into
-valid Mercury in at least two ways. The first is to make
-@samp{solve} deterministic and return a status:
+where @samp{solve(Goal)} does some I/O
+can be transformed into valid Mercury in at least two ways.
+The first is to make @samp{solve} deterministic and return a status:
 
 @example
-    ...
-    solve(Goal, Result, IO6, IO7),
-    ( Result = yes ->
-        ...
+@group
+    @dots{} 
+    solve(Goal, Result, !IO),
+    (
+        Result = success(@dots{}),
+        @dots{}        
     ;
-        ...
+        Result = failure,
+        @dots{} 
     ),
-    ...
+    @dots{}    
+@end group
 @end example
 
-The other way is to transform @samp{solve} so that all the input
-and output takes place outside it:
+The other way is to transform @samp{solve} so that
+all the input and output takes place outside it:
 
 @example
     ...
-    io.write_string("calling: ", IO6, IO7),
-    solve.write_goal(Goal, IO7, IO8),
+    io.write_string("calling: ", !IO),
+    solve.write_goal(Goal, !IO),
     ( solve(Goal) ->
-        io.write_string("succeeded\n", IO8, IO9),
+        io.write_string("succeeded\n", !IO),
         ...
     ;
-        IO9 = IO8,
         ...
     ),
     ...
 @end example
 
-@node FailLoops
-@chapter Failure driven loops, assert and retract
+@node AssertRetract
+@chapter Assert and retract
 
-Because Mercury is purely declarative,
-the goal @samp{Goal, fail} is interchangeable with the goal @samp{fail, Goal}.
-Also because it is purely declarative, there are no side effects to goals
-(see also the section on input and output).
-As a consequence of these two facts,
-it is not possible to write failure driven loops in Mercury.
-Neither is it possible to use predicates such as assert or retract.
-This is not the place to argue it, but we believe
-most programs that use failure driven loops, assert and retract
-to be less clear and harder to maintain than those that do not.
+In Prolog, calls to the builtin predicates @code{assert} and @code{retract}
+can change the set of clauses of the program currently being executed.
+This makes compilation very tricky,
+and different Prolog systems react differently
+when the program alters the definition of a predicate that has active calls.
+It also makes program analysis almost impossible,
+since the program that the compiler should analyze
+is not actually available at compilation time.
+Since Mercury is a compiled language,
+it does not allow the compiled program to be altered in any way.
 
-The use of assert and retract should be replaced with
-a collection data structure threaded through the relevant part of the program.
-Data which is truly global may be stored in the @samp{io.state} using
-the predicates @samp{io.get_globals} and @samp{io.set_globals}.
-These predicates take an argument of type @samp{univ}, the universal
-type, so that by using @samp{type_to_univ} and @samp{univ_to_type} it
-is possible to store data of any type in the @samp{io.state}.
+Most uses of @code{assert} and @code{retract} in Prolog programs
+are not actually intended to alter the program.
+Their purpose is just to maintain a set of facts,
+with semantically separate sets of facts being stored in separate predicates.
+(Most Prolog systems require these predicates
+to be marked as @code{dynamic} predicates.)
+A Mercury programmer who wants to store a set of facts
+would simply store those facts as data (not as code) in a data structure.
 
 The standard library contains
-several abstract data types for storing collections,
-each of which will be useful for different classes of problems.
+several abstract data types (ADTs) for storing collections of items,
+each of which is useful for different classes of problems.
 
-The @samp{list} ADT is useful if the order of the asserted facts is important.
-The @samp{set} ADT is useful if the order is not important,
-and if the asserted facts are not key-value pairs.
-If the asserted facts are key-value pairs,
-you can choose among several ADTs,
-including @samp{map}, @samp{bintree}, @samp{rbtree}, and @samp{tree234}.
-We recommend the @samp{map} ADT for generic use.
-Its current implementation is as a 234 tree (using @samp{tree234}),
-but in the future it may change to a hash table, or a trie,
-or it may become a module that chooses among several implementation methods
-dynamically depending on the size and characteristics of the data.
+If the order of the items in the collection is important,
+consider the @code{list} and @code{cord} ADTs.
+@code{list} has lower constant factors,
+but the @code{cord} ADTs supports concatenation in constant time.
+The @code{stack} and @code{queue} ADTs implement
+lists with specific semantics and operations appropriate to those semantics.
 
-Failure driven loops in Prolog programs
-should be transformed into ordinary tail recursion in Mercury.
-This does have the disadvantage
-that the heap space used by the failing clause
-is not reclaimed immediately but only through garbage collection,
-but we are working on ways to fix this problem.
-In any case, the transformed code is more declarative
-and hence easier to maintain and understand for humans
-and easier for the compiler to optimize.
+If the order of items in the collection is not important,
+and if the items are key-value pairs,
+you can store them in ADTs implementing several different kinds of trees,
+including @code{rbtree} and @code{tree234}.
+In the absence of a compelling reason to choose a different implementation,
+we recommend the @code{map} ADT for generic use.
+Maps are implemented using 234 trees,
+which are guaranteed to be balanced and thus have good worst-case behavior,
+but also have good performance in the average case.
+@c but in the future it may change to a hash table, or a trie,
+@c or it may become a module that chooses among several implementation methods
+@c dynamically depending on the size and characteristics of the data.
+@code{bimap}, @code{injection}, @code{multi_map} and @code{rtree} are
+specialized version of maps.
+
+If the items in the collection are not key-value pairs,
+then consider the @code{set} and @code{bag} ADTs.
+The @code{set} ADT itself has several versions,
+some based on trees and some based on bit vectors,
+each with its own tradeoffs.
+
+The Mercury standard library has some modules
+for more specialized collections as well, such as graphs.
+And of course, if needed, you can always create your own ADT.
+
+If for some reason you cannot thread variables holding some data
+through the parts of your program that need access to that data,
+then you can store that data in a @samp{mutable},
+which is as close as Mercury comes to Prolog's dynamic predicates.
+Each Mercury mutable stores one value,
+though of course this value can be a collection,
+and that collection may be (but doesn't have to be) implemented
+by one of the Mercury standard library modules listed above.
+
+Each mutable has a getter and setter predicate.
+You can set things up so that the getter and setter predicates
+both function as I/O operations,
+destroying the current state of the world
+and returning a new state of the world.
+This effectively considers the mutable to be part of the state of the world
+@emph{outside} the Mercury program.
+The @code{io} module also provides another way to do this,
+by allowing the storage of information in the @code{io.state}
+using the predicates @code{io.get_globals} and @code{io.set_globals}.
+These predicates take an argument of type @code{univ}, the universal type,
+so that by using @code{type_to_univ} and @code{univ_to_type}
+it is possible to store data of any type in the @code{io.state}.
+
+Alternatively, you can set things up so that
+the getter and setter predicates of a mutable are @emph{not} I/O operations,
+but in that case calls to those predicates are not considered pure Mercury,
+and must instead use Mercury's mechanisms for controlled impurity.
+These mechanisms require all code that is not pure Mercury
+to be explicitly marked as such.
+They are intended to allow programmers
+to implement pure interfaces using @emph{small} pieces of impure code,
+for use in circumstances where there is no feasible way
+to implement that same interface using pure code.
+Most Mercury programs do not use impure code at all.
+The ones that do make use of it use it very sparingly,
+with 99.9+% of their code being pure Mercury.
+
+@node FailLoops
+@chapter Failure driven loops
+
+In pure Mercury code,
+the goal @code{Goal, fail} is interchangeable with the goal @code{fail, Goal},
+and @code{Goal} cannot have any side effects.
+As a consequence of these two facts,
+it is not possible to write failure driven loops in pure Mercury code.
+While one could try to use Mercury's mechanisms for controlled impurity
+to implement failure driven loops using impure Mercury code,
+this is not part of the culture of Mercury programming,
+because failure driven loops are
+significantly less clear and harder to maintain
+than other means of iterating through a sequence.
+Since they are inherently imperative and not declarative,
+they are also very hard for compilers to optimize.
+
+If the sequence must be generated through backtracking,
+then a Mercury programmer could just collect all the solutions together
+using the standard Mercury library predicate @code{solutions},
+and iterate through the resulting list of solutions
+using an ordinary tail recursive predicate.
+
+However, most Mercury programmers would prefer to generate
+a list of solutions directly.
+This can be easily done by replacing code that generates
+alternative solutions through backtracking,
+using predicates like this:
+
+@example
+generate_solutions(In1, In2, Soln) :-
+    (
+        % Generate one value of Soln from In1 and In2.
+        generate_one_soln(In1, In2, Soln)
+    ;
+        % Compute a new value for the second input.
+        In2' = ....
+        % Generate more values of Soln from In1 and In2'.
+        generate_solutions(In1, In2', Soln)
+    ).
+@end example
+
+in which the different solutions are produced by different disjuncts,
+with predicates in which
+the different solutions are produced by different conjuncts,
+like this:
+
+@example
+generate_solutions(In1, In2, [Soln| Solns]) :-
+    generate_one_soln(In1, In2, Soln),
+    In2' = ....
+    generate_solutions(In1, In2', Solns).
+@end example
+
+Unlike predicates following the previous pattern,
+predicates following this pattern can exploit Mercury's determinism system
+to ensure that they have considered all the possible combinations
+of the values of the input arguments.
+They are also more efficient,
+since choice point creation is expensive.
+
+They can be made even more efficient
+if the consumption of the solutions can be interleaved
+with their generation.
+For example, if the solutions are intended to be inputs to a fold
+(i.e. each solution is intended to update an accumulator),
+then this interleaving can be done like this:
+
+@example
+generate_and_use_solutions(In1, In2, !Acc) :-
+    generate_one_soln(In1, In2, Soln),
+    use_solution(Soln, !Acc),
+    In2' = ....
+    generate_and_use_solutions(In1, In2', !Acc).
+@end example
 
 @node Commits
 @chapter Cuts and indexing
 
-The cut operator is not part of the Mercury language.
-In addition, the conditional operator @samp{-> ;}
-does not do a hard cut across the condition
---- only a soft cut which prunes away either the `then' goal or the `else' goal.
-If there are multiple solutions to the condition,
-they will all be found on backtracking.
+The Prolog cut operator is not part of the Mercury language.
 
-Prolog programs that use cuts and a `catch-all' clause should be
-transformed to use if-then-else.
+Mercury allows if-then-elses to be written
+not just as @samp{C -> T ; E}, but also as @samp{if C then T else E}.
+In Mercury, an if-then-else prunes away
+either the `else' goal (if the condition succeeded)
+or the `then' goal (if the condition failed),
+but if there are multiple solutions to the condition,
+they will all be found on backtracking,
+and the `then' goal will be executed for each of those solutions.
+By contrast, an if-then-else in Prolog
+prunes away all solutions of the condition except the first.
+
+Prolog programs that use cuts and a `catch-all' clause
+should be transformed to use if-then-else in Mercury.
 
 For example
 
@@ -394,10 +610,10 @@ qsort(L0, L) :- qsort_2(L0, L - []).
 
 qsort_2([], R - R).
 qsort_2([X|L], R0 - R) :-
-	partition(L, X, L1, L2),
-	qsort_2(L1, R0 - R1),
-	R1 = [X|R2],
-	qsort_2(L2, R2 - R).
+    partition(L, X, L1, L2),
+    qsort_2(L1, R0 - R1),
+    R1 = [X|R2],
+    qsort_2(L2, R2 - R).
 @end example
 
 Due to an unfortunate limitation of the current Mercury implementation
@@ -437,32 +653,40 @@ the Mercury library uses the pair of lists proposed by Richard O'Keefe).
 @node Determinism
 @chapter Determinism
 
-The Mercury language requires that the determinism of all predicates
-exported by a module be declared. The determinism of predicates that
-are local to a module may either be declared or inferred. By default,
-the compiler issues a warning message where such declarations are
-omitted, but this warning can be disabled using the
-@samp{--no-warn-missing-det-decls} option if you want to use
-determinism inference.
+The Mercury language requires the determinism of all predicates
+exported by a module to be declared.
+The determinism of predicates that are local to a module
+may be declared but don't have to be;
+if they are not declared, they will be inferred.
+By default, the compiler issues a warning message
+where such declarations are omitted,
+but if you want to use determinism inference,
+you can disable this warning
+using the @samp{--no-warn-missing-det-decls} option.
 
-Determinism checking and inference is an undecidable problem in the
-general case, so it is possible
-to write programs that are deterministic, and have the compiler
-fail to prove the fact. The most important aspect of this problem
+Determinism checking and inference
+is an undecidable problem in the general case,
+so it is possible to write programs that are deterministic,
+and have the compiler fail to prove the fact.
+The most important aspect of this problem
 is that the Mercury compiler only detects the clauses of a predicate
-(or the arms of a disjunction, in the general case) to be mutually
-exclusive (and hence deterministic) if they are distinguished by the
-unification of a variable (possibly renamed) with distinct functors
-in the different clauses (or disjuncts), so long as the unifications
-take place before the first call in the clause (or disjunct).
-In these cases, the Mercury compiler generates a @emph{switch} (see
-the earlier section on indexing).
-If a switch has a branch for every functor on the type of the switching
-variable, then the switch cannot fail (though one or more of its arms
-may do so). 
+(or the arms of a disjunction, in the general case) to be mutually exclusive,
+allowing the execution of at most one disjunct at runtime,
+if the clauses or disjuncts
+each unify the same variable (or a copy of that variable)
+with distinct functors,
+with these unifications all taking place
+before the first call in the clause or disjunct.
+For such disjunctions, the Mercury compiler generates a @emph{switch}
+(see the earlier section on indexing).
+If a switch has a branch for every functor
+in the type of the switched-on variable,
+then the switch guarantees that exactly one of its arms will be executed.
+If all the arms are deterministic goals,
+then the switch itself is deterministic.
 
-The Mercury compiler does not do any range checking of integers, so
-code such as:
+The Mercury compiler does not do any range checking of integers,
+so code such as:
 
 @example
 factorial(0, 1).
@@ -474,20 +698,25 @@ factorial(N, F) :-
 @end example
 
 @noindent
-would be inferred ``nondeterministic''. The compiler would infer that
-the two clauses are not mutually exclusive because it does not know
-about the semantics of @samp{>/2}, and it would infer that
-the predicate as a whole could fail because the call to @samp{>/2}
-can fail.
+would be inferred to be ``nondeterministic''.
+The compiler would infer that the two clauses are not mutually exclusive,
+because it does not know about the semantics of @code{>/2},
+and it would infer that the predicate as a whole could fail
+because (a) the unification of the first argument with @code{0} can fail,
+so the first clause is not guaranteed to generate a solution,
+and (b) the call to @code{>/2} can fail,
+and so the second clause is not guaranteed to generate a solution either.
 
-The general solution to such problems is to use an if-then-else:
+The general solution to such problems
+is to use a chain of one or more if-then-elses.
 
 @example
-:- pred factorial(int, int).
-:- mode factorial(in, out) is det.
+:- pred factorial(int::in, int::out) is det.
 
 factorial(N, F) :-
-    ( N =< 0 ->
+    ( N < 0 ->
+        unexpected($pred, "negative N")
+    ; N = 0 ->
         F = 1
     ;
         N1 is N - 1,
@@ -496,24 +725,33 @@ factorial(N, F) :-
     ).
 @end example
 
+The @code{unexpected} predicate is defined
+in the @code{require} module of the Mercury standard library.
+Calls to it throw an exception,
+and unless that exception is caught, it aborts the program.
+The terms @code{$pred} is automatically replaced by the compiler
+with the (module-qualified) name of the predicate in which it appears.
+
 @node All-solutions
 @chapter All-solutions predicates.
 
-Prolog's various different all-solutions predicates (findall/3, bagof/3,
-and setof/3) all have semantic problems.
-Mercury has a different set of all-solutions predicates (solutions/2,
-solutions_set/2, and unsorted_solutions/2 --- all defined in the library
-module @samp{solutions}) that
-address the problems of the Prolog versions.
-To avoid the variable scoping problems of the Prolog
-versions, rather than taking both a goal to execute and an aliased
-term holding the resulting value to collect, Mercury's all-solutions
-predicates take
-as input a single higher-order predicate term.  The Mercury equivalent to
+Prolog's various different all-solutions predicates
+(@samp{findall/3}, @samp{bagof/3},
+and @samp{setof/3}) all have semantic problems.
+Mercury has a different set of all-solutions predicates
+(@samp{solutions/2}, @samp{solutions_set/2}, and @samp{unsorted_solutions/2},
+all defined in the library module @samp{solutions})
+that address the problems of the Prolog versions.
+To avoid the variable scoping problems of the Prolog versions,
+rather than taking both a goal to execute
+and an aliased term holding the resulting value to collect,
+Mercury's all-solutions predicates take as input
+a single higher-order predicate term.
+The Mercury equivalent to
 
 @example
 intersect(List1, List2, Intersection) :-
-	setof(X, (member(X, List1), member(X, List2)), Intersection).
+    setof(X, (member(X, List1), member(X, List2)), Intersection).
 @end example
 
 @noindent
@@ -521,28 +759,29 @@ is
 
 @example
 intersect(List1, List2, Intersection) :-
-	solutions((pred(X::out) is nondet :-
-	    (list.member(X, List1), list.member(X, List2))), Intersection).
+    solutions((pred(X::out) is nondet :-
+        (list.member(X, List1), list.member(X, List2))), Intersection).
 @end example
 
 Alternately, this could also be written as
 
 @example
 intersect(List1, List2, Intersection) :-
-	solutions(member_of_both(List1, List2), Intersection).
+    solutions(member_of_both(List1, List2), Intersection).
 
 :- pred member_of_both(list(T)::in, list(T)::in, T::out) is nondet.
 member_of_both(List1, List2, X) :-
-	list.member(X, List1), list.member(X, List2).
+    list.member(X, List1), list.member(X, List2).
 @end example
 
 @noindent
-and in fact that's exactly how the Mercury compiler implements lambda
-expressions.
+and in fact that is exactly how the Mercury compiler
+implements lambda expressions.
 
-The current implementation of solutions/2 is a ``zero-copy'' implementation,
-so the cost of solutions/2 is proportional the number of solutions, but
-independent of the size of the solutions.  (This may change in
-future implementations.)
+The current implementation of @samp{solutions/2}
+is a ``zero-copy'' implementation,
+so the cost of @samp{solutions/2} is
+independent of the @emph{size} of the solutions,
+though it is proportional to the @emph{number} of solutions.
 
 @bye

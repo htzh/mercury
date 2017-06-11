@@ -16,15 +16,20 @@
 :- module ml_backend.ml_util.
 :- interface.
 
+:- import_module libs.
 :- import_module libs.globals.          % for foreign_language
+:- import_module hlds.
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_module.
 :- import_module ml_backend.mlds.
-:- import_module parse_tree.prog_data.
 
+:- import_module assoc_list.
 :- import_module bool.
+:- import_module cord.
+:- import_module counter.
 :- import_module list.
 :- import_module maybe.
+:- import_module set_tree234.
 
 %-----------------------------------------------------------------------------%
 
@@ -35,11 +40,13 @@
 
 %-----------------------------------------------------------------------------%
 
-    % Return `true' if the statement is a tail call which can be optimized
-    % into a jump back to the start of the function.
+    % code_address_is_for_this_function(CodeAddr, ModuleName, FuncName):
     %
-:- pred can_optimize_tailcall(mlds_qualified_entity_name::in, mlds_stmt::in)
-    is semidet.
+    % True if CodeAddr, if used as the callee of an ml_stmt_call statement,
+    % would call qual(ModuleName, module_qual, FuncName).
+    %
+:- pred code_address_is_for_this_function(mlds_code_addr::in,
+    mlds_module_name::in, mlds_function_name::in) is semidet.
 
 %-----------------------------------------------------------------------------%
 %
@@ -86,28 +93,45 @@
 :- pred defn_contains_outline_foreign_proc(foreign_language::in,
     mlds_defn::in) is semidet.
 
+%-----------------------------------------------------------------------------%
+
+    % Succeeds iff this definition is a data definition.
+    %
+:- pred defn_is_data(mlds_defn::in, mlds_data_defn::out) is semidet.
+
     % Succeeds iff this definition is a type definition.
     %
-:- pred defn_is_type(mlds_defn::in) is semidet.
+:- pred defn_is_type(mlds_defn::in, mlds_class_defn::out) is semidet.
 
     % Succeeds iff this definition is a function definition.
     %
-:- pred defn_is_function(mlds_defn::in) is semidet.
+:- pred defn_is_function(mlds_defn::in, mlds_function_defn::out) is semidet.
 
     % Succeeds iff this definition is a data definition which
     % defines a type_ctor_info constant.
     %
-:- pred defn_is_type_ctor_info(mlds_defn::in) is semidet.
+:- pred defn_is_type_ctor_info(mlds_defn::in, mlds_data_defn::out) is semidet.
 
     % Succeeds iff this definition is a data definition which
     % defines a variable whose type is mlds_commit_type.
     %
 :- pred defn_is_commit_type_var(mlds_defn::in) is semidet.
 
-    % Succeeds iff this definition has `public' in the access
-    % field in its decl_flags.
+    % Succeeds iff this definition has `public' in the access field
+    % in its decl_flags.
     %
 :- pred defn_is_public(mlds_defn::in) is semidet.
+
+    % Test whether one of the members of an mlds_enum class
+    % is an enumeration constant.
+    %
+:- pred defn_is_enum_const(mlds_defn::in, mlds_data_defn::out) is semidet.
+
+    % Succeeds iff this definition is a data definition which defines RTTI.
+    %
+:- pred defn_is_rtti_data(mlds_defn::in, mlds_data_defn::out) is semidet.
+
+%-----------------------------------------------------------------------------%
 
     % Says whether these definitions contains a reference to
     % the specified variable.
@@ -118,6 +142,7 @@
     % the specified variable.
     %
 :- func defn_contains_var(mlds_defn, mlds_data) = bool.
+:- func function_defn_contains_var(mlds_function_defn, mlds_data) = bool.
 
 %-----------------------------------------------------------------------------%
 %
@@ -147,77 +172,102 @@
 :- func lval_contains_var(mlds_lval, mlds_data) = bool.
 
 %-----------------------------------------------------------------------------%
-
-    % Does the type require the lowlevel representation on the indicated
-    % backend?
-    %
-:- pred type_needs_lowlevel_rep(compilation_target::in, mer_type::in)
-    is semidet.
-
-:- pred type_ctor_needs_lowlevel_rep(compilation_target::in,
-    type_ctor::in) is semidet.
-
-%-----------------------------------------------------------------------------%
 %
 % Functions for generating initializers.
 %
 % This handles arrays, maybe, null pointers, strings, ints, and builtin enums.
 
-:- func gen_init_builtin_const(string) = mlds_initializer.
-
-:- func gen_init_array(func(T) = mlds_initializer, list(T)) = mlds_initializer.
-
-:- func gen_init_maybe(mlds_type, func(T) = mlds_initializer, maybe(T)) =
-    mlds_initializer.
-
-:- func gen_init_null_pointer(mlds_type) = mlds_initializer.
-
-:- func gen_init_string(string) = mlds_initializer.
-
-:- func gen_init_foreign(foreign_language, string) = mlds_initializer.
+:- func gen_init_bool(bool) = mlds_initializer.
 
 :- func gen_init_int(int) = mlds_initializer.
 
-:- func gen_init_bool(bool) = mlds_initializer.
-
 :- func gen_init_boxed_int(int) = mlds_initializer.
+
+:- func gen_init_string(string) = mlds_initializer.
+
+:- func gen_init_builtin_const(string) = mlds_initializer.
+
+:- func gen_init_foreign(foreign_language, string) = mlds_initializer.
+
+:- func gen_init_null_pointer(mlds_type) = mlds_initializer.
 
 :- func gen_init_reserved_address(module_info, reserved_address) =
     mlds_initializer.
 
+:- func gen_init_maybe(mlds_type, func(T) = mlds_initializer, maybe(T)) =
+    mlds_initializer.
+
+:- func gen_init_array(func(T) = mlds_initializer, list(T)) = mlds_initializer.
+
 :- func wrap_init_obj(mlds_rval) = mlds_initializer.
+
+%-----------------------------------------------------------------------------%
+
+:- type code_addrs_in_consts
+    --->    code_addrs_in_consts(
+                % The set of code addresses we have seen so far
+                % as arguments of ml_const rvals.
+                set_tree234(mlds_code_addr),
+
+                % The sequence number we will assign to the next mlds_code_addr
+                % we will see as the argument of an ml_const rval.
+                counter,
+
+                % A list of the mlds_code_addrs we have seen so far
+                % as the arguments of ml_const rvals, each with its
+                % order-of-first-occurrence sequence number.
+                % The list is ordered in reverse: if seqnumA > seqnumB,
+                % then seqnumA, and its code address, will appear *before*
+                % seqnumB in the list. This is to adding a new code address
+                % and its sequence number an O(1) operation.
+                assoc_list(int, mlds_code_addr)
+            ).
+
+:- func init_code_addrs_in_consts = code_addrs_in_consts.
+
+    % Accumulate the method pointers (mlds_code_addrs stored in ml_const
+    % rvals) in definitions or initializers.
+    %
+    % These predicates expect MLDS generated for C# or Java.
+    %
+:- pred method_ptrs_in_defns(list(mlds_defn)::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+:- pred method_ptrs_in_scalars(cord(mlds_initializer)::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.rtti.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
 :- import_module ml_backend.ml_unify_gen.
-:- import_module parse_tree.prog_type.
 
+:- import_module pair.
+:- import_module require.
 :- import_module solutions.
 
 %-----------------------------------------------------------------------------%
 
 defns_contain_main([Defn | Defns]) :-
-    (
-        Defn = mlds_defn(Name, _, _, _),
-        Name = entity_function(FuncName, _, _, _),
-        FuncName = mlds_user_pred_label(pf_predicate, _, "main", 2, _, _)
-    ;
+    ( if
+        Defn = mlds_function(FuncDefn),
+        FuncDefn = mlds_function_defn(FuncName, _, _, _, _, _, _, _, _),
+        FuncName = mlds_function_name(PlainFuncName),
+        PlainFuncName = mlds_plain_func_name(PredLabel, _, _, _),
+        PredLabel = mlds_user_pred_label(pf_predicate, _, "main", 2, _, _)
+    then
+        true
+    else
         defns_contain_main(Defns)
     ).
 
-can_optimize_tailcall(Name, Call) :-
-    Call = ml_stmt_call(_Signature, FuncRval, MaybeObject, _CallArgs,
-        _Results, CallKind),
-    % Check if this call can be optimized as a tail call.
-    ( CallKind = tail_call ; CallKind = no_return_call ),
-
+code_address_is_for_this_function(CodeAddr, ModuleName, FuncName) :-
     % Check if the callee address is the same as the caller.
-    FuncRval = ml_const(mlconst_code_addr(CodeAddr)),
     (
         CodeAddr = code_addr_proc(QualifiedProcLabel, _Sig),
         MaybeSeqNum = no
@@ -225,19 +275,14 @@ can_optimize_tailcall(Name, Call) :-
         CodeAddr = code_addr_internal(QualifiedProcLabel, SeqNum, _Sig),
         MaybeSeqNum = yes(SeqNum)
     ),
-    ProcLabel = mlds_proc_label(PredLabel, ProcId),
-    QualifiedProcLabel = qual(ModuleName, module_qual, ProcLabel),
 
     % Check that the module name matches.
-    Name = qual(ModuleName, module_qual, FuncName),
+    QualifiedProcLabel = qual(ModuleName, module_qual, ProcLabel),
 
-    % Check that the PredLabel, ProcId, and MaybeSeqNum match.
-    FuncName = entity_function(PredLabel, ProcId, MaybeSeqNum, _),
-
-    % In C++, `this' is a constant, so our usual technique of assigning
-    % the arguments won't work if it is a member function. Thus we don't do
-    % this optimization if we're optimizing a member function call.
-    MaybeObject = no.
+    % Check that the function name (PredLabel, ProcId, MaybeSeqNum) matches.
+    ProcLabel = mlds_proc_label(PredLabel, ProcId),
+    FuncName = mlds_function_name(
+        mlds_plain_func_name(PredLabel, ProcId, MaybeSeqNum, _)).
 
 %-----------------------------------------------------------------------------%
 %
@@ -295,7 +340,8 @@ stmt_contains_statement(Stmt, SubStatement) :-
         ( Stmt = ml_stmt_label(_Label)
         ; Stmt = ml_stmt_goto(_)
         ; Stmt = ml_stmt_computed_goto(_Rval, _Labels)
-        ; Stmt = ml_stmt_call(_Sig, _Func, _Obj, _Args, _RetLvals, _TailCall)
+        ; Stmt = ml_stmt_call(_Sig, _Func, _Obj, _Args, _RetLvals, _TailCall,
+            _Markers)
         ; Stmt = ml_stmt_return(_Rvals)
         ; Stmt = ml_stmt_do_commit(_Ref)
         ; Stmt = ml_stmt_atomic(_AtomicStmt)
@@ -334,9 +380,12 @@ default_contains_statement(default_case(Statement), SubStatement) :-
 
 statements_contains_var([], _DataName) = no.
 statements_contains_var([Statement | Statements], DataName) = ContainsVar :-
-    ( statement_contains_var(Statement, DataName) = yes ->
+    StatementContainsVar = statement_contains_var(Statement, DataName),
+    (
+        StatementContainsVar = yes,
         ContainsVar = yes
     ;
+        StatementContainsVar = no,
         ContainsVar = statements_contains_var(Statements, DataName)
     ).
 
@@ -355,35 +404,57 @@ statement_contains_var(Statement, DataName) = ContainsVar :-
 stmt_contains_var(Stmt, DataName) = ContainsVar :-
     (
         Stmt = ml_stmt_block(Defns, Statements),
-        ( defns_contains_var(Defns, DataName) = yes ->
+        DefnsContainVar = defns_contains_var(Defns, DataName),
+        (
+            DefnsContainVar = yes,
             ContainsVar = yes
         ;
+            DefnsContainVar = no,
             ContainsVar = statements_contains_var(Statements, DataName)
         )
     ;
         Stmt = ml_stmt_while(_Kind, Rval, Statement),
-        ( rval_contains_var(Rval, DataName) = yes ->
+        RvalContainsVar = rval_contains_var(Rval, DataName),
+        (
+            RvalContainsVar = yes,
             ContainsVar = yes
         ;
+            RvalContainsVar = no,
             ContainsVar = statement_contains_var(Statement, DataName)
         )
     ;
         Stmt = ml_stmt_if_then_else(Cond, Then, MaybeElse),
-        ( rval_contains_var(Cond, DataName) = yes ->
-            ContainsVar = yes
-        ; statement_contains_var(Then, DataName) = yes ->
+        CondContainsVar = rval_contains_var(Cond, DataName),
+        (
+            CondContainsVar = yes,
             ContainsVar = yes
         ;
-            ContainsVar = maybe_statement_contains_var(MaybeElse, DataName)
+            CondContainsVar = no,
+            ThenContainsVar = statement_contains_var(Then, DataName),
+            (
+                ThenContainsVar = yes,
+                ContainsVar = yes
+            ;
+                ThenContainsVar = no,
+                ContainsVar = maybe_statement_contains_var(MaybeElse, DataName)
+            )
         )
     ;
         Stmt = ml_stmt_switch(_Type, Val, _Range, Cases, Default),
-        ( rval_contains_var(Val, DataName) = yes ->
-            ContainsVar = yes
-        ; cases_contains_var(Cases, DataName) = yes ->
+        ValContainsVar = rval_contains_var(Val, DataName),
+        (
+            ValContainsVar = yes,
             ContainsVar = yes
         ;
-            ContainsVar = default_contains_var(Default, DataName)
+            ValContainsVar = no,
+            CasesContainsVar = cases_contains_var(Cases, DataName),
+            (
+                CasesContainsVar = yes,
+                ContainsVar = yes
+            ;
+                CasesContainsVar = no,
+                ContainsVar = default_contains_var(Default, DataName)
+            )
         )
     ;
         ( Stmt = ml_stmt_label(_Label)
@@ -394,15 +465,29 @@ stmt_contains_var(Stmt, DataName) = ContainsVar :-
         Stmt = ml_stmt_computed_goto(Rval, _Labels),
         ContainsVar = rval_contains_var(Rval, DataName)
     ;
-        Stmt = ml_stmt_call(_Sig, Func, Obj, Args, RetLvals, _TailCall),
-        ( rval_contains_var(Func, DataName) = yes ->
-            ContainsVar = yes
-        ; maybe_rval_contains_var(Obj, DataName) = yes ->
-            ContainsVar = yes
-        ; rvals_contains_var(Args, DataName) = yes ->
+        Stmt = ml_stmt_call(_Sig, Func, Obj, Args, RetLvals, _TailCall,
+            _Markers),
+        FuncContainsVar = rval_contains_var(Func, DataName),
+        (
+            FuncContainsVar = yes,
             ContainsVar = yes
         ;
-            ContainsVar = lvals_contains_var(RetLvals, DataName)
+            FuncContainsVar = no,
+            ObjContainsVar = maybe_rval_contains_var(Obj, DataName),
+            (
+                ObjContainsVar = yes,
+                ContainsVar = yes
+            ;
+                ObjContainsVar = no,
+                ArgsContainVar = rvals_contains_var(Args, DataName),
+                (
+                    ArgsContainVar = yes,
+                    ContainsVar = yes
+                ;
+                    ArgsContainVar = no,
+                    ContainsVar = lvals_contains_var(RetLvals, DataName)
+                )
+            )
         )
     ;
         Stmt = ml_stmt_return(Rvals),
@@ -412,12 +497,20 @@ stmt_contains_var(Stmt, DataName) = ContainsVar :-
         ContainsVar = rval_contains_var(Ref, DataName)
     ;
         Stmt = ml_stmt_try_commit(Ref, Statement, Handler),
-        ( lval_contains_var(Ref, DataName) = yes ->
-            ContainsVar = yes
-        ; statement_contains_var(Statement, DataName) = yes ->
+        RefContainsVar = lval_contains_var(Ref, DataName),
+        (
+            RefContainsVar = yes,
             ContainsVar = yes
         ;
-            ContainsVar = statement_contains_var(Handler, DataName)
+            RefContainsVar = no,
+            StatementContainsVar = statement_contains_var(Statement, DataName),
+            (
+                StatementContainsVar = yes,
+                ContainsVar = yes
+            ;
+                StatementContainsVar = no,
+                ContainsVar = statement_contains_var(Handler, DataName)
+            )
         )
     ;
         Stmt = ml_stmt_atomic(AtomicStmt),
@@ -429,9 +522,12 @@ stmt_contains_var(Stmt, DataName) = ContainsVar :-
 cases_contains_var([], _DataName) = no.
 cases_contains_var([Case | Cases], DataName) = ContainsVar :-
     Case = mlds_switch_case(_FirstCond, _LaterConds, Statement),
-    ( statement_contains_var(Statement, DataName) = yes ->
+    StatementContainsVar = statement_contains_var(Statement, DataName),
+    (
+        StatementContainsVar = yes,
         ContainsVar = yes
     ;
+        StatementContainsVar = no,
         ContainsVar = cases_contains_var(Cases, DataName)
     ).
 
@@ -458,9 +554,12 @@ atomic_stmt_contains_var(AtomicStmt, DataName) = ContainsVar :-
         ( AtomicStmt = assign(Lval, Rval)
         ; AtomicStmt = assign_if_in_heap(Lval, Rval)
         ),
-        ( lval_contains_var(Lval, DataName) = yes ->
+        LvalContainsVar = lval_contains_var(Lval, DataName),
+        (
+            LvalContainsVar = yes,
             ContainsVar = yes
         ;
+            LvalContainsVar = no,
             ContainsVar = rval_contains_var(Rval, DataName)
         )
     ;
@@ -470,9 +569,12 @@ atomic_stmt_contains_var(AtomicStmt, DataName) = ContainsVar :-
         AtomicStmt = new_object(Target, _MaybeTag, _ExplicitSecTag, _Type,
             _MaybeSize, _MaybeCtorName, Args, _ArgTypes, _MayUseAtomic,
             _AllocId),
-        ( lval_contains_var(Target, DataName) = yes ->
+        TargetContainsVar = lval_contains_var(Target, DataName),
+        (
+            TargetContainsVar = yes,
             ContainsVar = yes
         ;
+            TargetContainsVar = no,
             ContainsVar = rvals_contains_var(Args, DataName)
         )
     ;
@@ -493,9 +595,13 @@ atomic_stmt_contains_var(AtomicStmt, DataName) = ContainsVar :-
     ;
         AtomicStmt = outline_foreign_proc(_Lang, OutlineArgs, ReturnLvals,
             _Code),
-        ( outline_args_contains_var(OutlineArgs, DataName) = yes ->
+        OutlineArgsContainVar =
+            outline_args_contains_var(OutlineArgs, DataName),
+        (
+            OutlineArgsContainVar = yes,
             ContainsVar = yes
         ;
+            OutlineArgsContainVar = no,
             ContainsVar = lvals_contains_var(ReturnLvals, DataName)
         )
     ).
@@ -528,9 +634,13 @@ trail_op_contains_var(TrailOp, DataName) = ContainsVar :-
 target_code_components_contains_var([], _DataName) = no.
 target_code_components_contains_var([TargetCode | TargetCodes], DataName)
         = ContainsVar :-
-    ( target_code_component_contains_var(TargetCode, DataName) = yes ->
+    TargetCodeContainsVar =
+        target_code_component_contains_var(TargetCode, DataName),
+    (
+        TargetCodeContainsVar = yes,
         ContainsVar = yes
     ;
+        TargetCodeContainsVar = no,
         ContainsVar =
             target_code_components_contains_var(TargetCodes, DataName)
     ).
@@ -540,10 +650,11 @@ target_code_components_contains_var([TargetCode | TargetCodes], DataName)
 
 target_code_component_contains_var(TargetCode, DataName) = ContainsVar :-
     (
-        ( TargetCode = user_target_code(_, _, _)
-        ; TargetCode = raw_target_code(_, _)
+        ( TargetCode = user_target_code(_, _)
+        ; TargetCode = raw_target_code(_)
         ; TargetCode = target_code_type(_)
         ; TargetCode = target_code_alloc_id(_)
+        ; TargetCode = target_code_function_name(_)
         ),
         ContainsVar = no
     ;
@@ -552,17 +663,6 @@ target_code_component_contains_var(TargetCode, DataName) = ContainsVar :-
     ;
         TargetCode = target_code_output(Lval),
         ContainsVar = lval_contains_var(Lval, DataName)
-    ;
-        TargetCode = target_code_name(EntityName),
-        (
-            EntityName = qual(ModuleName, QualKind,
-                entity_data(UnqualDataName)),
-            DataName = qual(ModuleName, QualKind, UnqualDataName)
-        ->
-            ContainsVar = yes
-        ;
-            ContainsVar = no
-        )
     ).
 
 :- func outline_args_contains_var(list(outline_arg), mlds_data) = bool.
@@ -570,9 +670,12 @@ target_code_component_contains_var(TargetCode, DataName) = ContainsVar :-
 outline_args_contains_var([], _DataName) = no.
 outline_args_contains_var([OutlineArg | OutlineArgs], DataName) =
         ContainsVar :-
-    ( outline_arg_contains_var(OutlineArg, DataName) = yes ->
+    OutlineArgContainsVar = outline_arg_contains_var(OutlineArg, DataName),
+    (
+        OutlineArgContainsVar = yes,
         ContainsVar = yes
     ;
+        OutlineArgContainsVar = no,
         ContainsVar = outline_args_contains_var(OutlineArgs, DataName)
     ).
 
@@ -606,8 +709,9 @@ has_foreign_languages(Statement, Langs) :-
 %
 
 defn_contains_foreign_code(NativeTargetLang, Defn) :-
-    Defn = mlds_defn(_Name, _Context, _Flags, Body),
-    Body = mlds_function(_, _, body_defined_here(FunctionBody), _, _),
+    % XXX MLDS_DEFN
+    Defn = mlds_function(FunctionDefn),
+    FunctionDefn ^ mfd_body = body_defined_here(FunctionBody),
     statement_contains_statement(FunctionBody, Statement),
     Statement = statement(Stmt, _),
     (
@@ -618,35 +722,60 @@ defn_contains_foreign_code(NativeTargetLang, Defn) :-
     ).
 
 defn_contains_outline_foreign_proc(ForeignLang, Defn) :-
-    Defn = mlds_defn(_Name, _Context, _Flags, Body),
-    Body = mlds_function(_, _, body_defined_here(FunctionBody), _, _),
+    % XXX MLDS_DEFN
+    Defn = mlds_function(FunctionDefn),
+    FunctionDefn ^ mfd_body = body_defined_here(FunctionBody),
     statement_contains_statement(FunctionBody, Statement),
     Statement = statement(Stmt, _),
     Stmt = ml_stmt_atomic(outline_foreign_proc(ForeignLang, _, _, _)).
 
-defn_is_type(Defn) :-
-    Defn = mlds_defn(Name, _Context, _Flags, _Body),
-    Name = entity_type(_, _).
+%-----------------------------------------------------------------------------%
 
-defn_is_function(Defn) :-
-    Defn = mlds_defn(Name, _Context, _Flags, _Body),
-    Name = entity_function(_, _, _, _).
+defn_is_data(Defn, DataDefn) :-
+    Defn = mlds_data(DataDefn).
 
-defn_is_type_ctor_info(Defn) :-
-    Defn = mlds_defn(_Name, _Context, _Flags, Body),
-    Body = mlds_data(Type, _, _),
+defn_is_type(Defn, ClassDefn) :-
+    Defn = mlds_class(ClassDefn).
+
+defn_is_function(Defn, FuncDefn) :-
+    Defn = mlds_function(FuncDefn).
+
+defn_is_type_ctor_info(Defn, DataDefn) :-
+    % XXX MLDS_DEFN
+    Defn = mlds_data(DataDefn),
+    DataDefn = mlds_data_defn(_Name, _Context, _Flags, Type, _, _),
     Type = mlds_rtti_type(item_type(RttiId)),
     RttiId = ctor_rtti_id(_, RttiName),
     RttiName = type_ctor_type_ctor_info.
 
 defn_is_commit_type_var(Defn) :-
-    Defn = mlds_defn(_Name, _Context, _Flags, Body),
-    Body = mlds_data(Type, _, _),
-    Type = mlds_commit_type.
+    % XXX MLDS_DEFN
+    Defn = mlds_data(DataDefn),
+    DataDefn ^ mdd_type = mlds_commit_type.
 
 defn_is_public(Defn) :-
-    Defn = mlds_defn(_Name, _Context, Flags, _Body),
-    access(Flags) = acc_public.
+    (
+        Defn = mlds_data(DataDefn),
+        DataFlags = DataDefn ^ mdd_decl_flags,
+        get_data_access(DataFlags) = acc_public
+    ;
+        Defn = mlds_function(FuncDefn),
+        FuncFlags = FuncDefn ^ mfd_decl_flags,
+        get_function_access(FuncFlags) = acc_public
+    ;
+        Defn = mlds_class(ClassDefn),
+        ClassFlags = ClassDefn ^ mcd_decl_flags,
+        get_class_access(ClassFlags) = class_public
+    ).
+
+defn_is_enum_const(Defn, DataDefn) :-
+    Defn = mlds_data(DataDefn),
+    Flags = DataDefn ^ mdd_decl_flags,
+    get_data_constness(Flags) = const.
+
+defn_is_rtti_data(Defn, DataDefn) :-
+    Defn = mlds_data(DataDefn),
+    DataDefn ^ mdd_type = mlds_rtti_type(_).
 
 %-----------------------------------------------------------------------------%
 %
@@ -660,37 +789,45 @@ defn_is_public(Defn) :-
 
 defns_contains_var([], _DataName) = no.
 defns_contains_var([Defn | Defns], DataName) = ContainsVar :-
-    ( defn_contains_var(Defn, DataName) = yes ->
+    DefnContainsVar = defn_contains_var(Defn, DataName),
+    (
+        DefnContainsVar = yes,
         ContainsVar = yes
     ;
+        DefnContainsVar = no,
         ContainsVar = defns_contains_var(Defns, DataName)
     ).
 
 defn_contains_var(Defn, DataName) = ContainsVar :-
-    Defn = mlds_defn(_Name, _Context, _Flags, DefnBody),
-    ContainsVar = defn_body_contains_var(DefnBody, DataName).
-
-:- func defn_body_contains_var(mlds_entity_defn, mlds_data) = bool.
-
-defn_body_contains_var(DefnBody, DataName) = ContainsVar :-
     (
-        DefnBody = mlds_data(_Type, Initializer, _GCStatement),
+        Defn = mlds_data(DataDefn),
+        DataDefn = mlds_data_defn(_Name, _Ctxt, _Flags,
+            _Type, Initializer, _GCStatement),
         % XXX Should we include variables in the GCStatement field here?
         ContainsVar = initializer_contains_var(Initializer, DataName)
     ;
-        DefnBody = mlds_function(_PredProcId, _Params, FunctionBody,
-            _Attrs, _EnvVarNames),
-        ContainsVar = function_body_contains_var(FunctionBody, DataName)
+        Defn = mlds_function(FunctionDefn),
+        ContainsVar = function_defn_contains_var(FunctionDefn, DataName)
     ;
-        DefnBody = mlds_class(ClassDefn),
-        ClassDefn = mlds_class_defn(_Kind, _Imports, _Inherits, _Implements,
+        Defn = mlds_class(ClassDefn),
+        ClassDefn = mlds_class_defn(_Name, _Ctxt, _Flags,
+            _Kind, _Imports, _Inherits, _Implements,
             _TypeParams, CtorDefns, FieldDefns),
-        ( defns_contains_var(FieldDefns, DataName) = yes ->
+        FieldDefnsContainVar = defns_contains_var(FieldDefns, DataName),
+        (
+            FieldDefnsContainVar = yes,
             ContainsVar = yes
         ;
+            FieldDefnsContainVar = no,
             ContainsVar = defns_contains_var(CtorDefns, DataName)
         )
     ).
+
+function_defn_contains_var(FunctionDefn, DataName) = ContainsVar :-
+    FunctionDefn = mlds_function_defn(_Name, _Ctxt, _Flags,
+        _PredProcId, _Params, FunctionBody, _Attrs,
+        _EnvVarNames, _MaybeRequireTailrecInfo),
+    ContainsVar = function_body_contains_var(FunctionBody, DataName).
 
 :- func function_body_contains_var(mlds_function_body, mlds_data) = bool.
 
@@ -739,17 +876,23 @@ initializer_contains_var(Initializer, DataName) = ContainsVar :-
 initializers_contains_var([], _DataName) = no.
 initializers_contains_var([Initializer | Initializers], DataName) =
         ContainsVar :-
-    ( initializer_contains_var(Initializer, DataName) = yes ->
+    InitializerContainsVar = initializer_contains_var(Initializer, DataName),
+    (
+        InitializerContainsVar = yes,
         ContainsVar = yes
     ;
+        InitializerContainsVar = no,
         ContainsVar = initializers_contains_var(Initializers, DataName)
     ).
 
 rvals_contains_var([], _DataName) = no.
 rvals_contains_var([Rval | Rvals], DataName) = ContainsVar :-
-    ( rval_contains_var(Rval, DataName) = yes ->
+    RvalContainsVar = rval_contains_var(Rval, DataName),
+    (
+        RvalContainsVar = yes,
         ContainsVar = yes
     ;
+        RvalContainsVar = no,
         ContainsVar = rvals_contains_var(Rvals, DataName)
     ).
 
@@ -769,16 +912,17 @@ rval_contains_var(Rval, DataName) = ContainsVar :-
         (
             Const = mlconst_data_addr(DataAddr),
             DataAddr = data_addr(ModuleName, RawDataName),
-            ( DataName = qual(ModuleName, _QualKind, RawDataName) ->
+            ( if DataName = qual(ModuleName, _QualKind, RawDataName) then
                 % This is a place where we can succeed.
                 ContainsVar = yes
-            ;
+            else
                 ContainsVar = no
             )
         ;
             ( Const = mlconst_true
             ; Const = mlconst_false
             ; Const = mlconst_int(_)
+            ; Const = mlconst_uint(_)
             ; Const = mlconst_enum(_, _)
             ; Const = mlconst_char(_)
             ; Const = mlconst_float(_)
@@ -796,9 +940,12 @@ rval_contains_var(Rval, DataName) = ContainsVar :-
         ContainsVar = rval_contains_var(RvalA, DataName)
     ;
         Rval = ml_binop(_Op, RvalA, RvalB),
-        ( rval_contains_var(RvalA, DataName) = yes ->
+        RvalAContainsVar = rval_contains_var(RvalA, DataName),
+        (
+            RvalAContainsVar = yes,
             ContainsVar = yes
         ;
+            RvalAContainsVar = no,
             ContainsVar = rval_contains_var(RvalB, DataName)
         )
     ;
@@ -817,9 +964,12 @@ rval_contains_var(Rval, DataName) = ContainsVar :-
 
 lvals_contains_var([], _DataName) = no.
 lvals_contains_var([Lval | Lvals], DataName) = ContainsVar :-
-    ( lval_contains_var(Lval, DataName) = yes ->
+    LvalContainsVar = lval_contains_var(Lval, DataName),
+    (
+        LvalContainsVar = yes,
         ContainsVar = yes
     ;
+        LvalContainsVar = no,
         ContainsVar = lvals_contains_var(Lvals, DataName)
     ).
 
@@ -836,91 +986,311 @@ lval_contains_var(Lval, DataName) = ContainsVar :-
     ;
         Lval = ml_var(qual(ModuleName, QualKind, Name), _Type),
         % This is another place where we can succeed.
-        ( DataName = qual(ModuleName, QualKind, mlds_data_var(Name)) ->
+        ( if DataName = qual(ModuleName, QualKind, mlds_data_var(Name)) then
             ContainsVar = yes
-        ;
+        else
             ContainsVar =no
         )
     ).
 
 %-----------------------------------------------------------------------------%
 
-type_needs_lowlevel_rep(Target, Type) :-
-    type_to_ctor(Type, TypeCtor),
-    type_ctor_needs_lowlevel_rep(Target, TypeCtor).
+gen_init_bool(no) = init_obj(ml_const(mlconst_false)).
+gen_init_bool(yes) = init_obj(ml_const(mlconst_true)).
 
-    % XXX Do we need to do the same for the Java back-end?
-type_ctor_needs_lowlevel_rep(target_il, type_ctor(TypeName, _Arity)) :-
-    Builtin = mercury_public_builtin_module,
-    PrivateBuiltin = mercury_private_builtin_module,
-    RttiImplementation = unqualified("rtti_implementation"),
-    Univ = unqualified("univ"),
-    MutVar = unqualified("mutvar"),
-    TypeDesc = unqualified("type_desc"),
-    ( TypeName = qualified(PrivateBuiltin, "base_typeclass_info")
-    ; TypeName = qualified(PrivateBuiltin, "type_ctor_info")
-    ; TypeName = qualified(PrivateBuiltin, "typeclass_info")
-    ; TypeName = qualified(PrivateBuiltin, "type_info")
+gen_init_int(Int) = init_obj(ml_const(mlconst_int(Int))).
 
-        % Use lowlevel types for all types in rtti_implementation
-        % as this allows as to add new types needed to manipulate
-        % the RTTI type safely easily.
-    ; TypeName = qualified(RttiImplementation, _)
+gen_init_boxed_int(Int) =
+    init_obj(ml_unop(box(mlds_native_int_type), ml_const(mlconst_int(Int)))).
 
-    ; TypeName = qualified(TypeDesc, "type_desc")
-    ; TypeName = qualified(TypeDesc, "pseudo_type_desc")
-    ; TypeName = qualified(TypeDesc, "type_ctor_desc")
-
-        % Types which don't have a Mercury representation.
-    ; TypeName = qualified(PrivateBuiltin, "ref")
-    ; TypeName = qualified(PrivateBuiltin, "heap_pointer")
-    ; TypeName = qualified(Builtin, "c_pointer")
-
-        % XXX These types are referenced in IL and C# code,
-        % so it is easier to just keep their low level representation
-        % for the moment.
-    ; TypeName = qualified(Builtin, "comparison_result")
-    ; TypeName = qualified(Univ, "univ")
-    ; TypeName = qualified(MutVar, "mutvar")
-    ).
-
-%-----------------------------------------------------------------------------%
+gen_init_string(String) = init_obj(ml_const(mlconst_string(String))).
 
 gen_init_builtin_const(Name) = init_obj(Rval) :-
     PrivateBuiltin = mercury_private_builtin_module,
     MLDS_Module = mercury_module_name_to_mlds(PrivateBuiltin),
+    VarName = mlds_comp_var(mcv_enum_const(Name)),
     % XXX These are actually enumeration constants.
     % Perhaps we should be using an enumeration type here,
     % rather than `mlds_native_int_type'.
     Type = mlds_native_int_type,
-    Rval = ml_lval(ml_var(qual(MLDS_Module, module_qual,
-        mlds_var_name(Name, no)), Type)).
-
-gen_init_array(Conv, List) = init_array(list.map(Conv, List)).
-
-gen_init_maybe(_Type, Conv, yes(X)) = Conv(X).
-gen_init_maybe(Type, _Conv, no) = gen_init_null_pointer(Type).
-
-gen_init_null_pointer(Type) = init_obj(ml_const(mlconst_null(Type))).
-
-gen_init_string(String) = init_obj(ml_const(mlconst_string(String))).
-
-gen_init_int(Int) = init_obj(ml_const(mlconst_int(Int))).
+    Rval = ml_lval(ml_var(qual(MLDS_Module, module_qual, VarName), Type)).
 
 gen_init_foreign(Lang, String) =
     init_obj(ml_const(mlconst_foreign(Lang, String, mlds_native_int_type))).
 
-gen_init_bool(no) = init_obj(ml_const(mlconst_false)).
-gen_init_bool(yes) = init_obj(ml_const(mlconst_true)).
-
-gen_init_boxed_int(Int) =
-    init_obj(ml_unop(box(mlds_native_int_type), ml_const(mlconst_int(Int)))).
+gen_init_null_pointer(Type) = init_obj(ml_const(mlconst_null(Type))).
 
 gen_init_reserved_address(ModuleInfo, ReservedAddress) =
     % XXX using `mlds_generic_type' here is probably wrong
     init_obj(ml_gen_reserved_address(ModuleInfo, ReservedAddress,
         mlds_generic_type)).
 
+gen_init_maybe(_Type, Conv, yes(X)) = Conv(X).
+gen_init_maybe(Type, _Conv, no) = gen_init_null_pointer(Type).
+
+gen_init_array(Conv, List) = init_array(list.map(Conv, List)).
+
 wrap_init_obj(Rval) = init_obj(Rval).
 
+%-----------------------------------------------------------------------------%
+
+init_code_addrs_in_consts =
+    code_addrs_in_consts(set_tree234.init, counter.init(0), []).
+
+method_ptrs_in_defns([], !CodeAddrsInConsts).
+method_ptrs_in_defns([Defn | Defns], !CodeAddrsInConsts) :-
+    method_ptrs_in_defn(Defn, !CodeAddrsInConsts),
+    method_ptrs_in_defns(Defns, !CodeAddrsInConsts).
+
+:- pred method_ptrs_in_defn(mlds_defn::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_defn(Defn, !CodeAddrsInConsts) :-
+    (
+        Defn = mlds_data(DataDefn),
+        DataDefn = mlds_data_defn(_, _, _, _Type, Initializer, _GCStatement),
+        method_ptrs_in_initializer(Initializer, !CodeAddrsInConsts)
+    ;
+        Defn = mlds_function(FunctionDefn),
+        FunctionDefn = mlds_function_defn(_, _, _, _MaybeID, _Params, Body,
+            _Attributes, _EnvVars, _MaybeRequireTailrecInfo),
+        (
+            Body = body_defined_here(Statement),
+            method_ptrs_in_statement(Statement, !CodeAddrsInConsts)
+        ;
+            Body = body_external
+        )
+    ;
+        Defn = mlds_class(ClassDefn),
+        ClassDefn = mlds_class_defn(_, _, _, _, _, _, _, _, Ctors, Members),
+        method_ptrs_in_defns(Ctors, !CodeAddrsInConsts),
+        method_ptrs_in_defns(Members, !CodeAddrsInConsts)
+    ).
+
+:- pred method_ptrs_in_statements(list(statement)::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_statements([], !CodeAddrsInConsts).
+method_ptrs_in_statements([Statement | Statements], !CodeAddrsInConsts) :-
+    method_ptrs_in_statement(Statement, !CodeAddrsInConsts),
+    method_ptrs_in_statements(Statements, !CodeAddrsInConsts).
+
+:- pred method_ptrs_in_statement(statement::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_statement(Statement, !CodeAddrsInConsts) :-
+    Statement = statement(Stmt, _Context),
+    (
+        Stmt = ml_stmt_block(Defns, SubStatements),
+        method_ptrs_in_defns(Defns, !CodeAddrsInConsts),
+        method_ptrs_in_statements(SubStatements, !CodeAddrsInConsts)
+    ;
+        Stmt = ml_stmt_while(_Kind, Rval, SubStatement),
+        method_ptrs_in_rval(Rval, !CodeAddrsInConsts),
+        method_ptrs_in_statement(SubStatement, !CodeAddrsInConsts)
+    ;
+        Stmt = ml_stmt_if_then_else(SubRval,
+            StatementThen, MaybeStatementElse),
+        method_ptrs_in_rval(SubRval, !CodeAddrsInConsts),
+        method_ptrs_in_statement(StatementThen, !CodeAddrsInConsts),
+        (
+            MaybeStatementElse = yes(StatementElse),
+            method_ptrs_in_statement(StatementElse, !CodeAddrsInConsts)
+        ;
+            MaybeStatementElse = no
+        )
+    ;
+        Stmt = ml_stmt_switch(_Type, SubRval, _Range, Cases, Default),
+        method_ptrs_in_rval(SubRval, !CodeAddrsInConsts),
+        method_ptrs_in_switch_cases(Cases, !CodeAddrsInConsts),
+        method_ptrs_in_switch_default(Default, !CodeAddrsInConsts)
+    ;
+        Stmt = ml_stmt_label(_),
+        unexpected($pred, "labels are not supported in C# or Java.")
+    ;
+        Stmt = ml_stmt_goto(Target),
+        (
+            ( Target = goto_break
+            ; Target = goto_continue
+            )
+        ;
+            Target = goto_label(_),
+            unexpected($pred, "goto label is not supported in C# or Java.")
+        )
+    ;
+        Stmt = ml_stmt_computed_goto(_, _),
+        unexpected($pred, "computed gotos are not supported in C# or Java.")
+    ;
+        Stmt = ml_stmt_try_commit(_Lval, StatementGoal, StatementHandler),
+        % We don't check "_Lval" here as we expect it to be a local variable
+        % of type mlds_commit_type.
+        method_ptrs_in_statement(StatementGoal, !CodeAddrsInConsts),
+        method_ptrs_in_statement(StatementHandler, !CodeAddrsInConsts)
+    ;
+        Stmt = ml_stmt_do_commit(_Rval)
+        % We don't check "_Rval" here as we expect it to be a local variable
+        % of type mlds_commit_type.
+    ;
+        Stmt = ml_stmt_return(Rvals),
+        method_ptrs_in_rvals(Rvals, !CodeAddrsInConsts)
+    ;
+        Stmt = ml_stmt_call(_FuncSig, _Rval, _MaybeThis, Rvals, _ReturnVars,
+            _IsTailCall, _Markers),
+        % We don't check "_Rval" - it may be a code address but is a
+        % standard call rather than a function pointer use.
+        method_ptrs_in_rvals(Rvals, !CodeAddrsInConsts)
+    ;
+        Stmt = ml_stmt_atomic(AtomicStatement),
+        ( if
+            AtomicStatement = new_object(Lval, _MaybeTag, _Bool,
+                _Type, _MemRval, _MaybeCtorName, Rvals, _Types, _MayUseAtomic,
+                _AllocId)
+        then
+            % We don't need to check "_MemRval" since this just stores
+            % the amount of memory needed for the new object.
+            method_ptrs_in_lval(Lval, !CodeAddrsInConsts),
+            method_ptrs_in_rvals(Rvals, !CodeAddrsInConsts)
+        else if
+            AtomicStatement = assign(Lval, Rval)
+        then
+            method_ptrs_in_lval(Lval, !CodeAddrsInConsts),
+            method_ptrs_in_rval(Rval, !CodeAddrsInConsts)
+        else
+            true
+        )
+    ).
+
+:- pred method_ptrs_in_switch_default(mlds_switch_default::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_switch_default(Default, !CodeAddrsInConsts) :-
+    (
+        ( Default = default_is_unreachable
+        ; Default = default_do_nothing
+        )
+    ;
+        Default = default_case(Statement),
+        method_ptrs_in_statement(Statement, !CodeAddrsInConsts)
+    ).
+
+:- pred method_ptrs_in_switch_cases(list(mlds_switch_case)::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_switch_cases([], !CodeAddrsInConsts).
+method_ptrs_in_switch_cases([Case | Cases], !CodeAddrsInConsts) :-
+    Case = mlds_switch_case(_FirstCond, _LaterConds, Statement),
+    method_ptrs_in_statement(Statement, !CodeAddrsInConsts),
+    method_ptrs_in_switch_cases(Cases, !CodeAddrsInConsts).
+
+method_ptrs_in_scalars(Cord, !CodeAddrsInConsts) :-
+    cord.foldl_pred(method_ptrs_in_initializer, Cord, !CodeAddrsInConsts).
+
+:- pred method_ptrs_in_initializer(mlds_initializer::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_initializer(Initializer, !CodeAddrsInConsts) :-
+    (
+        Initializer = no_initializer
+    ;
+        Initializer = init_struct(_Type, SubInitializers),
+        method_ptrs_in_initializers(SubInitializers, !CodeAddrsInConsts)
+    ;
+        Initializer = init_array(SubInitializers),
+        method_ptrs_in_initializers(SubInitializers, !CodeAddrsInConsts)
+    ;
+        Initializer = init_obj(Rval),
+        method_ptrs_in_rval(Rval, !CodeAddrsInConsts)
+    ).
+
+:- pred method_ptrs_in_initializers(list(mlds_initializer)::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_initializers([], !CodeAddrsInConsts).
+method_ptrs_in_initializers([Initializer | Initializers],
+        !CodeAddrsInConsts) :-
+    method_ptrs_in_initializer(Initializer, !CodeAddrsInConsts),
+    method_ptrs_in_initializers(Initializers, !CodeAddrsInConsts).
+
+:- pred method_ptrs_in_rvals(list(mlds_rval)::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_rvals([], !CodeAddrsInConsts).
+method_ptrs_in_rvals([Rval | Rvals], !CodeAddrsInConsts) :-
+    method_ptrs_in_rval(Rval, !CodeAddrsInConsts),
+    method_ptrs_in_rvals(Rvals, !CodeAddrsInConsts).
+
+:- pred method_ptrs_in_rval(mlds_rval::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_rval(Rval, !CodeAddrsInConsts) :-
+    (
+        Rval = ml_lval(Lval),
+        method_ptrs_in_lval(Lval, !CodeAddrsInConsts)
+    ;
+        Rval = ml_mkword(_Tag, SubRval),
+        method_ptrs_in_rval(SubRval, !CodeAddrsInConsts)
+    ;
+        Rval = ml_const(RvalConst),
+        (
+            RvalConst = mlconst_code_addr(CodeAddr),
+            !.CodeAddrsInConsts = code_addrs_in_consts(Seen0, Counter0, Rev0),
+            ( if set_tree234.insert_new(CodeAddr, Seen0, Seen) then
+                counter.allocate(SeqNum, Counter0, Counter),
+                Rev = [SeqNum - CodeAddr | Rev0],
+                !:CodeAddrsInConsts = code_addrs_in_consts(Seen, Counter, Rev)
+            else
+                true
+            )
+        ;
+            ( RvalConst = mlconst_true
+            ; RvalConst = mlconst_false
+            ; RvalConst = mlconst_int(_)
+            ; RvalConst = mlconst_uint(_)
+            ; RvalConst = mlconst_char(_)
+            ; RvalConst = mlconst_enum(_, _)
+            ; RvalConst = mlconst_foreign(_, _, _)
+            ; RvalConst = mlconst_float(_)
+            ; RvalConst = mlconst_string(_)
+            ; RvalConst = mlconst_multi_string(_)
+            ; RvalConst = mlconst_named_const(_)
+            ; RvalConst = mlconst_data_addr(_)
+            ; RvalConst = mlconst_null(_)
+            )
+        )
+    ;
+        Rval = ml_unop(_UnaryOp, SubRval),
+        method_ptrs_in_rval(SubRval, !CodeAddrsInConsts)
+    ;
+        Rval = ml_binop(_BinaryOp, SubRvalA, SubRvalB),
+        method_ptrs_in_rval(SubRvalA, !CodeAddrsInConsts),
+        method_ptrs_in_rval(SubRvalB, !CodeAddrsInConsts)
+    ;
+        Rval = ml_vector_common_row(_, RowRval),
+        method_ptrs_in_rval(RowRval, !CodeAddrsInConsts)
+    ;
+        ( Rval = ml_scalar_common(_)
+        ; Rval = ml_mem_addr(_Address)
+        ; Rval = ml_self(_Type)
+        )
+    ).
+
+:- pred method_ptrs_in_lval(mlds_lval::in,
+    code_addrs_in_consts::in, code_addrs_in_consts::out) is det.
+
+method_ptrs_in_lval(Lval, !CodeAddrsInConsts) :-
+    (
+        Lval = ml_mem_ref(_Rval, _Type)
+        % Here, "_Rval" is the address of a variable so we don't check it.
+    ;
+        Lval = ml_field(_MaybeTag, _Rval, _FieldId, _FieldType, _PtrType)
+        % Here, "_Rval" is a pointer to a cell on the heap, and doesn't need
+        % to be considered.
+    ;
+        ( Lval = ml_var(_Variable, _Type)
+        ; Lval = ml_global_var_ref(_)
+        )
+    ).
+
+%-----------------------------------------------------------------------------%
+:- end_module ml_backend.ml_util.
 %-----------------------------------------------------------------------------%

@@ -1,6 +1,11 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab ft=make
+#-----------------------------------------------------------------------------#
 
 THIS_DIR = debugger
+SUBDIRS =
+TESTS_DIR = ..
+MAYBE_J1 =
 
 #-----------------------------------------------------------------------------#
 
@@ -17,6 +22,7 @@ RETRY_PROGS = \
 	tabled_read			\
 	tabled_read_unitize		\
 	tabled_read_decl		\
+	tabled_typeclass		\
 	tailrec1
 
 NONRETRY_PROGS = \
@@ -36,6 +42,7 @@ NONRETRY_PROGS = \
 	exported_eqv_type		\
 	fib				\
 	field_names			\
+	foreign_type			\
 	higher_order			\
 	implied_instance		\
 	interpreter			\
@@ -58,7 +65,6 @@ NONRETRY_PROGS = \
 	resume_typeinfos		\
 	save				\
 	shell				\
-	solver_test			\
 	switch_on_unbounded		\
 	synth_attr			\
 	synth_attr_impure		\
@@ -140,29 +146,28 @@ ifneq "$(findstring tsc,$(GRADE))" ""
     SENSITIVE_PROGS :=
 endif
 
-# The no_inline_builtins test only works if the library is
-# built with execution tracing enabled. Adding a `.exp2' file
-# to allow it to be run in other grades would mean that we
-# wouldn't detect a regression which caused builtins not to
-# be traced with `--no-inline-builtins'.
+# The no_inline_builtins test only works if the library is built with
+# execution tracing enabled. Adding a `.exp2' file to allow it to be run
+# in other grades would mean that we wouldn't detect a regression which
+# caused builtins not to be traced with `--no-inline-builtins'.
 ifeq "$(findstring debug,$(GRADE))" "debug"
     DEBUG_GRADE_PROGS = no_inline_builtins
-else 
+else
     DEBUG_GRADE_PROGS =
 endif
 
 # The uci test matches its expected output only if the grade supports
-# enumerated types.  Currently all grades do support enumerated types.
+# enumerated types. Currently all grades do support enumerated types.
 ENUM_PROGS = uci
 
 # The tests term_size_words and term_size_cells are each meant to be used
 # in their respective grades only.
 ifneq "$(findstring .tsw,$(GRADE))" ""
     TERM_SIZE_PROGS = term_size_words
-else 
+else
     ifneq "$(findstring .tsc,$(GRADE))" ""
 	TERM_SIZE_PROGS = term_size_cells
-    else 
+    else
 	TERM_SIZE_PROGS =
     endif
 endif
@@ -170,16 +175,23 @@ endif
 # The mmos_print test is meant to be used in mmos grades only.
 ifneq "$(findstring mmos,$(GRADE))" ""
     MMOS_PROGS = mmos_print
-else 
+else
     MMOS_PROGS =
 endif
 
-ALL_RETRY_PROGS = $(RETRY_PROGS) $(INTERACTIVE_PROGS)
-ALL_NONRETRY_PROGS = $(NONRETRY_PROGS) $(SENSITIVE_PROGS) \
-			$(SHALLOW_PROGS) $(DEBUG_GRADE_PROGS) $(ENUM_PROGS) \
-			$(TERM_SIZE_PROGS) $(MMOS_PROGS)
+ALL_RETRY_PROGS = \
+	$(RETRY_PROGS) \
+	$(INTERACTIVE_PROGS)
+ALL_NONRETRY_PROGS = \
+	$(NONRETRY_PROGS) \
+	$(SENSITIVE_PROGS) \
+	$(SHALLOW_PROGS) \
+	$(DEBUG_GRADE_PROGS) \
+	$(ENUM_PROGS) \
+	$(TERM_SIZE_PROGS) \
+	$(MMOS_PROGS)
 
-# Debugging doesn't yet don't work in MLDS grades (hl*, il*, csharp, java),
+# Debugging doesn't yet don't work in MLDS grades (hl*, csharp, java),
 # or the Erlang grade,
 # and the retry command doesn't and will not work in deep profiling
 # grades (profdeep).
@@ -191,40 +203,38 @@ ifneq "$(findstring profdeep,$(GRADE))" ""
     # However, the code that is required to switch off the profiling
     # primitives in Mercury code invoked by the debugger (e.g. for
     # browsing) has not yet been implemented.
-    DEBUGGER_PROGS0=
+    DEBUGGER_PROGS0 =
 else
-    DEBUGGER_PROGS0=$(ALL_NONRETRY_PROGS) $(ALL_RETRY_PROGS)
+    DEBUGGER_PROGS0 = $(ALL_NONRETRY_PROGS) $(ALL_RETRY_PROGS)
 endif
 
 # The tail call optimisation isn't supported in decldebug grades,
 # so we don't run the tailrec1 test in those grades.
 ifneq "$(findstring decldebug,$(GRADE))" ""
-    DEBUGGER_PROGS=$(subst tailrec1,,$(DEBUGGER_PROGS0))
+    DEBUGGER_PROGS = $(subst tailrec1,,$(DEBUGGER_PROGS0))
 else
-    DEBUGGER_PROGS=$(DEBUGGER_PROGS0)
+    DEBUGGER_PROGS = $(DEBUGGER_PROGS0)
 endif
 
-ifneq "$(filter hl% java% csharp% il% erlang%,$(GRADE))" ""
-    PROGS=
+ifneq "$(filter hl% java% csharp% erlang%,$(GRADE))" ""
+    PROGS =
 else
     ifneq "$(findstring asm_,$(GRADE))" ""
-        PROGS=$(DEBUGGER_PROGS)
+        PROGS = $(DEBUGGER_PROGS)
     else
         ifneq "$(findstring jump,$(GRADE))" ""
-            PROGS=
+            PROGS =
         else
             ifneq "$(findstring fast,$(GRADE))" ""
-                PROGS=
+                PROGS =
             else
-                PROGS=$(DEBUGGER_PROGS)
+                PROGS = $(DEBUGGER_PROGS)
             endif
         endif
     endif
 endif
 
-SUBDIRS = declarative
 TESTS = $(sort $(PROGS))
-TESTS_DIR = ..
 include $(TESTS_DIR)/Mmake.common
 
 # The minimum trace level in .decldebug grades is --trace decl.
@@ -240,13 +250,13 @@ MLFLAGS += --trace
 # All other tests ignore this variable.
 #
 ifneq "$(findstring .decldebug,$(GRADE))" ""
-    INP=inp2
+    INP = inp2
 else
-    INP=inp
+    INP = inp
 endif
 
-# Module-specific options should go in Mercury.options so they
-# can be found by `mmc --make'.
+# Module-specific options should go in Mercury.options so they can be found
+# by `mmc --make'.
 include Mercury.options
 
 %.runtest: %.res ;
@@ -322,7 +332,7 @@ poly_io_retry2.out: poly_io_retry2 poly_io_retry2.inp
 # the exact goal paths are dependent on optimization level. The stripping
 # must be done outside the condition of the if-then-else.
 exception_cmd.out: exception_cmd exception_cmd.inp
-	if $(MDB_STD) ./exception_cmd < exception_cmd.inp		\
+	if $(MDB_STD) ./exception_cmd < exception_cmd.inp	\
 		> exception_cmd.tmp 2>&1;			\
 	then							\
 		sed -e '/EXCP/s/).*/)/' < exception_cmd.tmp	\
@@ -341,12 +351,12 @@ dice.pass1: dice
 	MERCURY_OPTIONS=--trace-count ./dice 1 2 3 4 && \
 	mv .mercury_trace_counts.*dice.* dice.pass1
 
-dice.pass2: dice
+dice.pass2: dice dice.pass1
 	/bin/rm -f .mercury_trace_counts.*dice.*
 	MERCURY_OPTIONS=--trace-count ./dice 5 6 7 8 && \
 	mv .mercury_trace_counts.*dice.* dice.pass2
 
-dice.pass3: dice
+dice.pass3: dice dice.pass2
 	/bin/rm -f .mercury_trace_counts.*dice.*
 	MERCURY_OPTIONS=--trace-count ./dice 10 11 100 && \
 	mv .mercury_trace_counts.*dice.* dice.pass3
@@ -355,7 +365,7 @@ dice.passes: dice.pass1 dice.pass2 dice.pass3
 	MERCURY_OPTIONS= \
 	$(SLICE_DIR)mtc_union -o dice.passes dice.pass1 dice.pass2 dice.pass3
 
-dice.fail: dice
+dice.fail: dice dice.passes
 	/bin/rm -f .mercury_trace_counts.*dice.*
 	MERCURY_OPTIONS=--trace-count ./dice 4 1 2 3 && \
 	mv .mercury_trace_counts.*dice.* dice.fail
@@ -371,7 +381,7 @@ exception_value.out: exception_value exception_value.inp
 		sed -e '/EXCP/s/).*/)/' > exception_value.out 2>&1
 
 exception_vars.out: exception_vars exception_vars.inp
-	if $(MDB_STD) ./exception_vars < exception_vars.inp		\
+	if $(MDB_STD) ./exception_vars < exception_vars.inp	\
 		> exception_vars.tmp 2>&1;			\
 	then							\
 		sed -e '/EXCP/s/).*/)/' < exception_vars.tmp	\
@@ -405,6 +415,11 @@ fib.out: fib fib.inp
 field_names.out: field_names field_names.inp
 	$(MDB) ./field_names < field_names.inp > field_names.out 2>&1
 
+foreign_type.out: foreign_type foreign_type.inp
+	$(MDB_STD) ./foreign_type < foreign_type.inp | \
+		sed 's/0x[-0-9A-Fa-f]*/0xXXXX/g' \
+		> foreign_type.out 2>&1
+
 higher_order.out: higher_order higher_order.inp
 	$(MDB_STD) ./higher_order < higher_order.inp > higher_order.out 2>&1
 
@@ -414,7 +429,7 @@ implied_instance.out: implied_instance implied_instance.inp
 
 io_tab_goto.out: io_tab_goto io_tab_goto.inp
 	$(MDB_STD) ./io_tab_goto < io_tab_goto.inp 2>&1 | \
-		sed 's/c_pointer(0x[0-9A-Fa-f]*)/c_pointer(0xXXXX)/g' \
+		sed 's/c_pointer(0x[-0-9A-Fa-f]*)/c_pointer(0xXXXX)/g' \
 		> io_tab_goto.out 2>&1
 
 lambda_expr.out: lambda_expr lambda_expr.inp
@@ -474,10 +489,6 @@ mmos_print.out: mmos_print mmos_print.inp
 	$(MDB) ./mmos_print < mmos_print.inp \
 		> mmos_print.out 2>&1
 
-mmos_print.out: mmos_print mmos_print.inp
-	$(MDB) ./mmos_print < mmos_print.inp \
-		> mmos_print.out 2>&1
-
 mutrec.out: 	mutrec mutrec.inp
 	$(MDB) ./mutrec < mutrec.inp > mutrec.out 2>&1
 
@@ -505,7 +516,7 @@ print_goal.out: print_goal print_goal.inp
 print_io_actions.out: print_io_actions print_io_actions.inp \
 		print_io_actions.data
 	$(MDB_STD) ./print_io_actions < print_io_actions.inp | \
-		sed 's/c_pointer(0x[0-9A-Fa-f]*)/c_pointer(0xXXXX)/g' \
+		sed 's/c_pointer(0x[-0-9A-Fa-f]*)/c_pointer(0xXXXX)/g' \
 		> print_io_actions.out 2>&1
 
 print_table.out: print_table print_table.inp
@@ -540,7 +551,7 @@ retry.out: retry retry.inp
 	$(MDB_STD) ./retry < retry.inp > retry.out 2>&1
 
 # The values of xml_browser_cmd and xml_tmp_filename will be system specific,
-# so we pipe the output through sed and replace the system specific bit 
+# so we pipe the output through sed and replace the system specific bit
 # with a known character sequence.
 save.out: save save.inp
 	$(MDB) ./save < save.inp 2>&1 | \
@@ -560,16 +571,13 @@ shallow.out: shallow shallow.inp
 shell.out: shell shell.inp
 	$(MDB_STD) ./shell < shell.inp > shell.out 2>&1
 
-solver_test.out: solver_test solver_test.inp
-	$(MDB_STD) ./solver_test < solver_test.inp > solver_test.out 2>&1
-
 switch_on_unbounded.out: switch_on_unbounded switch_on_unbounded.inp
 	$(MDB_STD) ./switch_on_unbounded < switch_on_unbounded.inp \
 		> switch_on_unbounded.out 2>&1
 
 tabled_read.out: tabled_read tabled_read.inp tabled_read.data
 	$(MDB_STD) ./tabled_read < tabled_read.inp 2>&1 | \
-		sed 's/c_pointer(0x[0-9A-Fa-f]*)/c_pointer(0xXXXX)/g' \
+		sed 's/c_pointer(0x[-0-9A-Fa-f]*)/c_pointer(0xXXXX)/g' \
 		> tabled_read.out 2>&1
 
 tabled_read_unitize.out: tabled_read_unitize.data
@@ -580,8 +588,12 @@ tabled_read_unitize.out: tabled_read_unitize tabled_read_unitize.inp
 
 tabled_read_decl.out: tabled_read_decl tabled_read_decl.inp tabled_read_decl.data
 	$(MDB_STD) ./tabled_read_decl < tabled_read_decl.inp 2>&1 | \
-		sed 's/c_pointer(0x[0-9A-Fa-f]*)/c_pointer(0xXXXX)/g' \
+		sed 's/c_pointer(0x[-0-9A-Fa-f]*)/c_pointer(0xXXXX)/g' \
 		> tabled_read_decl.out 2>&1
+
+tabled_typeclass.out: tabled_typeclass tabled_typeclass.inp
+	$(MDB_STD) ./tabled_typeclass < tabled_typeclass.inp \
+		> tabled_typeclass.out 2>&1
 
 tailrec1.out: tailrec1 tailrec1.inp tailrec1.data
 	$(MDB_STD) ./tailrec1 < tailrec1.inp > tailrec1.out 2>&1
@@ -705,11 +717,10 @@ interactive.out: interactive.out.orig
 	fi
 
 # We ignore the result of this action because
-# the exit status of grep is not useful in this case
+# the exit status of grep is not useful in this case.
 mdb_command_test.out: mdb_command_test mdb_command_test.inp
 	-$(MDB) ./mdb_command_test < mdb_command_test.inp 2>&1 \
 		| egrep "internal error in the trace help system" \
 		> mdb_command_test.out
 
 #-----------------------------------------------------------------------------#
-

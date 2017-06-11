@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2009-2012 The University of Melbourne.
+% Copyright (C) 2015 The Mercury team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -13,59 +14,52 @@
 % If goal is
 %   (a) a disjunction
 %       Mode-analyse the sub-goals;
-%       check that the final insts of all the non-local
-%       variables are the same for all the sub-goals.
+%       check that the final insts of all the non-local variables are the same
+%       for all the sub-goals.
 %   (b) a conjunction
-%       Attempt to schedule each sub-goal.  If a sub-goal can
-%       be scheduled, then schedule it, otherwise delay it.
-%       Continue with the remaining sub-goals until there are
-%       no goals left.  Every time a variable gets bound,
-%       see whether we should wake up a delayed goal,
-%       and if so, wake it up next time we get back to
-%       the conjunction.  If there are still delayed goals
-%       hanging around at the end of the conjunction,
+%       Attempt to schedule each sub-goal. If a sub-goal can be scheduled,
+%       then schedule it, otherwise delay it. Continue with the remaining
+%       subgoals until there are no goals left. Every time a variable gets
+%       bound, see whether we should wake up a delayed goal, and if so,
+%       wake it up next time we get back to the conjunction. If there are
+%       still delayed goals hanging around at the end of the conjunction,
 %       report a mode error.
 %   (c) a negation
 %       Mode-check the sub-goal.
-%       Check that the sub-goal does not further instantiate
-%       any non-local variables.  (Actually, rather than
-%       doing this check after we mode-analyse the subgoal,
-%       we instead "lock" the non-local variables, and
-%       disallow binding of locked variables.)
+%       Check that the sub-goal does not further instantiate any nonlocal
+%       variables. (Actually, rather than doing this check after we
+%       mode-analyse the subgoal, we instead "lock" the non-local variables,
+%       and disallow binding of locked variables.)
 %   (d) a unification
-%       Check that the unification doesn't attempt to unify
-%       two free variables (or in general two free sub-terms)
-%       unless one of them is dead.  Split unifications
-%       up if necessary to avoid complicated sub-unifications.
-%       We also figure out at this point whether or not each
+%       Check that the unification doesn't attempt to unify two free variables
+%       (or in general two free sub-terms) unless one of them is dead.
+%       Split unifications up if necessary to avoid complicated
+%       sub-unifications. We also figure out at this point whether or not each
 %       unification can fail.
 %   (e) a predicate call
-%       Check that there is a mode declaration for the
-%       predicate which matches the current instantiation of
-%       the arguments.  (Also handle calls to implied modes.)
-%       If the called predicate is one for which we must infer
-%       the modes, then create a new mode for the called predicate
-%       whose initial insts are the result of normalising
+%       Check that there is a mode declaration for the predicate which matches
+%       the current instantiation of the arguments. (Also handle calls
+%       to implied modes.) If the called predicate is one for which
+%       we must infer the modes, then create a new mode for the called
+%       predicate whose initial insts are the result of normalising
 %       the current inst of the arguments.
 %   (f) an if-then-else
-%       Attempt to schedule the condition.  If successful,
-%       then check that it doesn't further instantiate any
-%       non-local variables, mode-check the `then' part
-%       and the `else' part, and then check that the final
-%       insts match.  (Perhaps also think about expanding
-%       if-then-elses so that they can be run backwards,
-%       if the condition can't be scheduled?)
+%       Attempt to schedule the condition. If successful, then check that
+%       it doesn't further instantiate any nonlocal variables, modecheck
+%       the `then' part and the `else' part, and then check that the final
+%       insts match. (Perhaps also think about expanding if-then-elses so that
+%       they can be run backwards, if the condition can't be scheduled?)
 %
-% To attempt to schedule a goal, first mode-check the goal.  If mode-checking
-% succeeds, then scheduling succeeds.  If mode-checking would report
-% an error due to the binding of a local variable, then scheduling
-% fails.  (If mode-checking would report an error due to the binding of
-% a *local* variable, we could report the error right away --
-% but this idea has not yet been implemented.)
+% To attempt to schedule a goal, first mode-check the goal. If mode-checking
+% succeeds, then scheduling succeeds. If mode-checking would report an error
+% due to the binding of a local variable, then scheduling fails.
+% (If mode-checking would report an error due to the binding of a *local*
+% variable, we could report the error right away -- but this idea has
+% not yet been implemented.)
 %
-% Note that the notion of liveness used here is different to that
-% used in liveness.m and the code generator.  Here, we consider
-% a variable live if its value will be used later on in the computation.
+% Note that the notion of liveness used here is different to that used
+% in liveness.m and the code generator. Here, we consider a variable live
+% if its value will be used later on in the computation.
 %
 % XXX We ought to allow unification of free with free even when both
 % *variables* are live, if one of the particular *sub-nodes* is dead
@@ -115,7 +109,6 @@
 
 :- implementation.
 
-:- import_module check_hlds.inst_match.
 :- import_module check_hlds.inst_util.
 :- import_module check_hlds.mode_debug.
 :- import_module check_hlds.mode_errors.
@@ -125,31 +118,35 @@
 :- import_module check_hlds.modecheck_unify.
 :- import_module check_hlds.modecheck_util.
 :- import_module check_hlds.polymorphism.
-:- import_module check_hlds.type_util.
 :- import_module hlds.goal_util.
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.instmap.
+:- import_module hlds.make_goal.
 :- import_module hlds.pred_table.
+:- import_module hlds.vartypes.
 :- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.
 :- import_module parse_tree.builtin_lib_types.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_event.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.prog_event.
 :- import_module parse_tree.prog_mode.
+:- import_module parse_tree.prog_rename.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.set_of_var.
 
 :- import_module bag.
-:- import_module bool.
 :- import_module list.
 :- import_module map.
 :- import_module maybe.
 :- import_module pair.
 :- import_module require.
-:- import_module set.
 :- import_module std_util.
 :- import_module string.
 :- import_module term.
@@ -164,24 +161,22 @@ modecheck_goal(Goal0, Goal, !ModeInfo) :-
 
     % Store the current context in the mode_info.
     Context = goal_info_get_context(GoalInfo0),
-    term.context_init(EmptyContext),
-    ( Context = EmptyContext ->
+    ( if is_dummy_context(Context) then
         true
-    ;
+    else
         mode_info_set_context(Context, !ModeInfo)
     ),
-    ( goal_info_has_feature(GoalInfo0, feature_duplicated_for_switch) ->
+    ( if goal_info_has_feature(GoalInfo0, feature_duplicated_for_switch) then
         mode_info_get_in_dupl_for_switch(!.ModeInfo, InDuplForSwitch),
         mode_info_set_in_dupl_for_switch(in_dupl_for_switch, !ModeInfo),
         modecheck_goal_2(GoalExpr0, GoalInfo0, Goal, !ModeInfo),
         mode_info_set_in_dupl_for_switch(InDuplForSwitch, !ModeInfo)
-    ;
+    else
         modecheck_goal_2(GoalExpr0, GoalInfo0, Goal, !ModeInfo)
     ).
 
 :- pred modecheck_goal_2(hlds_goal_expr::in, hlds_goal_info::in,
     hlds_goal::out, mode_info::in, mode_info::out) is det.
-
 :- pragma inline(modecheck_goal_2/5).
 
 modecheck_goal_2(GoalExpr0, GoalInfo0, Goal, !ModeInfo) :-
@@ -293,42 +288,37 @@ modecheck_goal_disj(Disjuncts0, GoalInfo0, GoalExpr, !ModeInfo) :-
         % If you modify this code, you may also need to modify
         % modecheck_clause_disj or the code that calls it.
         Disjuncts0 = [_ | _],
+        mode_info_get_pred_var_multimode_map(!.ModeInfo, MultiModeMap0),
         NonLocals = goal_info_get_nonlocals(GoalInfo0),
-        modecheck_disj_list(Disjuncts0, Disjuncts1, InstMaps0,
-            NonLocals, LargeFlatConstructs, !ModeInfo),
-        ( mode_info_solver_init_is_supported(!.ModeInfo) ->
-            mode_info_get_var_types(!.ModeInfo, VarTypes),
-            handle_solver_vars_in_disjs(set_of_var.to_sorted_list(NonLocals),
-                VarTypes, Disjuncts1, Disjuncts2, InstMaps0, InstMaps,
-                !ModeInfo)
-        ;
-            InstMaps = InstMaps0,
-            Disjuncts2 = Disjuncts1
-        ),
+        LargeFlatConstructs0 = NonLocals,
+        modecheck_disj_list(MultiModeMap0, Disjuncts0, Disjuncts1, InstMaps,
+            LargeFlatConstructs0, LargeFlatConstructs, !ModeInfo),
         merge_disj_branches(NonLocals, LargeFlatConstructs,
-            Disjuncts2, Disjuncts3, InstMaps, !ModeInfo),
+            Disjuncts1, Disjuncts2, InstMaps, !ModeInfo),
         % Since merge_disj_branches depends on each disjunct in Disjuncts2
         % having a corresponding instmap in InstMaps, we can flatten disjuncts
         % only *after* merge_disj_branches has done its job.
-        Disjuncts = flatten_disjs(Disjuncts3),
+        flatten_disj(Disjuncts2, Disjuncts),
         disj_list_to_goal(Disjuncts, GoalInfo0, hlds_goal(GoalExpr, _GoalInfo))
     ),
     mode_checkpoint(exit, "disj", !ModeInfo).
 
-:- pred modecheck_disj_list(list(hlds_goal)::in, list(hlds_goal)::out,
-    list(instmap)::out, set_of_progvar::in, set_of_progvar::out,
+:- pred modecheck_disj_list(pred_var_multimode_map::in,
+    list(hlds_goal)::in, list(hlds_goal)::out, list(instmap)::out,
+    set_of_progvar::in, set_of_progvar::out,
     mode_info::in, mode_info::out) is det.
 
-modecheck_disj_list([], [], [], !LargeFlatConstructs, !ModeInfo).
-modecheck_disj_list([Goal0 | Goals0], [Goal | Goals], [InstMap | InstMaps],
-        !LargeFlatConstructs, !ModeInfo) :-
+modecheck_disj_list(_, [], [], [], !LargeFlatConstructs, !ModeInfo).
+modecheck_disj_list(MultiModeMap0, [Goal0 | Goals0], [Goal | Goals],
+        [InstMap | InstMaps], !LargeFlatConstructs, !ModeInfo) :-
+    mode_info_set_pred_var_multimode_map(MultiModeMap0, !ModeInfo),
     mode_info_get_instmap(!.ModeInfo, InstMap0),
     modecheck_goal(Goal0, Goal, !ModeInfo),
     accumulate_large_flat_constructs(Goal, !LargeFlatConstructs),
     mode_info_get_instmap(!.ModeInfo, InstMap),
     mode_info_set_instmap(InstMap0, !ModeInfo),
-    modecheck_disj_list(Goals0, Goals, InstMaps, !LargeFlatConstructs,
-        !ModeInfo).
+    modecheck_disj_list(MultiModeMap0, Goals0, Goals, InstMaps,
+        !LargeFlatConstructs, !ModeInfo).
 
 :- pred merge_disj_branches(set_of_progvar::in, set_of_progvar::in,
     list(hlds_goal)::in, list(hlds_goal)::out, list(instmap)::in,
@@ -336,10 +326,10 @@ modecheck_disj_list([Goal0 | Goals0], [Goal | Goals], [InstMap | InstMaps],
 
 merge_disj_branches(NonLocals, LargeFlatConstructs, Disjuncts0, Disjuncts,
         InstMaps0, !ModeInfo) :-
-    ( set_of_var.is_empty(LargeFlatConstructs) ->
+    ( if set_of_var.is_empty(LargeFlatConstructs) then
         Disjuncts = Disjuncts0,
         InstMaps = InstMaps0
-    ;
+    else
         % The instmaps will each map every var in LargeFlatConstructs
         % to a very big inst. This means that instmap_merge will take a long
         % time on those variables and add lots of big insts to the merge_inst
@@ -363,28 +353,12 @@ merge_disj_branches(NonLocals, LargeFlatConstructs, Disjuncts0, Disjuncts,
         LargeFlatConstructList =
             set_of_var.to_sorted_list(LargeFlatConstructs),
         list.map(
-            instmap_set_vars_same(ground(shared, none),
+            instmap_set_vars_same(ground(shared, none_or_default_func),
                 LargeFlatConstructList),
             InstMaps0, InstMaps)
     ),
     make_arm_instmaps_for_goals(Disjuncts, InstMaps, ArmInstMaps),
     instmap_merge(NonLocals, ArmInstMaps, merge_disj, !ModeInfo).
-
-    % Ensure that any non-local solver var that is initialised in
-    % one disjunct is initialised in all disjuncts.
-    %
-:- pred handle_solver_vars_in_disjs(list(prog_var)::in,
-    vartypes::in, list(hlds_goal)::in, list(hlds_goal)::out,
-    list(instmap)::in, list(instmap)::out, mode_info::in, mode_info::out)
-    is det.
-
-handle_solver_vars_in_disjs(NonLocals, VarTypes, Disjs0, Disjs,
-        InstMaps0, InstMaps, !ModeInfo) :-
-    mode_info_get_module_info(!.ModeInfo, ModuleInfo),
-    EnsureInitialised = solver_vars_that_must_be_initialised(NonLocals,
-        VarTypes, ModuleInfo, InstMaps0),
-    add_necessary_disj_init_calls(Disjs0, Disjs, InstMaps0, InstMaps,
-        EnsureInitialised, !ModeInfo).
 
 %-----------------------------------------------------------------------------%
 %
@@ -406,22 +380,26 @@ modecheck_goal_switch(Var, CanFail, Cases0, GoalInfo0, GoalExpr, !ModeInfo) :-
         % If you modify this code, you may also need to modify
         % modecheck_clause_switch or the code that calls it.
         Cases0 = [_ | _],
+        mode_info_get_pred_var_multimode_map(!.ModeInfo, MultiModeMap0),
         NonLocals = goal_info_get_nonlocals(GoalInfo0),
-        modecheck_case_list(Cases0, Var, Cases1, InstMaps,
-            NonLocals, LargeFlatConstructs, !ModeInfo),
+        LargeFlatConstructs0 = NonLocals,
+        modecheck_case_list(MultiModeMap0, Var, Cases0, Cases1, InstMaps,
+            LargeFlatConstructs0, LargeFlatConstructs, !ModeInfo),
         merge_switch_branches(NonLocals, LargeFlatConstructs,
             Cases1, Cases, InstMaps, !ModeInfo)
     ),
     GoalExpr = switch(Var, CanFail, Cases),
     mode_checkpoint(exit, "switch", !ModeInfo).
 
-:- pred modecheck_case_list(list(case)::in, prog_var::in, list(case)::out,
-    list(instmap)::out, set_of_progvar::in, set_of_progvar::out,
+:- pred modecheck_case_list(pred_var_multimode_map::in, prog_var::in,
+    list(case)::in, list(case)::out, list(instmap)::out,
+    set_of_progvar::in, set_of_progvar::out,
     mode_info::in, mode_info::out) is det.
 
-modecheck_case_list([], _Var, [], [], !LargeFlatConstructs, !ModeInfo).
-modecheck_case_list([Case0 | Cases0], Var, [Case | Cases],
+modecheck_case_list(_, _, [], [], [], !LargeFlatConstructs, !ModeInfo).
+modecheck_case_list(MultiModeMap0, Var, [Case0 | Cases0], [Case | Cases],
         [InstMap | InstMaps], !LargeFlatConstructs, !ModeInfo) :-
+    mode_info_set_pred_var_multimode_map(MultiModeMap0, !ModeInfo),
     Case0 = case(MainConsId, OtherConsIds, Goal0),
     mode_info_get_instmap(!.ModeInfo, InstMap0),
 
@@ -431,10 +409,10 @@ modecheck_case_list([Case0 | Cases0], Var, [Case | Cases],
 
     % Modecheck this case (if it is reachable).
     mode_info_get_instmap(!.ModeInfo, InstMap1),
-    ( instmap_is_reachable(InstMap1) ->
+    ( if instmap_is_reachable(InstMap1) then
         modecheck_goal(Goal0, Goal1, !ModeInfo),
         mode_info_get_instmap(!.ModeInfo, InstMap)
-    ;
+    else
         % We should not mode-analyse the goal, since it is unreachable.
         % Instead we optimize the goal away, so that later passes
         % won't complain about it not having mode information.
@@ -448,8 +426,8 @@ modecheck_case_list([Case0 | Cases0], Var, [Case | Cases],
     Case = case(MainConsId, OtherConsIds, Goal),
     accumulate_large_flat_constructs(Goal, !LargeFlatConstructs),
     mode_info_set_instmap(InstMap0, !ModeInfo),
-    modecheck_case_list(Cases0, Var, Cases, InstMaps, !LargeFlatConstructs,
-        !ModeInfo).
+    modecheck_case_list(MultiModeMap0, Var, Cases0, Cases, InstMaps,
+        !LargeFlatConstructs, !ModeInfo).
 
 :- pred merge_switch_branches(set_of_progvar::in, set_of_progvar::in,
     list(case)::in, list(case)::out, list(instmap)::in,
@@ -457,10 +435,10 @@ modecheck_case_list([Case0 | Cases0], Var, [Case | Cases],
 
 merge_switch_branches(NonLocals, LargeFlatConstructs, Cases0, Cases,
         InstMaps0, !ModeInfo) :-
-    ( set_of_var.is_empty(LargeFlatConstructs) ->
+    ( if set_of_var.is_empty(LargeFlatConstructs) then
         Cases = Cases0,
         InstMaps = InstMaps0
-    ;
+    else
         % The same considerations apply here as in merge_disj_branches.
         list.map(
             set_large_flat_constructs_to_ground_in_case(LargeFlatConstructs),
@@ -468,7 +446,7 @@ merge_switch_branches(NonLocals, LargeFlatConstructs, Cases0, Cases,
         LargeFlatConstructList =
             set_of_var.to_sorted_list(LargeFlatConstructs),
         list.map(
-            instmap_set_vars_same(ground(shared, none),
+            instmap_set_vars_same(ground(shared, none_or_default_func),
                 LargeFlatConstructList),
             InstMaps0, InstMaps)
     ),
@@ -485,11 +463,11 @@ merge_switch_branches(NonLocals, LargeFlatConstructs, Cases0, Cases,
     set_of_progvar::in, set_of_progvar::out) is det.
 
 accumulate_large_flat_constructs(Goal, !LargeFlatConstructs) :-
-    ( set_of_var.is_empty(!.LargeFlatConstructs) ->
+    ( if set_of_var.is_empty(!.LargeFlatConstructs) then
         % Calling goal_large_flat_constructs and then set.intersect
         % would be waste of time; !:LargeFlatConstructs will still be empty.
         true
-    ;
+    else
         GoalLargeFlatConstructs = goal_large_flat_constructs(Goal),
         set_of_var.intersect(GoalLargeFlatConstructs, !LargeFlatConstructs)
     ).
@@ -527,11 +505,13 @@ goal_large_flat_constructs(Goal) = LargeFlatConstructs :-
             ( Reason = from_ground_term(_, from_ground_term_initial)
             ; Reason = from_ground_term(_, from_ground_term_deconstruct)
             ; Reason = from_ground_term(_, from_ground_term_other)
+            ; Reason = disable_warnings(_, _)
             ; Reason = exist_quant(_)
             ; Reason = promise_solutions(_, _)
             ; Reason = promise_purity(_)
             ; Reason = require_detism(_)
             ; Reason = require_complete_switch(_)
+            ; Reason = require_switch_arms_detism(_, _)
             ; Reason = commit(_)
             ; Reason = barrier(_)
             ; Reason = trace_goal(_, _, _, _, _)
@@ -582,9 +562,10 @@ set_large_flat_constructs_to_ground_in_goal(LargeFlatConstructs,
         GoalExpr0 = scope(Reason, SubGoal0),
         (
             Reason = from_ground_term(TermVar, from_ground_term_construct),
-            ( set_of_var.member(LargeFlatConstructs, TermVar) ->
+            ( if set_of_var.member(LargeFlatConstructs, TermVar) then
                 InstMapDelta0 = goal_info_get_instmap_delta(GoalInfo0),
-                instmap_delta_set_var(TermVar, ground(shared, none),
+                instmap_delta_set_var(TermVar,
+                    ground(shared, none_or_default_func),
                     InstMapDelta0, InstMapDelta),
                 goal_info_set_instmap_delta(InstMapDelta, GoalInfo0, GoalInfo),
 
@@ -597,18 +578,20 @@ set_large_flat_constructs_to_ground_in_goal(LargeFlatConstructs,
                 SubGoal = hlds_goal(SubGoalExpr0, SubGoalInfo),
                 GoalExpr = scope(Reason, SubGoal),
                 Goal = hlds_goal(GoalExpr, GoalInfo)
-            ;
+            else
                 Goal = Goal0
             )
         ;
             ( Reason = from_ground_term(_, from_ground_term_initial)
             ; Reason = from_ground_term(_, from_ground_term_deconstruct)
             ; Reason = from_ground_term(_, from_ground_term_other)
+            ; Reason = disable_warnings(_, _)
             ; Reason = exist_quant(_)
             ; Reason = promise_solutions(_, _)
             ; Reason = promise_purity(_)
             ; Reason = require_detism(_)
             ; Reason = require_complete_switch(_)
+            ; Reason = require_switch_arms_detism(_, _)
             ; Reason = commit(_)
             ; Reason = barrier(_)
             ; Reason = trace_goal(_, _, _, _, _)
@@ -625,7 +608,7 @@ set_large_flat_constructs_to_ground_in_goal(LargeFlatConstructs,
         InstMapDelta0 = goal_info_get_instmap_delta(GoalInfo0),
         instmap_delta_changed_vars(InstMapDelta0, ChangedVars),
         set_of_var.intersect(ChangedVars, LargeFlatConstructs, GroundVars),
-        instmap_delta_set_vars_same(ground(shared, none),
+        instmap_delta_set_vars_same(ground(shared, none_or_default_func),
             set_of_var.to_sorted_list(GroundVars),
             InstMapDelta0, InstMapDelta),
         goal_info_set_instmap_delta(InstMapDelta, GoalInfo0, GoalInfo),
@@ -666,6 +649,7 @@ set_large_flat_constructs_to_ground_in_case(LargeFlatConstructs,
 modecheck_goal_if_then_else(Vars, Cond0, Then0, Else0, GoalInfo0, GoalExpr,
         !ModeInfo) :-
     mode_checkpoint(enter, "if-then-else", !ModeInfo),
+    mode_info_get_pred_var_multimode_map(!.ModeInfo, MultiModeMap0),
     NonLocals = goal_info_get_nonlocals(GoalInfo0),
     ThenVars = goal_get_nonlocals(Then0),
     mode_info_get_instmap(!.ModeInfo, InstMap0),
@@ -679,23 +663,20 @@ modecheck_goal_if_then_else(Vars, Cond0, Then0, Else0, GoalInfo0, GoalExpr,
     mode_info_get_instmap(!.ModeInfo, InstMapCond),
     mode_info_remove_live_vars(ThenVars, !ModeInfo),
     mode_info_unlock_vars(var_lock_if_then_else, NonLocals, !ModeInfo),
-    ( instmap_is_reachable(InstMapCond) ->
-        modecheck_goal(Then0, Then1, !ModeInfo),
-        mode_info_get_instmap(!.ModeInfo, InstMapThen1)
-    ;
+    ( if instmap_is_reachable(InstMapCond) then
+        modecheck_goal(Then0, Then, !ModeInfo),
+        mode_info_get_instmap(!.ModeInfo, InstMapThen)
+    else
         % We should not mode-analyse the goal, since it is unreachable.
         % Instead we optimize the goal away, so that later passes
         % won't complain about it not having mode information.
-        Then1 = true_goal,
-        InstMapThen1 = InstMapCond
+        Then = true_goal,
+        InstMapThen = InstMapCond
     ),
+    mode_info_set_pred_var_multimode_map(MultiModeMap0, !ModeInfo),
     mode_info_set_instmap(InstMap0, !ModeInfo),
-    modecheck_goal(Else0, Else1, !ModeInfo),
-    mode_info_get_instmap(!.ModeInfo, InstMapElse1),
-    mode_info_get_var_types(!.ModeInfo, VarTypes),
-    handle_solver_vars_in_ite(set_of_var.to_sorted_list(NonLocals), VarTypes,
-        Then1, Then, Else1, Else,
-        InstMapThen1, InstMapThen, InstMapElse1, InstMapElse, !ModeInfo),
+    modecheck_goal(Else0, Else, !ModeInfo),
+    mode_info_get_instmap(!.ModeInfo, InstMapElse),
     mode_info_set_instmap(InstMap0, !ModeInfo),
     make_arm_instmaps_for_goals([Then, Else], [InstMapThen, InstMapElse],
         ThenElseArgInfos),
@@ -716,31 +697,6 @@ modecheck_goal_if_then_else(Vars, Cond0, Then0, Else0, GoalInfo0, GoalExpr,
     ),
     mode_checkpoint(exit, "if-then-else", !ModeInfo).
 
-:- pred handle_solver_vars_in_ite(list(prog_var)::in, vartypes::in,
-    hlds_goal::in, hlds_goal::out, hlds_goal::in, hlds_goal::out,
-    instmap::in, instmap::out, instmap::in, instmap::out, mode_info::in,
-    mode_info::out) is det.
-
-handle_solver_vars_in_ite(NonLocals, VarTypes, Then0, Then, Else0, Else,
-        ThenInstMap0, ThenInstMap, ElseInstMap0, ElseInstMap, !ModeInfo) :-
-    mode_info_get_module_info(!.ModeInfo, ModuleInfo),
-    EnsureInitialised = solver_vars_that_must_be_initialised(NonLocals,
-        VarTypes, ModuleInfo, [ThenInstMap0, ElseInstMap0]),
-
-    ThenVarsToInit = solver_vars_to_init(EnsureInitialised, ModuleInfo,
-        ThenInstMap0),
-    construct_initialisation_calls(ThenVarsToInit, ThenInitCalls, !ModeInfo),
-    InitedThenVars = list_to_set(ThenVarsToInit),
-    Then = append_init_calls_to_goal(InitedThenVars, ThenInitCalls, Then0),
-    instmap_set_vars_same(any_inst, ThenVarsToInit, ThenInstMap0, ThenInstMap),
-
-    ElseVarsToInit = solver_vars_to_init(EnsureInitialised, ModuleInfo,
-        ElseInstMap0),
-    construct_initialisation_calls(ElseVarsToInit, ElseInitCalls, !ModeInfo),
-    InitedElseVars = list_to_set(ElseVarsToInit),
-    Else = append_init_calls_to_goal(InitedElseVars, ElseInitCalls, Else0),
-    instmap_set_vars_same(any_inst, ElseVarsToInit, ElseInstMap0, ElseInstMap).
-
 %-----------------------------------------------------------------------------%
 %
 % Modecheck negations.
@@ -751,6 +707,7 @@ handle_solver_vars_in_ite(NonLocals, VarTypes, Then0, Then, Else0, Else,
 
 modecheck_goal_negation(SubGoal0, GoalInfo0, GoalExpr, !ModeInfo) :-
     mode_checkpoint(enter, "not", !ModeInfo),
+    mode_info_get_pred_var_multimode_map(!.ModeInfo, MultiModeMap0),
     NonLocals = goal_info_get_nonlocals(GoalInfo0),
     mode_info_get_instmap(!.ModeInfo, InstMap0),
 
@@ -758,7 +715,7 @@ modecheck_goal_negation(SubGoal0, GoalInfo0, GoalExpr, !ModeInfo) :-
     % execution after that goal), because if the goal succeeds then execution
     % will immediately backtrack. So we need to set the live variables set
     % to empty here. This allows those variables to be backtrackably
-    % destructively updated.  (If you try to do non-backtrackable destructive
+    % destructively updated. (If you try to do non-backtrackable destructive
     % update on such a variable, it will be caught later on by unique_modes.m.)
     mode_info_get_live_vars(!.ModeInfo, LiveVars0),
     mode_info_set_live_vars(bag.init, !ModeInfo),
@@ -782,6 +739,7 @@ modecheck_goal_negation(SubGoal0, GoalInfo0, GoalExpr, !ModeInfo) :-
         InPromisePurityScope = in_promise_purity_scope
     ),
     GoalExpr = negation(SubGoal),
+    mode_info_set_pred_var_multimode_map(MultiModeMap0, !ModeInfo),
     mode_checkpoint(exit, "not", !ModeInfo).
 
 %-----------------------------------------------------------------------------%
@@ -810,10 +768,12 @@ modecheck_goal_scope(Reason, SubGoal0, GoalInfo0, GoalExpr, !ModeInfo) :-
         mode_checkpoint(exit, "trace scope", !ModeInfo)
     ;
         (
-            ( Reason = exist_quant(_)
+            ( Reason = disable_warnings(_, _)
+            ; Reason = exist_quant(_)
             ; Reason = promise_solutions(_, _)
             ; Reason = require_detism(_)
             ; Reason = require_complete_switch(_)
+            ; Reason = require_switch_arms_detism(_, _)
             ; Reason = commit(_)
             ; Reason = barrier(_)
             )
@@ -925,7 +885,7 @@ modecheck_goal_scope(Reason, SubGoal0, GoalInfo0, GoalExpr, !ModeInfo) :-
     % into
     %
     %   conj(plain_conj,
-    %       scope(TermVar,
+    %       scope(CloneVar,
     %           conj(plain_conj,
     %               X1 = ...
     %               X2 = ...
@@ -984,7 +944,7 @@ modecheck_goal_make_ground_term_unique(TermVar, SubGoal0, GoalInfo0, GoalExpr,
     % We could get a more accurate new inst for TermVar by replacing
     % all the "shared" functors in TermVarOldInst with "unique".
     % However, this should be good enough. XXX wangp, is this right?
-    TermVarUniqueInst = ground(unique, none),
+    TermVarUniqueInst = ground(unique, none_or_default_func),
 
     instmap_set_var(CloneVar, TermVarOldInst, InstMap0, InstMap1),
     mode_info_set_instmap(InstMap1, !ModeInfo),
@@ -1033,8 +993,10 @@ modecheck_make_type_info_var_for_type(Type, Context, TypeInfoVar,
         PolyInfo0, PolyInfo),
 
     % Update the information in the predicate table.
-    polymorphism.poly_info_extract(PolyInfo, PredInfo0, PredInfo,
+    polymorphism.poly_info_extract(PolyInfo, PolySpecs, PredInfo0, PredInfo,
         ProcInfo2, ProcInfo, ModuleInfo1),
+    expect(unify(PolySpecs, []), $module, $pred,
+        "got errors while making type_info_var"),
     module_info_set_pred_proc_info(PredId, ProcId, PredInfo, ProcInfo,
         ModuleInfo1, ModuleInfo),
 
@@ -1086,26 +1048,26 @@ modecheck_goal_from_ground_term_scope(TermVar, SubGoal0, GoalInfo0,
             Kind = from_ground_term_deconstruct
         ;
             MaybeGroundTermMode = no,
-            (
+            ( if
                 TermVarInst = free,
                 SubGoal0 = hlds_goal(SubGoalExpr0, SubGoalInfo0),
                 SubGoalExpr0 = conj(plain_conj, SubGoalConjuncts0)
-            ->
+            then
                 % We reverse the list here for the same reason
                 % modecheck_specializable_ground_term does in the
                 % corresponding case.
                 list.reverse(SubGoalConjuncts0, SubGoalConjuncts1),
                 SubGoalExpr1 = conj(plain_conj, SubGoalConjuncts1),
                 SubGoal1 = hlds_goal(SubGoalExpr1, SubGoalInfo0)
-            ;
+            else
                 SubGoal1 = SubGoal0
             ),
             Kind = from_ground_term_other
         ),
-        ( goal_info_has_feature(GoalInfo0, feature_from_head) ->
+        ( if goal_info_has_feature(GoalInfo0, feature_from_head) then
             attach_features_to_all_goals([feature_from_head],
                 attach_in_from_ground_term, SubGoal1, SubGoal2)
-        ;
+        else
             SubGoal2 = SubGoal1
         ),
         mode_checkpoint(enter, "scope", !ModeInfo),
@@ -1124,7 +1086,7 @@ modecheck_goal_from_ground_term_scope(TermVar, SubGoal0, GoalInfo0,
 modecheck_specializable_ground_term(SubGoal, TermVar, TermVarInst,
         MaybeGroundTermMode) :-
     SubGoal = hlds_goal(SubGoalExpr, SubGoalInfo),
-    (
+    ( if
         NonLocals = goal_info_get_nonlocals(SubGoalInfo),
         set_of_var.is_singleton(NonLocals, TermVar),
         goal_info_get_purity(SubGoalInfo) = purity_pure,
@@ -1134,8 +1096,8 @@ modecheck_specializable_ground_term(SubGoal, TermVar, TermVarInst,
         % to contain a unification other than one involving TermVar.
         UnifyTermGoal ^ hlds_goal_expr = unify(TermVar, _, _, _, _),
         all_plain_construct_unifies([UnifyTermGoal | UnifyArgGoals])
-    ->
-        ( TermVarInst = free ->
+    then
+        ( if TermVarInst = free then
             % UnifyTerGoalm unifies TermVar with the arguments created
             % by UnifyArgGoals. Since TermVar is now free and the
             % argument variables haven't been encountered yet,
@@ -1148,13 +1110,13 @@ modecheck_specializable_ground_term(SubGoal, TermVar, TermVarInst,
 
             list.reverse([UnifyTermGoal | UnifyArgGoals], RevConj),
             MaybeGroundTermMode = yes(construct_ground_term(RevConj))
-        ; TermVarInst = ground(shared, none) ->
+        else if TermVarInst = ground(shared, none_or_default_func) then
             Conj = [UnifyTermGoal | UnifyArgGoals],
             MaybeGroundTermMode = yes(deconstruct_ground_term(Conj))
-        ;
+        else
             MaybeGroundTermMode = no
         )
-    ;
+    else
         MaybeGroundTermMode = no
     ).
 
@@ -1164,7 +1126,7 @@ all_plain_construct_unifies([]).
 all_plain_construct_unifies([Goal | Goals]) :-
     Goal = hlds_goal(GoalExpr, _),
     GoalExpr = unify(_LHSVar, RHS, _, _, _),
-    RHS = rhs_functor(_ConsId, no, _RHSVars),
+    RHS = rhs_functor(_ConsId, is_not_exist_constr, _RHSVars),
     all_plain_construct_unifies(Goals).
 
 :- pred modecheck_ground_term_construct(prog_var::in, list(hlds_goal)::in,
@@ -1203,10 +1165,10 @@ modecheck_ground_term_construct_goal_loop(_, [], [], !LocalVarMap).
 modecheck_ground_term_construct_goal_loop(VarSet,
         [Goal0 | Goals0], [Goal | Goals], !LocalVarMap) :-
     Goal0 = hlds_goal(GoalExpr0, GoalInfo0),
-    (
+    ( if
         GoalExpr0 = unify(LHSVar, RHS, _, _, UnifyContext),
-        RHS = rhs_functor(ConsId, no, RHSVars)
-    ->
+        RHS = rhs_functor(ConsId, is_not_exist_constr, RHSVars)
+    then
         % We could set TermInst to simply to ground, as opposed to the inst
         % we now use which gives information about LHSVar's shape. This would
         % remove the need for the inst information in !LocalVarMap, and
@@ -1214,16 +1176,16 @@ modecheck_ground_term_construct_goal_loop(VarSet,
         % quadratic. However, due to structure sharing, the actual memory
         % requirements of these bound insts are only linear in the size of the
         % term.
-        modecheck_ground_term_construct_arg_loop(RHSVars, ArgInsts, UniModes,
+        modecheck_ground_term_construct_arg_loop(RHSVars, ArgInsts, ArgModes,
             !LocalVarMap),
         BoundInst = bound_functor(ConsId, ArgInsts),
         TermInst = bound(shared, inst_test_results_fgtc, [BoundInst]),
-        LHSMode = (free -> TermInst),
-        RHSMode = (TermInst -> TermInst),
-        UnifyMode = LHSMode - RHSMode,
+        LHSFromToInsts = from_to_insts(free, TermInst),
+        RHSFromToInsts = from_to_insts(TermInst, TermInst),
+        UnifyMode = unify_modes_lhs_rhs(LHSFromToInsts, RHSFromToInsts),
         ConstructHow = construct_statically,
         Uniqueness = cell_is_shared,
-        Unification = construct(LHSVar, ConsId, RHSVars, UniModes,
+        Unification = construct(LHSVar, ConsId, RHSVars, ArgModes,
             ConstructHow, Uniqueness, no_construct_sub_info),
         GoalExpr = unify(LHSVar, RHS, UnifyMode, Unification, UnifyContext),
         InstMapDelta = instmap_delta_from_assoc_list([LHSVar - TermInst]),
@@ -1235,19 +1197,19 @@ modecheck_ground_term_construct_goal_loop(VarSet,
 
         LHSVarInfo = construct_var_info(TermInst),
         map.det_insert(LHSVar, LHSVarInfo, !LocalVarMap)
-    ;
+    else
         unexpected($module, $pred, "not rhs_functor unify")
     ),
     modecheck_ground_term_construct_goal_loop(VarSet, Goals0, Goals,
         !LocalVarMap).
 
 :- pred modecheck_ground_term_construct_arg_loop(list(prog_var)::in,
-    list(mer_inst)::out, list(uni_mode)::out,
+    list(mer_inst)::out, list(unify_mode)::out,
     construct_var_info_map::in, construct_var_info_map::out) is det.
 
 modecheck_ground_term_construct_arg_loop([], [], [], !LocalVarMap).
 modecheck_ground_term_construct_arg_loop([Var | Vars], [VarInst | VarInsts],
-        [UniMode | UniModes], !LocalVarMap) :-
+        [ArgMode | ArgModes], !LocalVarMap) :-
     % Each variable introduced by the superhomogeneous transformation
     % for a ground term appears in the from_ground_term scope exactly twice.
     % Once when it is produced (which is handled in the goal loop predicate),
@@ -1257,12 +1219,10 @@ modecheck_ground_term_construct_arg_loop([Var | Vars], [VarInst | VarInsts],
     % from LocalVarMap. This greatly reduces the size of LocalVarMap.
     map.det_remove(Var, VarInfo, !LocalVarMap),
     VarInfo = construct_var_info(VarInst),
-    LHSOldInst = free,
-    RHSOldInst = VarInst,
-    LHSNewInst = VarInst,
-    RHSNewInst = VarInst,
-    UniMode = ((LHSOldInst - RHSOldInst) -> (LHSNewInst - RHSNewInst)),
-    modecheck_ground_term_construct_arg_loop(Vars, VarInsts, UniModes,
+    LHSFromToInsts = from_to_insts(free, VarInst),
+    RHSFromToInsts = from_to_insts(VarInst, VarInst),
+    ArgMode = unify_modes_lhs_rhs(LHSFromToInsts, RHSFromToInsts),
+    modecheck_ground_term_construct_arg_loop(Vars, VarInsts, ArgModes,
         !LocalVarMap).
 
 %-----------------------------------------------------------------------------%
@@ -1315,7 +1275,8 @@ modecheck_goal_generic_call(GenericCall, Args0, Modes0, GoalInfo0, GoalExpr,
     mode_checkpoint(enter, "generic_call", !ModeInfo),
     mode_info_get_instmap(!.ModeInfo, InstMap0),
 
-    hlds_goal.generic_call_id(GenericCall, CallId),
+    hlds_goal.generic_call_to_id(GenericCall, GenericCallId),
+    CallId = generic_call_id(GenericCallId),
     mode_info_set_call_context(call_context_call(CallId), !ModeInfo),
     (
         GenericCall = higher_order(PredVar, _, PredOrFunc, _),
@@ -1338,9 +1299,9 @@ modecheck_goal_generic_call(GenericCall, Args0, Modes0, GoalInfo0, GoalExpr,
         mode_info_get_module_info(!.ModeInfo, ModuleInfo),
         module_info_get_event_set(ModuleInfo, EventSet),
         EventSpecMap = EventSet ^ event_set_spec_map,
-        ( event_arg_modes(EventSpecMap, EventName, ModesPrime) ->
+        ( if event_arg_modes(EventSpecMap, EventName, ModesPrime) then
             Modes = ModesPrime
-        ;
+        else
             % The typechecker should have caught the unknown event,
             % and not let compilation of this predicate proceed any further.
             unexpected($module, $pred, "unknown event")
@@ -1350,17 +1311,17 @@ modecheck_goal_generic_call(GenericCall, Args0, Modes0, GoalInfo0, GoalExpr,
             detism_det)
     ;
         GenericCall = cast(_CastType),
-        (
+        ( if
             goal_info_has_feature(GoalInfo0, feature_keep_constant_binding),
             mode_info_get_instmap(!.ModeInfo, InstMap),
-            (
+            ( if
                 Args0 = [Arg1Prime, _Arg2Prime],
                 Modes0 = [Mode1Prime, Mode2Prime]
-            ->
+            then
                 Arg1 = Arg1Prime,
                 Mode1 = Mode1Prime,
                 Mode2 = Mode2Prime
-            ;
+            else
                 unexpected($module, $pred, "bad cast")
             ),
             Mode1 = in_mode,
@@ -1377,12 +1338,12 @@ modecheck_goal_generic_call(GenericCall, Args0, Modes0, GoalInfo0, GoalExpr,
             ConsTagValues = Body ^ du_type_cons_tag_values,
             map.lookup(ConsTagValues, ConsId, ConsTag),
             ConsTag = shared_local_tag(_, LocalTag)
-        ->
-            BoundInst = bound_functor(int_const(LocalTag), []),
-            NewMode2 =
-                (free -> bound(Unique, inst_test_results_fgtc, [BoundInst])),
+        then
+            BoundFunctor = bound_functor(int_const(LocalTag), []),
+            BoundInst = bound(Unique, inst_test_results_fgtc, [BoundFunctor]),
+            NewMode2 = from_to_mode(free, BoundInst),
             Modes = [Mode1, NewMode2]
-        ;
+        else
             Modes = Modes0
         ),
         modecheck_builtin_cast(Modes, Args0, Args, Det, ExtraGoals, !ModeInfo),
@@ -1420,7 +1381,7 @@ modecheck_goal_unify(LHS0, RHS0, Unification0, UnifyContext, GoalInfo0,
 
 :- pred modecheck_goal_call_foreign_proc(pragma_foreign_proc_attributes::in,
     pred_id::in, proc_id::in, list(foreign_arg)::in, list(foreign_arg)::in,
-    maybe(trace_expr(trace_runtime))::in, pragma_foreign_code_impl::in,
+    maybe(trace_expr(trace_runtime))::in, pragma_foreign_proc_impl::in,
     hlds_goal_info::in, hlds_goal_expr::out,
     mode_info::in, mode_info::out) is det.
 
@@ -1470,6 +1431,7 @@ modecheck_goal_shorthand(ShortHand0, GoalInfo0, GoalExpr, !ModeInfo) :-
         % These calls are removed when atomic goals are expanded.
 
         mode_checkpoint(enter, "atomic", !ModeInfo),
+        mode_info_get_pred_var_multimode_map(!.ModeInfo, MultiModeMap0),
         AtomicGoalList0 = [MainGoal0 | OrElseGoals0],
         NonLocals = goal_info_get_nonlocals(GoalInfo0),
 
@@ -1480,15 +1442,11 @@ modecheck_goal_shorthand(ShortHand0, GoalInfo0, GoalExpr, !ModeInfo) :-
         % inner variables are enforced by these calls anyway.
 
         % mode_info_lock_vars(var_lock_atomic_goal, OuterVars, !ModeInfo),
-        modecheck_orelse_list(AtomicGoalList0, AtomicGoalList1, InstMapList0,
-            !ModeInfo),
+        modecheck_orelse_list(MultiModeMap0, AtomicGoalList0, AtomicGoalList,
+            InstMapList, !ModeInfo),
         mode_info_get_var_types(!.ModeInfo, VarTypes),
         % mode_info_unlock_vars(var_lock_atomic_goal, OuterVars, !ModeInfo),
 
-        % XXX STM: Handling of solver vars
-        handle_solver_vars_in_disjs(set_of_var.to_sorted_list(NonLocals),
-            VarTypes, AtomicGoalList1, AtomicGoalList, InstMapList0,
-            InstMapList, !ModeInfo),
         MainGoal = list.det_head(AtomicGoalList),
         OrElseGoals = list.det_tail(AtomicGoalList),
 
@@ -1506,17 +1464,17 @@ modecheck_goal_shorthand(ShortHand0, GoalInfo0, GoalExpr, !ModeInfo) :-
         Outer = atomic_interface_vars(OuterDI, OuterUO),
         lookup_var_type(VarTypes, OuterDI, OuterDIType),
         lookup_var_type(VarTypes, OuterUO, OuterUOType),
-        (
+        ( if
             ( OuterDIType = io_state_type
             ; OuterDIType = io_io_type
             )
-        ->
+        then
             GoalType = top_level_atomic_goal
-        ;
+        else if
             OuterDIType = stm_atomic_type
-        ->
+        then
             GoalType = nested_atomic_goal
-        ;
+        else
             unexpected($module, $pred, "atomic_goal: invalid outer var type")
         ),
 
@@ -1538,7 +1496,9 @@ modecheck_goal_shorthand(ShortHand0, GoalInfo0, GoalExpr, !ModeInfo) :-
     ;
         ShortHand0 = try_goal(MaybeIO, ResultVar, SubGoal0),
         mode_checkpoint(enter, "try", !ModeInfo),
-        modecheck_goal(SubGoal0, SubGoal, !ModeInfo),
+        mode_info_get_pred_var_multimode_map(!.ModeInfo, MultiModeMap0),
+         modecheck_goal(SubGoal0, SubGoal, !ModeInfo),
+        mode_info_set_pred_var_multimode_map(MultiModeMap0, !ModeInfo),
         ShortHand = try_goal(MaybeIO, ResultVar, SubGoal),
         GoalExpr = shorthand(ShortHand),
         mode_checkpoint(exit, "try", !ModeInfo)
@@ -1548,17 +1508,19 @@ modecheck_goal_shorthand(ShortHand0, GoalInfo0, GoalExpr, !ModeInfo) :-
         unexpected($module, $pred, "bi_implication")
     ).
 
-:- pred modecheck_orelse_list(list(hlds_goal)::in, list(hlds_goal)::out,
-    list(instmap)::out, mode_info::in, mode_info::out) is det.
+:- pred modecheck_orelse_list(pred_var_multimode_map::in,
+    list(hlds_goal)::in, list(hlds_goal)::out, list(instmap)::out,
+    mode_info::in, mode_info::out) is det.
 
-modecheck_orelse_list([], [], [], !ModeInfo).
-modecheck_orelse_list([Goal0 | Goals0], [Goal | Goals], [InstMap | InstMaps],
-        !ModeInfo) :-
+modecheck_orelse_list(_, [], [], [], !ModeInfo).
+modecheck_orelse_list(MultiModeMap0, [Goal0 | Goals0], [Goal | Goals],
+        [InstMap | InstMaps], !ModeInfo) :-
+    mode_info_set_pred_var_multimode_map(MultiModeMap0, !ModeInfo),
     mode_info_get_instmap(!.ModeInfo, InstMap0),
     modecheck_goal(Goal0, Goal, !ModeInfo),
     mode_info_get_instmap(!.ModeInfo, InstMap),
     mode_info_set_instmap(InstMap0, !ModeInfo),
-    modecheck_orelse_list(Goals0, Goals, InstMaps, !ModeInfo).
+    modecheck_orelse_list(MultiModeMap0, Goals0, Goals, InstMaps, !ModeInfo).
 
 %-----------------------------------------------------------------------------%
 %
@@ -1576,90 +1538,21 @@ modecheck_orelse_list([Goal0 | Goals0], [Goal | Goals], [InstMap | InstMaps],
 check_no_inst_any_vars(_, [], _, _, !ModeInfo).
 check_no_inst_any_vars(NegCtxtDesc, [NonLocal | NonLocals], InstMap0, InstMap,
         !ModeInfo) :-
-    (
+    ( if
         ( instmap_lookup_var(InstMap0, NonLocal, Inst)
         ; instmap_lookup_var(InstMap,  NonLocal, Inst)
         ),
         mode_info_get_module_info(!.ModeInfo, ModuleInfo),
         inst_contains_any(ModuleInfo, Inst)
-    ->
+    then
         WaitingVars = set_of_var.make_singleton(NonLocal),
         ModeError = purity_error_should_be_in_promise_purity_scope(NegCtxtDesc,
             NonLocal),
         mode_info_error(WaitingVars, ModeError, !ModeInfo)
-    ;
+    else
         check_no_inst_any_vars(NegCtxtDesc, NonLocals, InstMap0, InstMap,
             !ModeInfo)
     ).
-
-:- func solver_vars_that_must_be_initialised(list(prog_var),
-    vartypes, module_info, list(instmap)) = list(prog_var).
-
-solver_vars_that_must_be_initialised(Vars, VarTypes, ModuleInfo, InstMaps) =
-    list.filter(
-        solver_var_must_be_initialised(VarTypes, ModuleInfo, InstMaps),
-        Vars).
-
-:- pred solver_var_must_be_initialised(vartypes::in, module_info::in,
-    list(instmap)::in, prog_var::in) is semidet.
-
-solver_var_must_be_initialised(VarTypes, ModuleInfo, InstMaps, Var) :-
-    lookup_var_type(VarTypes, Var, VarType),
-    type_is_solver_type_with_auto_init(ModuleInfo, VarType),
-    list.member(InstMap, InstMaps),
-    instmap_lookup_var(InstMap, Var, Inst),
-    not inst_match.inst_is_free(ModuleInfo, Inst).
-
-:- pred add_necessary_disj_init_calls(list(hlds_goal)::in,
-    list(hlds_goal)::out, list(instmap)::in, list(instmap)::out,
-    list(prog_var)::in, mode_info::in, mode_info::out) is det.
-
-add_necessary_disj_init_calls([], [], [], [], _EnsureInitialised, !ModeInfo).
-add_necessary_disj_init_calls([], _, [_ | _], _, _, _, _) :-
-    unexpected($module, $pred, "mismatched lists").
-add_necessary_disj_init_calls([_ | _], _, [], _, _, _, _) :-
-    unexpected($module, $pred, "mismatched lists").
-add_necessary_disj_init_calls([Goal0 | Goals0], [Goal | Goals],
-        [InstMap0 | InstMaps0], [InstMap | InstMaps],
-        EnsureInitialised, !ModeInfo) :-
-    mode_info_get_module_info(!.ModeInfo, ModuleInfo),
-    VarsToInit = solver_vars_to_init(EnsureInitialised, ModuleInfo, InstMap0),
-    construct_initialisation_calls(VarsToInit, InitCalls, !ModeInfo),
-    InitedVars = list_to_set(VarsToInit),
-    Goal = append_init_calls_to_goal(InitedVars, InitCalls, Goal0),
-    instmap_set_vars_same(any_inst, VarsToInit, InstMap0, InstMap),
-    add_necessary_disj_init_calls(Goals0, Goals, InstMaps0, InstMaps,
-        EnsureInitialised, !ModeInfo).
-
-:- func append_init_calls_to_goal(set_of_progvar, list(hlds_goal), hlds_goal) =
-        hlds_goal.
-
-append_init_calls_to_goal(InitedVars, InitCalls, Goal0) = Goal :-
-    Goal0 = hlds_goal(GoalExpr0, GoalInfo0),
-    NonLocals0 = goal_info_get_nonlocals(GoalInfo0),
-    set_of_var.union(InitedVars, NonLocals0, NonLocals),
-    goal_info_set_nonlocals(NonLocals, GoalInfo0, GoalInfo),
-    ( GoalExpr0 = disj(Disjs0) ->
-        Disjs = list.map(append_init_calls_to_goal(InitedVars, InitCalls),
-            Disjs0),
-        Goal = hlds_goal(disj(Disjs), GoalInfo)
-    ;
-        goal_to_conj_list(Goal0, Conjs),
-        conj_list_to_goal(Conjs ++ InitCalls, GoalInfo, Goal)
-    ).
-
-:- func solver_vars_to_init(list(prog_var), module_info, instmap) =
-    list(prog_var).
-
-solver_vars_to_init(Vars, ModuleInfo, InstMap) =
-    list.filter(solver_var_to_init(ModuleInfo, InstMap), Vars).
-
-:- pred solver_var_to_init(module_info::in, instmap::in, prog_var::in)
-    is semidet.
-
-solver_var_to_init(ModuleInfo, InstMap, Var) :-
-    instmap_lookup_var(InstMap, Var, Inst),
-    inst_match.inst_is_free(ModuleInfo, Inst).
 
 %-----------------------------------------------------------------------------%
 :- end_module check_hlds.modecheck_goal.

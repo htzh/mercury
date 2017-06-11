@@ -69,17 +69,6 @@
 :- pred apply_rec_subst_to_type_list(tsubst::in,
     list(mer_type)::in, list(mer_type)::out) is det.
 
-%---------%
-
-:- pred apply_variable_renaming_to_vartypes(tvar_renaming::in,
-    vartypes::in, vartypes::out) is det.
-
-:- pred apply_subst_to_vartypes(tsubst::in, vartypes::in, vartypes::out)
-    is det.
-
-:- pred apply_rec_subst_to_vartypes(tsubst::in, vartypes::in, vartypes::out)
-    is det.
-
 %-----------------------------------------------------------------------------%
 %
 % Utility predicates dealing with typeclass constraints.
@@ -122,7 +111,6 @@
 :- implementation.
 
 :- import_module map.
-:- import_module maybe.
 :- import_module require.
 
 %-----------------------------------------------------------------------------%
@@ -141,24 +129,24 @@ apply_variable_renaming_to_tvar_kind_map_2(Renaming, TVar0, Kind, !KindMap) :-
 %-----------------------------------------------------------------------------%
 
 apply_variable_renaming_to_tvar(Renaming, TVar0, TVar) :-
-    ( map.search(Renaming, TVar0, TVar1) ->
+    ( if map.search(Renaming, TVar0, TVar1) then
         TVar = TVar1
-    ;
+    else
         TVar = TVar0
     ).
 
 apply_subst_to_tvar(KindMap, Subst, TVar, Type) :-
-    ( map.search(Subst, TVar, Type0) ->
+    ( if map.search(Subst, TVar, Type0) then
         apply_subst_to_type(Subst, Type0, Type)
-    ;
+    else
         get_tvar_kind(KindMap, TVar, Kind),
         Type = type_variable(TVar, Kind)
     ).
 
 apply_rec_subst_to_tvar(KindMap, Subst, TVar, Type) :-
-    ( map.search(Subst, TVar, Type0) ->
+    ( if map.search(Subst, TVar, Type0) then
         apply_rec_subst_to_type(Subst, Type0, Type)
-    ;
+    else
         get_tvar_kind(KindMap, TVar, Kind),
         Type = type_variable(TVar, Kind)
     ).
@@ -189,17 +177,9 @@ apply_variable_renaming_to_type(Renaming, Type0, Type) :-
         Type0 = builtin_type(_),
         Type = Type0
     ;
-        Type0 = higher_order_type(Args0, MaybeReturn0, Purity, EvalMethod),
+        Type0 = higher_order_type(PorF, Args0, HOInstInfo, Purity, EvalMethod),
         apply_variable_renaming_to_type_list(Renaming, Args0, Args),
-        (
-            MaybeReturn0 = yes(Return0),
-            apply_variable_renaming_to_type(Renaming, Return0, Return),
-            MaybeReturn = yes(Return)
-        ;
-            MaybeReturn0 = no,
-            MaybeReturn = no
-        ),
-        Type = higher_order_type(Args, MaybeReturn, Purity, EvalMethod)
+        Type = higher_order_type(PorF, Args, HOInstInfo, Purity, EvalMethod)
     ;
         Type0 = tuple_type(Args0, Kind),
         apply_variable_renaming_to_type_list(Renaming, Args0, Args),
@@ -218,9 +198,9 @@ apply_variable_renaming_to_type(Renaming, Type0, Type) :-
 apply_subst_to_type(Subst, Type0, Type) :-
     (
         Type0 = type_variable(TVar, Kind),
-        ( map.search(Subst, TVar, Type1) ->
+        ( if map.search(Subst, TVar, Type1) then
             ensure_type_has_kind(Kind, Type1, Type)
-        ;
+        else
             Type = Type0
         )
     ;
@@ -231,17 +211,9 @@ apply_subst_to_type(Subst, Type0, Type) :-
         Type0 = builtin_type(_),
         Type = Type0
     ;
-        Type0 = higher_order_type(Args0, MaybeReturn0, Purity, EvalMethod),
+        Type0 = higher_order_type(PorF, Args0, HOInstInfo, Purity, EvalMethod),
         apply_subst_to_type_list(Subst, Args0, Args),
-        (
-            MaybeReturn0 = yes(Return0),
-            apply_subst_to_type(Subst, Return0, Return),
-            MaybeReturn = yes(Return)
-        ;
-            MaybeReturn0 = no,
-            MaybeReturn = no
-        ),
-        Type = higher_order_type(Args, MaybeReturn, Purity, EvalMethod)
+        Type = higher_order_type(PorF, Args, HOInstInfo, Purity, EvalMethod)
     ;
         Type0 = tuple_type(Args0, Kind),
         apply_subst_to_type_list(Subst, Args0, Args),
@@ -249,9 +221,9 @@ apply_subst_to_type(Subst, Type0, Type) :-
     ;
         Type0 = apply_n_type(TVar, Args0, Kind),
         apply_subst_to_type_list(Subst, Args0, Args),
-        ( map.search(Subst, TVar, AppliedType) ->
+        ( if map.search(Subst, TVar, AppliedType) then
             apply_type_args(AppliedType, Args, Type)
-        ;
+        else
             Type = apply_n_type(TVar, Args, Kind)
         )
     ;
@@ -263,10 +235,10 @@ apply_subst_to_type(Subst, Type0, Type) :-
 apply_rec_subst_to_type(Subst, Type0, Type) :-
     (
         Type0 = type_variable(TVar, Kind),
-        ( map.search(Subst, TVar, Type1) ->
+        ( if map.search(Subst, TVar, Type1) then
             ensure_type_has_kind(Kind, Type1, Type2),
             apply_rec_subst_to_type(Subst, Type2, Type)
-        ;
+        else
             Type = Type0
         )
     ;
@@ -277,17 +249,9 @@ apply_rec_subst_to_type(Subst, Type0, Type) :-
         Type0 = builtin_type(_),
         Type = Type0
     ;
-        Type0 = higher_order_type(Args0, MaybeReturn0, Purity, EvalMethod),
+        Type0 = higher_order_type(PorF, Args0, HOInstInfo, Purity, EvalMethod),
         apply_rec_subst_to_type_list(Subst, Args0, Args),
-        (
-            MaybeReturn0 = yes(Return0),
-            apply_rec_subst_to_type(Subst, Return0, Return),
-            MaybeReturn = yes(Return)
-        ;
-            MaybeReturn0 = no,
-            MaybeReturn = no
-        ),
-        Type = higher_order_type(Args, MaybeReturn, Purity, EvalMethod)
+        Type = higher_order_type(PorF, Args, HOInstInfo, Purity, EvalMethod)
     ;
         Type0 = tuple_type(Args0, Kind),
         apply_rec_subst_to_type_list(Subst, Args0, Args),
@@ -295,10 +259,10 @@ apply_rec_subst_to_type(Subst, Type0, Type) :-
     ;
         Type0 = apply_n_type(TVar, Args0, Kind),
         apply_rec_subst_to_type_list(Subst, Args0, Args),
-        ( map.search(Subst, TVar, AppliedType0) ->
+        ( if map.search(Subst, TVar, AppliedType0) then
             apply_rec_subst_to_type(Subst, AppliedType0, AppliedType),
             apply_type_args(AppliedType, Args, Type)
-        ;
+        else
             Type = apply_n_type(TVar, Args, Kind)
         )
     ;
@@ -320,17 +284,6 @@ apply_rec_subst_to_type_list(Subst, Types0, Types) :-
 
 %-----------------------------------------------------------------------------%
 
-apply_variable_renaming_to_vartypes(Renaming, !VarTypes) :-
-    transform_var_types(apply_variable_renaming_to_type(Renaming), !VarTypes).
-
-apply_subst_to_vartypes(Subst, !VarTypes) :-
-    transform_var_types(apply_subst_to_type(Subst), !VarTypes).
-
-apply_rec_subst_to_vartypes(Subst, !VarTypes) :-
-    transform_var_types(apply_rec_subst_to_type(Subst), !VarTypes).
-
-%-----------------------------------------------------------------------------%
-
 :- pred apply_type_args(mer_type::in, list(mer_type)::in, mer_type::out)
     is det.
 
@@ -345,7 +298,7 @@ apply_type_args(Type0, Args, Type) :-
         Type = defined_type(Name, Args0 ++ Args, Kind)
     ;
         ( Type0 = builtin_type(_)
-        ; Type0 = higher_order_type(_, _, _, _)
+        ; Type0 = higher_order_type(_, _, _, _, _)
         ),
         (
             Args = []
@@ -384,9 +337,9 @@ apply_type_args_to_kind(Kind0, ArgTypes, Kind) :-
             unexpected($module, $pred, "too many args in apply_n")
         ;
             Kind0 = kind_arrow(KindA, KindB),
-            ( get_type_kind(HeadArgType) = KindA ->
+            ( if get_type_kind(HeadArgType) = KindA then
                 apply_type_args_to_kind(KindB, TailArgTypes, Kind)
-            ;
+            else
                 unexpected($module, $pred, "kind error in apply_n")
             )
         ;
@@ -398,9 +351,9 @@ apply_type_args_to_kind(Kind0, ArgTypes, Kind) :-
 :- pred ensure_type_has_kind(kind::in, mer_type::in, mer_type::out) is det.
 
 ensure_type_has_kind(Kind, Type0, Type) :-
-    ( get_type_kind(Type0) = Kind ->
+    ( if get_type_kind(Type0) = Kind then
         Type = Type0
-    ;
+    else
         unexpected($module, $pred, "substitution not kind preserving")
     ).
 

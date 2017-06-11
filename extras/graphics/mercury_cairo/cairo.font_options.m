@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %----------------------------------------------------------------------------%
 % Copyright (C) 2010 The University of Melbourne.
+% Copyright (C) 2017 The Mercury team.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -37,9 +38,10 @@
 
 :- type subpixel_order
     --->    subpixel_order_default
+    ;       subpixel_order_rgb
     ;       subpixel_order_bgr
     ;       subpixel_order_vrgb
-    ;       subpixel_order_vbgr.    
+    ;       subpixel_order_vbgr.
 
     % font_options.set_subpixel_order(FontOptions, SubpixelOrder, !IO):
     %
@@ -57,10 +59,10 @@
 :- type hint_style
     --->    hint_style_default
             % Use the default hint style for font backend and target device.
-            
+
     ;       hint_style_none
             % Do not hint outlines.
-            
+
     ;       hint_style_slight
             % Hint outlines slightly to improve contrast while retaining good
             % fidelity to the original shapes.
@@ -88,7 +90,7 @@
             % target device.
 
     ;       hint_metrics_off
-            % Do not hint font metric. 
+            % Do not hint font metric.
 
     ;       hint_metrics_on.
             % Hint font metrics.
@@ -110,6 +112,7 @@
 
 :- pragma foreign_enum("C", subpixel_order/0, [
     subpixel_order_default - "CAIRO_SUBPIXEL_ORDER_DEFAULT",
+    subpixel_order_rgb     - "CAIRO_SUBPIXEL_ORDER_RGB",
     subpixel_order_bgr     - "CAIRO_SUBPIXEL_ORDER_BGR",
     subpixel_order_vrgb    - "CAIRO_SUBPIXEL_ORDER_VRGB",
     subpixel_order_vbgr    - "CAIRO_SUBPIXEL_ORDER_VBGR"
@@ -148,13 +151,13 @@
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     cairo_font_options_t    *raw_copy;
-    
+
     raw_copy = cairo_font_options_copy(Orig->mcairo_raw_font_options);
     Copy = MR_GC_NEW(MCAIRO_font_options);
     Copy->mcairo_raw_font_options = raw_copy;
     MR_GC_register_finalizer(Copy, MCAIRO_finalize_font_options, 0);
 ").
-    
+
 :- pragma foreign_proc("C",
     set_antialias(FntOpts::in, AntiAlias::in, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
@@ -167,13 +170,13 @@
     get_antialias(FntOpts::in, AntiAlias::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
-    AntiAlias = 
+    AntiAlias =
         cairo_font_options_get_antialias(FntOpts->mcairo_raw_font_options);
 ").
-    
+
 :- pragma foreign_proc("C",
     set_subpixel_order(FntOpts::in, SPO::in, _IO0::di, _IO::uo),
-    [promise_pure, will_not_call_mercury, tabled_for_io], 
+    [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     cairo_font_options_set_subpixel_order(FntOpts->mcairo_raw_font_options,
         SPO);
@@ -181,7 +184,7 @@
 
 :- pragma foreign_proc("C",
     get_subpixel_order(FntOpts::in, SPO::out, _IO0::di, _IO::uo),
-    [promise_pure, will_not_call_mercury, tabled_for_io], 
+    [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     SPO = cairo_font_options_get_subpixel_order(
         FntOpts->mcairo_raw_font_options);
@@ -189,7 +192,7 @@
 
 :- pragma foreign_proc("C",
     set_hint_style(FntOpts::in, HintStyle::in, _IO0::di, _IO::uo),
-    [promise_pure, will_not_call_mercury, tabled_for_io], 
+    [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     cairo_font_options_set_hint_style(FntOpts->mcairo_raw_font_options,
         HintStyle);
@@ -197,7 +200,7 @@
 
 :- pragma foreign_proc("C",
     get_hint_style(FntOpts::in, HintStyle::out, _IO0::di, _IO::uo),
-    [promise_pure, will_not_call_mercury, tabled_for_io], 
+    [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     HintStyle = cairo_font_options_get_hint_style(
         FntOpts->mcairo_raw_font_options);
@@ -205,7 +208,7 @@
 
 :- pragma foreign_proc("C",
     set_hint_metrics(FntOpts::in, HintMetrics::in, _IO0::di, _IO::uo),
-    [promise_pure, will_not_call_mercury, tabled_for_io], 
+    [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     cairo_font_options_set_hint_metrics(FntOpts->mcairo_raw_font_options,
         HintMetrics);
@@ -213,7 +216,7 @@
 
 :- pragma foreign_proc("C",
     get_hint_metrics(FntOpts::in, HintMetrics::out, _IO0::di, _IO::uo),
-    [promise_pure, will_not_call_mercury, tabled_for_io], 
+    [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     HintMetrics = cairo_font_options_get_hint_metrics(
         FntOpts->mcairo_raw_font_options);

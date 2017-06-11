@@ -1,3 +1,7 @@
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
+%
 % Tests that abstractly_unify_bound_inst_list handles the case of
 % different length bound_inst lists where all the cons_ids are the same
 % correctly.
@@ -8,36 +12,36 @@
 
 :- interface.
 
-:- type two ---> true;false.
+:- type two
+    --->    true
+    ;       false.
 
 :- pred test is semidet.
 :- pred test2 is semidet.
 
 :- implementation.
 
-:- import_module require.
-
 test :-
-	(
-		cond(true)
-	->
-		RA = true
-	;
-		RA = false
-	),
-	(
-		cond(false)
-	->
-		RB = true
-	;
-		RB = false
-	),
-	RA = RB.
+    (
+        cond(true)
+    ->
+        RA = true
+    ;
+        RA = false
+    ),
+    (
+        cond(false)
+    ->
+        RB = true
+    ;
+        RB = false
+    ),
+    RA = RB.
 
 test2 :-
-	RA = true,
-	RB = true,
-	RA = RB.
+    RA = true,
+    RB = true,
+    RA = RB.
 
 :- pred cond(two::in) is semidet.
 

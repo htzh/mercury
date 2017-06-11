@@ -85,6 +85,9 @@
 :- import_module hlds.hlds_clauses.
 :- import_module hlds.hlds_error_util.
 :- import_module hlds.hlds_goal.
+:- import_module hlds.make_goal.
+:- import_module hlds.status.
+:- import_module hlds.vartypes.
 :- import_module parse_tree.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
@@ -236,7 +239,7 @@ ensure_unique_arguments(PredId, !ModuleInfo) :-
     clauses_info_get_headvars(ClausesInfo0, HeadVars),
 
     SeenSoFar = set_of_var.list_to_set(proc_arg_vector_to_list(HeadVars)),
-    get_clause_list(ClausesRep0, Clauses0),
+    get_clause_list_for_replacement(ClausesRep0, Clauses0),
     BodyGoals0 = list.map(func(X) = clause_body(X), Clauses0),
     list.map_foldl3(ensure_unique_arguments_in_goal, BodyGoals0, BodyGoals,
         SeenSoFar, _, VarSet0, VarSet, VarTypes0, VarTypes),
@@ -494,8 +497,8 @@ module_info_pred_status_is_imported(ModuleInfo, PredId) :-
 
     % The following used because pred_info_is_imported/2 is not
     % as comprehensive as status_is_imported/2.
-    pred_info_get_import_status(PredInfo, Status),
-    status_is_imported(Status) = yes.
+    pred_info_get_status(PredInfo, Status),
+    pred_status_is_imported(Status) = yes.
 
 %----------------------------------------------------------------------------%
 

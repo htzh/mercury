@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2008, 2010-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Authors: pbone, zs.
 %
@@ -14,7 +14,7 @@
 % This module can be compiled with the following trace flag to enable
 % debugging: debug_first_var_use. See Mercury.options in this directory.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module var_use_analysis.
 
@@ -63,7 +63,7 @@
     ;       var_use_other.
             % The variable is used in some other way.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func average_var_use(list(var_use_info)) = var_use_info.
 
@@ -75,12 +75,12 @@
 :- pred pessimistic_var_use_time(var_use_type::in, float::in, float::out)
     is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-    % call_site_dynamic_var_use_info(Deep, CSDPtr, ArgPos, RT, VarUseType,
+    % get_call_site_dynamic_var_use_info(Deep, CSDPtr, ArgNum, RT, VarUseType,
     %   MaybeVarUseInfo):
     %
-    % Lookup when the call site CSDPtr will produce ArgPos. RT is the type of
+    % Lookup when the call site CSDPtr will produce ArgNum. RT is the type of
     % recursion in the call site's parent clique and VarUseType is the type of
     % variable use that is expected, VarUseType is used to produce conservative
     % defaults if a callee cannot be analyzed.
@@ -88,15 +88,16 @@
     % The first mode avoids a check to ensure that this recursion type provides
     % enough information.
     %
-:- pred call_site_dynamic_var_use_info(call_site_dynamic_ptr, int,
+:- pred get_call_site_dynamic_var_use_info(call_site_dynamic_ptr, int,
     recursion_type, float, var_use_options, maybe_error(var_use_info)).
-:- mode call_site_dynamic_var_use_info(in, in,
+:- mode get_call_site_dynamic_var_use_info(in, in,
     in(recursion_type_known_costs), in, in, out) is det.
-:- mode call_site_dynamic_var_use_info(in, in,
+:- mode get_call_site_dynamic_var_use_info(in, in,
     in, in, in, out) is det.
 
-    % call_site_dynamic_var_use_info(Deep, CliquePtr, CSDPtr, ArgPos, RT,
-    %   MaybeCurDepth, Cost, CallStack, VarUseType, MaybeVarUseInfo).
+    % get_call_site_dynamic_var_use_info_rec_level(Deep, CliquePtr, CSDPtr,
+    %   ArgNum, RT, MaybeCurDepth, Cost, CallStack, VarUseType,
+    %   MaybeVarUseInfo).
     %
     % As above. This alternative should be used if searching starts at a
     % different recursion level or from within a current variable use analysis.
@@ -107,13 +108,13 @@
     %
     % Cost is the cost of the call.
     %
-:- pred call_site_dynamic_var_use_info(clique_ptr, call_site_dynamic_ptr,
-    int, recursion_type, maybe(recursion_depth), float, set(proc_dynamic_ptr),
-    var_use_options, maybe_error(var_use_info)).
-:- mode call_site_dynamic_var_use_info(in, in, in,
+:- pred get_call_site_dynamic_var_use_info_rec_level(clique_ptr,
+    call_site_dynamic_ptr, int, recursion_type, maybe(recursion_depth),
+    float, set(proc_dynamic_ptr), var_use_options, maybe_error(var_use_info)).
+:- mode get_call_site_dynamic_var_use_info_rec_level(in, in, in,
     in(recursion_type_known_costs), in(maybe_yes(ground)), in, in, in, out)
     is det.
-:- mode call_site_dynamic_var_use_info(in, in, in,
+:- mode get_call_site_dynamic_var_use_info_rec_level(in, in, in,
     in, in, in, in, in, out) is det.
 
 :- pred clique_var_use_info(clique_ptr::in, int::in,
@@ -125,7 +126,7 @@
     float::in, set(proc_dynamic_ptr)::in, var_use_options::in,
     maybe_error(var_use_info)::out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Find the first use of a variable in an arbitrary goal.
     %
@@ -137,7 +138,7 @@
     goal_rep(goal_id)::in, reverse_goal_path::in, float::in, var_rep::in,
     var_use_options::in, var_use_info::out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -151,10 +152,9 @@
 :- import_module io.
 :- import_module pair.
 :- import_module require.
-:- import_module solutions.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 average_var_use(Uses) = var_use_info(CostUntilUse, AvgProcCost, Type) :-
     (
@@ -170,9 +170,9 @@ average_var_use(Uses) = var_use_info(CostUntilUse, AvgProcCost, Type) :-
             ( pred(var_use_info(_, _, TypeI)::in) is semidet :-
                 Type = TypeI
             ),
-        ( all_true(TestType, Uses) ->
+        ( if all_true(TestType, Uses) then
             true
-        ;
+        else
             unexpected($module, $pred, "use types do not match")
         )
     ).
@@ -184,24 +184,24 @@ sum_use_info_costs(var_use_info(Cost, ProcCost, _), !AccCost, !AccProcCost) :-
     !:AccCost = !.AccCost + Cost,
     !:AccProcCost = !.AccProcCost + ProcCost.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 var_mode_to_var_use_type(var_mode_rep(InitialInst, FinalInst), VarUseType) :-
-    (
+    ( if
         InitialInst = ir_ground_rep,
         FinalInst = ir_ground_rep
-    ->
+    then
         VarUseType = var_use_consumption
-    ;
+    else if
         InitialInst = ir_free_rep,
         FinalInst = ir_ground_rep
-    ->
+    then
         VarUseType = var_use_production
-    ;
+    else
         VarUseType = var_use_other
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 pessimistic_var_use_info(VarUseType, ProcCost, VarUseInfo) :-
     pessimistic_var_use_time(VarUseType, ProcCost, CostUntilUse),
@@ -218,23 +218,23 @@ pessimistic_var_use_time(VarUseType, ProcCost, CostUntilUse) :-
         CostUntilUse = ProcCost
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-    % XXX: If the CSD represents a closure then the argument position will be
+get_call_site_dynamic_var_use_info(CSDPtr, ArgNum, RecursionType, Cost,
+        VarUseOptions, MaybeVarUseInfo) :-
+    % XXX If the CSD represents a closure then the argument position will be
     % incorrect. This is not currently important as we assume that the
     % compiler will not push signals and waits into higher order calls.
     % Therefore this should never be called for a higher order call site.
-    %
-call_site_dynamic_var_use_info(CSDPtr, ArgPos, RT, Cost, VarUseOptions,
-        MaybeVarUseInfo) :-
     Deep = VarUseOptions ^ vuo_deep,
     deep_lookup_call_site_dynamics(Deep, CSDPtr, CSD),
     deep_lookup_clique_index(Deep, CSD ^ csd_caller, ParentCliquePtr),
-    recursion_type_get_maybe_avg_max_depth(RT, MaybeCurDepth),
-    call_site_dynamic_var_use_info(ParentCliquePtr, CSDPtr, ArgPos, RT,
-        MaybeCurDepth, Cost, set.init, VarUseOptions, MaybeVarUseInfo).
+    recursion_type_get_maybe_avg_max_depth(RecursionType, MaybeCurDepth),
+    get_call_site_dynamic_var_use_info_rec_level(ParentCliquePtr, CSDPtr,
+        ArgNum, RecursionType, MaybeCurDepth, Cost, set.init, VarUseOptions,
+        MaybeVarUseInfo).
 
-call_site_dynamic_var_use_info(ParentCliquePtr, CSDPtr, ArgNum,
+get_call_site_dynamic_var_use_info_rec_level(ParentCliquePtr, CSDPtr, ArgNum,
         RecursionType, MaybeDepth, Cost, CallStack0, VarUseOptions,
         MaybeVarUseInfo) :-
     Deep = VarUseOptions ^ vuo_deep,
@@ -243,8 +243,8 @@ call_site_dynamic_var_use_info(ParentCliquePtr, CSDPtr, ArgNum,
         MaybeCalleeCliquePtr = yes(CalleeCliquePtr),
         % This is a non-recursive call site.
 
-        % We don't check if this call crossed a module boundary here, that's
-        % done in clique_var_use_info.
+        % We don't check if this call crossed a module boundary here,
+        % that is done in clique_var_use_info.
         clique_var_use_info(CalleeCliquePtr, ArgNum, VarUseOptions,
             MaybeVarUseInfo)
     ;
@@ -253,17 +253,19 @@ call_site_dynamic_var_use_info(ParentCliquePtr, CSDPtr, ArgNum,
 
         deep_lookup_call_site_dynamics(Deep, CSDPtr, CSD),
         CalleePDPtr = CSD ^ csd_callee,
-        ( not intermodule_var_use_should_follow_csd(VarUseOptions, CSDPtr) ->
+        ( if
+            not intermodule_var_use_should_follow_csd(VarUseOptions, CSDPtr)
+        then
             % Don't follow this call across module boundaries.
             pessimistic_var_use_info(VarUseOptions ^ vuo_var_use_type, Cost,
                 VarUseInfo),
             MaybeVarUseInfo = ok(VarUseInfo)
-        ; member(CalleePDPtr, CallStack0) ->
+        else if set.member(CalleePDPtr, CallStack0) then
             % Return a first use time of 1.0. This is used by the formula
             % below.
             MaybeVarUseInfo = ok(var_use_info(1.0, Cost,
                 VarUseOptions ^ vuo_var_use_type))
-        ;
+        else
             (
                 MaybeDepth = yes(Depth0),
                 recursion_depth_descend(Depth0, Depth),
@@ -319,7 +321,7 @@ clique_var_use_info(CliquePtr, ArgNum, VarUseOptions, MaybeVarUseInfo) :-
     (
         MaybeFirstProc = yes(FirstPDPtr),
         VarUseType = VarUseOptions ^ vuo_var_use_type,
-        ( intermodule_var_use_should_follow_csd(VarUseOptions, CSDPtr) ->
+        ( if intermodule_var_use_should_follow_csd(VarUseOptions, CSDPtr) then
             create_clique_recursion_costs_report(Deep, CliquePtr,
                 MaybeRecursionReport),
             (
@@ -334,7 +336,7 @@ clique_var_use_info(CliquePtr, ArgNum, VarUseOptions, MaybeVarUseInfo) :-
                     RecursionType = rt_not_recursive,
                     recursion_type_get_maybe_avg_max_depth(RecursionType,
                         yes(Depth)),
-                    % XXX: This shouldn't need the recursion information
+                    % XXX This shouldn't need the recursion information
                     % anymore.
                     proc_dynamic_var_use_info(CliquePtr, FirstPDPtr,
                         ArgNum, RecursionType, Depth, Cost, set.init,
@@ -370,7 +372,7 @@ clique_var_use_info(CliquePtr, ArgNum, VarUseOptions, MaybeVarUseInfo) :-
                 pessimistic_var_use_info(VarUseType, Cost, VarUseInfo),
                 MaybeVarUseInfo = ok(VarUseInfo)
             )
-        ;
+        else
             pessimistic_var_use_info(VarUseType, Cost, VarUseInfo),
             MaybeVarUseInfo = ok(VarUseInfo)
         )
@@ -519,12 +521,12 @@ prepare_for_proc_var_first_use(CliquePtr, PDPtr, ArgNum, RecursionType, Depth,
         MaybeProcrep = ok(ProcRep),
         ProcDefn = ProcRep ^ pr_defn,
         HeadVars = ProcDefn ^ pdr_head_vars,
-        ( index0(HeadVars, ArgNum, head_var_rep(Var, Mode)) ->
+        ( if index0(HeadVars, ArgNum, head_var_rep(Var, Mode)) then
             var_mode_to_var_use_type(Mode, ComputedUse),
             VarUseType = VarUseOptions ^ vuo_var_use_type,
-            ( VarUseType = ComputedUse ->
+            ( if VarUseType = ComputedUse then
                 true
-            ;
+            else
                 PDPtr = proc_dynamic_ptr(PDNum),
                 string.format(
                     "Var uses do not match, passed: %s calculated from "
@@ -570,7 +572,7 @@ prepare_for_proc_var_first_use(CliquePtr, PDPtr, ArgNum, RecursionType, Depth,
             Info = proc_var_first_use_prepared_info(Goal, LastGoalId,
                 ContainingGoalMap, CoverageArray, CallSiteCostMap,
                 RecursiveCallSiteCostMap, Var)
-        ;
+        else
             PDPtr = proc_dynamic_ptr(PDNum),
             string.format(
                 "proc_dynamic_var_use_info: ArgNum %d out of range for PD %d",
@@ -582,9 +584,9 @@ prepare_for_proc_var_first_use(CliquePtr, PDPtr, ArgNum, RecursionType, Depth,
         Info = error(Error)
     ).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% The actual first use analyais code.
+% The actual first use analysis code.
 %
 % Any changes here should be reflected in the recursion and base case specific
 % versions of this code below.
@@ -677,7 +679,7 @@ goal_var_first_use(RevGoalPath, Goal, StaticInfo, !CostSoFar, FoundFirstUse) :-
     Goal = goal_rep(GoalExpr, Detism, _),
     CoverageArray = StaticInfo ^ fui_coverage_array,
     Coverage = get_goal_attribute_det(CoverageArray, Goal ^ goal_annotation),
-    (
+    ( if
         % Do not bother exploring this goal if it is never entered. Or never
         % finishes and we're looking for a production.
         (
@@ -693,9 +695,9 @@ goal_var_first_use(RevGoalPath, Goal, StaticInfo, !CostSoFar, FoundFirstUse) :-
                 get_coverage_after(Coverage, 0)
             )
         )
-    ->
+    then
         FoundFirstUse = have_not_found_first_use
-    ;
+    else
         (
             GoalExpr = conj_rep(Conjuncts),
             conj_var_first_use(RevGoalPath, 1, Conjuncts, StaticInfo,
@@ -775,14 +777,14 @@ call_var_first_use(AtomicGoal, BoundVars, RevGoalPath, StaticInfo,
     map.lookup(CostMap, RevGoalPath, CostAndCallees),
 
     % Get the cost of the call.
-    ( cost_and_callees_is_recursive(CliquePtr, CostAndCallees) ->
+    ( if cost_and_callees_is_recursive(CliquePtr, CostAndCallees) then
         map.lookup(RecCostMap, RevGoalPath, Cost0)
-    ;
+    else
         Cost0 = CostAndCallees ^ cac_cost
     ),
-    ( cs_cost_get_calls(Cost0) = 0.0 ->
+    ( if cs_cost_get_calls(Cost0) = 0.0 then
         Cost = 0.0
-    ;
+    else
         Cost = cs_cost_get_percall(Cost0)
     ),
     !:CostSoFar = !.CostSoFar + Cost,
@@ -798,70 +800,69 @@ call_var_first_use(AtomicGoal, BoundVars, RevGoalPath, StaticInfo,
         ),
         Vars = [HOVar | Args]
     ),
-    ( list.member(Var, Vars) ->
-        solutions((pred(TimeI::out) is nondet :-
-                (
-                    consume_ho_arg(AtomicGoal, Var, TimeI)
-                ;
-                    call_args_first_use(Args, Cost, StaticInfo,
-                        CostAndCallees, TimeI)
-                )
-            ), Times),
+    ( if list.member(Var, Vars) then
         (
-            Times = [],
-            unexpected($module, $pred,
-                "no solutions for variable first use time")
+            ( AtomicGoal = higher_order_call_rep(_, _)
+            ; AtomicGoal = method_call_rep(_, _, _)
+            ),
+            % Conservative assumption, but we *could* do better, since we
+            % can find out what procedures are actually called at this call
+            % site.
+            FirstTime = 0.0
         ;
-            Times = [FirstTime | OtherTimes],
-            FoundFirstUse = found_first_use(FirstTime + CostBefore),
+            AtomicGoal = plain_call_rep(_, _, _),
+            call_args_first_use(Args, Cost, StaticInfo, CostAndCallees, Times),
             (
-                VarUseType = var_use_production
-            =>
-                OtherTimes = []
-            ->
-                true
-            ;
+                Times = [],
                 unexpected($module, $pred,
-                    "multiple solutions for variable production time")
+                    "no solutions for variable first use time")
+            ;
+                Times = [FirstTime | LaterTimes],
+                ( if
+                    VarUseType = var_use_production,
+                    LaterTimes = [_ | _]
+                then
+                    unexpected($module, $pred,
+                        "multiple solutions for variable production time")
+                else
+                    true
+                )
             )
         ),
 
-        % Assertion
-        (
-            VarUseType = var_use_production
-        =>
-            list.member(Var, BoundVars)
-        ->
-            true
-        ;
+        FoundFirstUse = found_first_use(CostBefore + FirstTime),
+
+        % Assertions.
+        ( if
+            VarUseType = var_use_production,
+            not list.member(Var, BoundVars)
+        then
             unexpected($module, $pred,
                 "a bound var must be produced by a call if it is an argument.")
-        ),
-        (
-            VarUseType = var_use_consumption
-        =>
-            not member(Var, BoundVars)
-        ->
+        else
             true
-        ;
+        ),
+        ( if
+            VarUseType = var_use_consumption,
+            list.member(Var, BoundVars)
+        then
             unexpected($module, $pred,
                 "a consumed var must not be mentioned in BoundVars")
-        ),
-        (
-            VarUseType = var_use_production
-        =>
-            not (
-                ( AtomicGoal = higher_order_call_rep(Var, _)
-                ; AtomicGoal = method_call_rep(Var, _, _)
-                )
-            )
-        ->
+        else
             true
-        ;
+        ),
+        ( if
+            VarUseType = var_use_production,
+            ( AtomicGoal = higher_order_call_rep(Var, _)
+            ; AtomicGoal = method_call_rep(Var, _, _)
+            )
+        then
             unexpected($module, $pred,
                 "a HO call site cannot produce its own HO value")
+        else
+            true
         )
-    ;
+    else
         FoundFirstUse = have_not_found_first_use
     ).
 
@@ -873,34 +874,30 @@ consume_ho_arg(method_call_rep(Var, _, _), Var, 0.0).
 
 :- pred call_args_first_use(list(var_rep)::in, float::in,
     var_first_use_static_info::in(var_first_use_static_info),
-    cost_and_callees::in, float::out) is nondet.
+    cost_and_callees::in, list(float)::out) is det.
 
-call_args_first_use(Args, Cost, StaticInfo, CostAndCallees, Time) :-
+call_args_first_use(Args, Cost, StaticInfo, CostAndCallees, Times) :-
     StaticInfo = var_first_use_static_info(CliquePtr, _CostMap,
         _RecCostMap, _ContainingGoalMap, _CoverageArray, Var, VarUseOptions,
         CallStack, RecursionType, CurDepth, _RecInfo),
     VarUseType = VarUseOptions ^ vuo_var_use_type,
     HigherOrder = CostAndCallees ^ cac_call_site_is_ho,
-    Callees = CostAndCallees ^ cac_callees,
-    member_index0(Var, Args, ArgNum),
     (
         HigherOrder = first_order_call,
-        ( empty(Callees) ->
-            % There are no callees, this code is never called.
-            pessimistic_var_use_time(VarUseType, Cost, Time)
-        ; is_singleton(Callees, SingletonCallee) ->
+        Callees = CostAndCallees ^ cac_callees,
+        list.member_indexes0(Var, Args, ArgNums),
+        ( if set.empty(Callees) then
+            % There are no callees; this code is never called.
+            pessimistic_var_use_time(VarUseType, Cost, Time),
+            Times = [Time]
+        else if set.is_singleton(Callees, SingletonCallee) then
             CSDPtr = SingletonCallee ^ c_csd,
-            call_site_dynamic_var_use_info(CliquePtr, CSDPtr,
-                ArgNum, RecursionType, yes(CurDepth), Cost, CallStack,
-                VarUseOptions, MaybeVarUseInfo),
-            (
-                MaybeVarUseInfo = ok(VarUseInfo),
-                VarUseInfo = var_use_info(Time, _, _)
-            ;
-                MaybeVarUseInfo = error(_),
-                pessimistic_var_use_time(VarUseType, Cost, Time)
-            )
-        ;
+            list.map(
+                get_call_site_dynamic_var_use_time(CliquePtr, CSDPtr,
+                    RecursionType, CurDepth, Cost, CallStack, VarUseOptions),
+                ArgNums, Times0),
+            list.sort_and_remove_dups(Times0, Times)
+        else
             unexpected($module, $pred,
                 "wrong number of callees for normal call site")
         )
@@ -908,6 +905,27 @@ call_args_first_use(Args, Cost, StaticInfo, CostAndCallees, Time) :-
         HigherOrder = higher_order_call,
         % The compiler cannot push signals or waits into higher order calls.
         % Therefore we assume a pessimistic default here.
+        pessimistic_var_use_time(VarUseType, Cost, Time),
+        Times = [Time]
+    ).
+
+:- pred get_call_site_dynamic_var_use_time(clique_ptr::in,
+    call_site_dynamic_ptr::in, recursion_type::in,
+    recursion_depth::in, float::in, set(proc_dynamic_ptr)::in,
+    var_use_options::in, int::in, float::out) is det.
+
+get_call_site_dynamic_var_use_time(CliquePtr, CSDPtr,
+        RecursionType, CurDepth, Cost, CallStack,
+        VarUseOptions, ArgNum, Time) :-
+    get_call_site_dynamic_var_use_info_rec_level(CliquePtr, CSDPtr,
+        ArgNum, RecursionType, yes(CurDepth), Cost, CallStack,
+        VarUseOptions, MaybeVarUseInfo),
+    (
+        MaybeVarUseInfo = ok(VarUseInfo),
+        VarUseInfo = var_use_info(Time, _, _)
+    ;
+        MaybeVarUseInfo = error(_),
+        VarUseType = VarUseOptions ^ vuo_var_use_type,
         pessimistic_var_use_time(VarUseType, Cost, Time)
     ).
 
@@ -932,19 +950,19 @@ atomic_trivial_var_first_use(AtomicGoal, BoundVars, CostSoFar, StaticInfo,
     Var = StaticInfo ^ fui_var,
     VarUseType = StaticInfo ^ fui_var_use_opts ^ vuo_var_use_type,
     atomic_goal_get_vars(AtomicGoal, Vars),
-    (
-        member(Var, Vars),
+    ( if
+        set.member(Var, Vars),
         (
             VarUseType = var_use_consumption
         ;
             VarUseType = var_use_production,
-            member(Var, BoundVars)
+            list.member(Var, BoundVars)
         ;
             VarUseType = var_use_other
         )
-    ->
+    then
         FoundFirstUse = found_first_use(CostSoFar)
-    ;
+    else
         FoundFirstUse = have_not_found_first_use
     ).
 
@@ -969,7 +987,7 @@ conj_var_first_use(RevGoalPath, ConjNum, [Conj | Conjs], StaticInfo,
         % must have only partially instantiated it. Instmaps can be used
         % to track this. This is relevant when searching for the producer
         % of a variable.
-        % XXX: For now, we assume that no variable is bound more than once.
+        % XXX For now, we assume that no variable is bound more than once.
         HeadFoundFirstUse = found_first_use(_),
         FoundFirstUse = HeadFoundFirstUse
     ;
@@ -996,10 +1014,10 @@ disj_var_first_use(RevGoalPath, Disjuncts, Detism, StaticInfo,
     disj_var_first_use_2(RevGoalPath, 1, Disjuncts, StaticInfo,
         !CostSoFar, FoundFirstUse0),
     CostAfterDisjunction = !.CostSoFar,
-    (
+    ( if
         detism_get_solutions(Detism) = at_most_many_rep,
         FoundFirstUse0 = found_first_use(_)
-    ->
+    then
         VarUseType = StaticInfo ^ fui_var_use_opts ^ vuo_var_use_type,
         (
             VarUseType = var_use_consumption,
@@ -1010,7 +1028,7 @@ disj_var_first_use(RevGoalPath, Disjuncts, Detism, StaticInfo,
             ),
             FoundFirstUse = found_first_use(CostAfterDisjunction)
         )
-    ;
+    else
         FoundFirstUse = FoundFirstUse0
     ).
 
@@ -1056,9 +1074,9 @@ disj_var_first_use_2(RevGoalPath, DisjNum, [Disj | Disjs], StaticInfo,
             % of the first disjunct.
             DisjCoverage =
                 get_goal_attribute_det(CoverageArray, Disj ^ goal_annotation),
-            ( get_coverage_before(DisjCoverage, HeadCount) ->
+            ( if get_coverage_before(DisjCoverage, HeadCount) then
                 HeadWeight = float(HeadCount)
-            ;
+            else
                 unexpected($module, $pred,
                     "unknown coverage before disjunct")
             ),
@@ -1069,9 +1087,9 @@ disj_var_first_use_2(RevGoalPath, DisjNum, [Disj | Disjs], StaticInfo,
                 Disjs = [FirstTailDisj | _],
                 FirstTailCoverage = get_goal_attribute_det(CoverageArray,
                     FirstTailDisj ^ goal_annotation),
-                ( get_coverage_before(FirstTailCoverage, TailCount) ->
+                ( if get_coverage_before(FirstTailCoverage, TailCount) then
                     TailWeight = float(TailCount)
-                ;
+                else
                     unexpected($module, $pred,
                         "unknown coverage before disjunct")
                 )
@@ -1093,14 +1111,16 @@ switch_var_first_use(RevGoalPath, SwitchedOnVar, Cases, StaticInfo,
         CostBeforeSwitch, CostCases, FoundFirstUseCases),
     weighted_average(CaseWeights, CostCases, CostAfterSwitch),
     Var = StaticInfo ^ fui_var,
-    ( Var = SwitchedOnVar ->
+    ( if Var = SwitchedOnVar then
         % This can only possibly be a consumption of this variable.
         FoundFirstUse = found_first_use(CostBeforeSwitch)
-    ;
-        ( list.all_true(unify(have_not_found_first_use), FoundFirstUseCases) ->
+    else
+        ( if
+            list.all_true(unify(have_not_found_first_use), FoundFirstUseCases)
+        then
             % No case contained a first-use of this variable.
             FoundFirstUse = have_not_found_first_use
-        ;
+        else
             VarUseType = StaticInfo ^ fui_var_use_opts ^ vuo_var_use_type,
             (
                 VarUseType = var_use_consumption,
@@ -1173,12 +1193,12 @@ ite_var_first_use(RevGoalPath, Cond, Then, Else, StaticInfo,
         FoundFirstUse = CondFoundFirstUse
     ;
         CondFoundFirstUse = have_not_found_first_use,
-        (
+        ( if
             ThenFoundFirstUse = have_not_found_first_use,
             ElseFoundFirstUse = have_not_found_first_use
-        ->
+        then
             FoundFirstUse = have_not_found_first_use
-        ;
+        else
             (
                 VarUseType = var_use_consumption,
                 DefaultCost = CostAfterCond
@@ -1209,7 +1229,7 @@ ite_var_first_use(RevGoalPath, Cond, Then, Else, StaticInfo,
 ffu_to_float(Default, have_not_found_first_use, Default).
 ffu_to_float(_, found_first_use(UseTime), UseTime).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Goal var first use analysis for the base and recursive cases of a recursive
 % procedure.
@@ -1242,9 +1262,9 @@ filter_recursive_call_sites(GoalPathStep, !RecCallSites) :-
     %
     % Find the first use in both the recursive and base cases.
     %
-    % This sorks under the following assumptions.
+    % This works under the following assumptions.
     %   + All sub goals succeed at most once.
-    %   + The first use is not conjoind with a switch where some switch
+    %   + The first use is not conjoined with a switch where some switch
     %     branches are recursive and some are not. (or ITE)
     %   + The cost of disjunctions is not computed correctly.
     %
@@ -1258,7 +1278,7 @@ rec_goal_var_first_use(Goal, RecCalls, Info, FoundFirstUse,
     Goal = goal_rep(GoalExpr, Detism, GoalId),
     Coverage = get_goal_attribute_det(Info ^ fui_coverage_array, GoalId),
     get_coverage_before_and_after_det(Coverage, Before, After),
-    (
+    ( if
         % Do not bother exploring this goal if it is never entered.
         % Or never finishes and we are looking for a production.
         (
@@ -1271,9 +1291,9 @@ rec_goal_var_first_use(Goal, RecCalls, Info, FoundFirstUse,
             ; After = 0
             )
         )
-    ->
+    then
         FoundFirstUse = have_not_found_first_use
-    ;
+    else
         (
             GoalExpr = conj_rep(Conjs),
             rec_conj_var_first_use(Conjs, 1, RecCalls, Info,
@@ -1356,7 +1376,7 @@ rec_conj_var_first_use([Conj | Conjs], ConjNum, RecCalls, StaticInfo,
     rec_conj_var_first_use(Conjs, ConjNum + 1, RecCalls, StaticInfo,
         ConjsFoundFirstUse, !CostSoFar),
     (
-        % XXX: if a variable is bound more than once, because it's used
+        % XXX if a variable is bound more than once, because it's used
         % with partial instantiation then we want to use the last time it
         % is bound. Instmaps can be used to track this. This is relevant
         % when searching for the producer of a variable.
@@ -1364,13 +1384,13 @@ rec_conj_var_first_use([Conj | Conjs], ConjNum, RecCalls, StaticInfo,
         FoundFirstUse = found_first_use(UseTime)
     ;
         ConjFoundFirstUse = have_not_found_first_use,
-        % XXX: Use time should be adjusted for the probability of entering
-        % Conjs (the success of Conj) But doing so means a weighted everage
+        % XXX Use time should be adjusted for the probability of entering
+        % Conjs (the success of Conj) But doing so means a weighted average
         % between the success and failure paths, which only makes sense if
-        % the consuption (because this is semidet) might be done in the
+        % the consumption (because this is semidet) might be done in the
         % failure case. This also has to be done if the probability of
-        % recursion in one of the two cases is different. For now we
-        % assume that Conjs will always be entred.
+        % recursion in one of the two cases is different. For now we assume
+        % that Conjs will always be entered.
         FoundFirstUse = ConjsFoundFirstUse
     ).
 
@@ -1380,11 +1400,11 @@ rec_conj_var_first_use([Conj | Conjs], ConjNum, RecCalls, StaticInfo,
     found_first_use::out, float::in, float::out) is det.
 
 rec_disj_var_first_use(Disjs, RecCalls, Info, FoundFirstUse, !CostSoFar) :-
-    % We do not handle disjunctions, just use a pesimistic default.
+    % We do not handle disjunctions, just use a pessimistic default.
     % For calculating the cost of the disjunction, assume that is is a semidet
     % disjunction. Doing this will find the incorrect cost for the
-    % disjunction, however disjunctions occur rarely, this is not likely to
-    % drametically effect anything.
+    % disjunction, however disjunctions occur rarely, so this is not likely
+    % to dramatically affect anything.
     CostBeforeDisjunction = !.CostSoFar,
     rec_disj_var_first_use_2(Disjs, 1, RecCalls, Info, FoundFirstUse0,
         !CostSoFar),
@@ -1421,11 +1441,11 @@ rec_disj_var_first_use_2([Disj | Disjs], DisjNum, RecCalls, Info,
     CoverageArray = Info ^ fui_coverage_array,
     Coverage = get_goal_attribute_det(CoverageArray, Disj ^ goal_annotation),
     get_coverage_before_and_after_det(Coverage, Before, After),
-    ( Before = 0 ->
+    ( if Before = 0 then
         % Avoid a divide by zero.
         CostDisjs = 0.0,
         FoundFirstUse = DisjFoundFirstUse
-    ;
+    else
         rec_disj_var_first_use_2(Disjs, DisjNum + 1, RecCalls, Info,
             DisjsFoundFirstUse, 0.0, CostDisjs0),
         FailureProb = probable(float(Before - After) / float(Before)),
@@ -1455,18 +1475,20 @@ rec_switch_var_first_use(Cases, SwitchedOnVar, RecCalls, Info,
     weighted_average(CaseWeights, CostAfterCases, CostAfterSwitch),
 
     Var = Info ^ fui_var,
-    ( Var = SwitchedOnVar ->
+    ( if Var = SwitchedOnVar then
         FoundFirstUse = found_first_use(CostBeforeSwitch)
-    ;
-        ( list.all_true(unify(have_not_found_first_use), FoundFirstUseCases) ->
+    else
+        ( if
+            list.all_true(unify(have_not_found_first_use), FoundFirstUseCases)
+        then
             % No case contained a first-use of this variable.
             FoundFirstUse = have_not_found_first_use
-        ;
+        else
             VarUseType = Info ^ fui_var_use_opts ^ vuo_var_use_type,
-            % XXX: this is also flawed, the default costs should not be the
+            % XXX this is also flawed, the default costs should not be the
             % average costs, they should be the cost for the specific case
             % where that default would be used.
-            % XXX: Secondly, this needs to also support the 'don't insert waits
+            % XXX Secondly, this needs to also support the 'don't insert waits
             % on all branches' optimisation.
             (
                 VarUseType = var_use_consumption,
@@ -1558,12 +1580,12 @@ rec_ite_var_first_use(Cond, Then, Else, RecCalls, Info, FoundFirstUse,
     ;
         CondFoundFirstUse = have_not_found_first_use,
 
-        (
+        ( if
             ThenFoundFirstUse = have_not_found_first_use,
             ElseFoundFirstUse = have_not_found_first_use
-        ->
+        then
             FoundFirstUse = have_not_found_first_use
-        ;
+        else
             VarUseType = Info ^ fui_var_use_opts ^ vuo_var_use_type,
             (
                 VarUseType = var_use_consumption,
@@ -1594,12 +1616,12 @@ adjust_weight_for_recursion(RecCase, RecProb, !Weight) :-
     ),
     !:Weight = !.Weight * probability_to_float(Prob).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Give the probability that this goal leads to a recursion.
     %
-    % Note that this does not compute whether this goal is on a recursive path
-    % so it's not sufficent on it's own. See rec_goal_var_first_use.
+    % Note that this does not compute whether this goal is on a recursive path,
+    % so it is not sufficient on its own. See rec_goal_var_first_use.
     %
 :- pred goal_rec_prob(goal_rep(goal_id)::in, recursive_calls_list::in,
     var_first_use_static_info::in, probability::out,
@@ -1610,12 +1632,12 @@ goal_rec_prob(Goal, RecCalls, Info, Prob, !ProbArray) :-
     Goal = goal_rep(GoalExpr, _, GoalId),
     Coverage = get_goal_attribute_det(Info ^ fui_coverage_array, GoalId),
     get_coverage_before_det(Coverage, Before),
-    ( Before = 0 ->
+    ( if Before = 0 then
         % Avoid a divide by zero and provide a short-cut.
         Prob = impossible
-        % There is no need to update the array. the default value is already
+        % There is no need to update the array. The default value is already
         % impossible.
-    ;
+    else
         (
             GoalExpr = conj_rep(Conjs),
             conj_rec_prob(Conjs, 1, RecCalls, Info, Prob, !ProbArray)
@@ -1661,11 +1683,11 @@ conj_rec_prob([Conj | Conjs], ConjNum, RecCalls, Info, Prob, !ProbArray) :-
     ConjId = Conj ^ goal_annotation,
     Coverage = get_goal_attribute_det(Info ^ fui_coverage_array, ConjId),
     get_coverage_before_and_after_det(Coverage, Before, After),
-    ( Before = 0 ->
-        % This code is dead, pevent a divide by zero and make a short cut
-        % here.
+    ( if Before = 0 then
+        % This code is dead. Return the result without a division
+        % to prevent a divide by zero.
         Prob = impossible
-    ;
+    else
         conj_rec_prob(Conjs, ConjNum + 1, RecCalls, Info, ConjsProb0,
             !ProbArray),
         SuccessProb = probable(float(After) / float(Before)),
@@ -1687,13 +1709,13 @@ disj_rec_prob([Disj | Disjs], DisjNum, RecCalls, Info, Prob, !ProbArray) :-
     DisjId = Disj ^ goal_annotation,
     Coverage = get_goal_attribute_det(Info ^ fui_coverage_array, DisjId),
     get_coverage_before_and_after_det(Coverage, Before, After),
-    ( Before = 0 ->
+    ( if Before = 0 then
         % As above, this code is dead.
         Prob = impossible
-    ;
+    else
         disj_rec_prob(Disjs, DisjNum + 1, RecCalls, Info, DisjsProb0,
             !ProbArray),
-        % Assume that this disjuction is in a single solution context.
+        % Assume that this disjunction is in a single solution context.
         FailureProb = probable(float(Before - After) / float(Before)),
         DisjsProb = and(FailureProb, DisjsProb0),
 
@@ -1762,7 +1784,7 @@ ite_rec_prob(Cond, Then, Else, RecCalls, Info, Prob, !ProbArray) :-
     ThenElseProb = or(ThenProb, ElseProb),
     Prob = or(CondProb, ThenElseProb).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred goal_var_first_use_wrapper(clique_ptr::in, set(proc_dynamic_ptr)::in,
     containing_goal_map::in, goal_attr_array(coverage_info)::in,
@@ -1822,7 +1844,7 @@ found_first_use_to_use_info(FoundFirstUse, Cost, VarUseType, VarUseInfo) :-
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred intermodule_var_use_should_follow_csd(var_use_options::in,
     call_site_dynamic_ptr::in) is semidet.
@@ -1864,4 +1886,4 @@ intermodule_var_use_should_follow_pd_2(Deep, Module, PDPtr) :-
     ; Label = str_special_proc_label(_, _, Module, _, _, _)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

@@ -1,7 +1,7 @@
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
-% Copyright (C) 1993-2012 The University of Melbourne.
+% Copyright (C) 1993-2012,2014 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -14,8 +14,11 @@
 :- import_module hlds.hlds_pred.
 :- import_module hlds.make_hlds.qual_info.
 :- import_module hlds.quantification.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.error_util.
+:- import_module parse_tree.maybe_error.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
@@ -23,16 +26,16 @@
 %-----------------------------------------------------------------------------%
 
 :- pred module_add_clause(prog_varset::in, pred_or_func::in, sym_name::in,
-    list(prog_term)::in, goal::in, import_status::in, prog_context::in,
+    list(prog_term)::in, maybe1(goal)::in, pred_status::in, prog_context::in,
     maybe(int)::in, goal_type::in, module_info::in, module_info::out,
     qual_info::in, qual_info::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
 :- pred clauses_info_add_clause(clause_applicable_modes::in, list(proc_id)::in,
     prog_varset::in, tvarset::in, list(prog_term)::in, goal::in,
-    prog_context::in, maybe(int)::in, import_status::in, pred_or_func::in,
+    prog_context::in, maybe(int)::in, pred_status::in, pred_or_func::in,
     arity::in, goal_type::in, hlds_goal::out, prog_varset::out, tvarset::out,
-    clauses_info::in, clauses_info::out, list(quant_warning)::out,
+    list(quant_warning)::out, clauses_info::in, clauses_info::out,
     module_info::in, module_info::out, qual_info::in, qual_info::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
@@ -41,6 +44,7 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.clause_to_proc.
 :- import_module check_hlds.mode_errors.
 :- import_module hlds.goal_util.
@@ -51,61 +55,63 @@
 :- import_module hlds.hlds_out.
 :- import_module hlds.hlds_out.hlds_out_goal.
 :- import_module hlds.hlds_out.hlds_out_util.
-:- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_rtti.
+:- import_module hlds.make_goal.
 :- import_module hlds.make_hlds.add_pred.
-:- import_module hlds.make_hlds.field_access.
 :- import_module hlds.make_hlds.goal_expr_to_goal.
 :- import_module hlds.make_hlds.make_hlds_warn.
 :- import_module hlds.make_hlds.state_var.
 :- import_module hlds.make_hlds.superhomogeneous.
 :- import_module hlds.pred_table.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
-:- import_module parse_tree.mercury_to_mercury.
 :- import_module parse_tree.module_qual.
-:- import_module parse_tree.prog_data.
-:- import_module parse_tree.prog_io_util.
+:- import_module parse_tree.parse_inst_mode_name.
+:- import_module parse_tree.parse_tree_out_info.
+:- import_module parse_tree.parse_tree_out_pred_decl.
 :- import_module parse_tree.prog_mode.
 :- import_module parse_tree.prog_out.
+:- import_module parse_tree.prog_rename.
 :- import_module parse_tree.prog_util.
 
-:- import_module assoc_list.
 :- import_module bool.
+:- import_module cord.
 :- import_module int.
 :- import_module io.
 :- import_module map.
-:- import_module pair.
 :- import_module require.
-:- import_module set.
 :- import_module string.
 :- import_module varset.
 
 %-----------------------------------------------------------------------------%
 
-module_add_clause(ClauseVarSet, PredOrFunc, PredName, Args0, Body, Status,
-        Context, MaybeSeqNum, GoalType, !ModuleInfo, !QualInfo, !Specs) :-
-    ( illegal_state_var_func_result(PredOrFunc, Args0, SVar) ->
-        IllegalSVarResult = yes(SVar)
-    ;
+module_add_clause(ClauseVarSet, PredOrFunc, PredName, ArgTerms0, MaybeBodyGoal,
+        Status, Context, MaybeSeqNum, GoalType,
+        !ModuleInfo, !QualInfo, !Specs) :-
+    ( if
+        illegal_state_var_func_result(PredOrFunc, ArgTerms0, SVar, SVarCtxt)
+    then
+        IllegalSVarResult = yes({SVar, SVarCtxt})
+    else
         IllegalSVarResult = no
     ),
     ArityAdjustment = ( if IllegalSVarResult = yes(_) then -1 else 0 ),
-    expand_bang_states(Args0, Args),
+    expand_bang_state_pairs_in_terms(ArgTerms0, ArgTerms),
 
     % Lookup the pred declaration in the predicate table.
     % (If it's not there, call maybe_undefined_pred_error and insert
     % an implicit declaration for the predicate.)
     module_info_get_name(!.ModuleInfo, ModuleName),
-    list.length(Args, Arity0),
+    list.length(ArgTerms, Arity0),
     Arity = Arity0 + ArityAdjustment,
-    some [!PredInfo, !PredicateTable] (
-        module_info_get_predicate_table(!.ModuleInfo, !:PredicateTable),
-        predicate_table_lookup_pf_sym_arity(!.PredicateTable,
+    some [!PredInfo] (
+        module_info_get_predicate_table(!.ModuleInfo, PredicateTable),
+        predicate_table_lookup_pf_sym_arity(PredicateTable,
             is_fully_qualified, PredOrFunc, PredName, Arity, PredIds),
-        ( PredIds = [PredIdPrime] ->
-            PredId = PredIdPrime,
-            ( GoalType = goal_type_promise(_) ->
+        ( if PredIds = [PredIdPrime] then
+            MaybePredId = yes(PredIdPrime),
+            ( if GoalType = goal_type_promise(_) then
                 NameString = sym_name_to_string(PredName),
                 string.format("%s %s %s (%s).\n",
                     [s("Attempted to introduce a predicate"),
@@ -113,30 +119,64 @@ module_add_clause(ClauseVarSet, PredOrFunc, PredName, Args0, Body, Status,
                     s("name to an existing predicate"),
                     s(NameString)], UnexpectedMsg),
                 unexpected($module, $pred, UnexpectedMsg)
-            ;
+            else
                 true
             )
-        ;
+        else if unqualify_name(PredName) = ",", Arity = 2 then
+            MaybePredId = no,
+            Pieces = [words("Attempt to define a clause for"),
+                unqual_sym_name_and_arity(sym_name_arity(unqualified(","), 2)),
+                suffix("."),
+                words("This is usually caused by"),
+                words("inadvertently writing a period instead of a comma"),
+                words("at the end of the preceding line."), nl],
+            Msg = simple_msg(Context, [always(Pieces)]),
+            Spec = error_spec(severity_error, phase_parse_tree_to_hlds, [Msg]),
+            !:Specs = [Spec | !.Specs]
+        else
             % A promise will not have a corresponding pred declaration.
-            ( GoalType = goal_type_promise(_) ->
-                HeadVars = term.term_list_to_var_list(Args),
-                preds_add_implicit_for_assertion(HeadVars, !.ModuleInfo,
-                    ModuleName, PredName, Arity, Status, Context, PredOrFunc,
-                    PredId, !PredicateTable),
-                module_info_set_predicate_table(!.PredicateTable, !ModuleInfo)
-            ;
-                preds_add_implicit_report_error(ModuleName, PredOrFunc,
-                    PredName, Arity, Status, no, Context,
-                    origin_user(PredName), [words("clause")], PredId,
-                    !ModuleInfo, !Specs)
-            )
+            ( if GoalType = goal_type_promise(_) then
+                HeadVars = term.term_list_to_var_list(ArgTerms),
+                preds_add_implicit_for_assertion(!ModuleInfo, ModuleName,
+                    PredName, Arity, PredOrFunc, HeadVars, Status, Context,
+                    NewPredId)
+            else
+                preds_add_implicit_report_error(!ModuleInfo, ModuleName,
+                    PredName, Arity, PredOrFunc, Status, is_not_a_class_method,
+                    Context, origin_user(PredName), [words("clause")],
+                    NewPredId, !Specs)
+            ),
+            MaybePredId = yes(NewPredId)
         ),
+        (
+            MaybePredId = yes(PredId),
+            module_add_clause_2(ClauseVarSet, PredOrFunc, PredName, PredId,
+                ArgTerms, Arity, ArityAdjustment, MaybeBodyGoal,
+                Status, Context, MaybeSeqNum, GoalType, IllegalSVarResult,
+                !ModuleInfo, !QualInfo, !Specs)
+        ;
+            MaybePredId = no
+        )
+    ).
+
+:- pred module_add_clause_2(prog_varset::in, pred_or_func::in, sym_name::in,
+    pred_id::in, list(prog_term)::in, int::in, int::in, maybe1(goal)::in,
+    pred_status::in, prog_context::in, maybe(int)::in, goal_type::in,
+    maybe({prog_var, prog_context})::in, module_info::in, module_info::out,
+    qual_info::in, qual_info::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
+
+module_add_clause_2(ClauseVarSet, PredOrFunc, PredName, PredId,
+        MaybeAnnotatedArgTerms, Arity, ArityAdjustment, MaybeBodyGoal,
+        PredStatus, Context, MaybeSeqNum, GoalType, IllegalSVarResult,
+        !ModuleInfo, !QualInfo, !Specs) :-
+    some [!PredInfo, !PredicateTable, !PredSpecs] (
         % Lookup the pred_info for this pred, add the clause to the
         % clauses_info in the pred_info, if there are no modes add an
         % `infer_modes' marker, and then save the pred_info.
         module_info_get_predicate_table(!.ModuleInfo, !:PredicateTable),
-        predicate_table_get_preds(!.PredicateTable, Preds0),
-        map.lookup(Preds0, PredId, !:PredInfo),
+        predicate_table_get_preds(!.PredicateTable, PredMap0),
+        map.lookup(PredMap0, PredId, !:PredInfo),
 
         trace [io(!IO)] (
             some [Globals] (
@@ -151,10 +191,11 @@ module_add_clause(ClauseVarSet, PredOrFunc, PredName, Args0, Body, Status,
                         [i(NumClauses + 1)], !IO),
                     write_pred_or_func(PredOrFunc, !IO),
                     io.write_string(" `", !IO),
-                    list.length(Args, PredArity0),
+                    list.length(MaybeAnnotatedArgTerms, PredArity0),
                     PredArity = PredArity0 + ArityAdjustment,
                     adjust_func_arity(PredOrFunc, OrigArity, PredArity),
-                    prog_out.write_sym_name_and_arity(PredName/OrigArity, !IO),
+                    prog_out.write_sym_name_and_arity(
+                        sym_name_arity(PredName, OrigArity), !IO),
                     io.write_string("'...\n", !IO)
                 ;
                     VeryVerbose = no
@@ -164,88 +205,111 @@ module_add_clause(ClauseVarSet, PredOrFunc, PredName, Args0, Body, Status,
 
         % Opt_imported preds are initially tagged as imported, and are tagged
         % as opt_imported only if/when we see a clause for them.
-        ( Status = status_opt_imported ->
-            pred_info_set_import_status(status_opt_imported, !PredInfo),
+        ( if PredStatus = pred_status(status_opt_imported) then
+            pred_info_set_status(pred_status(status_opt_imported), !PredInfo),
             pred_info_get_markers(!.PredInfo, InitMarkers0),
             add_marker(marker_calls_are_fully_qualified,
                 InitMarkers0, InitMarkers),
             pred_info_set_markers(InitMarkers, !PredInfo)
-        ;
+        else
             true
         ),
-        (
-            IllegalSVarResult = yes(StateVar),
-            report_illegal_func_svar_result(Context, ClauseVarSet, StateVar,
-                !Specs)
-        ;
-            IllegalSVarResult = no,
-            (
-                % User-supplied clauses for field access functions are not
-                % allowed -- the clauses are always generated by the compiler.
-                %
-                PredOrFunc = pf_function,
-                adjust_func_arity(pf_function, FuncArity, Arity),
-                is_field_access_function_name(!.ModuleInfo, PredName,
-                    FuncArity, _, _),
 
-                % Don't report errors for clauses for field access
-                % function clauses in `.opt' files.
-                Status \= status_opt_imported
-            ->
-                CallId = simple_call_id(PredOrFunc, PredName, Arity),
-                MainPieces = [
-                    words("Error: clause for automatically generated"),
-                    words("field access"), simple_call(CallId),
-                    suffix("."), nl],
-                VerbosePieces = [words("Clauses for field access functions"),
-                    words("are automatically generated by the compiler."),
-                    words("To supply your own definition for a field access"),
-                    words("function, for example to check the input"),
-                    words("to a field update, give the field"),
-                    words("of the constructor a different name.")],
-                Msg = simple_msg(Context,
-                    [always(MainPieces), verbose_only(VerbosePieces)]),
-                Spec = error_spec(severity_error, phase_parse_tree_to_hlds,
-                    [Msg]),
-                !:Specs = [Spec | !.Specs]
+        !:PredSpecs = [],
+        (
+            IllegalSVarResult = yes({StateVar, StateVarContext}),
+            report_illegal_func_svar_result(StateVarContext, ClauseVarSet,
+                StateVar, !PredSpecs)
+        ;
+            IllegalSVarResult = no
+        ),
+
+        ( if
+            % User-supplied clauses for field access functions are not
+            % allowed -- the clauses are always generated by the compiler.
+            PredOrFunc = pf_function,
+            adjust_func_arity(pf_function, FuncArity, Arity),
+            is_field_access_function_name(!.ModuleInfo, PredName,
+                FuncArity, _, _),
+
+            % Don't report errors for clauses for field access function clauses
+            % in `.opt' files.
+            PredStatus \= pred_status(status_opt_imported)
+        then
+            CallId = simple_call_id(PredOrFunc, PredName, Arity),
+            FieldAccessMainPieces =
+                [words("Error: clause for automatically generated"),
+                words("field access"), simple_call(CallId), suffix("."), nl],
+            FieldAccessVerbosePieces =
+                [words("Clauses for field access functions"),
+                words("are automatically generated by the compiler."),
+                words("To supply your own definition for a field access"),
+                words("function, for example to check the input"),
+                words("to a field update, give the field"),
+                words("of the constructor a different name.")],
+            FieldAccessMsg = simple_msg(Context,
+                [always(FieldAccessMainPieces),
+                verbose_only(verbose_always, FieldAccessVerbosePieces)]),
+            FieldAccessSpec = error_spec(severity_error,
+                phase_parse_tree_to_hlds, [FieldAccessMsg]),
+            !:PredSpecs = [FieldAccessSpec | !.PredSpecs]
+        else
+            true
+        ),
+
+        ( if pred_info_is_builtin(!.PredInfo) then
+            % When bootstrapping a change that defines a builtin using
+            % normal Mercury code, we need to disable the generation
+            % of the error message, and just ignore the definition.
+            some [Globals] (
+                module_info_get_globals(!.ModuleInfo, Globals),
+                globals.lookup_bool_option(Globals, allow_defn_of_builtins,
+                    AllowDefnOfBuiltin)
+            ),
+            (
+                AllowDefnOfBuiltin = no,
+                BuiltinMsg = simple_msg(Context,
+                    [always([words("Error: clause for builtin.")])]),
+                BuiltinSpec = error_spec(severity_error,
+                    phase_parse_tree_to_hlds, [BuiltinMsg]),
+                !:PredSpecs = [BuiltinSpec | !.PredSpecs]
             ;
-                pred_info_is_builtin(!.PredInfo)
-            ->
-                % When bootstrapping a change that defines a builtin using
-                % normal Mercury code, we need to disable the generation
-                % of the error message, and just ignore the definition.
-                some [Globals] (
-                    module_info_get_globals(!.ModuleInfo, Globals),
-                    globals.lookup_bool_option(Globals, allow_defn_of_builtins,
-                        AllowDefnOfBuiltin)
-                ),
-                (
-                    AllowDefnOfBuiltin = no,
-                    Msg = simple_msg(Context,
-                        [always([words("Error: clause for builtin.")])]),
-                    Spec = error_spec(severity_error, phase_parse_tree_to_hlds,
-                        [Msg]),
-                    !:Specs = [Spec | !.Specs]
-                ;
-                    AllowDefnOfBuiltin = yes
-                )
+                AllowDefnOfBuiltin = yes
+            )
+        else
+            true
+        ),
+
+        maybe_add_default_func_mode(!PredInfo, _),
+        (
+            !.PredSpecs = [_ | _ ],
+            !:Specs = !.PredSpecs ++ get_any_errors1(MaybeBodyGoal) ++ !.Specs
+        ;
+            !.PredSpecs = [],
+            (
+                MaybeBodyGoal = error1(BodyGoalSpecs),
+                !:Specs = BodyGoalSpecs ++ !.Specs,
+                pred_info_get_clauses_info(!.PredInfo, Clauses0),
+                Clauses = Clauses0 ^ cli_had_syntax_errors := yes,
+                pred_info_set_clauses_info(Clauses, !PredInfo)
             ;
+                MaybeBodyGoal = ok1(BodyGoal),
                 pred_info_get_clauses_info(!.PredInfo, Clauses0),
                 pred_info_get_typevarset(!.PredInfo, TVarSet0),
-                maybe_add_default_func_mode(!PredInfo, _),
-                select_applicable_modes(Args, ClauseVarSet, Status, Context,
-                    PredId, !.PredInfo, ArgTerms, ProcIdsForThisClause,
-                    AllProcIds, !ModuleInfo, !QualInfo, !Specs),
+                select_applicable_modes(MaybeAnnotatedArgTerms, ClauseVarSet,
+                    PredStatus, Context, PredId, !.PredInfo, ArgTerms,
+                    ProcIdsForThisClause, AllProcIds,
+                    !ModuleInfo, !QualInfo, !Specs),
                 clauses_info_add_clause(ProcIdsForThisClause, AllProcIds,
-                    ClauseVarSet, TVarSet0, ArgTerms, Body,
-                    Context, MaybeSeqNum, Status, PredOrFunc, Arity,
-                    GoalType, Goal, VarSet, TVarSet, Clauses0, Clauses,
-                    Warnings, !ModuleInfo, !QualInfo, !Specs),
+                    ClauseVarSet, TVarSet0, ArgTerms, BodyGoal,
+                    Context, MaybeSeqNum, PredStatus, PredOrFunc, Arity,
+                    GoalType, Goal, VarSet, TVarSet, Warnings,
+                    Clauses0, Clauses, !ModuleInfo, !QualInfo, !Specs),
                 pred_info_set_clauses_info(Clauses, !PredInfo),
-                ( GoalType = goal_type_promise(PromiseType) ->
+                ( if GoalType = goal_type_promise(PromiseType) then
                     pred_info_set_goal_type(goal_type_promise(PromiseType),
                         !PredInfo)
-                ;
+                else
                     pred_info_update_goal_type(goal_type_clause, !PredInfo)
                 ),
                 pred_info_set_typevarset(TVarSet, !PredInfo),
@@ -259,30 +323,53 @@ module_add_clause(ClauseVarSet, PredOrFunc, PredName, Args0, Body, Status,
                 % Predicates representing promises do not need mode inference.
 
                 ProcIds = pred_info_all_procids(!.PredInfo),
-                (
+                ( if
                     ProcIds = [],
                     GoalType \= goal_type_promise(_)
-                ->
+                then
                     pred_info_get_markers(!.PredInfo, EndMarkers0),
                     add_marker(marker_infer_modes, EndMarkers0, EndMarkers),
                     pred_info_set_markers(EndMarkers, !PredInfo)
-                ;
+                else
                     true
                 ),
-                map.det_update(PredId, !.PredInfo, Preds0, Preds),
-                predicate_table_set_preds(Preds, !PredicateTable),
-                module_info_set_predicate_table(!.PredicateTable, !ModuleInfo),
-                ( Status = status_opt_imported ->
+                ( if
+                    (
+                        % Any singleton warnings should be generated
+                        % for the original code, not for the copy
+                        % in a .opt or .trans_opt file.
+                        PredStatus = pred_status(status_opt_imported)
+                    ;
+                        % Part of the parser's recovery from syntax errors
+                        % (e.g. when they occur in lambda expressions' clause
+                        % heads) may have included not translating parts
+                        % of the original term into the parsed clause body,
+                        % so any singleton warnings we generate for such
+                        % "truncated" clauses could be misleading.
+                        %
+                        % We could try to record the set of variables
+                        % in the parts of the original goal term that we don't
+                        % include in the clause, but (a) this is not trivial
+                        % to do, and (b) the payoff is questionable, because
+                        % some of those variables could have been the result
+                        % of typos affecting a word that the programmer meant
+                        % to be something else.
+                        Clauses ^ cli_had_syntax_errors = yes
+                    )
+                then
                     true
-                ;
+                else
                     % Warn about singleton variables.
                     SimpleCallId = simple_call_id(PredOrFunc, PredName, Arity),
                     warn_singletons(!.ModuleInfo, SimpleCallId, VarSet, Goal,
                         !Specs),
                     % Warn about variables with overlapping scopes.
-                    warn_overlap(Warnings, VarSet, SimpleCallId, !Specs)
+                    add_quant_warnings(SimpleCallId, VarSet, Warnings, !Specs)
                 )
-            )
+            ),
+            map.det_update(PredId, !.PredInfo, PredMap0, PredMap),
+            predicate_table_set_preds(PredMap, !PredicateTable),
+            module_info_set_predicate_table(!.PredicateTable, !ModuleInfo)
         )
     ).
 
@@ -290,71 +377,94 @@ module_add_clause(ClauseVarSet, PredOrFunc, PredName, Args0, Body, Status,
     % and determine which mode(s) this clause should apply to.
     %
 :- pred select_applicable_modes(list(prog_term)::in, prog_varset::in,
-    import_status::in, prog_context::in, pred_id::in, pred_info::in,
+    pred_status::in, prog_context::in, pred_id::in, pred_info::in,
     list(prog_term)::out, clause_applicable_modes::out, list(proc_id)::out,
     module_info::in, module_info::out, qual_info::in, qual_info::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
-select_applicable_modes(Args0, VarSet, Status, Context, PredId, PredInfo,
-        Args, ApplProcIds, AllProcIds, !ModuleInfo, !QualInfo, !Specs) :-
+select_applicable_modes(MaybeAnnotatedArgTerms, VarSet, PredStatus, Context,
+        PredId, PredInfo, ArgTerms, ApplProcIds, AllProcIds,
+        !ModuleInfo, !QualInfo, !Specs) :-
     AllProcIds = pred_info_all_procids(PredInfo),
-    get_mode_annotations(Args0, Args, empty, ModeAnnotations),
+    PredIdStr = pred_id_to_string(!.ModuleInfo, PredId),
+    ContextPieces = cord.from_list([words("In the head of a clause for"),
+        fixed(PredIdStr), suffix(":"), nl]),
+    get_mode_annotations(VarSet, ContextPieces, MaybeAnnotatedArgTerms, 1,
+        ArgTerms, ma_empty, ModeAnnotations, [], ModeAnnotationSpecs),
     (
-        ModeAnnotations = modes(ModeList0),
-
-        % The user specified some mode annotations on this clause.
-        % First module-qualify the mode annotations. The annotations on
-        % clauses from `.opt' files will already be fully module qualified.
-
-        ( Status = status_opt_imported ->
-            ModeList = ModeList0
-        ;
-            qual_info_get_mq_info(!.QualInfo, MQInfo0),
-            qualify_clause_mode_list(ModeList0, ModeList, Context,
-                MQInfo0, MQInfo, !Specs),
-            qual_info_set_mq_info(MQInfo, !QualInfo)
-        ),
-
-        % Now find the procedure which matches these mode annotations.
-        pred_info_get_procedures(PredInfo, Procs),
-        map.to_assoc_list(Procs, ExistingProcs),
+        ModeAnnotationSpecs = [_ | _],
+        !:Specs = ModeAnnotationSpecs ++ !.Specs,
+        % Apply the clause to all modes.
+        % XXX Would it be better to apply it to none?
+        ApplProcIds = selected_modes(AllProcIds)
+    ;
+        ModeAnnotationSpecs = [],
         (
-            get_procedure_matching_declmodes_with_renaming(ExistingProcs,
-                ModeList, !.ModuleInfo, ProcId)
-        ->
-            ApplProcIds = selected_modes([ProcId])
+            ModeAnnotations = ma_modes(ModeList0),
+
+            % The user specified some mode annotations on this clause.
+            % First module-qualify the mode annotations. The annotations on
+            % clauses from `.opt' files will already be fully module qualified.
+
+            ( if PredStatus = pred_status(status_opt_imported) then
+                ModeList = ModeList0
+            else
+                Exported =
+                    pred_status_is_exported_to_non_submodules(PredStatus),
+                (
+                    Exported = yes,
+                    InInt = mq_used_in_interface
+                ;
+                    Exported = no,
+                    InInt = mq_not_used_in_interface
+                ),
+                qual_info_get_mq_info(!.QualInfo, MQInfo0),
+                qualify_clause_mode_list(InInt, Context,
+                    ModeList0, ModeList, MQInfo0, MQInfo, !Specs),
+                qual_info_set_mq_info(MQInfo, !QualInfo)
+            ),
+
+            % Now find the procedure which matches these mode annotations.
+            pred_info_get_proc_table(PredInfo, Procs),
+            map.to_assoc_list(Procs, ExistingProcs),
+            ( if
+                get_procedure_matching_declmodes_with_renaming(ExistingProcs,
+                    ModeList, !.ModuleInfo, ProcId)
+            then
+                ApplProcIds = selected_modes([ProcId])
+            else
+                undeclared_mode_error(ModeList, VarSet, PredId, PredInfo,
+                    !.ModuleInfo, Context, !Specs),
+                % Apply the clause to all modes.
+                % XXX Would it be better to apply it to none?
+                ApplProcIds = selected_modes(AllProcIds)
+            )
         ;
-            undeclared_mode_error(ModeList, VarSet, PredId, PredInfo,
-                !.ModuleInfo, Context, !Specs),
+            ( ModeAnnotations = ma_empty
+            ; ModeAnnotations = ma_none
+            ),
+            ( if pred_info_pragma_goal_type(PredInfo) then
+                % We are only allowed to mix foreign procs and
+                % mode specific clauses, so make this clause
+                % mode specific but apply to all modes.
+                ApplProcIds = selected_modes(AllProcIds)
+            else
+                ApplProcIds = all_modes
+            )
+        ;
+            ModeAnnotations = ma_mixed,
+            Pieces = [words("In the head of a clause for"),
+                fixed(PredIdStr), suffix(":"), nl,
+                words("syntax error: some but not all arguments"),
+                words("have mode annotations."), nl],
+            Msg = simple_msg(Context, [always(Pieces)]),
+            Spec = error_spec(severity_error, phase_parse_tree_to_hlds, [Msg]),
+            !:Specs = [Spec | !.Specs],
+
             % Apply the clause to all modes.
             % XXX Would it be better to apply it to none?
             ApplProcIds = selected_modes(AllProcIds)
         )
-    ;
-        ( ModeAnnotations = empty
-        ; ModeAnnotations = none
-        ),
-        ( pred_info_pragma_goal_type(PredInfo) ->
-            % We are only allowed to mix foreign procs and
-            % mode specific clauses, so make this clause
-            % mode specific but apply to all modes.
-            ApplProcIds = selected_modes(AllProcIds)
-        ;
-            ApplProcIds = all_modes
-        )
-    ;
-        ModeAnnotations = mixed,
-        PredIdStr = pred_id_to_string(!.ModuleInfo, PredId),
-        Pieces = [words("In clause for"), fixed(PredIdStr), suffix(":"), nl,
-            words("syntax error: some but not all arguments"),
-            words("have mode annotations."), nl],
-        Msg = simple_msg(Context, [always(Pieces)]),
-        Spec = error_spec(severity_error, phase_parse_tree_to_hlds, [Msg]),
-        !:Specs = [Spec | !.Specs],
-
-        % Apply the clause to all modes.
-        % XXX Would it be better to apply it to none?
-        ApplProcIds = selected_modes(AllProcIds)
     ).
 
 :- pred undeclared_mode_error(list(mer_mode)::in, prog_varset::in,
@@ -369,9 +479,8 @@ undeclared_mode_error(ModeList, VarSet, PredId, PredInfo, ModuleInfo, Context,
     PredOrFunc = pred_info_is_pred_or_func(PredInfo),
     Name = pred_info_name(PredInfo),
     MaybeDet = no,
-    SubDeclStr = mercury_mode_subdecl_to_string(PredOrFunc,
-        varset.coerce(VarSet), unqualified(Name), StrippedModeList,
-        MaybeDet, Context),
+    SubDeclStr = mercury_mode_subdecl_to_string(output_debug, PredOrFunc,
+        varset.coerce(VarSet), unqualified(Name), StrippedModeList, MaybeDet),
 
     MainPieces = [words("In clause for")] ++ PredIdPieces ++ [suffix(":"), nl,
         words("error: mode annotation specifies undeclared mode"),
@@ -403,7 +512,7 @@ undeclared_mode_error(ModeList, VarSet, PredId, PredInfo, ModuleInfo, Context,
         )
     ),
     Msg = simple_msg(Context,
-        [always(MainPieces), verbose_only(VerbosePieces)]),
+        [always(MainPieces), verbose_only(verbose_always, VerbosePieces)]),
     Spec = error_spec(severity_error, phase_parse_tree_to_hlds, [Msg]),
     !:Specs = [Spec | !.Specs].
 
@@ -418,63 +527,93 @@ mode_decl_for_pred_info_to_pieces(PredInfo, ProcId) =
     % clause should only be used for particular modes of a predicate.
     % This type specifies the mode annotations on a clause.
 :- type mode_annotations
-    --->    empty   % No arguments.
+    --->    ma_empty
+            % No arguments.
 
-    ;       none    % One or more arguments,
-                    % each without any mode annotations.
+    ;       ma_none
+            % One or more arguments, each without any mode annotations.
 
-    ;       modes(list(mer_mode))
-                    % One or more arguments, each with a mode annotation.
+    ;       ma_modes(list(mer_mode))
+            % One or more arguments, each with a mode annotation.
 
-    ;       mixed.  % Two or more arguments, including some with mode
-                    % annotations and some without.  (This is not allowed.)
+    ;       ma_mixed.
+            % Two or more arguments, including some with mode annotations
+            % and some without. (This is not allowed.)
 
     % Extract the mode annotations (if any) from a list of arguments.
     %
-:- pred get_mode_annotations(list(prog_term)::in, list(prog_term)::out,
-    mode_annotations::in, mode_annotations::out) is det.
+:- pred get_mode_annotations(prog_varset::in, cord(format_component)::in,
+    list(prog_term)::in, int::in, list(prog_term)::out,
+    mode_annotations::in, mode_annotations::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
 
-get_mode_annotations([], [], !Annotations).
-get_mode_annotations([Arg0 | Args0], [Arg | Args], !Annotations) :-
-    get_mode_annotation(Arg0, Arg, MaybeAnnotation),
-    add_annotation(MaybeAnnotation, !Annotations),
-    get_mode_annotations(Args0, Args, !Annotations).
+get_mode_annotations(_, _, [], _, [], !Annotations, !Specs).
+get_mode_annotations(VarSet, ContextPieces,
+        [MAArgTerm | MAArgTerms], ArgNum, [ArgTerm | ArgTerms],
+        !Annotations, !Specs) :-
+    ArgContextPieces = ContextPieces ++
+        cord.from_list([words("in the"), nth_fixed(ArgNum),
+        words("argument:"), nl]),
+    get_mode_annotation(VarSet, ArgContextPieces, MAArgTerm, ArgTerm,
+        MaybeMaybeMode),
+    (
+        MaybeMaybeMode = ok1(MaybeMode),
+        add_annotation(MaybeMode, !Annotations)
+    ;
+        MaybeMaybeMode = error1(MaybeModeSpecs),
+        !:Specs = !.Specs ++ MaybeModeSpecs
+    ),
+    get_mode_annotations(VarSet, ContextPieces,
+        MAArgTerms, ArgNum + 1, ArgTerms, !Annotations, !Specs).
 
 :- pred add_annotation(maybe(mer_mode)::in,
     mode_annotations::in, mode_annotations::out) is det.
 
-add_annotation(no,        empty, none).
-add_annotation(yes(Mode), empty, modes([Mode])).
-add_annotation(no,        modes(_ `with_type` list(mer_mode)), mixed).
-add_annotation(yes(Mode), modes(Modes), modes(Modes ++ [Mode])).
-add_annotation(no,        none, none).
-add_annotation(yes(_),    none, mixed).
-add_annotation(_,         mixed, mixed).
+add_annotation(no,        ma_empty, ma_none).
+add_annotation(yes(Mode), ma_empty, ma_modes([Mode])).
+add_annotation(no,        ma_modes(_ : list(mer_mode)), ma_mixed).
+add_annotation(yes(Mode), ma_modes(Modes), ma_modes(Modes ++ [Mode])).
+add_annotation(no,        ma_none, ma_none).
+add_annotation(yes(_),    ma_none, ma_mixed).
+add_annotation(_,         ma_mixed, ma_mixed).
 
     % Extract the mode annotations (if any) from a single argument.
     %
-:- pred get_mode_annotation(prog_term::in, prog_term::out,
-    maybe(mer_mode)::out) is det.
+:- pred get_mode_annotation(prog_varset::in, cord(format_component)::in,
+    prog_term::in, prog_term::out, maybe1(maybe(mer_mode))::out) is det.
 
-get_mode_annotation(Arg0, Arg, MaybeAnnotation) :-
-    (
-        Arg0 = term.functor(term.atom("::"), [Arg1, ModeTerm], _),
-        convert_mode(allow_constrained_inst_var, term.coerce(ModeTerm), Mode)
-    ->
-        Arg = Arg1,
-        MaybeAnnotation = yes(Mode)
-    ;
-        Arg = Arg0,
-        MaybeAnnotation = no
+get_mode_annotation(VarSet, ContextPieces, MaybeAnnotatedArgTerm, ArgTerm,
+        MaybeMaybeAnnotation) :-
+    ( if
+        MaybeAnnotatedArgTerm = term.functor(term.atom("::"),
+            [ArgTermPrime, ModeTerm], _)
+    then
+        ArgTerm = ArgTermPrime,
+
+        varset.coerce(VarSet, GenVarSet),
+        term.coerce(ModeTerm, GenModeTerm),
+        parse_mode(allow_constrained_inst_var, GenVarSet, ContextPieces,
+            GenModeTerm, MaybeMode),
+        (
+            MaybeMode = ok1(Mode),
+            MaybeMaybeAnnotation = ok1(yes(Mode))
+        ;
+            MaybeMode = error1(Specs),
+            MaybeMaybeAnnotation = error1(Specs)
+        )
+    else
+        ArgTerm = MaybeAnnotatedArgTerm,
+        MaybeMaybeAnnotation = ok1(no)
     ).
 
-clauses_info_add_clause(ApplModeIds0, AllModeIds, CVarSet, TVarSet0,
-        Args, Body, Context, MaybeSeqNum, Status, PredOrFunc, Arity,
-        GoalType, Goal, VarSet, TVarSet, !ClausesInfo, QuantWarnings,
-        !ModuleInfo, !QualInfo, !Specs) :-
-    !.ClausesInfo = clauses_info(VarSet0, ExplicitVarTypes0,
-        TVarNameMap0, InferredVarTypes, HeadVars, ClausesRep0, ItemNumbers0,
-        RttiVarMaps, HasForeignClauses),
+clauses_info_add_clause(ApplModeIds0, AllModeIds, CVarSet, TVarSet0, ArgTerms,
+        BodyGoal, Context, MaybeSeqNum, PredStatus, PredOrFunc, Arity,
+        GoalType, Goal, VarSet, TVarSet, QuantWarnings,
+        !ClausesInfo, !ModuleInfo, !QualInfo, !Specs) :-
+    !.ClausesInfo = clauses_info(VarSet0, TVarNameMap0,
+        ExplicitVarTypes0, InferredVarTypes, HeadVars,
+        ClausesRep0, ItemNumbers0, RttiVarMaps,
+        HasForeignClauses, HadSyntaxError0),
     IsEmpty = clause_list_is_empty(ClausesRep0),
     (
         IsEmpty = yes,
@@ -489,37 +628,42 @@ clauses_info_add_clause(ApplModeIds0, AllModeIds, CVarSet, TVarSet0,
         IsEmpty = no,
         TVarNameMap = TVarNameMap0
     ),
-    update_qual_info(TVarNameMap, TVarSet0, ExplicitVarTypes0, Status,
-        !QualInfo),
+    ( if PredStatus = pred_status(status_opt_imported) then
+        MaybeOptImported = is_opt_imported
+    else
+        MaybeOptImported = is_not_opt_imported
+    ),
+    update_qual_info(TVarNameMap, TVarSet0, ExplicitVarTypes0,
+        MaybeOptImported, !QualInfo),
     varset.merge_renaming(VarSet0, CVarSet, VarSet1, Renaming),
-    add_clause_transform(Renaming, HeadVars, Args, Body, Context, PredOrFunc,
-        Arity, GoalType, Goal0, VarSet1, VarSet,
+    add_clause_transform(Renaming, HeadVars, ArgTerms, BodyGoal, Context,
+        PredOrFunc, Arity, GoalType, Goal0, VarSet1, VarSet,
         QuantWarnings, StateVarWarnings, StateVarErrors,
         !ModuleInfo, !QualInfo, !Specs),
     qual_info_get_tvarset(!.QualInfo, TVarSet),
     qual_info_get_found_syntax_error(!.QualInfo, FoundError),
     qual_info_set_found_syntax_error(no, !QualInfo),
-    (
+    ( if
         ( FoundError = yes
         ; StateVarErrors = [_ | _]
         )
-    ->
-        % Don't insert clauses containing syntax errors into the clauses_info,
-        % because doing that would cause typecheck.m to report spurious type
-        % errors. Don't report singleton variable warnings if there were
-        % syntax errors.
+    then
+        % Don't insert clauses containing syntax errors into the
+        % clauses_info, because doing that would cause typecheck.m
+        % to report spurious type errors. Don't report singleton variable
+        % warnings if there were syntax errors.
         !:Specs = StateVarErrors ++ !.Specs,
-        Goal = true_goal
-    ;
+        Goal = true_goal,
+        !ClausesInfo ^ cli_had_syntax_errors := yes
+    else
         Goal = Goal0,
-
         % If we have foreign clauses, we should only add this clause
         % for modes *not* covered by the foreign clauses.
         (
             HasForeignClauses = yes,
-            get_clause_list_any_order(ClausesRep0, AnyOrderClauseList),
+            get_clause_list(Clauses0, ClausesRep0, ClausesRep1),
             ForeignModeIds = list.condense(list.filter_map(
-                (func(C) = ProcIds is semidet :-
+                ( func(C) = ProcIds is semidet :-
                     C ^ clause_lang = impl_lang_foreign(_),
                     ApplProcIds = C ^ clause_applicable_procs,
                     (
@@ -529,7 +673,7 @@ clauses_info_add_clause(ApplModeIds0, AllModeIds, CVarSet, TVarSet0,
                         ApplProcIds = selected_modes(ProcIds)
                     )
                 ),
-                AnyOrderClauseList)),
+                Clauses0)),
             (
                 ApplModeIds0 = all_modes,
                 ModeIds0 = AllModeIds
@@ -539,13 +683,13 @@ clauses_info_add_clause(ApplModeIds0, AllModeIds, CVarSet, TVarSet0,
             ModeIds = list.delete_elems(ModeIds0, ForeignModeIds),
             (
                 ModeIds = [],
-                ClausesRep = ClausesRep0
+                ClausesRep = ClausesRep1
             ;
                 ModeIds = [_ | _],
                 ApplicableModeIds = selected_modes(ModeIds),
                 Clause = clause(ApplicableModeIds, Goal, impl_lang_mercury,
                     Context, StateVarWarnings),
-                add_clause(Clause, ClausesRep0, ClausesRep)
+                add_clause(Clause, ClausesRep1, ClausesRep)
             )
         ;
             HasForeignClauses = no,
@@ -556,12 +700,14 @@ clauses_info_add_clause(ApplModeIds0, AllModeIds, CVarSet, TVarSet0,
         qual_info_get_var_types(!.QualInfo, ExplicitVarTypes),
         add_clause_item_number(MaybeSeqNum, Context, item_is_clause,
             ItemNumbers0, ItemNumbers),
-        !:ClausesInfo = clauses_info(VarSet, ExplicitVarTypes, TVarNameMap,
-            InferredVarTypes, HeadVars, ClausesRep, ItemNumbers,
-            RttiVarMaps, HasForeignClauses)
+        !:ClausesInfo = clauses_info(VarSet, TVarNameMap,
+            ExplicitVarTypes, InferredVarTypes, HeadVars,
+            ClausesRep, ItemNumbers, RttiVarMaps,
+            HasForeignClauses, HadSyntaxError0)
     ).
 
-    % Args0 has already had !S arguments replaced by a !.S, !:S argument pair.
+    % ArgTerms0 has already had !S arguments replaced by
+    % !.S, !:S argument pairs.
     %
 :- pred add_clause_transform(prog_var_renaming::in,
     proc_arg_vector(prog_var)::in, list(prog_term)::in, goal::in,
@@ -571,21 +717,23 @@ clauses_info_add_clause(ApplModeIds0, AllModeIds, CVarSet, TVarSet0,
     module_info::in, module_info::out, qual_info::in, qual_info::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
-add_clause_transform(Renaming, HeadVars, Args0, ParseBody, Context, PredOrFunc,
-        Arity, GoalType, Goal, !VarSet, QuantWarnings, StateVarWarnings,
-        StateVarErrors, !ModuleInfo, !QualInfo, !Specs) :-
+add_clause_transform(Renaming, HeadVars, ArgTerms0, ParseTreeBodyGoal, Context,
+        PredOrFunc, Arity, GoalType, Goal, !VarSet,
+        QuantWarnings, StateVarWarnings, StateVarErrors,
+        !ModuleInfo, !QualInfo, !Specs) :-
     some [!SInfo, !SVarState, !SVarStore] (
         HeadVarList = proc_arg_vector_to_list(HeadVars),
-        rename_vars_in_term_list(need_not_rename, Renaming, Args0, Args1),
-        svar_prepare_for_clause_head(Args1, Args, !VarSet, FinalSVarMap,
-            !:SVarState, !:SVarStore, !Specs),
+        rename_vars_in_term_list(need_not_rename, Renaming,
+            ArgTerms0, ArgTerms1),
+        svar_prepare_for_clause_head(ArgTerms1, ArgTerms, !VarSet,
+            FinalSVarMap, !:SVarState, !:SVarStore, !Specs),
         InitialSVarState = !.SVarState,
-        ( GoalType = goal_type_promise(_) ->
+        ( if GoalType = goal_type_promise(_) then
             HeadGoal = true_goal
-        ;
+        else
             ArgContext = ac_head(PredOrFunc, Arity),
             HeadGoal0 = true_goal,
-            insert_arg_unifications(HeadVarList, Args, Context, ArgContext,
+            insert_arg_unifications(HeadVarList, ArgTerms, Context, ArgContext,
                 HeadGoal0, HeadGoal1, !SVarState, !SVarStore, !VarSet,
                 !ModuleInfo, !QualInfo, !Specs),
             % The only pass that pays attention to the from_head feature,
@@ -603,20 +751,20 @@ add_clause_transform(Renaming, HeadVars, Args0, ParseBody, Context, PredOrFunc,
             attach_features_to_all_goals([feature_from_head],
                 do_not_attach_in_from_ground_term, HeadGoal1, HeadGoal)
         ),
-        transform_goal_expr_context_to_goal(loc_whole_goal, ParseBody,
+        transform_parse_tree_goal_to_hlds(loc_whole_goal, ParseTreeBodyGoal,
             Renaming, BodyGoal, !SVarState, !SVarStore, !VarSet,
             !ModuleInfo, !QualInfo, !Specs),
 
         trace [compiletime(flag("debug-statevar-lambda")), io(!IO)] (
             io.write_string("\nCLAUSE HEAD\n", !IO),
-            io.write_string("args before:\n", !IO),
-            io.write_list(Args0, "\n", io.write, !IO),
+            io.write_string("arg terms before:\n", !IO),
+            io.write_list(ArgTerms0, "\n", io.write, !IO),
             io.nl(!IO),
-            io.write_string("args renamed:\n", !IO),
-            io.write_list(Args1, "\n", io.write, !IO),
+            io.write_string("arg terms renamed:\n", !IO),
+            io.write_list(ArgTerms1, "\n", io.write, !IO),
             io.nl(!IO),
-            io.write_string("args after:\n", !IO),
-            io.write_list(Args, "\n", io.write, !IO),
+            io.write_string("arg terms after:\n", !IO),
+            io.write_list(ArgTerms, "\n", io.write, !IO),
             io.nl(!IO),
             io.write_string("head vars:\n", !IO),
             io.write(HeadVarList, !IO),

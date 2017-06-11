@@ -85,24 +85,19 @@
 :- import_module libs.process_util.
 :- import_module parse_tree.file_names.
 :- import_module parse_tree.module_cmds.
-:- import_module parse_tree.prog_data.
-:- import_module parse_tree.prog_item.
 :- import_module parse_tree.prog_foreign.
+:- import_module top_level.                      % XXX unwanted dependency
+:- import_module top_level.mercury_compile_main. % XXX unwanted dependency
 :- import_module transform_hlds.
 :- import_module transform_hlds.mmc_analysis.
 
 :- import_module dir.
+:- import_module int.
 :- import_module float.
 :- import_module require.
+:- import_module sparse_bitset.
 
 %-----------------------------------------------------------------------------%
-
-:- pred make_module_target_acc(globals::in, dependency_file::in,
-    bool::in, bool::out, make_info::in, make_info::out, io::di, io::uo) is det.
-
-make_module_target_acc(Globals, TargetFile, !Succeeded, !Info, !IO) :-
-    make_module_target(Globals, TargetFile, TargetSucceeded, !Info, !IO),
-    bool.and(TargetSucceeded, !Succeeded).
 
 make_module_target(Globals, DepFile, Succeeded, !Info, !IO) :-
     make_module_target_extra_options([], Globals, DepFile, Succeeded,
@@ -148,20 +143,20 @@ make_module_target_file_extra_options(ExtraOptions, Globals, TargetFile,
         ;
             MaybeImports = yes(Imports),
             CompilationTask = compilation_task(Globals, FileType),
-            (
+            ( if
                 % For a target built by processing a Mercury source file,
                 % the target for a nested sub-module is produced as a side
                 % effect of making the target for the top-level module in
                 % the file.
                 CompilationTask = process_module(_) - _,
                 Imports ^ mai_source_file_module_name \= ModuleName
-            ->
+            then
                 NestedTargetFile = target_file(
                     Imports ^ mai_source_file_module_name, FileType),
                 make_module_target_extra_options(ExtraOptions, Globals,
                     dep_target(NestedTargetFile),
                     Succeeded, !Info, !IO)
-            ;
+            else
                 CompilationTask = CompilationTaskType - _,
                 touched_files(Globals, TargetFile, CompilationTaskType,
                     TouchedTargetFiles, TouchedFiles, !Info, !IO),
@@ -171,10 +166,10 @@ make_module_target_file_extra_options(ExtraOptions, Globals, TargetFile,
                 debug_file_msg(Globals, TargetFile, "checking dependencies",
                     !IO),
 
-                ( CompilationTask = process_module(_) - _ ->
-                    ModulesToCheck =
-                        [ModuleName | Imports ^ mai_nested_children]
-                ;
+                ( if CompilationTask = process_module(_) - _ then
+                    ModulesToCheck = [ModuleName |
+                        set.to_sorted_list(Imports ^ mai_nested_children)]
+                else
                     ModulesToCheck = [ModuleName]
                 ),
                 module_names_to_index_set(ModulesToCheck, ModulesToCheckSet,
@@ -182,14 +177,14 @@ make_module_target_file_extra_options(ExtraOptions, Globals, TargetFile,
 
                 deps_set_foldl3_maybe_stop_at_error(!.Info ^ keep_going,
                     union_deps(target_dependencies(Globals, FileType)),
-                    Globals, ModulesToCheckSet, DepsSuccess, init, DepFiles0,
-                    !Info, !IO),
+                    Globals, ModulesToCheckSet, DepsSuccess,
+                    sparse_bitset.init, DepFiles0, !Info, !IO),
                 dependency_file_index_set_to_plain_set(!.Info, DepFiles0,
                     DepFilesSet0),
-                (
+                ( if
                     TargetFile = target_file(_, TargetType),
                     TargetType = module_target_private_interface
-                ->
+                then
                     % Avoid circular dependencies (the `.int0' files
                     % for the nested sub-modules depend on this module's
                     % `.int0' file).
@@ -197,12 +192,12 @@ make_module_target_file_extra_options(ExtraOptions, Globals, TargetFile,
                         module_target_private_interface),
                     DepFilesToMake = set.to_sorted_list(
                         set.delete_list(DepFilesSet0, PrivateInts))
-                ;
+                else
                     DepFilesToMake = set.to_sorted_list(DepFilesSet0)
                 ),
 
-                debug_msg(Globals,
-                   (pred(!.IO::di, !:IO::uo) is det :-
+                debug_make_msg(Globals,
+                   ( pred(!.IO::di, !:IO::uo) is det :-
                         make_write_target_file(Globals, TargetFile, !IO),
                         io.write_string(": dependencies:\n", !IO),
                         dependency_file_index_set_to_plain_set(!.Info,
@@ -212,12 +207,12 @@ make_module_target_file_extra_options(ExtraOptions, Globals, TargetFile,
                 ), !IO),
 
                 globals.lookup_bool_option(Globals, keep_going, KeepGoing),
-                (
+                ( if
                     DepsSuccess = no,
                     KeepGoing = no
-                ->
+                then
                     DepsResult = deps_error
-                ;
+                else
                     make_dependency_files(Globals, TargetFile, DepFilesToMake,
                         TouchedTargetFiles, TouchedFiles, DepsResult0,
                         !Info, !IO),
@@ -258,23 +253,8 @@ make_module_target_file_extra_options(ExtraOptions, Globals, TargetFile,
         Succeeded = yes
     ;
         Status = deps_status_being_built,
-        (
-            TargetFile = target_file(_FileName, FileType),
-            FileType = module_target_foreign_il_asm(_Lang)
-        ->
-            io.write_string("Error: circular dependency detected " ++
-                "while building\n", !IO),
-            io.write_string("  `", !IO),
-            make_write_dependency_file(Globals, Dep, !IO),
-            io.write_string("'.\n", !IO),
-            io.write_string("  This is due to a forbidden " ++
-                "foreign_import_module cycle.\n", !IO),
-            io.set_exit_status(1, !IO)
-        ;
-            unexpected($module, $pred,
-                "target being built, circular dependencies?")
-        ),
-        Succeeded = no
+        unexpected($module, $pred,
+            "target being built, circular dependencies?")
     ;
         Status = deps_status_error,
         Succeeded = no
@@ -303,18 +283,18 @@ make_dependency_files(Globals, TargetFile, DepFilesToMake, TouchedTargetFiles,
         DepsResult = deps_error
     ;
         MakeDepsSuccess = yes,
-        ( list.member(error(_), TargetTimestamps) ->
+        ( if list.member(error(_), TargetTimestamps) then
             debug_file_msg(Globals, TargetFile, "target file does not exist",
                 !IO),
             DepsResult = deps_out_of_date
-        ;
-            (
+        else
+            ( if
                 TargetFile = target_file(ModuleName, FileType),
                 FileType = module_target_analysis_registry
-            ->
+            then
                 force_reanalysis_of_suboptimal_module(Globals, ModuleName,
                     ForceReanalysis, !.Info, !IO)
-            ;
+            else
                 ForceReanalysis = no
             ),
             (
@@ -350,7 +330,7 @@ make_dependency_files(Globals, TargetFile, DepFilesToMake, TouchedTargetFiles,
 
 force_reanalysis_of_suboptimal_module(Globals, ModuleName, ForceReanalysis,
         Info, !IO) :-
-    ( Info ^ reanalysis_passes > 0 ->
+    ( if Info ^ reanalysis_passes > 0 then
         do_read_module_overall_status(mmc, Globals, ModuleName, AnalysisStatus,
             !IO),
         (
@@ -362,7 +342,7 @@ force_reanalysis_of_suboptimal_module(Globals, ModuleName, ForceReanalysis,
             AnalysisStatus = optimal,
             ForceReanalysis = no
         )
-    ;
+    else
         ForceReanalysis = no
     ).
 
@@ -378,60 +358,77 @@ build_target(Globals, CompilationTask, TargetFile, Imports, TouchedTargetFiles,
     maybe_make_target_message(Globals, TargetFile, !IO),
     TargetFile = target_file(ModuleName, _FileType),
     CompilationTask = Task - TaskOptions,
-    (
+    ( if
         CompilationTask = process_module(ModuleTask) - _,
         forkable_module_compilation_task_type(ModuleTask) = yes,
-        \+ can_fork
-    ->
+        not can_fork
+    then
         % We need a temporary file to pass the arguments to the mmc process
-        % which will do the compilation.  It's created here
-        % (not in invoke_mmc) so it can be cleaned up by
-        % build_with_check_for_interrupt.
-        io.make_temp(ArgFileName, !IO),
-        MaybeArgFileName = yes(ArgFileName)
-    ;
-        MaybeArgFileName = no
-    ),
-    Cleanup =
-        (pred(!.MakeInfo::in, !:MakeInfo::out, !.IO::di, !:IO::uo) is det :-
-            % XXX Remove `.int.tmp' files.
-            list.foldl2(make_remove_target_file(Globals, very_verbose),
-                TouchedTargetFiles, !MakeInfo, !IO),
-            list.foldl2(make_remove_file(Globals, very_verbose), TouchedFiles,
-                !MakeInfo, !IO),
-            (
-                MaybeArgFileName = yes(ArgFileName2),
-                io.remove_file(ArgFileName2, _, !IO)
-            ;
-                MaybeArgFileName = no
-            )
-        ),
-
-    get_real_milliseconds(Time0, !IO),
-    globals.lookup_bool_option(Globals, very_verbose, VeryVerbose),
-    build_with_check_for_interrupt(VeryVerbose,
-        build_with_module_options_and_output_redirect(Globals, ModuleName,
-            ExtraOptions ++ TaskOptions,
-            build_target_2(ModuleName, Task, MaybeArgFileName, Imports)),
-        Cleanup, Succeeded, !Info, !IO),
-    record_made_target_2(Globals, Succeeded, TargetFile, TouchedTargetFiles,
-        TouchedFiles, !Info, !IO),
-    get_real_milliseconds(Time, !IO),
-
-    globals.lookup_bool_option(Globals, show_make_times, ShowMakeTimes),
-    (
-        ShowMakeTimes = yes,
-        DiffSecs = float(Time - Time0) / 1000.0,
-        % Avoid cluttering the screen with short running times.
-        ( DiffSecs >= 0.4 ->
-            io.write_string("Making ", !IO),
-            make_write_target_file(Globals, TargetFile, !IO),
-            io.format(" took %.2fs\n", [f(DiffSecs)], !IO)
+        % which will do the compilation. It is created here (not in invoke_mmc)
+        % so it can be cleaned up by build_with_check_for_interrupt.
+        io.make_temp_file(ArgFileNameResult, !IO),
+        (
+            ArgFileNameResult = ok(ArgFileName),
+            MaybeArgFileName = yes(ArgFileName),
+            ArgFileNameSuccess = ok
         ;
-            true
+            ArgFileNameResult = error(Error),
+            MaybeArgFileName = no,
+            ArgFileNameSuccess = error(Error)
+        )
+    else
+        MaybeArgFileName = no,
+        ArgFileNameSuccess = ok
+    ),
+
+    (
+        ArgFileNameSuccess = ok : io.res,
+        Cleanup = (pred(!.MakeInfo::in, !:MakeInfo::out, !.IO::di, !:IO::uo)
+                    is det :-
+                % XXX Remove `.int.tmp' files.
+                list.foldl2(make_remove_target_file(Globals, very_verbose),
+                    TouchedTargetFiles, !MakeInfo, !IO),
+                list.foldl2(make_remove_file(Globals, very_verbose),
+                    TouchedFiles, !MakeInfo, !IO),
+                (
+                    MaybeArgFileName = yes(ArgFileName2),
+                    io.remove_file(ArgFileName2, _, !IO)
+                ;
+                    MaybeArgFileName = no
+                )
+            ),
+
+        get_real_milliseconds(Time0, !IO),
+        globals.lookup_bool_option(Globals, very_verbose, VeryVerbose),
+        build_with_check_for_interrupt(VeryVerbose,
+            build_with_module_options_and_output_redirect(Globals, ModuleName,
+                ExtraOptions ++ TaskOptions,
+                build_target_2(ModuleName, Task, MaybeArgFileName, Imports)),
+            Cleanup, Succeeded, !Info, !IO),
+        record_made_target_2(Globals, Succeeded, TargetFile, TouchedTargetFiles,
+            TouchedFiles, !Info, !IO),
+        get_real_milliseconds(Time, !IO),
+
+        globals.lookup_bool_option(Globals, show_make_times, ShowMakeTimes),
+        (
+            ShowMakeTimes = yes,
+            DiffSecs = float(Time - Time0) / 1000.0,
+            % Avoid cluttering the screen with short running times.
+            ( if DiffSecs >= 0.4 then
+                io.write_string("Making ", !IO),
+                make_write_target_file(Globals, TargetFile, !IO),
+                io.format(" took %.2fs\n", [f(DiffSecs)], !IO)
+            else
+                true
+            )
+        ;
+            ShowMakeTimes = no
         )
     ;
-        ShowMakeTimes = no
+        ArgFileNameSuccess = error(ArgFileError),
+        io.format(stderr_stream, "Could not create temporary file: %s\n",
+            [s(error_message(ArgFileError))], !IO),
+        Succeeded = no
     ).
 
 :- pred build_target_2(module_name::in, compilation_task_type::in,
@@ -459,7 +456,7 @@ build_target_2(ModuleName, Task, ArgFileName, Imports, Globals, AllOptionArgs,
             Verbose = no
         ),
 
-        % Run compilations to target code in a separate process.  This avoids
+        % Run compilations to target code in a separate process. This avoids
         % problems with the Boehm GC retaining memory by scanning too much of
         % the Mercury stacks. If the compilation is run in a separate process,
         % it is also easier to kill if an interrupt arrives. We do the same for
@@ -481,15 +478,15 @@ build_target_2(ModuleName, Task, ArgFileName, Imports, Globals, AllOptionArgs,
         ),
         io.set_output_stream(OldOutputStream, _, !IO),
 
-        (
+        ( if
             ( ModuleTask = task_compile_to_target_code
             ; ModuleTask = task_errorcheck
             )
-        ->
+        then
             % The `.err_date' file is needed because the `.err' file is touched
             % by all phases of compilation, including writing interfaces.
             touch_interface_datestamp(Globals, ModuleName, ".err_date", !IO)
-        ;
+        else
             true
         )
     ;
@@ -530,34 +527,27 @@ build_target_2(ModuleName, Task, ArgFileName, Imports, Globals, AllOptionArgs,
     pic::in, io.output_stream::in, module_and_imports::in, bool::out,
     io::di, io::uo) is det.
 
-build_object_code(Globals, ModuleName, Target, PIC, ErrorStream, Imports,
+build_object_code(Globals, ModuleName, Target, PIC, ErrorStream, _Imports,
         Succeeded, !IO) :-
     (
         Target = target_c,
-        compile_c_file(ErrorStream, PIC, ModuleName, Globals, Succeeded, !IO)
+        compile_c_file(Globals, ErrorStream, PIC, ModuleName, Succeeded, !IO)
     ;
         Target = target_java,
         module_name_to_file_name(Globals, ModuleName, ".java", do_create_dirs,
             JavaFile, !IO),
-        compile_java_files(ErrorStream, [JavaFile], Globals, Succeeded, !IO)
+        compile_java_files(Globals, ErrorStream, [JavaFile], Succeeded, !IO)
     ;
         Target = target_csharp,
         module_name_to_file_name(Globals, ModuleName, ".cs", do_create_dirs,
             CsharpFile, !IO),
-        compile_target_code.link(ErrorStream, csharp_library, ModuleName,
-            [CsharpFile], Globals, Succeeded, !IO)
-    ;
-        Target = target_il,
-        il_assemble(ErrorStream, ModuleName, Imports ^ mai_has_main,
-            Globals, Succeeded, !IO)
-    ;
-        Target = target_x86_64,
-        sorry($module, $pred, "NYI mmc --make and target x86_64")
+        compile_target_code.link(Globals, ErrorStream, csharp_library,
+            ModuleName, [CsharpFile], Succeeded, !IO)
     ;
         Target = target_erlang,
         module_name_to_file_name(Globals, ModuleName, ".erl", do_create_dirs,
             ErlangFile, !IO),
-        compile_erlang_file(ErrorStream, ErlangFile, Globals, Succeeded, !IO)
+        compile_erlang_file(Globals, ErrorStream, ErlangFile, Succeeded, !IO)
     ).
 
 :- pred compile_foreign_code_file(globals::in, io.output_stream::in, pic::in,
@@ -568,22 +558,18 @@ compile_foreign_code_file(Globals, ErrorStream, PIC, Imports, ForeignCodeFile,
         Succeeded, !IO) :-
     (
         ForeignCodeFile = foreign_code_file(lang_c, CFile, ObjFile),
-        do_compile_c_file(ErrorStream, PIC, CFile, ObjFile, Globals, Succeeded,
+        do_compile_c_file(Globals, ErrorStream, PIC, CFile, ObjFile, Succeeded,
             !IO)
     ;
-        ForeignCodeFile = foreign_code_file(lang_il, ILFile, DLLFile),
-        do_il_assemble(ErrorStream, ILFile, DLLFile, no_main,
-            Globals, Succeeded, !IO)
-    ;
         ForeignCodeFile = foreign_code_file(lang_java, JavaFile, _ClassFile),
-        compile_java_files(ErrorStream, [JavaFile], Globals, Succeeded, !IO)
+        compile_java_files(Globals, ErrorStream, [JavaFile], Succeeded, !IO)
     ;
         ForeignCodeFile = foreign_code_file(lang_csharp, CSharpFile, DLLFile),
-        compile_csharp_file(ErrorStream, Imports, CSharpFile, DLLFile,
-            Globals, Succeeded, !IO)
+        compile_csharp_file(Globals, ErrorStream, Imports, CSharpFile, DLLFile,
+            Succeeded, !IO)
     ;
         ForeignCodeFile = foreign_code_file(lang_erlang, ErlFile, _BeamFile),
-        compile_erlang_file(ErrorStream, ErlFile, Globals, Succeeded, !IO)
+        compile_erlang_file(Globals, ErrorStream, ErlFile, Succeeded, !IO)
     ).
 
 :- func forkable_module_compilation_task_type(module_compilation_task_type)
@@ -604,13 +590,13 @@ forkable_module_compilation_task_type(task_make_xml_doc) = yes.
     foreign_language::in, foreign_code_file::out, io::di, io::uo) is det.
 
 get_foreign_code_file(Globals, ModuleName, PIC, Lang, ForeignCodeFile, !IO) :-
-    (
+    ( if
         ForeignModName0 = foreign_language_module_name(ModuleName, Lang),
         SrcExt0 = foreign_language_file_extension(Lang)
-    ->
+    then
         ForeignModName = ForeignModName0,
         SrcExt = SrcExt0
-    ;
+    else
         unexpected($module, $pred, "unsupported foreign language")
     ),
     ObjExt = get_object_extension(Globals, PIC),
@@ -640,17 +626,11 @@ get_object_extension(Globals, PIC) = Ext :-
         CompilationTarget = target_c,
         maybe_pic_object_file_extension(Globals, PIC, Ext)
     ;
-        CompilationTarget = target_il,
-        Ext = ".dll"
-    ;
         CompilationTarget = target_csharp,
         sorry($module, $pred, "object extension for csharp")
     ;
         CompilationTarget = target_java,
         sorry($module, $pred, "object extension for java")
-    ;
-        CompilationTarget = target_x86_64,
-        sorry($module, $pred, "mmc --make NYI and target x86_64")
     ;
         CompilationTarget = target_erlang,
         sorry($module, $pred, "mmc --make NYI and target erlang")
@@ -664,9 +644,9 @@ get_object_extension(Globals, PIC) = Ext :-
 call_mercury_compile_main(Globals, Args, Succeeded, !IO) :-
     io.get_exit_status(Status0, !IO),
     io.set_exit_status(0, !IO),
-    mercury_compile.main_for_make(Globals, Args, !IO),
+    mercury_compile_main.main_for_make(Globals, Args, !IO),
     io.get_exit_status(Status, !IO),
-    Succeeded = ( Status = 0 -> yes ; no ),
+    Succeeded = ( if Status = 0 then yes else no ),
     io.set_exit_status(Status0, !IO).
 
 :- pred invoke_mmc(globals::in, io.output_stream::in, maybe(file_name)::in,
@@ -674,7 +654,17 @@ call_mercury_compile_main(Globals, Args, Succeeded, !IO) :-
 
 invoke_mmc(Globals, ErrorStream, MaybeArgFileName, Args, Succeeded, !IO) :-
     io.progname("", ProgName, !IO),
-    ( ProgName = "" ->
+    ( if
+        % NOTE: if the compiler is built in the Java grade then ProgName will
+        % be set to "top_level" (which was the name compiled into the module
+        % containing the predicate main/2). We don't want to attempt to
+        % invoke an executable named "top_level" however, since the wrapper
+        % script will have been renamed to "mercury_compile" by the Mmakefile
+        % in the compiler directory.
+        ( ProgName = ""
+        ; target_is_java
+        )
+    then
         io.get_environment_var("MERCURY_COMPILER", MaybeMercuryCompiler, !IO),
         (
             MaybeMercuryCompiler = yes(MercuryCompiler)
@@ -682,7 +672,7 @@ invoke_mmc(Globals, ErrorStream, MaybeArgFileName, Args, Succeeded, !IO) :-
             MaybeMercuryCompiler = no,
             MercuryCompiler = "mmc"
         )
-    ;
+    else
         MercuryCompiler = ProgName
     ),
 
@@ -721,13 +711,23 @@ invoke_mmc(Globals, ErrorStream, MaybeArgFileName, Args, Succeeded, !IO) :-
     ;
         ArgFileOpenRes = error(Error),
         Succeeded = no,
-        io.write_string("Error opening `", !IO),
-        io.write_string(ArgFileName, !IO),
-        io.write_string("' for output: ", !IO),
-        io.write_string(io.error_message(Error), !IO),
-        io.nl(!IO)
+        io.error_message(Error, ErrorMsg),
+        io.format("Error opening `%s' for output: %s\n",
+            [s(ArgFileName), s(ErrorMsg)], !IO)
     ),
     io.remove_file(ArgFileName, _, !IO).
+
+:- pred target_is_java is semidet.
+
+:- pragma foreign_proc("Java",
+    target_is_java,
+    [promise_pure, will_not_call_mercury, thread_safe],
+"
+    SUCCESS_INDICATOR = true;
+").
+
+target_is_java :-
+    semidet_fail.
 
 %-----------------------------------------------------------------------------%
 
@@ -769,10 +769,10 @@ record_made_target_2(Globals, Succeeded, TargetFile, TouchedTargetFiles,
         % of files which might be affected can be found by reading the
         % corresponding .imdg file. But it is simpler to just delete the
         % timestamps of all the .analysis files that we know about.
-        ( TargetFile = target_file(_, module_target_analysis_registry) ->
+        ( if TargetFile = target_file(_, module_target_analysis_registry) then
             map.foldl(delete_analysis_registry_timestamps(Globals),
                 !.Timestamps, !Timestamps)
-        ;
+        else
             true
         ),
 
@@ -791,9 +791,9 @@ update_target_status(TargetStatus, TargetFile, !Info) :-
     file_timestamps::in, file_timestamps::out) is det.
 
 delete_analysis_registry_timestamps(Globals, FileName, _, !Timestamps) :-
-    ( string.suffix(FileName, ".analysis") ->
+    ( if string.suffix(FileName, ".analysis") then
         delete_timestamp(Globals, FileName, !Timestamps)
-    ;
+    else
         true
     ).
 
@@ -802,8 +802,8 @@ delete_analysis_registry_timestamps(Globals, FileName, _, !Timestamps) :-
 
 delete_timestamp(Globals, TouchedFile, !Timestamps) :-
     trace [io(!IO)] (
-        debug_msg(Globals,
-            (pred(!.IO::di, !:IO::uo) is det :-
+        debug_make_msg(Globals,
+            ( pred(!.IO::di, !:IO::uo) is det :-
                 io.write_string("Deleting timestamp for ", !IO),
                 io.write_string(TouchedFile, !IO),
                 io.nl(!IO)
@@ -841,10 +841,6 @@ compilation_task(Globals, module_target_c_header(_)) =
         compilation_task(Globals, module_target_c_code).
 compilation_task(_, module_target_c_code) =
     process_module(task_compile_to_target_code) - ["--compile-to-c"].
-compilation_task(_, module_target_il_code) =
-    process_module(task_compile_to_target_code) - ["--il-only"].
-compilation_task(_, module_target_il_asm) =
-        target_code_to_object_code(non_pic) - [].
 compilation_task(_, module_target_csharp_code) =
     process_module(task_compile_to_target_code) - ["--csharp-only"].
 compilation_task(_, module_target_java_code) =
@@ -858,23 +854,13 @@ compilation_task(_, module_target_erlang_code) =
 compilation_task(_, module_target_erlang_beam_code) =
         target_code_to_object_code(non_pic) - [].
 compilation_task(_, module_target_object_code(PIC)) =
-    target_code_to_object_code(PIC) - get_pic_flags(PIC).
-compilation_task(_, module_target_foreign_il_asm(Lang)) =
-    foreign_code_to_object_code(non_pic, Lang) - [].
+    target_code_to_object_code(PIC) - [].
 compilation_task(_, module_target_foreign_object(PIC, Lang)) =
-    foreign_code_to_object_code(PIC, Lang) - get_pic_flags(PIC).
+    foreign_code_to_object_code(PIC, Lang) - [].
 compilation_task(_, module_target_fact_table_object(PIC, FactTable)) =
-    fact_table_code_to_object_code(PIC, FactTable) - get_pic_flags(PIC).
+    fact_table_code_to_object_code(PIC, FactTable) - [].
 compilation_task(_, module_target_xml_doc) =
     process_module(task_make_xml_doc) - ["--make-xml-doc"].
-
-:- func get_pic_flags(pic) = list(string).
-
-% `--pic-reg' is harmless for architectures and grades where it is not needed
-% (it's only needed for grades using GCC global register variables on x86).
-get_pic_flags(pic) = ["--pic-reg"].
-get_pic_flags(link_with_pic) = ["--pic-reg"].
-get_pic_flags(non_pic) = [].
 
     % Find the files which could be touched by a compilation task.
     %
@@ -930,19 +916,19 @@ touched_files_process_module(Globals, TargetFile, Task, TouchedTargetFiles,
         unexpected($module, $pred, "no module dependencies")
     ),
 
-    NestedChildren = Imports ^ mai_nested_children,
+    NestedChildren = set.to_sorted_list(Imports ^ mai_nested_children),
     SourceFileModuleNames = [ModuleName | NestedChildren],
 
     list.map_foldl2(get_module_dependencies(Globals), NestedChildren,
         MaybeNestedImportsList, !Info, !IO),
-    (
+    ( if
         list.map(
-            (pred(yes(NestedModuleImports)::in, NestedModuleImports::out)
+            ( pred(yes(NestedModuleImports)::in, NestedModuleImports::out)
                 is semidet),
             MaybeNestedImportsList, NestedImportsList)
-    ->
+    then
         ModuleImportsList = [Imports | NestedImportsList]
-    ;
+    else
         % This error should have been caught earlier. We shouldn't be
         % attempting to build a target if we couldn't find the dependencies
         % for the module or its nested sub-modules.
@@ -976,8 +962,7 @@ touched_files_process_module(Globals, TargetFile, Task, TouchedTargetFiles,
                 HeaderTargets0 = []
             )
         ;
-            ( CompilationTarget = target_il
-            ; CompilationTarget = target_csharp
+            ( CompilationTarget = target_csharp
             ; CompilationTarget = target_java
             ),
             HeaderTargets0 = []
@@ -987,9 +972,6 @@ touched_files_process_module(Globals, TargetFile, Task, TouchedTargetFiles,
             HeaderModuleNames = SourceFileModuleNames,
             HeaderTargets0 = make_target_file_list(HeaderModuleNames,
                 module_target_erlang_header)
-        ;
-            CompilationTarget = target_x86_64,
-            sorry($module, $pred, "NYI mmc --make and target x86_64")
         ),
 
         (
@@ -999,8 +981,7 @@ touched_files_process_module(Globals, TargetFile, Task, TouchedTargetFiles,
                 make_target_file_list(Names, module_target_c_header(header_mh))
                 ++ HeaderTargets0
         ;
-            ( CompilationTarget = target_il
-            ; CompilationTarget = target_csharp
+            ( CompilationTarget = target_csharp
             ; CompilationTarget = target_java
             ; CompilationTarget = target_erlang
             ),
@@ -1032,20 +1013,23 @@ touched_files_process_module(Globals, TargetFile, Task, TouchedTargetFiles,
         ForeignCodeFiles = [],
         TouchedTargetFiles = make_target_file_list(TargetModuleNames, FileType)
     ),
-    list.foldl2(
-        (pred(TouchedTargetFile::in,
-            !.TimestampFiles::in, !:TimestampFiles::out, !.IO::di, !:IO::uo)
-            is det :-
-        TouchedTargetFile = target_file(TargetModuleName, TargetFileType),
-        ( TimestampExt = timestamp_extension(Globals, TargetFileType) ->
-            module_name_to_file_name(Globals, TargetModuleName, TimestampExt,
-                do_not_create_dirs, TimestampFile, !IO),
-            list.cons(TimestampFile, !TimestampFiles)
-        ;
-            true
-        )
-    ), TouchedTargetFiles, [], TimestampFileNames, !IO),
+    list.foldl2(gather_target_file_timestamp_file_names(Globals),
+        TouchedTargetFiles, [], TimestampFileNames, !IO),
     TouchedFileNames = ForeignCodeFiles ++ TimestampFileNames.
+
+:- pred gather_target_file_timestamp_file_names(globals::in, target_file::in,
+    list(string)::in, list(string)::out, io::di, io::uo) is det.
+
+gather_target_file_timestamp_file_names(Globals, TouchedTargetFile,
+        !TimestampFileNames, !IO) :-
+    TouchedTargetFile = target_file(TargetModuleName, TargetFileType),
+    ( if timestamp_extension(TargetFileType, TimestampExt) then
+        module_name_to_file_name(Globals, TargetModuleName, TimestampExt,
+            do_not_create_dirs, TimestampFile, !IO),
+        list.cons(TimestampFile, !TimestampFileNames)
+    else
+        true
+    ).
 
 external_foreign_code_files(Globals, PIC, Imports, ForeignFiles, !IO) :-
     % Find externally compiled foreign code files for
@@ -1054,61 +1038,38 @@ external_foreign_code_files(Globals, PIC, Imports, ForeignFiles, !IO) :-
     maybe_pic_object_file_extension(Globals, PIC, ObjExt),
     globals.get_target(Globals, CompilationTarget),
     ModuleName = Imports ^ mai_module_name,
-    (
-        CompilationTarget = target_il,
-        Imports ^ mai_has_foreign_code = contains_foreign_code(Langs)
-    ->
-        list.map_foldl(external_foreign_code_files_for_il(Globals, ModuleName),
-            set.to_sorted_list(Langs), ForeignFilesList, !IO),
-        list.condense(ForeignFilesList, ForeignFiles0)
-    ;
-        ForeignFiles0 = []
-    ),
+
+    % None of the current backends require estnerally compiled foreign
+    % code.
+    ForeignFiles0 = [],
 
     % Find externally compiled foreign code files for fact tables.
     (
         CompilationTarget = target_c,
         list.map_foldl(
-            (pred(FactTableFile::in, FactTableForeignFile::out, di, uo)
-                    is det -->
-                fact_table_file_name(Globals, ModuleName, FactTableFile,
-                    ".c", do_not_create_dirs, FactTableCFile),
-                fact_table_file_name(Globals, ModuleName, FactTableFile,
-                    ObjExt, do_not_create_dirs, FactTableObjFile),
-                { FactTableForeignFile = foreign_code_file(lang_c,
-                    FactTableCFile, FactTableObjFile) }
-            ), Imports ^ mai_fact_table_deps, FactTableForeignFiles, !IO),
+            get_fact_table_foreign_code_file(Globals, ObjExt, ModuleName),
+            Imports ^ mai_fact_table_deps, FactTableForeignFiles, !IO),
         ForeignFiles = ForeignFiles0 ++ FactTableForeignFiles
     ;
         ( CompilationTarget = target_java
         ; CompilationTarget = target_csharp
-        ; CompilationTarget = target_il
-        ; CompilationTarget = target_x86_64
         ; CompilationTarget = target_erlang
         ),
         ForeignFiles = ForeignFiles0
     ).
 
-:- pred external_foreign_code_files_for_il(globals::in, module_name::in,
-    foreign_language::in, list(foreign_code_file)::out,
+:- pred get_fact_table_foreign_code_file(globals::in, string::in,
+    module_name::in, file_name::in, foreign_code_file::out,
     io::di, io::uo) is det.
 
-external_foreign_code_files_for_il(Globals, ModuleName, Language, ForeignFiles,
-        !IO) :-
-    (
-        ForeignModuleName = foreign_language_module_name(ModuleName, Language),
-        ForeignExt = foreign_language_file_extension(Language)
-    ->
-        module_name_to_file_name(Globals, ForeignModuleName, ForeignExt,
-            do_create_dirs, ForeignFileName, !IO),
-        module_name_to_file_name(Globals, ForeignModuleName, ".dll",
-            do_create_dirs, ForeignDLLFileName, !IO),
-        ForeignFiles = [foreign_code_file(Language, ForeignFileName,
-            ForeignDLLFileName)]
-    ;
-        % No external file is generated for this foreign language.
-        ForeignFiles = []
-    ).
+get_fact_table_foreign_code_file(Globals, ObjExt, ModuleName, FactTableFile,
+        FactTableForeignFile, !IO) :-
+    fact_table_file_name(Globals, ModuleName, FactTableFile,
+        ".c", do_not_create_dirs, FactTableCFile, !IO),
+    fact_table_file_name(Globals, ModuleName, FactTableFile,
+        ObjExt, do_not_create_dirs, FactTableObjFile, !IO),
+    FactTableForeignFile =
+        foreign_code_file(lang_c, FactTableCFile, FactTableObjFile).
 
 :- func target_type_to_pic(module_target_type) = pic.
 
@@ -1128,15 +1089,12 @@ target_type_to_pic(TargetType) = Result :-
         ; TargetType = module_target_track_flags
         ; TargetType = module_target_c_header(_)
         ; TargetType = module_target_c_code
-        ; TargetType = module_target_il_code
-        ; TargetType = module_target_il_asm
         ; TargetType = module_target_csharp_code
         ; TargetType = module_target_java_code
         ; TargetType = module_target_java_class_code
         ; TargetType = module_target_erlang_header
         ; TargetType = module_target_erlang_code
         ; TargetType = module_target_erlang_beam_code
-        ; TargetType = module_target_foreign_il_asm(_)
         ; TargetType = module_target_foreign_object(_, _)
         ; TargetType = module_target_fact_table_object(_, _)
         ; TargetType = module_target_xml_doc

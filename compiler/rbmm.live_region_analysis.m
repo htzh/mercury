@@ -69,7 +69,7 @@
 live_region_analysis(ModuleInfo, RptaInfoTable, LVBeforeTable, LVAfterTable,
         VoidVarTable, LRBeforeTable, LRAfterTable, VoidVarRegionTable,
         InputRTable, OutputRTable, BornRTable, DeadRTable, LocalRTable) :-
-    module_info_get_valid_predids(PredIds, ModuleInfo, _),
+    module_info_get_valid_pred_ids(ModuleInfo, PredIds),
     map.init(LRBeforeTable0),
     map.init(LRAfterTable0),
     map.init(VoidVarRegionTable0),
@@ -78,8 +78,9 @@ live_region_analysis(ModuleInfo, RptaInfoTable, LVBeforeTable, LVAfterTable,
     map.init(BornRTable0),
     map.init(DeadRTable0),
     map.init(LocalRTable0),
-    foldl8(live_region_analysis_pred(ModuleInfo, RptaInfoTable,
-                LVBeforeTable, LVAfterTable, VoidVarTable),
+    foldl8(
+        live_region_analysis_pred(ModuleInfo, RptaInfoTable,
+            LVBeforeTable, LVAfterTable, VoidVarTable),
         PredIds,
         LRBeforeTable0, LRBeforeTable,
         LRAfterTable0, LRAfterTable,
@@ -220,7 +221,7 @@ foldl8(P, [H|T], !A, !B, !C, !D, !E, !F, !G, !H) :-
     proc_info::in, region_set::out) is det.
 
 lv_to_lr(LVSet, Graph, ModuleInfo, ProcInfo, LRSet) :-
-    ( set.empty(LVSet) ->
+    ( set.is_empty(LVSet) ->
         set.init(LRSet)
     ;
         % Collect reachable regions at this program point.

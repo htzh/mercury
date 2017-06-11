@@ -18,16 +18,17 @@
 :- module parse_tree.prog_type.
 :- interface.
 
+:- import_module libs.
 :- import_module libs.globals.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.prog_data.
-:- import_module parse_tree.set_of_var.
 
 :- import_module bool.
 :- import_module list.
 :- import_module map.
 :- import_module maybe.
-:- import_module set.
 :- import_module term.
 
 %-----------------------------------------------------------------------------%
@@ -145,6 +146,10 @@
     %
 :- pred type_list_to_var_list(list(mer_type)::in, list(tvar)::out) is semidet.
 
+    % Convert a var into a variable type.
+    %
+:- pred var_to_type(tvar_kind_map::in, tvar::in, mer_type::out) is det.
+
     % Convert a list of vars into a list of variable types.
     %
 :- pred var_list_to_type_list(tvar_kind_map::in, list(tvar)::in,
@@ -180,8 +185,16 @@
 :- pred construct_higher_order_pred_type(purity::in, lambda_eval_method::in,
     list(mer_type)::in, mer_type::out) is det.
 
+:- pred construct_higher_order_pred_type(purity::in, lambda_eval_method::in,
+    list(mer_type)::in, list(mer_mode)::in, determinism::in, mer_type::out)
+    is det.
+
 :- pred construct_higher_order_func_type(purity::in, lambda_eval_method::in,
     list(mer_type)::in, mer_type::in, mer_type::out) is det.
+
+:- pred construct_higher_order_func_type(purity::in, lambda_eval_method::in,
+    list(mer_type)::in, mer_type::in, list(mer_mode)::in, mer_mode::in,
+    determinism::in, mer_type::out) is det.
 
     % Make error messages more readable by removing "builtin."
     % qualifiers.
@@ -244,23 +257,6 @@
 
 :- func is_introduced_type_info_type_category(type_ctor_category) = bool.
 
-    % Given a list of variables, return the permutation
-    % of that list which has all the type_info-related variables
-    % preceding the non-type_info-related variables (with the relative
-    % order of variables within each group being the same as in the
-    % original list).
-    %
-:- func put_typeinfo_vars_first(list(prog_var), vartypes) = list(prog_var).
-
-    % Given a list of variables, remove all the type_info-related
-    % variables.
-    %
-:- func remove_typeinfo_vars(vartypes, list(prog_var)) = list(prog_var).
-:- func remove_typeinfo_vars_from_set(vartypes, set(prog_var))
-    = set(prog_var).
-:- func remove_typeinfo_vars_from_set_of_var(vartypes, set_of_progvar)
-    = set_of_progvar.
-
     % Check for a "new " prefix at the start of the functor name,
     % and remove it if present; if there is no such prefix, fail.
     % (These prefixes are used for construction unifications
@@ -287,6 +283,7 @@
 
 :- type type_ctor_cat_builtin
     --->    cat_builtin_int
+    ;       cat_builtin_uint
     ;       cat_builtin_float
     ;       cat_builtin_char
     ;       cat_builtin_string.
@@ -310,8 +307,8 @@
     % Fails if the constant is not an atom.
     %
     % This really ought to take a name and an arity -
-    % use of integers/floats/strings as type names should
-    % be rejected by the parser in prog_io.m, not in module_qual.m.
+    % use of integers/floats/strings as type names should be rejected
+    % by the parser, not by module_qual.m.
     %
 :- pred make_type_ctor(const::in, int::in, type_ctor::out) is semidet.
 
@@ -355,6 +352,11 @@
     %
 :- pred type_constructors_are_type_info(list(constructor)::in) is semidet.
 
+    % Is the discriminated union type with the given list of constructors
+    % an enum? Is yes, return the number of bits required to represent it.
+    %
+:- pred du_type_is_enum(list(constructor)::in, int::out) is semidet.
+
     % type_ctor_should_be_notag(Globals, TypeCtor, ReservedTag, Ctors,
     %   MaybeUserEqComp, SingleFunctorName, SingleArgType, MaybeSingleArgName):
     %
@@ -380,6 +382,16 @@
 :- pred type_unify_list(list(mer_type)::in, list(mer_type)::in, list(tvar)::in,
     tsubst::in, tsubst::out) is semidet.
 
+    % type_subsumes(TypeA, TypeB, Subst) succeeds iff TypeA subsumes
+    % (is more general than) TypeB, producing a type substitution
+    % which when applied to TypeA will give TypeB.
+    %
+:- pred type_subsumes(mer_type::in, mer_type::in, tsubst::out) is semidet.
+
+    % Same as type_subsumes, but aborts instead of failing.
+    %
+:- pred type_subsumes_det(mer_type::in, mer_type::in, tsubst::out) is det.
+
     % type_list_subsumes(TypesA, TypesB, Subst) succeeds iff the list
     % TypesA subsumes (is more general than) TypesB, producing a
     % type substitution which when applied to TypesA will give TypesB.
@@ -387,7 +399,7 @@
 :- pred type_list_subsumes(list(mer_type)::in, list(mer_type)::in, tsubst::out)
     is semidet.
 
-    % This does the same as type_list_subsumes, but aborts instead of failing.
+    % Same as type_list_subsumes, but aborts instead of failing.
     %
 :- pred type_list_subsumes_det(list(mer_type)::in, list(mer_type)::in,
     tsubst::out) is det.
@@ -417,10 +429,12 @@
 :- implementation.
 
 :- import_module libs.options.
+:- import_module mdbcomp.builtin_modules.
 :- import_module parse_tree.prog_out.
 :- import_module parse_tree.prog_util.
 :- import_module parse_tree.prog_type_subst.
 
+:- import_module int.
 :- import_module require.
 :- import_module string.
 
@@ -430,33 +444,24 @@ type_is_var(Type) :-
     strip_kind_annotation(Type) = type_variable(_, _).
 
 type_is_nonvar(Type) :-
-    \+ type_is_var(Type).
+    not type_is_var(Type).
 
 type_is_higher_order(Type) :-
-    strip_kind_annotation(Type) = higher_order_type(_, _, _, _).
+    strip_kind_annotation(Type) = higher_order_type(_, _, _, _, _).
 
-type_is_higher_order_details(Type, Purity, PredOrFunc, EvalMethod,
-        PredArgTypes) :-
+type_is_higher_order_details(Type, Purity, PredOrFunc, EvalMethod, ArgTypes) :-
     strip_kind_annotation(Type) =
-        higher_order_type(ArgTypes, MaybeRetType, Purity, EvalMethod),
-    (
-        MaybeRetType = yes(RetType),
-        PredOrFunc = pf_function,
-        PredArgTypes = list.append(ArgTypes, [RetType])
-    ;
-        MaybeRetType = no,
-        PredOrFunc = pf_predicate,
-        PredArgTypes = ArgTypes
-    ).
+        higher_order_type(PredOrFunc, ArgTypes, _HOInstInfo, Purity,
+            EvalMethod).
 
 type_is_higher_order_details_det(Type, !:Purity, !:PredOrFunc, !:EvalMethod,
         !:PredArgTypes) :-
-    (
+    ( if
         type_is_higher_order_details(Type, !:Purity, !:PredOrFunc,
             !:EvalMethod, !:PredArgTypes)
-    ->
+    then
         true
-    ;
+    else
         unexpected($module, $pred, "type is not higher-order")
     ).
 
@@ -464,41 +469,45 @@ type_is_tuple(Type, ArgTypes) :-
     strip_kind_annotation(Type) = tuple_type(ArgTypes, _).
 
 strip_kind_annotation(Type0) = Type :-
-    ( Type0 = kinded_type(Type1, _) ->
+    ( if Type0 = kinded_type(Type1, _) then
         Type = strip_kind_annotation(Type1)
-    ;
+    else
         Type = Type0
     ).
 
 %-----------------------------------------------------------------------------%
 
 type_is_ground(Type) :-
-    \+ type_contains_var(Type, _).
+    not type_contains_var(Type, _).
 
 type_is_nonground(Type) :-
     type_contains_var(Type, _).
 
 subst_type_is_ground(Type, TSubst) :-
-    \+ subst_type_is_nonground(Type, TSubst).
+    not subst_type_is_nonground(Type, TSubst).
 
 subst_type_is_nonground(Type, TSubst) :-
     type_contains_var(Type, TVar),
-    ( map.search(TSubst, TVar, Binding) ->
+    ( if map.search(TSubst, TVar, Binding) then
         subst_type_is_nonground(Binding, TSubst)
-    ;
+    else
         true
     ).
 
 type_has_variable_arity_ctor(Type, TypeCtor, TypeArgs) :-
-    ( type_is_higher_order_details(Type, _Purity, PredOrFunc, _, TypeArgs0) ->
+    ( if
+        type_is_higher_order_details(Type, _Purity, PredOrFunc, _, TypeArgs0)
+    then
         TypeArgs = TypeArgs0,
         PredOrFuncStr = prog_out.pred_or_func_to_str(PredOrFunc),
         TypeCtor = type_ctor(unqualified(PredOrFuncStr), 0)
-    ; type_is_tuple(Type, TypeArgs1) ->
+    else if
+        type_is_tuple(Type, TypeArgs1)
+    then
         TypeArgs = TypeArgs1,
         % XXX why tuple/0 and not {}/N ?
         TypeCtor = type_ctor(unqualified("tuple"), 0)
-    ;
+    else
         fail
     ).
 
@@ -515,16 +524,15 @@ type_to_ctor_and_args(Type, TypeCtor, Args) :-
         Args = [],
         TypeCtor = type_ctor(SymName, Arity)
     ;
-        Type = higher_order_type(Args0, MaybeRet, Purity, _EvalMethod),
-        Arity = list.length(Args0),
+        Type = higher_order_type(PorF, Args, _HOInstInfo, Purity, _EvalMethod),
         (
-            MaybeRet = yes(Ret),
+            PorF = pf_predicate,
             PorFStr = "func",
-            Args = list.append(Args0, [Ret])
+            Arity = list.length(Args)
         ;
-            MaybeRet = no,
+            PorF = pf_function,
             PorFStr = "pred",
-            Args = Args0
+            Arity = list.length(Args) - 1
         ),
         SymName0 = unqualified(PorFStr),
         (
@@ -552,10 +560,10 @@ type_to_ctor_and_args(Type, TypeCtor, Args) :-
     ).
 
 type_to_ctor_and_args_det(Type, TypeCtor, Args) :-
-    ( type_to_ctor_and_args(Type, TypeCtorPrime, ArgsPrime) ->
+    ( if type_to_ctor_and_args(Type, TypeCtorPrime, ArgsPrime) then
         TypeCtor = TypeCtorPrime,
         Args = ArgsPrime
-    ;
+    else
         unexpected($module, $pred,
             "type_to_ctor_and_args failed: " ++ string(Type))
     ).
@@ -607,10 +615,13 @@ type_list_to_var_list([Type | Types], [Var | Vars]) :-
     Type = type_variable(Var, _),
     type_list_to_var_list(Types, Vars).
 
+var_to_type(KindMap, Var, Type) :-
+    get_tvar_kind(KindMap, Var, Kind),
+    Type = type_variable(Var, Kind).
+
 var_list_to_type_list(_, [], []).
 var_list_to_type_list(KindMap, [Var | Vars], [Type | Types]) :-
-    get_tvar_kind(KindMap, Var, Kind),
-    Type = type_variable(Var, Kind),
+    var_to_type(KindMap, Var, Type),
     var_list_to_type_list(KindMap, Vars, Types).
 
 type_vars(Type, TVars) :-
@@ -624,14 +635,8 @@ type_vars_2(type_variable(Var, _), Vs, [Var | Vs]).
 type_vars_2(defined_type(_, Args, _), !V) :-
     type_vars_list_2(Args, !V).
 type_vars_2(builtin_type(_), !V).
-type_vars_2(higher_order_type(Args, MaybeRet, _, _), !V) :-
-    type_vars_list_2(Args, !V),
-    (
-        MaybeRet = yes(Ret),
-        type_vars_2(Ret, !V)
-    ;
-        MaybeRet = no
-    ).
+type_vars_2(higher_order_type(_, Args, _, _, _), !V) :-
+    type_vars_list_2(Args, !V).
 type_vars_2(tuple_type(Args, _), !V) :-
     type_vars_list_2(Args, !V).
 type_vars_2(apply_n_type(Var, Args, _), !V) :-
@@ -656,10 +661,8 @@ type_vars_list_2([Type | Types], !V) :-
 type_contains_var(type_variable(Var, _), Var).
 type_contains_var(defined_type(_, Args, _), Var) :-
     type_list_contains_var(Args, Var).
-type_contains_var(higher_order_type(Args, _, _, _), Var) :-
+type_contains_var(higher_order_type(_, Args, _, _, _), Var) :-
     type_list_contains_var(Args, Var).
-type_contains_var(higher_order_type(_, yes(Ret), _, _), Var) :-
-    type_contains_var(Ret, Var).
 type_contains_var(tuple_type(Args, _), Var) :-
     type_list_contains_var(Args, Var).
 type_contains_var(apply_n_type(Var, _, _), Var).
@@ -674,21 +677,21 @@ type_list_contains_var([_ | Types], Var) :-
     type_list_contains_var(Types, Var).
 
 construct_type(TypeCtor, Args, Type) :-
-    (
+    ( if
         TypeCtor = type_ctor(unqualified(Name), 0),
         builtin_type_to_string(BuiltinType, Name)
-    ->
+    then
         Type = builtin_type(BuiltinType)
-    ;
+    else if
         type_ctor_is_higher_order(TypeCtor, Purity, PredOrFunc, EvalMethod)
-    ->
+    then
         construct_higher_order_type(Purity, PredOrFunc, EvalMethod, Args, Type)
-    ;
+    else if
         type_ctor_is_tuple(TypeCtor)
-    ->
+    then
         % XXX kind inference: we assume the kind is star.
         Type = tuple_type(Args, kind_star)
-    ;
+    else
         TypeCtor = type_ctor(SymName, _),
         % XXX kind inference: we assume the kind is star.
         Type = defined_type(SymName, Args, kind_star)
@@ -706,39 +709,47 @@ construct_higher_order_type(Purity, PredOrFunc, EvalMethod, ArgTypes, Type) :-
     ).
 
 construct_higher_order_pred_type(Purity, EvalMethod, ArgTypes, Type) :-
-    Type = higher_order_type(ArgTypes, no, Purity, EvalMethod).
+    Type = higher_order_type(pf_predicate, ArgTypes, none_or_default_func,
+        Purity, EvalMethod).
+
+construct_higher_order_pred_type(Purity, EvalMethod, ArgTypes, ArgModes,
+        Detism, Type) :-
+    PredInstInfo = pred_inst_info(pf_predicate, ArgModes, arg_reg_types_unset,
+        Detism),
+    Type = higher_order_type(pf_predicate, ArgTypes, higher_order(PredInstInfo),
+        Purity, EvalMethod).
 
 construct_higher_order_func_type(Purity, EvalMethod, ArgTypes, RetType,
         Type) :-
-    Type = higher_order_type(ArgTypes, yes(RetType), Purity, EvalMethod).
+    Type = higher_order_type(pf_function, ArgTypes ++ [RetType],
+        none_or_default_func, Purity, EvalMethod).
+
+construct_higher_order_func_type(Purity, EvalMethod, ArgTypes, RetType,
+        ArgModes, RetMode, Detism, Type) :-
+    PredInstInfo = pred_inst_info(pf_function, ArgModes ++ [RetMode],
+        arg_reg_types_unset, Detism),
+    Type = higher_order_type(pf_function, ArgTypes ++ [RetType],
+        higher_order(PredInstInfo), Purity, EvalMethod).
 
 strip_builtin_qualifiers_from_type(type_variable(Var, Kind),
         type_variable(Var, Kind)).
 strip_builtin_qualifiers_from_type(defined_type(Name0, Args0, Kind),
         defined_type(Name, Args, Kind)) :-
-    (
+    ( if
         Name0 = qualified(Module, Name1),
         Module = mercury_public_builtin_module
-    ->
+    then
         Name = unqualified(Name1)
-    ;
+    else
         Name = Name0
     ),
     strip_builtin_qualifiers_from_type_list(Args0, Args).
 strip_builtin_qualifiers_from_type(builtin_type(BuiltinType),
         builtin_type(BuiltinType)).
 strip_builtin_qualifiers_from_type(
-        higher_order_type(Args0, MaybeRet0, Purity, EvalMethod),
-        higher_order_type(Args, MaybeRet, Purity, EvalMethod)) :-
-    strip_builtin_qualifiers_from_type_list(Args0, Args),
-    (
-        MaybeRet0 = yes(Ret0),
-        strip_builtin_qualifiers_from_type(Ret0, Ret),
-        MaybeRet = yes(Ret)
-    ;
-        MaybeRet0 = no,
-        MaybeRet = no
-    ).
+        higher_order_type(PorF, Args0, HOInstInfo, Purity, EvalMethod),
+        higher_order_type(PorF, Args, HOInstInfo, Purity, EvalMethod)) :-
+    strip_builtin_qualifiers_from_type_list(Args0, Args).
 strip_builtin_qualifiers_from_type(tuple_type(Args0, Kind),
         tuple_type(Args, Kind)) :-
     strip_builtin_qualifiers_from_type_list(Args0, Args).
@@ -763,8 +774,8 @@ constraint_list_get_tvars(Constraints, TVars) :-
     list.map(constraint_get_tvars, Constraints, TVarsList),
     list.condense(TVarsList, TVars).
 
-constraint_get_tvars(constraint(_Name, Args), TVars) :-
-    type_vars_list(Args, TVars).
+constraint_get_tvars(constraint(_ClassName, ArgTypes), TVars) :-
+    type_vars_list(ArgTypes, TVars).
 
 get_unconstrained_tvars(Tvars, Constraints, Unconstrained) :-
     constraint_list_get_tvars(Constraints, ConstrainedTvars),
@@ -777,6 +788,7 @@ get_unconstrained_tvars(Tvars, Constraints, Unconstrained) :-
     % builtin_type_ctor in type_ctor_info.m.
 builtin_type_ctors_with_no_hlds_type_defn =
     [ type_ctor(qualified(mercury_public_builtin_module, "int"), 0),
+      type_ctor(qualified(mercury_public_builtin_module, "uint"), 0),
       type_ctor(qualified(mercury_public_builtin_module, "string"), 0),
       type_ctor(qualified(mercury_public_builtin_module, "character"), 0),
       type_ctor(qualified(mercury_public_builtin_module, "float"), 0),
@@ -788,21 +800,21 @@ builtin_type_ctors_with_no_hlds_type_defn =
 
 check_builtin_dummy_type_ctor(TypeCtor) = IsBuiltinDummy :-
     TypeCtor = type_ctor(CtorSymName, TypeArity),
-    (
+    ( if
         CtorSymName = qualified(ModuleName, TypeName),
         ModuleName = mercury_io_module,
         TypeName = "state",
         TypeArity = 0
-    ->
+    then
         IsBuiltinDummy = is_builtin_dummy_type_ctor
-    ;
+    else if
         CtorSymName = qualified(ModuleName, TypeName),
         ModuleName = mercury_std_lib_module_name(unqualified("store")),
         TypeName = "store",
         TypeArity = 1
-    ->
+    then
         IsBuiltinDummy = is_builtin_dummy_type_ctor
-    ;
+    else
         IsBuiltinDummy = is_not_builtin_dummy_type_ctor
     ).
 
@@ -848,41 +860,6 @@ is_introduced_type_info_type_category(TypeCtorCat) = IsIntroduced :-
 
 %-----------------------------------------------------------------------------%
 
-put_typeinfo_vars_first(VarsList, VarTypes) =
-        TypeInfoVarsList ++ NonTypeInfoVarsList :-
-    split_vars_typeinfo_no_typeinfo(VarsList, VarTypes,
-        TypeInfoVarsList, NonTypeInfoVarsList).
-
-remove_typeinfo_vars(VarTypes, VarsList) = NonTypeInfoVarsList :-
-    list.negated_filter(var_is_introduced_type_info_type(VarTypes),
-        VarsList, NonTypeInfoVarsList).
-
-remove_typeinfo_vars_from_set(VarTypes, VarsSet0) = VarsSet :-
-    VarsList0 = set.to_sorted_list(VarsSet0),
-    VarsList = remove_typeinfo_vars(VarTypes, VarsList0),
-    VarsSet = set.sorted_list_to_set(VarsList).
-
-remove_typeinfo_vars_from_set_of_var(VarTypes, VarsSet0) = VarsSet :-
-    % XXX could be done more efficiently, operating directly on the set_of_var
-    VarsList0 = set_of_var.to_sorted_list(VarsSet0),
-    VarsList = remove_typeinfo_vars(VarTypes, VarsList0),
-    VarsSet = set_of_var.sorted_list_to_set(VarsList).
-
-:- pred split_vars_typeinfo_no_typeinfo(list(prog_var)::in,
-    vartypes::in, list(prog_var)::out, list(prog_var)::out) is det.
-
-split_vars_typeinfo_no_typeinfo(VarsList, VarTypes, TypeInfoVarsList,
-        NonTypeInfoVarsList) :-
-    list.filter(var_is_introduced_type_info_type(VarTypes),
-        VarsList, TypeInfoVarsList, NonTypeInfoVarsList).
-
-:- pred var_is_introduced_type_info_type(vartypes::in, prog_var::in)
-    is semidet.
-
-var_is_introduced_type_info_type(VarTypes, Var) :-
-    lookup_var_type(VarTypes, Var, Type),
-    is_introduced_type_info_type(Type).
-
 remove_new_prefix(unqualified(Name0), unqualified(Name)) :-
     string.append("new ", Name, Name0).
 remove_new_prefix(qualified(Module, Name0), qualified(Module, Name)) :-
@@ -921,12 +898,12 @@ cell_inst_cons_id(Which, Arity) = InstConsId :-
 qualify_cons_id(Args, ConsId0, ConsId, InstConsId) :-
     (
         ConsId0 = cons(Name0, OrigArity, TypeCtor),
-        ( TypeCtor = type_ctor(qualified(TypeModule, _), _) ->
+        ( if TypeCtor = type_ctor(qualified(TypeModule, _), _) then
             UnqualName = unqualify_name(Name0),
             Name = qualified(TypeModule, UnqualName),
             ConsId = cons(Name, OrigArity, TypeCtor),
             InstConsId = cons(Name, OrigArity, cons_id_dummy_type_ctor)
-        ;
+        else
             ConsId = ConsId0,
             InstConsId = cons(Name0, OrigArity, cons_id_dummy_type_ctor)
         )
@@ -943,6 +920,7 @@ qualify_cons_id(Args, ConsId0, ConsId, InstConsId) :-
         ( ConsId0 = tuple_cons(_)
         ; ConsId0 = closure_cons(_, _)
         ; ConsId0 = int_const(_)
+        ; ConsId0 = uint_const(_)
         ; ConsId0 = float_const(_)
         ; ConsId0 = char_const(_)
         ; ConsId0 = string_const(_)
@@ -952,7 +930,7 @@ qualify_cons_id(Args, ConsId0, ConsId, InstConsId) :-
         ; ConsId0 = type_info_const(_)
         ; ConsId0 = typeclass_info_const(_)
         ; ConsId0 = ground_term_const(_, _)
-        ; ConsId0 = table_io_decl(_)
+        ; ConsId0 = table_io_entry_desc(_)
         ; ConsId0 = tabling_info_const(_)
         ; ConsId0 = deep_profiling_proc_layout(_)
         ),
@@ -972,7 +950,7 @@ type_constructors_are_type_info(Ctors) :-
 type_is_single_ctor_single_arg(Ctors, Ctor, ArgType, MaybeArgName) :-
     Ctors = [SingleCtor],
     SingleCtor = ctor(ExistQVars, _Constraints, Ctor,
-        [ctor_arg(MaybeArgName, ArgType, _, _)], _Ctxt),
+        [ctor_arg(MaybeArgName, ArgType, _, _)], 1, _Ctxt),
     ExistQVars = [].
 
 :- pred ctor_is_type_info(sym_name::in) is semidet.
@@ -1001,6 +979,22 @@ name_is_type_info("base_typeclass_info").
 
 %-----------------------------------------------------------------------------%
 
+du_type_is_enum(Ctors, NumBits) :-
+    Ctors = [_, _ | _],
+    all [Ctor] (
+        list.member(Ctor, Ctors)
+    => (
+        Ctor = ctor(ExistQTVars, ExistConstraints, _Name, Args, _Arity,
+            _Context),
+        ExistQTVars = [],
+        ExistConstraints = [],
+        Args = []
+    )),
+    list.length(Ctors, NumFunctors),
+    int.log2(NumFunctors, NumBits).
+
+%-----------------------------------------------------------------------------%
+
 type_ctor_should_be_notag(Globals, _TypeCtor, ReserveTagPragma, Ctors,
         MaybeUserEqCmp, SingleFunctorName, SingleArgType,
         MaybeSingleArgName) :-
@@ -1009,17 +1003,23 @@ type_ctor_should_be_notag(Globals, _TypeCtor, ReserveTagPragma, Ctors,
     MaybeUserEqCmp = no,
 
     type_is_single_ctor_single_arg(Ctors, SingleFunctorName, SingleArgType,
-        MaybeSingleArgName0),
+        MaybeCtorFieldName),
 
-    % We don't handle unary tuples as no_tag types -- they are rare enough
-    % that it's not worth the implementation effort.
+    % We do not handle unary tuples as no_tag types -- they are rare enough
+    % that it is not worth the implementation effort.
     %
     % XXX Since the tuple type constructor doesn't have a HLDS type defn body,
     % will this test ever fail? Even if it can fail, we should test TypeCtor,
     % not SingleFunctorName.
     SingleFunctorName \= unqualified("{}"),
 
-    MaybeSingleArgName = map_maybe(unqualify_name, MaybeSingleArgName0).
+    (
+        MaybeCtorFieldName = no,
+        MaybeSingleArgName = no
+    ;
+        MaybeCtorFieldName = yes(ctor_field_name(SymName, _)),
+        MaybeSingleArgName = yes(unqualify_name(SymName))
+    ).
 
 %-----------------------------------------------------------------------------%
 %
@@ -1027,13 +1027,13 @@ type_ctor_should_be_notag(Globals, _TypeCtor, ReserveTagPragma, Ctors,
 %
 
 type_unify(X, Y, HeadTypeParams, !Bindings) :-
-    ( X = type_variable(VarX, _) ->
+    ( if X = type_variable(VarX, _) then
         type_unify_var(VarX, Y, HeadTypeParams, !Bindings)
-    ; Y = type_variable(VarY, _) ->
+    else if Y = type_variable(VarY, _) then
         type_unify_var(VarY, X, HeadTypeParams, !Bindings)
-    ; type_unify_nonvar(X, Y, HeadTypeParams, !Bindings) ->
+    else if type_unify_nonvar(X, Y, HeadTypeParams, !Bindings) then
         true
-    ;
+    else
         % Some special cases are not handled above. We handle them separately
         % here.
         type_unify_special(X, Y, HeadTypeParams, !Bindings)
@@ -1043,15 +1043,15 @@ type_unify(X, Y, HeadTypeParams, !Bindings) :-
     tsubst::in, tsubst::out) is semidet.
 
 type_unify_var(VarX, TypeY, HeadTypeParams, !Bindings) :-
-    ( TypeY = type_variable(VarY, KindY) ->
+    ( if TypeY = type_variable(VarY, KindY) then
         type_unify_var_var(VarX, VarY, KindY, HeadTypeParams, !Bindings)
-    ; map.search(!.Bindings, VarX, BindingOfX) ->
+    else if map.search(!.Bindings, VarX, BindingOfX) then
         % VarX has a binding. Y is not a variable.
         type_unify(BindingOfX, TypeY, HeadTypeParams, !Bindings)
-    ;
+    else
         % VarX has no binding, so bind it to TypeY.
-        \+ type_occurs(TypeY, VarX, !.Bindings),
-        \+ list.member(VarX, HeadTypeParams),
+        not type_occurs(TypeY, VarX, !.Bindings),
+        not list.member(VarX, HeadTypeParams),
         map.det_insert(VarX, TypeY, !Bindings)
     ).
 
@@ -1059,40 +1059,40 @@ type_unify_var(VarX, TypeY, HeadTypeParams, !Bindings) :-
     tsubst::in, tsubst::out) is semidet.
 
 type_unify_var_var(X, Y, Kind, HeadTypeParams, !Bindings) :-
-    ( list.member(Y, HeadTypeParams) ->
+    ( if list.member(Y, HeadTypeParams) then
         type_unify_head_type_param(X, Y, Kind, HeadTypeParams, !Bindings)
-    ; list.member(X, HeadTypeParams) ->
+    else if list.member(X, HeadTypeParams) then
         type_unify_head_type_param(Y, X, Kind, HeadTypeParams, !Bindings)
-    ; map.search(!.Bindings, X, BindingOfX) ->
-        ( map.search(!.Bindings, Y, BindingOfY) ->
+    else if map.search(!.Bindings, X, BindingOfX) then
+        ( if map.search(!.Bindings, Y, BindingOfY) then
             % Both X and Y already have bindings - just unify the
             % types they are bound to.
             type_unify(BindingOfX, BindingOfY, HeadTypeParams, !Bindings)
-        ;
+        else
             % Y hasn't been bound yet.
             apply_rec_subst_to_type(!.Bindings, BindingOfX, SubstBindingOfX),
-            ( SubstBindingOfX = type_variable(Y, _) ->
+            ( if SubstBindingOfX = type_variable(Y, _) then
                 true
-            ;
-                \+ type_occurs(SubstBindingOfX, Y, !.Bindings),
+            else
+                not type_occurs(SubstBindingOfX, Y, !.Bindings),
                 map.det_insert(Y, SubstBindingOfX, !Bindings)
             )
         )
-    ;
+    else
         % Neither X nor Y is a head type param. X had not been bound yet.
-        ( map.search(!.Bindings, Y, BindingOfY) ->
+        ( if map.search(!.Bindings, Y, BindingOfY) then
             apply_rec_subst_to_type(!.Bindings, BindingOfY, SubstBindingOfY),
-            ( SubstBindingOfY = type_variable(X, _) ->
+            ( if SubstBindingOfY = type_variable(X, _) then
                 true
-            ;
-                \+ type_occurs(SubstBindingOfY, X, !.Bindings),
+            else
+                not type_occurs(SubstBindingOfY, X, !.Bindings),
                 map.det_insert(X, SubstBindingOfY, !Bindings)
             )
-        ;
+        else
             % Both X and Y are unbound type variables - bind one to the other.
-            ( X = Y ->
+            ( if X = Y then
                 true
-            ;
+            else
                 map.det_insert(X, type_variable(Y, Kind), !Bindings)
             )
         )
@@ -1102,15 +1102,15 @@ type_unify_var_var(X, Y, Kind, HeadTypeParams, !Bindings) :-
     list(tvar)::in, tsubst::in, tsubst::out) is semidet.
 
 type_unify_head_type_param(Var, HeadVar, Kind, HeadTypeParams, !Bindings) :-
-    ( map.search(!.Bindings, Var, BindingOfVar) ->
+    ( if map.search(!.Bindings, Var, BindingOfVar) then
         BindingOfVar = type_variable(Var2, _),
         type_unify_head_type_param(Var2, HeadVar, Kind, HeadTypeParams,
             !Bindings)
-    ;
-        ( Var = HeadVar ->
+    else
+        ( if Var = HeadVar then
             true
-        ;
-            \+ list.member(Var, HeadTypeParams),
+        else
+            not list.member(Var, HeadTypeParams),
             map.det_insert(Var, type_variable(HeadVar, Kind), !Bindings)
         )
     ).
@@ -1135,14 +1135,9 @@ type_unify_nonvar(TypeX, TypeY, HeadTypeParams, !Bindings) :-
         TypeX = builtin_type(BuiltinType),
         TypeY = builtin_type(BuiltinType)
     ;
-        TypeX = higher_order_type(ArgsX, no, Purity, EvalMethod),
-        TypeY = higher_order_type(ArgsY, no, Purity, EvalMethod),
+        TypeX = higher_order_type(PorF, ArgsX, _, Purity, EvalMethod),
+        TypeY = higher_order_type(PorF, ArgsY, _, Purity, EvalMethod),
         type_unify_list(ArgsX, ArgsY, HeadTypeParams, !Bindings)
-    ;
-        TypeX = higher_order_type(ArgsX, yes(RetX), Purity, EvalMethod),
-        TypeY = higher_order_type(ArgsY, yes(RetY), Purity, EvalMethod),
-        type_unify_list(ArgsX, ArgsY, HeadTypeParams, !Bindings),
-        type_unify(RetX, RetY, HeadTypeParams, !Bindings)
     ;
         TypeX = tuple_type(ArgsX, _),
         TypeY = tuple_type(ArgsY, _),
@@ -1155,32 +1150,32 @@ type_unify_nonvar(TypeX, TypeY, HeadTypeParams, !Bindings) :-
     tsubst::in, tsubst::out) is semidet.
 
 type_unify_special(TypeX, TypeY, HeadTypeParams, !Bindings) :-
-    ( TypeX = apply_n_type(VarX, ArgsX, _) ->
+    ( if TypeX = apply_n_type(VarX, ArgsX, _) then
         type_unify_apply(TypeY, VarX, ArgsX, HeadTypeParams, !Bindings)
-    ; TypeY = apply_n_type(VarY, ArgsY, _) ->
+    else if TypeY = apply_n_type(VarY, ArgsY, _) then
         type_unify_apply(TypeX, VarY, ArgsY, HeadTypeParams, !Bindings)
-    ; TypeX = kinded_type(RawX, _) ->
-        ( TypeY = kinded_type(RawY, _) ->
+    else if TypeX = kinded_type(RawX, _) then
+        ( if TypeY = kinded_type(RawY, _) then
             type_unify(RawX, RawY, HeadTypeParams, !Bindings)
-        ;
+        else
             type_unify(RawX, TypeY, HeadTypeParams, !Bindings)
         )
-    ; TypeY = kinded_type(RawY, _) ->
+    else if TypeY = kinded_type(RawY, _) then
         type_unify(TypeX, RawY, HeadTypeParams, !Bindings)
-    ;
+    else
         fail
     ).
 
     % The idea here is that we try to strip off arguments from Y starting
     % from the end and unify each with the corresponding argument of X.
-    % If we reach an atomic type before the arguments run out then we fail.
-    % If we reach a variable before the arguments run out then we unify it
+    % If we reach an atomic type before the arguments run out, we fail.
+    % If we reach a variable before the arguments run out, we unify it
     % with what remains of the apply_n expression. If we manage to unify
-    % all of the arguments then we unify the apply_n variable with what
-    % remains of the other expression.
+    % all of the arguments, we unify the apply_n variable with what remains
+    % of the other expression.
     %
-    % Note that Y is not a variable, since that case would have been
-    % caught by type_unify.
+    % Note that Y is not a variable, since that case would have been caught
+    % by type_unify.
     %
 :- pred type_unify_apply(mer_type::in, tvar::in, list(mer_type)::in,
     list(tvar)::in, tsubst::in, tsubst::out) is semidet.
@@ -1197,7 +1192,7 @@ type_unify_apply(TypeY, VarX, ArgsX0, HeadTypeParams, !Bindings) :-
         ArgsX0 = [],
         type_unify_var(VarX, TypeY, HeadTypeParams, !Bindings)
     ;
-        TypeY = higher_order_type(_, _, _, _),
+        TypeY = higher_order_type(_, _, _, _, _),
         ArgsX0 = [],
         type_unify_var(VarX, TypeY, HeadTypeParams, !Bindings)
     ;
@@ -1233,6 +1228,10 @@ type_unify_apply(TypeY, VarX, ArgsX0, HeadTypeParams, !Bindings) :-
     ;
         TypeY = kinded_type(RawY, _),
         type_unify_apply(RawY, VarX, ArgsX0, HeadTypeParams, !Bindings)
+    ;
+        TypeY = builtin_type(_),
+        % XXX I (zs) am not sure *why* it is ok to fail here.
+        fail
     ).
 
 :- pred type_unify_args(list(mer_type)::in, list(mer_type)::in,
@@ -1265,17 +1264,18 @@ type_unify_list([X | Xs], [Y | Ys], HeadTypeParams, !Bindings) :-
     type_unify_list(Xs, Ys, HeadTypeParams, !Bindings).
 
     % type_occurs(Type, Var, Subst) succeeds iff Type contains Var,
-    % perhaps indirectly via the substitution.  (The variable must not
+    % perhaps indirectly via the substitution. (The variable must not
     % be mapped by the substitution.)
     %
 :- pred type_occurs(mer_type::in, tvar::in, tsubst::in) is semidet.
 
 type_occurs(TypeX, Y, Bindings) :-
+    require_complete_switch [TypeX]
     (
         TypeX = type_variable(X, _),
-        ( X = Y ->
+        ( if X = Y then
             true
-        ;
+        else
             map.search(Bindings, X, BindingOfX),
             type_occurs(BindingOfX, Y, Bindings)
         )
@@ -1283,13 +1283,8 @@ type_occurs(TypeX, Y, Bindings) :-
         TypeX = defined_type(_, Args, _),
         type_occurs_list(Args, Y, Bindings)
     ;
-        TypeX = higher_order_type(Args, MaybeRet, _, _),
-        (
-            type_occurs_list(Args, Y, Bindings)
-        ;
-            MaybeRet = yes(Ret),
-            type_occurs(Ret, Y, Bindings)
-        )
+        TypeX = higher_order_type(_, Args, _, _, _),
+        type_occurs_list(Args, Y, Bindings)
     ;
         TypeX = tuple_type(Args, _),
         type_occurs_list(Args, Y, Bindings)
@@ -1306,6 +1301,9 @@ type_occurs(TypeX, Y, Bindings) :-
     ;
         TypeX = kinded_type(X, _),
         type_occurs(X, Y, Bindings)
+    ;
+        TypeX = builtin_type(_),
+        fail
     ).
 
 :- pred type_occurs_list(list(mer_type)::in, tvar::in, tsubst::in) is semidet.
@@ -1319,18 +1317,31 @@ type_occurs_list([X | Xs], Y,  Bindings) :-
 
 %-----------------------------------------------------------------------------%
 
+type_subsumes(TypeA, TypeB, TypeSubst) :-
+    % TypeA subsumes TypeB iff TypeA can be unified with TypeB
+    % without binding any of the type variables in TypeB.
+    type_vars(TypeB, TypeBVars),
+    map.init(TypeSubst0),
+    type_unify(TypeA, TypeB, TypeBVars, TypeSubst0, TypeSubst).
+
+type_subsumes_det(TypeA, TypeB, TypeSubst) :-
+    ( if type_subsumes(TypeA, TypeB, TypeSubstPrime) then
+        TypeSubst = TypeSubstPrime
+    else
+        unexpected($module, $pred, "type_subsumes failed")
+    ).
+
 type_list_subsumes(TypesA, TypesB, TypeSubst) :-
     % TypesA subsumes TypesB iff TypesA can be unified with TypesB
     % without binding any of the type variables in TypesB.
-
     type_vars_list(TypesB, TypesBVars),
     map.init(TypeSubst0),
     type_unify_list(TypesA, TypesB, TypesBVars, TypeSubst0, TypeSubst).
 
 type_list_subsumes_det(TypesA, TypesB, TypeSubst) :-
-    ( type_list_subsumes(TypesA, TypesB, TypeSubstPrime) ->
+    ( if type_list_subsumes(TypesA, TypesB, TypeSubstPrime) then
         TypeSubst = TypeSubstPrime
-    ;
+    else
         unexpected($module, $pred, "type_list_subsumes failed")
     ).
 
@@ -1390,9 +1401,9 @@ arg_type_list_subsumes(TVarSet, ExistQVars, ActualArgTypes, HeadTypeParams,
 
 apply_partial_map_to_list(_PartialMap, [], []).
 apply_partial_map_to_list(PartialMap, [X | Xs], [Y | Ys]) :-
-    ( map.search(PartialMap, X, Y0) ->
+    ( if map.search(PartialMap, X, Y0) then
         Y = Y0
-    ;
+    else
         Y = X
     ),
     apply_partial_map_to_list(PartialMap, Xs, Ys).

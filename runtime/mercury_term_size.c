@@ -1,19 +1,15 @@
-/*
-** vim:ts=4 sw=4 expandtab
-*/
-/*
-** Copyright (C) 2003-2005, 2007, 2009, 2011 The University of Melbourne.
-** This file may only be copied under the terms of the GNU Library General
-** Public License - see the file COPYING.LIB in the Mercury distribution.
-*/
+// vim: ts=4 sw=4 expandtab ft=c
 
-/*
-** mercury_term_size.c
-**
-** This module defines a function for measuring the sizes of terms.
-*/
+// Copyright (C) 2003-2005, 2007, 2009, 2011 The University of Melbourne.
+// This file may only be copied under the terms of the GNU Library General
+// Public License - see the file COPYING.LIB in the Mercury distribution.
+
+// mercury_term_size.c
+//
+// This module defines a function for measuring the sizes of terms.
 
 #include "mercury_imp.h"
+#include "mercury_runtime_util.h" // For MR_STRERROR_BUF_SIZE.
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -54,7 +50,7 @@ try_again:
     switch (MR_type_ctor_rep(type_ctor_info)) {
         case MR_TYPECTOR_REP_RESERVED_ADDR:
         case MR_TYPECTOR_REP_RESERVED_ADDR_USEREQ:
-            /* XXX the code to handle these cases hasn't been written yet */
+            // XXX The code to handle these cases hasn't been written yet.
             MR_fatal_error("MR_term_size: RESERVED_ADDR");
 
         case MR_TYPECTOR_REP_DU:
@@ -87,10 +83,9 @@ try_again:
                     return MR_field(MR_mktag(ptag), term, -1);
 
                 case MR_SECTAG_NONE_DIRECT_ARG:
-                     /*
-                     ** The compiler should not generate direct arg tags
-                     ** in term size recording grades.
-                     */
+                     // The compiler should not generate direct arg tags
+                     // in term size recording grades.
+
                      MR_fatal_error("MR_term_size: DIRECT_ARG");
 
                 case MR_SECTAG_LOCAL:
@@ -117,11 +112,11 @@ try_again:
                             (void *) term,
                             (int) MR_field(MR_mktag(ptag), term, -1));
                         printf("type %s.%s/%d, functor %s\n",
-                                type_ctor_info->MR_type_ctor_module_name,
-                                type_ctor_info->MR_type_ctor_name,
-                                type_ctor_info->MR_type_ctor_arity,
-                                ptag_layout->MR_sectag_alternatives[sectag]->
-                                    MR_du_functor_name);
+                            type_ctor_info->MR_type_ctor_module_name,
+                            type_ctor_info->MR_type_ctor_name,
+                            type_ctor_info->MR_type_ctor_arity,
+                            ptag_layout->MR_sectag_alternatives[sectag]->
+                                MR_du_functor_name);
                     }
 #endif
                     return MR_field(MR_mktag(ptag), term, -1);
@@ -187,7 +182,7 @@ try_again:
         case MR_TYPECTOR_REP_TUPLE:
             arity = MR_TYPEINFO_GET_VAR_ARITY_ARITY(type_info);
             if (arity == 0) {
-                /* term may be a NULL pointer, so don't follow it */
+                // Term may be a NULL pointer, so don't follow it.
                 size = 0;
             } else {
                 size = MR_field(MR_mktag(0), term, -1);
@@ -208,11 +203,11 @@ try_again:
                 printf("MR_term_size: pred/func %p\n", (void *) term);
             }
 #endif
-            /* currently we don't collect stats on closure sizes */
+            // Currently we don't collect stats on closure sizes.
             return 0;
 
         case MR_TYPECTOR_REP_ARRAY:
-            /* currently we don't collect stats on array sizes */
+            // Currently we don't collect stats on array sizes.
 #ifdef MR_DEBUG_TERM_SIZES
             if (MR_heapdebug && MR_lld_print_enabled) {
                 printf("MR_term_size: array %p\n", (void *) term);
@@ -236,7 +231,7 @@ try_again:
             }
 #endif
             return 0;
-        
+
         case MR_TYPECTOR_REP_FOREIGN_ENUM:
         case MR_TYPECTOR_REP_FOREIGN_ENUM_USEREQ:
 #ifdef MR_DEBUG_TERMSIZES
@@ -250,8 +245,19 @@ try_again:
         case MR_TYPECTOR_REP_INT:
 #ifdef MR_DEBUG_TERM_SIZES
             if (MR_heapdebug && MR_lld_print_enabled) {
-                printf("MR_term_size: int %p %ld\n",
-                    (void *) term, (long) term);
+                printf(
+                    "MR_term_size: int %p %" MR_INTEGER_LENGTH_MODIFIER "d\n",
+                    (void *) term, (MR_Integer) term);
+            }
+#endif
+            return 0;
+
+        case MR_TYPECTOR_REP_UINT:
+#ifdef MR_DEBUG_TERM_SIZES
+            if (MR_heapdebug && MR_lld_print_enabled) {
+                printf(
+                    "MR_term_size: uint %p %" MR_INTEGER_LENGTH_MODIFIER "u\n",
+                    (void *) term, (MR_Unsigned) term);
             }
 #endif
             return 0;
@@ -399,21 +405,21 @@ MR_write_complexity_proc(MR_ComplexityProc *proc)
     int                     num_slots;
     MR_ComplexityPastSlots  *past_slots;
     char                    *cmd_buf;
+    char                    errbuf[MR_STRERROR_BUF_SIZE];
 
     full_proc_name_len = strlen(proc->MR_clp_full_proc_name);
     full_proc_name = MR_malloc(100 + full_proc_name_len);
     strcpy(full_proc_name, proc->MR_clp_full_proc_name);
 
-    /*
-    ** We can't have slash characters in the filenames we construct from
-    ** full_proc_name.
-    */
+    // We can't have slash characters in the filenames we construct from
+    // full_proc_name.
+
     while ((slash = strchr(full_proc_name, '/')) != NULL) {
         *slash = ':';
     }
 
     cmd_buf = MR_malloc(100 + 2 * full_proc_name_len);
-        /* will be big enough */
+        // Will be big enough.
 
     if (! MR_have_created_complexity_dirs) {
         sprintf(cmd_buf, "mkdir -p %s %s",
@@ -422,8 +428,9 @@ MR_write_complexity_proc(MR_ComplexityProc *proc)
             if (! MR_have_printed_complexity_dirs_error) {
                 fprintf(stderr, "%s: cannot create %s and %s: %s\n",
                     MR_progname, MR_COMPLEXITY_ARGS_DIR,
-                    MR_COMPLEXITY_DATA_DIR, strerror(errno));
-                /* there is no point in aborting */
+                    MR_COMPLEXITY_DATA_DIR,
+                    MR_strerror(errno, errbuf, sizeof(errbuf)));
+                // there is no point in aborting
                 MR_have_printed_complexity_dirs_error = MR_TRUE;
                 return;
             }
@@ -432,16 +439,17 @@ MR_write_complexity_proc(MR_ComplexityProc *proc)
     }
 
     args_filename = MR_malloc(100 + full_proc_name_len);
-        /* will be big enough */
+        // Will be big enough.
     sprintf(args_filename, "%s/%s", MR_COMPLEXITY_ARGS_DIR, full_proc_name);
 
     if (stat(args_filename, &statbuf) != 0) {
-        /* args_filename does not exist */
+        // args_filename does not exist.
         fp = fopen(args_filename, "w");
         if (fp == NULL) {
             fprintf(stderr, "%s: cannot open %s: %s\n",
-                MR_progname, args_filename, strerror(errno));
-            /* there is no point in aborting */
+                MR_progname, args_filename,
+                MR_strerror(errno, errbuf, sizeof(errbuf)));
+            // There is no point in aborting.
             return;
         }
 
@@ -449,7 +457,7 @@ MR_write_complexity_proc(MR_ComplexityProc *proc)
         fclose(fp);
         data_filemode = "w";
     } else {
-        /* args_filename does exist */
+        // args_filename does exist.
         char    *tmp_filename;
 
         tmp_filename = MR_malloc(100 + full_proc_name_len);
@@ -458,8 +466,9 @@ MR_write_complexity_proc(MR_ComplexityProc *proc)
         fp = fopen(tmp_filename, "w");
         if (fp == NULL) {
             fprintf(stderr, "%s: cannot open %s: %s\n",
-                MR_progname, tmp_filename, strerror(errno));
-            /* there is no point in aborting */
+                MR_progname, tmp_filename,
+                MR_strerror(errno, errbuf, sizeof(errbuf)));
+            // There is no point in aborting.
             return;
         }
 
@@ -468,11 +477,11 @@ MR_write_complexity_proc(MR_ComplexityProc *proc)
 
         sprintf(cmd_buf, "cmp -s %s %s", args_filename, tmp_filename);
         if (system(cmd_buf) == 0) {
-            /* the files are identical */
+            // The files are identical.
             (void) unlink(tmp_filename);
             data_filemode = "a";
         } else {
-            /* the files are different */
+            // The files are different.
             rename(tmp_filename, args_filename);
             data_filemode = "w";
         }
@@ -484,8 +493,9 @@ MR_write_complexity_proc(MR_ComplexityProc *proc)
     fp = fopen(data_filename, data_filemode);
     if (fp == NULL) {
         fprintf(stderr, "%s: cannot open %s: %s\n",
-            MR_progname, data_filename, strerror(errno));
-        /* there is no point in aborting */
+            MR_progname, data_filename,
+            MR_strerror(errno, errbuf, sizeof(errbuf)));
+        // There is no point in aborting.
         return;
     }
 
@@ -736,4 +746,4 @@ MR_complexity_redo_func(int procnum, int slot)
     proc->MR_clp_is_active = MR_COMPLEXITY_IS_ACTIVE;
 }
 
-#endif  /* MR_RECORD_TERM_SIZES */
+#endif  // MR_RECORD_TERM_SIZES

@@ -5,12 +5,12 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % File: process_util.m.
 % Main author: stayl.
-% 
+%
 % Process and signal handling, mainly for use by make.m and its sub-modules.
-% 
+%
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -133,7 +133,7 @@ build_with_check_for_interrupt(VeryVerbose, Build, Cleanup, Succeeded,
     Build(Succeeded0, !Info, !IO),
     restore_signal_handlers(MaybeSigIntHandler, !IO),
     check_for_signal(Signalled, Signal, !IO),
-    ( Signalled = 1 ->
+    ( if Signalled = 1 then
         Succeeded = no,
         (
             VeryVerbose = yes,
@@ -148,7 +148,7 @@ build_with_check_for_interrupt(VeryVerbose, Build, Cleanup, Succeeded,
         % The signal handler has been restored to the default,
         % so this should kill us.
         raise_signal(Signal, !IO)
-    ;
+    else
         Succeeded = Succeeded0
     ).
 
@@ -297,7 +297,7 @@ raise_signal(_::in, IO::di, IO::uo).
     raise_signal(Signal::in, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, tabled_for_io],
 "
-    raise(Signal);
+    raise((int)Signal);
 ").
 
 :- pragma foreign_proc("C",
@@ -305,7 +305,7 @@ raise_signal(_::in, IO::di, IO::uo).
     [will_not_call_mercury, promise_pure, tabled_for_io],
 "
 #ifdef MR_HAVE_KILL
-    kill(Pid, Signal);
+    kill((pid_t)Pid, (int)Signal);
 #endif
 ").
 
@@ -328,18 +328,18 @@ call_in_forked_process(P, Success, !IO) :-
     call_in_forked_process_with_backup(P, P, Success, !IO).
 
 call_in_forked_process_with_backup(P, AltP, Success, !IO) :-
-    ( can_fork ->
+    ( if can_fork then
         start_in_forked_process(P, MaybePid, !IO),
         (
             MaybePid = yes(Pid),
             do_wait(Pid, _, CallStatus, !IO),
-            Status = io.handle_system_command_exit_status(CallStatus),
-            Success = (Status = ok(exited(0)) -> yes ; no)
+            Status = decode_system_command_exit_code(CallStatus),
+            Success = ( if Status = ok(exited(0)) then yes else no )
         ;
             MaybePid = no,
             Success = no
         )
-    ;
+    else
         AltP(Success, !IO)
     ).
 
@@ -367,9 +367,9 @@ can_fork :- semidet_fail.
 
 start_in_forked_process(P, MaybePid, !IO) :-
     start_in_forked_process_2(P, Pid, !IO),
-    ( Pid = 0 ->
+    ( if Pid = 0 then
         MaybePid = no
-    ;
+    else
         MaybePid = yes(Pid)
     ).
 
@@ -393,7 +393,7 @@ start_in_forked_process_2(_, _, !IO) :-
         MR_Integer exit_status;
 
         MC_call_child_process_io_pred(Pred, &exit_status);
-        exit(exit_status);
+        exit((int)exit_status);
     } else {                                /* parent */
     }
 
@@ -451,7 +451,7 @@ call_child_process_io_pred(P, Status, !IO) :-
 #endif
 
         while (1) {
-            wait_status = waitpid(Pid, &child_status, 0);
+            wait_status = waitpid((pid_t)Pid, &child_status, 0);
             if (wait_status != -1) {
                 WaitedPid = wait_status;
                 Status = child_status;
@@ -466,7 +466,7 @@ call_child_process_io_pred(P, Status, !IO) :-
                     ** Linux).
                     */
                     if (Pid != -1) {
-                        kill(Pid, SIGTERM);
+                        kill((pid_t)Pid, SIGTERM);
                     }
                     break;
                 }
@@ -504,11 +504,11 @@ do_wait(_, _, _, _, _) :-
 
 wait_pid(Pid, Status, !IO) :-
     do_wait(Pid, _Pid, Status0, !IO),
-    Status = io.handle_system_command_exit_status(Status0).
+    Status = decode_system_command_exit_code(Status0).
 
 wait_any(Pid, Status, !IO) :-
     do_wait(-1, Pid, Status0, !IO),
-    Status = io.handle_system_command_exit_status(Status0).
+    Status = decode_system_command_exit_code(Status0).
 
 %-----------------------------------------------------------------------------%
 :- end_module libs.process_util.

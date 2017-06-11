@@ -26,11 +26,15 @@
 :- module ml_backend.ml_type_gen.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_module.
+:- import_module libs.
 :- import_module libs.globals.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
 :- import_module ml_backend.mlds.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module bool.
@@ -41,7 +45,23 @@
 
     % Generate MLDS definitions for all the types in the HLDS.
     %
-:- pred ml_gen_types(module_info::in, list(mlds_defn)::out) is det.
+:- pred ml_gen_types(module_info::in, list(mlds_class_defn)::out) is det.
+
+%-----------------------------------------------------------------------------%
+
+    % Generate a constructor function to initialise the given fields in a
+    % class representing a compiler generated data structure.
+    %
+    % The input we take as the description of each field is a bespoke type,
+    % mlds_field_info, not the field's mlds_defn. This is because not all
+    % mlds_defns define fields, and we don't want this predicate to have to
+    % test whether the data it is given makes sense.
+    %
+:- func ml_gen_constructor_function(compilation_target, mlds_class_id,
+    mlds_type, mlds_module_name, mlds_class_id, maybe(int),
+    list(mlds_field_info), mlds_context) = mlds_defn.
+
+%-----------------------------------------------------------------------------%
 
     % Given an HLDS type_ctor, generate the MLDS class name and arity
     % for the corresponding MLDS type.
@@ -58,22 +78,27 @@
 :- func ml_gen_du_ctor_name_unqual_type(compilation_target, string, int,
     sym_name, int) = string.
 
+%-----------------------------------------------------------------------------%
+
     % Return the declaration flags appropriate for a type.
     %
-:- func ml_gen_type_decl_flags = mlds_decl_flags.
-
-    % Return the declaration flags appropriate for an enumeration constant.
-    %
-:- func ml_gen_enum_constant_decl_flags = mlds_decl_flags.
+:- func ml_gen_type_decl_flags = mlds_class_decl_flags.
 
     % Return the declaration flags appropriate for a member variable.
     %
-:- func ml_gen_member_decl_flags = mlds_decl_flags.
+:- func ml_gen_member_decl_flags = mlds_function_decl_flags.
+:- func ml_gen_member_data_decl_flags = mlds_data_decl_flags.
 
     % Return the declaration flags appropriate for a member variable
     % which is read-only after initialisation.
     %
-:- func ml_gen_const_member_decl_flags = mlds_decl_flags.
+:- func ml_gen_const_member_data_decl_flags = mlds_data_decl_flags.
+
+    % Return the declaration flags appropriate for an enumeration constant.
+    %
+:- func ml_gen_enum_constant_data_decl_flags = mlds_data_decl_flags.
+
+%-----------------------------------------------------------------------------%
 
     % ml_uses_secondary_tag(TypeCtor, ConsTagValues, Ctor, SecondaryTag):
     % Check if this constructor uses a secondary tag,
@@ -96,15 +121,32 @@
     %
 :- func ml_target_uses_constructors(compilation_target) = bool.
 
-    % Generate a constructor function to initialise the given fields in a
-    % class.
-    %
-:- func ml_gen_constructor_function(compilation_target, mlds_class_id,
-    mlds_type, mlds_module_name, mlds_class_id, maybe(int), list(mlds_defn),
-    mlds_context) = mlds_defn.
+    % A description of a field in a compiler-generated data structure.
+:- type mlds_field_info
+    --->    mlds_field_info(
+                % The compiler generated field name. It should be of a type
+                % that is separate from the type of variables, but that change
+                % is for later.
+                mlds_var_name,
+
+                % The type of the field.
+                mlds_type,
+
+                % What tracing, if any, is required for the field.
+                mlds_gc_statement,
+
+                % The context we will use for code derived from this field.
+                % This *ought* to be the context of the field itself
+                % in the type definition, but there is no guarantee
+                % that it will be; at the moment, it may be the context
+                % of the whole type definition. Since pretty much noone
+                % ever looks at the contexts of the generated code,
+                % such minor differences don't really matter.
+                mlds_context
+            ).
 
     % Exported enumeration info in the HLDS is converted into an MLDS
-    % specific representation.  The target specific code generators may
+    % specific representation. The target specific code generators may
     % further transform it.
     %
 :- pred ml_gen_exported_enums(module_info::in, mlds_exported_enums::out)
@@ -115,16 +157,15 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.polymorphism.
-:- import_module hlds.hlds_pred.
+:- import_module hlds.status.
 :- import_module libs.options.
+:- import_module mdbcomp.builtin_modules.
 :- import_module ml_backend.ml_code_util.
-:- import_module ml_backend.ml_util.
-:- import_module parse_tree.prog_data.
 :- import_module parse_tree.prog_type.
 
 :- import_module int.
-:- import_module list.
 :- import_module map.
 :- import_module pair.
 :- import_module require.
@@ -137,48 +178,48 @@
 ml_gen_types(ModuleInfo, Defns) :-
     module_info_get_globals(ModuleInfo, Globals),
     globals.lookup_bool_option(Globals, highlevel_data, HighLevelData),
-    globals.get_target(Globals, Target),
     (
         HighLevelData = yes,
         module_info_get_type_table(ModuleInfo, TypeTable),
-        get_all_type_ctor_defns(TypeTable, TypeCtorsDefns0),
-        list.filter(
-            (pred(TypeCtorDefn::in) is semidet :-
-                TypeCtorDefn = TypeCtor - _TypeDefn,
-                \+ type_ctor_needs_lowlevel_rep(Target, TypeCtor)
-            ), TypeCtorsDefns0, TypeCtorDefns),
-        list.foldl(ml_gen_type_defn(ModuleInfo), TypeCtorDefns, [], Defns)
+        get_all_type_ctor_defns(TypeTable, TypeCtorDefns),
+        list.foldl(ml_gen_hld_type_defn_if_local(ModuleInfo), TypeCtorDefns,
+            [], Defns)
     ;
         HighLevelData = no,
         Defns = []
     ).
 
-:- pred ml_gen_type_defn(module_info::in, pair(type_ctor, hlds_type_defn)::in,
-    list(mlds_defn)::in, list(mlds_defn)::out) is det.
+:- pred ml_gen_hld_type_defn_if_local(module_info::in,
+    pair(type_ctor, hlds_type_defn)::in,
+    list(mlds_class_defn)::in, list(mlds_class_defn)::out) is det.
 
-ml_gen_type_defn(ModuleInfo, TypeCtor - TypeDefn, !Defns) :-
-    hlds_data.get_type_defn_status(TypeDefn, Status),
-    DefinedThisModule = status_defined_in_this_module(Status),
+ml_gen_hld_type_defn_if_local(ModuleInfo, TypeCtor - TypeDefn, !Defns) :-
+    hlds_data.get_type_defn_status(TypeDefn, TypeStatus),
+    DefinedThisModule = type_status_defined_in_this_module(TypeStatus),
     (
         DefinedThisModule = yes,
-        ml_gen_type_defn_2(ModuleInfo, TypeCtor, TypeDefn, !Defns)
+        ml_gen_hld_type_defn(ModuleInfo, TypeCtor, TypeDefn, !Defns)
     ;
         DefinedThisModule = no
     ).
 
-:- pred ml_gen_type_defn_2(module_info::in, type_ctor::in, hlds_type_defn::in,
-    list(mlds_defn)::in, list(mlds_defn)::out) is det.
+:- pred ml_gen_hld_type_defn(module_info::in, type_ctor::in,
+    hlds_type_defn::in,
+    list(mlds_class_defn)::in, list(mlds_class_defn)::out) is det.
 
-ml_gen_type_defn_2(ModuleInfo, TypeCtor, TypeDefn, !Defns) :-
+ml_gen_hld_type_defn(ModuleInfo, TypeCtor, TypeDefn, !Defns) :-
     hlds_data.get_type_defn_body(TypeDefn, TypeBody),
     (
-        TypeBody = hlds_abstract_type(_)
+        ( TypeBody = hlds_abstract_type(_)
+        ; TypeBody = hlds_foreign_type(_)
+        ; TypeBody = hlds_solver_type(_, _)
+        )
     ;
         TypeBody = hlds_eqv_type(_EqvType)
         % XXX Fixme!
         % For a description of the problems with equivalence types,
         % see our BABEL'01 paper "Compiling Mercury to the .NET CLR".
-        % The same issue arises for some of the cases below.
+        % The same issue arises for some of the other kinds of types.
     ;
         TypeBody = hlds_du_type(Ctors, TagValues, _CheaperTagTest, DuTypeKind,
             MaybeUserEqComp, _MaybeDirectArgCtors, _ReservedTag, _, _),
@@ -190,7 +231,7 @@ ml_gen_type_defn_2(ModuleInfo, TypeCtor, TypeDefn, !Defns) :-
             ),
             module_info_get_globals(ModuleInfo, Globals),
             globals.get_target(Globals, Target),
-            ml_gen_enum_type(Target, TypeCtor, TypeDefn, Ctors, TagValues,
+            ml_gen_hld_enum_type(Target, TypeCtor, TypeDefn, Ctors, TagValues,
                 MaybeEqualityMembers, !Defns)
         ;
             DuTypeKind = du_type_kind_direct_dummy,
@@ -198,19 +239,15 @@ ml_gen_type_defn_2(ModuleInfo, TypeCtor, TypeDefn, !Defns) :-
             % but it is not easy to ensure that we never refer to that type.
             module_info_get_globals(ModuleInfo, Globals),
             globals.get_target(Globals, Target),
-            ml_gen_enum_type(Target, TypeCtor, TypeDefn, Ctors, TagValues,
+            ml_gen_hld_enum_type(Target, TypeCtor, TypeDefn, Ctors, TagValues,
                 MaybeEqualityMembers, !Defns)
         ;
             ( DuTypeKind = du_type_kind_notag(_, _, _)
             ; DuTypeKind = du_type_kind_general
             ),
-            ml_gen_du_parent_type(ModuleInfo, TypeCtor, TypeDefn,
+            ml_gen_hld_du_type(ModuleInfo, TypeCtor, TypeDefn,
                 Ctors, TagValues, MaybeEqualityMembers, !Defns)
         )
-    ;
-        TypeBody = hlds_foreign_type(_)
-    ;
-        TypeBody = hlds_solver_type(_, _)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -227,18 +264,19 @@ ml_gen_type_defn_2(ModuleInfo, TypeCtor, TypeDefn, !Defns) :-
     %       int MR_value;
     %   };
     %
-    % It is marked as an mlds_enum so that the MLDS -> target code
-    % generator can treat it specially if need be (e.g. generating
-    % a C enum rather than a class).
+    % It is marked as an mlds_enum so that the MLDS -> target code generator
+    % can treat it specially if need be (e.g. generating a C enum rather than
+    % a class).
     %
     % Note that for Java the MR_value field is inherited from the
     % MercuryEnum class.
     %
-:- pred ml_gen_enum_type(compilation_target::in, type_ctor::in,
+:- pred ml_gen_hld_enum_type(compilation_target::in, type_ctor::in,
     hlds_type_defn::in, list(constructor)::in, cons_tag_values::in,
-    list(mlds_defn)::in, list(mlds_defn)::in, list(mlds_defn)::out) is det.
+    list(mlds_defn)::in,
+    list(mlds_class_defn)::in, list(mlds_class_defn)::out) is det.
 
-ml_gen_enum_type(Target, TypeCtor, TypeDefn, Ctors, TagValues,
+ml_gen_hld_enum_type(Target, TypeCtor, TypeDefn, Ctors, TagValues,
         MaybeEqualityMembers, !Defns) :-
     hlds_data.get_type_defn_context(TypeDefn, Context),
     MLDS_Context = mlds_make_context(Context),
@@ -248,11 +286,11 @@ ml_gen_enum_type(Target, TypeCtor, TypeDefn, Ctors, TagValues,
     QualifiedClassName = qual(_, _, MLDS_ClassName),
 
     % Generate the class members.
-    ValueMember = ml_gen_enum_value_member(Context),
+    ValueMember = ml_gen_hld_enum_value_member(Context),
     MLDS_Type = mlds_class_type(QualifiedClassName, MLDS_ClassArity,
         mlds_enum),
     EnumConstMembers = list.map(
-        ml_gen_enum_constant(Context, TypeCtor, TagValues, MLDS_Type),
+        ml_gen_hld_enum_constant(Context, TypeCtor, TagValues, MLDS_Type),
         Ctors),
     Members = MaybeEqualityMembers ++
         [ValueMember | EnumConstMembers],
@@ -268,9 +306,7 @@ ml_gen_enum_type(Target, TypeCtor, TypeDefn, Ctors, TagValues,
         Inherits = [ml_java_mercury_enum_class]
     ;
         ( Target = target_c
-        ; Target = target_il
         ; Target = target_csharp
-        ; Target = target_x86_64
         ; Target = target_erlang
         ),
         Implements = [],
@@ -280,41 +316,45 @@ ml_gen_enum_type(Target, TypeCtor, TypeDefn, Ctors, TagValues,
     get_type_defn_tparams(TypeDefn, TypeVars),
 
     % Put it all together.
-    MLDS_TypeName = entity_type(MLDS_ClassName, MLDS_ClassArity),
+    MLDS_TypeName = mlds_type_name(MLDS_ClassName, MLDS_ClassArity),
     MLDS_TypeFlags = ml_gen_type_decl_flags,
-    MLDS_TypeDefnBody = mlds_class(mlds_class_defn(mlds_enum,
-        Imports, Inherits, Implements, TypeVars, [], Members)),
-    Defn = mlds_defn(MLDS_TypeName, MLDS_Context, MLDS_TypeFlags,
-        MLDS_TypeDefnBody),
+    MLDS_TypeDefn = mlds_class_defn(MLDS_TypeName, MLDS_Context,
+        MLDS_TypeFlags, mlds_enum, Imports, Inherits, Implements,
+        TypeVars, [], Members),
 
-    !:Defns = [Defn | !.Defns].
+    !:Defns = [MLDS_TypeDefn | !.Defns].
 
-:- func ml_gen_enum_value_member(prog_context) = mlds_defn.
+:- func ml_gen_hld_enum_value_member(prog_context) = mlds_defn.
 
-ml_gen_enum_value_member(Context) =
-    mlds_defn(entity_data(mlds_data_var(mlds_var_name("MR_value", no))),
-        mlds_make_context(Context),
-        ml_gen_member_decl_flags,
-        mlds_data(mlds_native_int_type, no_initializer, gc_no_stmt)).
+ml_gen_hld_enum_value_member(Context) =
+    % XXX MLDS_DEFN
+    mlds_data(
+        mlds_data_defn(
+            mlds_data_var(mlds_comp_var(mcv_mr_value)),
+            mlds_make_context(Context),
+            ml_gen_member_data_decl_flags,
+            mlds_native_int_type,
+            no_initializer,
+            gc_no_stmt)).
 
-:- func ml_gen_enum_constant(prog_context, type_ctor, cons_tag_values,
+:- func ml_gen_hld_enum_constant(prog_context, type_ctor, cons_tag_values,
     mlds_type, constructor) = mlds_defn.
 
-ml_gen_enum_constant(Context, TypeCtor, ConsTagValues, MLDS_Type, Ctor)
+ml_gen_hld_enum_constant(Context, TypeCtor, ConsTagValues, MLDS_Type, Ctor)
         = Defn :-
     % Figure out the value of this enumeration constant.
-    Ctor = ctor(_ExistQTVars, _Constraints, Name, Args, _Ctxt),
-    list.length(Args, Arity),
+    Ctor = ctor(_ExistQTVars, _Constraints, Name, _Args, Arity, _Ctxt),
     map.lookup(ConsTagValues, cons(Name, Arity, TypeCtor), TagVal),
     (
         TagVal = int_tag(Int),
         ConstValue = ml_const(mlconst_enum(Int, MLDS_Type))
     ;
         TagVal = foreign_tag(ForeignLang, ForeignTagValue),
-        ConstValue = ml_const(mlconst_foreign(ForeignLang, ForeignTagValue,
-            MLDS_Type))
+        ConstValue = ml_const(
+            mlconst_foreign(ForeignLang, ForeignTagValue, MLDS_Type))
     ;
-        ( TagVal = string_tag(_)
+        ( TagVal = uint_tag(_)
+        ; TagVal = string_tag(_)
         ; TagVal = float_tag(_)
         ; TagVal = closure_tag(_, _, _)
         ; TagVal = type_ctor_info_tag(_, _, _)
@@ -324,7 +364,7 @@ ml_gen_enum_constant(Context, TypeCtor, ConsTagValues, MLDS_Type, Ctor)
         ; TagVal = ground_term_const_tag(_, _)
         ; TagVal = tabling_info_tag(_, _)
         ; TagVal = deep_profiling_proc_layout_tag(_, _)
-        ; TagVal = table_io_decl_tag(_, _)
+        ; TagVal = table_io_entry_tag(_, _)
         ; TagVal = single_functor_tag
         ; TagVal = unshared_tag(_)
         ; TagVal = direct_arg_tag(_)
@@ -341,11 +381,16 @@ ml_gen_enum_constant(Context, TypeCtor, ConsTagValues, MLDS_Type, Ctor)
 
     % Generate an MLDS definition for this enumeration constant.
     UnqualifiedName = unqualify_name(Name),
-    Defn = mlds_defn(
-        entity_data(mlds_data_var(mlds_var_name(UnqualifiedName, no))),
-        mlds_make_context(Context),
-        ml_gen_enum_constant_decl_flags,
-        mlds_data(mlds_native_int_type, init_obj(ConstValue), gc_no_stmt)).
+    VarName = mlds_comp_var(mcv_enum_const(UnqualifiedName)),
+    % XXX MLDS_DEFN
+    Defn = mlds_data(
+        mlds_data_defn(
+            mlds_data_var(VarName),
+            mlds_make_context(Context),
+            ml_gen_enum_constant_data_decl_flags,
+            mlds_native_int_type,
+            init_obj(ConstValue),
+            gc_no_stmt)).
 
 %-----------------------------------------------------------------------------%
 %
@@ -387,16 +432,14 @@ ml_gen_enum_constant(Context, TypeCtor, ConsTagValues, MLDS_Type, Ctor)
     %       ** that use a `reserved_address(reserved_object(...))'
     %       ** representation.
     %       **
-    %       ** Derived classes are generated for any other
-    %       ** constructors; these are generated as nested classes
-    %       ** avoid name clashes.
+    %       ** Derived classes are generated for any other constructors;
+    %       ** these are generated as nested classes avoid name clashes.
     %       ** These will derive either directly from
     %       ** <ClassName> or from <ClassName>::tag_type
     %       ** (which in turn derives from <ClassName>),
-    %       ** depending on whether they need a secondary
-    %       ** tag.  If all the ctors for a type need a
-    %       ** secondary tag, we put the secondary tag members
-    %       ** directly in the base class.
+    %       ** depending on whether they need a secondary tag.
+    %       ** If all the ctors for a type need a secondary tag,
+    %       ** we put the secondary tag members directly in the base class.
     %       */
     %       */
     % #if ctor1_uses_reserved_object
@@ -405,14 +448,13 @@ ml_gen_enum_constant(Context, TypeCtor, ConsTagValues, MLDS_Type, Ctor)
     %       static class <ctor1> : public <ClassName> {
     %       public:
     %           /*
-    %           ** fields, one for each argument of this
-    %           ** constructor
+    %           ** Fields, one for each argument of this constructor.
     %           */
     %           MR_Word F1;
     %           MR_Word F2;
     %           ...
     %           /*
-    %           ** A constructor to initialize the fields
+    %           ** A constructor to initialize the fields.
     %           */
     %           <ctor1>(MR_Word F1, MR_Word F2, ...) {
     %               this->F1 = F1;
@@ -429,22 +471,22 @@ ml_gen_enum_constant(Context, TypeCtor, ConsTagValues, MLDS_Type, Ctor)
     %
     %   };
     %
-    %
     % If there is only one constructor which is not represented
-    % as a reserved_object, then we don't generate a nested derived
-    % class for that constructor, instead we just allocate the fields
+    % as a reserved_object, then we don't generate a nested derived class
+    % for that constructor, instead we just allocate the fields
     % in the base class.
     %
-:- pred ml_gen_du_parent_type(module_info::in, type_ctor::in,
+:- pred ml_gen_hld_du_type(module_info::in, type_ctor::in,
     hlds_type_defn::in, list(constructor)::in, cons_tag_values::in,
-    list(mlds_defn)::in, list(mlds_defn)::in, list(mlds_defn)::out) is det.
+    list(mlds_defn)::in,
+    list(mlds_class_defn)::in, list(mlds_class_defn)::out) is det.
 
-ml_gen_du_parent_type(ModuleInfo, TypeCtor, TypeDefn, Ctors, TagValues,
+ml_gen_hld_du_type(ModuleInfo, TypeCtor, TypeDefn, Ctors, TagValues,
         MaybeEqualityMembers, !Defns) :-
     hlds_data.get_type_defn_context(TypeDefn, Context),
     MLDS_Context = mlds_make_context(Context),
 
-    % generate the class name
+    % Generate the class name.
     ml_gen_type_name(TypeCtor, QualBaseClassName, BaseClassArity),
     BaseClassId = mlds_class_type(QualBaseClassName, BaseClassArity,
         mlds_class),
@@ -454,20 +496,19 @@ ml_gen_du_parent_type(ModuleInfo, TypeCtor, TypeDefn, Ctors, TagValues,
     BaseClassQualifier = mlds_append_class_qualifier(Target,
         BaseClassModuleName, QualKind, BaseClassName, BaseClassArity),
 
-    (
-        % If none of the constructors for this type need a secondary tag,
-        % then we don't need the members for the secondary tag.
-
-        \+ (some [Ctor] (
-            list.member(Ctor, Ctors),
-            ml_needs_secondary_tag(TypeCtor, TagValues, Ctor)
-        ))
-    ->
-        TagMembers = [],
-        TagClassId = BaseClassId
-    ;
+    ml_num_ctors_that_need_secondary_tag(TypeCtor, TagValues, Ctors,
+        0, NumCtors, 0, NumSecTagCtors),
+    ( if NumSecTagCtors > 0 then
         % Generate the members for the secondary tag.
-        TagDataMember = ml_gen_tag_member("data_tag", Context),
+        % XXX MLDS_DEFN
+        TagDataMember = mlds_data(
+            mlds_data_defn(
+                mlds_data_var(mlds_comp_var(mcv_data_tag)),
+                mlds_make_context(Context),
+                ml_gen_member_data_decl_flags,
+                mlds_native_int_type,
+                no_initializer,
+                gc_no_stmt)),
         TagConstMembers = [],
         % XXX we don't yet bother with these;
         % mlds_to_c.m doesn't support static (one_copy) members.
@@ -475,31 +516,29 @@ ml_gen_du_parent_type(ModuleInfo, TypeCtor, TypeDefn, Ctors, TagValues,
         %       ml_gen_tag_constant(Context, TypeCtor, TagValues), Ctors)),
         TagMembers0 = [TagDataMember | TagConstMembers],
 
-        % If all the constructors for this type need a secondary tag, then
-        % we put the secondary tag members directly in the base class,
-        % otherwise we put it in a separate nested derived class.
-
-        (
-            all [Ctor] (
-                list.member(Ctor, Ctors)
-            =>
-                ml_needs_secondary_tag(TypeCtor, TagValues, Ctor)
-            )
-        ->
+        % If all the constructors for this type need a secondary tag,
+        % then we put the secondary tag members directly in the base class;
+        % otherwise, we put it in a separate nested derived class.
+        ( if NumSecTagCtors = NumCtors then
             TagMembers = TagMembers0,
             TagClassId = BaseClassId
-        ;
-            ml_gen_secondary_tag_class(MLDS_Context, BaseClassQualifier,
+        else
+            ml_gen_hld_secondary_tag_class(MLDS_Context, BaseClassQualifier,
                 BaseClassId, TagMembers0, Target, TagTypeDefn, TagClassId),
             TagMembers = [TagTypeDefn]
         )
+    else
+        % If none of the constructors for this type need a secondary tag,
+        % then we don't need the members for the secondary tag.
+        TagMembers = [],
+        TagClassId = BaseClassId
     ),
 
     % Generate the nested derived classes for the constructors,
     % or static (one_copy) member objects for constructors with
     % reserved_object representations, or fields and a constructor method
     % for the single_functor case.
-    list.foldl2(ml_gen_du_ctor_member(ModuleInfo, BaseClassId,
+    list.foldl2(ml_gen_hld_du_ctor_member(ModuleInfo, BaseClassId,
         BaseClassQualifier, TagClassId, TypeCtor, TypeDefn, TagValues),
         Ctors, [], CtorMembers, [], BaseClassCtorMethods),
 
@@ -514,9 +553,7 @@ ml_gen_du_parent_type(ModuleInfo, TypeCtor, TypeDefn, Ctors, TagValues,
         Implements = [ml_java_mercury_type_interface]
     ;
         ( Target = target_c
-        ; Target = target_il
         ; Target = target_csharp
-        ; Target = target_x86_64
         ; Target = target_erlang
         ),
         Implements = []
@@ -526,64 +563,39 @@ ml_gen_du_parent_type(ModuleInfo, TypeCtor, TypeDefn, Ctors, TagValues,
 
     % Put it all together.
     Members = MaybeEqualityMembers ++ TagMembers ++ CtorMembers,
-    MLDS_TypeName = entity_type(BaseClassName, BaseClassArity),
+    MLDS_TypeName = mlds_type_name(BaseClassName, BaseClassArity),
     MLDS_TypeFlags = ml_gen_type_decl_flags,
-    MLDS_TypeDefnBody = mlds_class(mlds_class_defn(mlds_class, Imports,
-        Inherits, Implements, TypeParams, BaseClassCtorMethods, Members)),
-    Defn = mlds_defn(MLDS_TypeName, MLDS_Context, MLDS_TypeFlags,
-        MLDS_TypeDefnBody),
+    % XXX MLDS_DEFN
+    Defn = mlds_class_defn(MLDS_TypeName, MLDS_Context,
+        MLDS_TypeFlags, mlds_class, Imports, Inherits, Implements,
+        TypeParams, BaseClassCtorMethods, Members),
 
     !:Defns = [Defn | !.Defns].
 
-    % Generate the declaration for the field that holds the secondary tag.
-    %
-:- func ml_gen_tag_member(string, prog_context) = mlds_defn.
+:- pred ml_num_ctors_that_need_secondary_tag(type_ctor::in,
+    cons_tag_values::in, list(constructor)::in,
+    int::in, int::out, int::in, int::out) is det.
 
-ml_gen_tag_member(Name, Context) =
-    mlds_defn(entity_data(mlds_data_var(mlds_var_name(Name, no))),
-        mlds_make_context(Context),
-        ml_gen_member_decl_flags,
-        mlds_data(mlds_native_int_type, no_initializer, gc_no_stmt)).
-
-:- func ml_gen_tag_constant(prog_context, type_ctor, cons_tag_values,
-    constructor) = list(mlds_defn).
-
-ml_gen_tag_constant(Context, TypeCtor, ConsTagValues, Ctor) = Defns :-
-    % Check if this constructor uses a secondary tag.
-    ( ml_uses_secondary_tag(TypeCtor, ConsTagValues, Ctor, SecondaryTag) ->
-        % Generate an MLDS definition for this secondary tag constant.
-        % We do this mainly for readability and interoperability. Note that
-        % we don't do the same thing for primary tags, so this is most useful
-        % in the `--tags none' case, where there will be no primary tags.
-
-        Ctor = ctor(_ExistQTVars, _Constraints, Name, _Args, _Ctxt),
-        UnqualifiedName = unqualify_name(Name),
-        ConstValue = ml_const(mlconst_int(SecondaryTag)),
-        Defn = mlds_defn(
-            entity_data(mlds_data_var(mlds_var_name(UnqualifiedName, no))),
-            mlds_make_context(Context),
-            ml_gen_enum_constant_decl_flags,
-            mlds_data(mlds_native_int_type, init_obj(ConstValue), gc_no_stmt)),
-        Defns = [Defn]
-    ;
-        Defns = []
-    ).
-
-    % Check if this constructor's representation uses a secondary tag,
-    % and if so, return the secondary tag value.
-    % BEWARE that this is not the same as ml_needs_secondary_tag, below.
-    %
-ml_uses_secondary_tag(TypeCtor, ConsTagValues, Ctor, SecondaryTag) :-
-    TagVal = get_tagval(TypeCtor, ConsTagValues, Ctor),
-    get_secondary_tag(TagVal) = yes(SecondaryTag).
+ml_num_ctors_that_need_secondary_tag(_TypeCtor, _TagValues, [],
+        !NumCtors, !NumSecTagCtors).
+ml_num_ctors_that_need_secondary_tag(TypeCtor, TagValues, [Ctor | Ctors],
+        !NumCtors, !NumSecTagCtors) :-
+    !:NumCtors = !.NumCtors + 1,
+    ( if ml_needs_secondary_tag(TypeCtor, TagValues, Ctor) then
+        !:NumSecTagCtors = !.NumSecTagCtors + 1
+    else
+        true
+    ),
+    ml_num_ctors_that_need_secondary_tag(TypeCtor, TagValues, Ctors,
+        !NumCtors, !NumSecTagCtors).
 
     % Check if this constructor needs a secondary tag. This is true if its
     % representation uses a secondary tag, obviously. But it is also true
     % if its representation is the address of a reserved object; in that case,
     % for some back-ends (e.g. C) we need a field of some kind to ensure
     % that the reserved object had non-zero size, which in turn is needed
-    % to ensure that its address is distinct from any other reserved objects
-    % for the same type.
+    % to ensure that its address is distinct from the address of any other
+    % reserved object for the same type.
     %
 :- pred ml_needs_secondary_tag(type_ctor::in, cons_tag_values::in,
     constructor::in) is semidet.
@@ -594,29 +606,55 @@ ml_needs_secondary_tag(TypeCtor, TagValues, Ctor) :-
     ; tagval_is_reserved_addr(TagVal, reserved_object(_, _, _))
     ).
 
-:- pred tagval_is_reserved_addr(cons_tag::in, reserved_address::out)
-    is semidet.
-
-tagval_is_reserved_addr(reserved_address_tag(RA), RA).
-tagval_is_reserved_addr(shared_with_reserved_addresses_tag(_, TagVal), RA) :-
-    tagval_is_reserved_addr(TagVal, RA).
-
 :- func get_tagval(type_ctor, cons_tag_values, constructor) = cons_tag.
 
 get_tagval(TypeCtor, ConsTagValues, Ctor) = TagVal :-
-    Ctor = ctor(_ExistQTVars, _Constraints, Name, Args, _Ctxt),
-    list.length(Args, Arity),
+    Ctor = ctor(_ExistQTVars, _Constraints, Name, _Args, Arity, _Ctxt),
     map.lookup(ConsTagValues, cons(Name, Arity, TypeCtor), TagVal).
+
+%-----------------------------------------------------------------------------%
+
+:- func ml_gen_hld_tag_constant(prog_context, type_ctor, cons_tag_values,
+    constructor) = list(mlds_data_defn).
+:- pragma consider_used(ml_gen_hld_tag_constant/4).
+
+ml_gen_hld_tag_constant(Context, TypeCtor, ConsTagValues, Ctor) = Defns :-
+    % Check if this constructor uses a secondary tag.
+    ( if
+        ml_uses_secondary_tag(TypeCtor, ConsTagValues, Ctor, SecondaryTag)
+    then
+        % Generate an MLDS definition for this secondary tag constant.
+        % We do this mainly for readability and interoperability. Note that
+        % we don't do the same thing for primary tags, so this is most useful
+        % in the `--tags none' case, where there will be no primary tags.
+
+        Ctor = ctor(_ExistQTVars, _Constraints, Name, _Args, _Arity, _Ctxt),
+        UnqualifiedName = unqualify_name(Name),
+        VarName = mlds_comp_var(mcv_sectag_const(UnqualifiedName)),
+        ConstValue = ml_const(mlconst_int(SecondaryTag)),
+        Defn = mlds_data_defn(
+            mlds_data_var(VarName),
+            mlds_make_context(Context),
+            ml_gen_enum_constant_data_decl_flags,
+            mlds_native_int_type,
+            init_obj(ConstValue),
+            gc_no_stmt),
+        Defns = [Defn]
+    else
+        Defns = []
+    ).
+
+%-----------------------------------------------------------------------------%
 
     % Generate a definition for the class used for the secondary tag type.
     % This is needed for discriminated unions for which some but not all
     % constructors use secondary tags.
     %
-:- pred ml_gen_secondary_tag_class(mlds_context::in, mlds_module_name::in,
+:- pred ml_gen_hld_secondary_tag_class(mlds_context::in, mlds_module_name::in,
     mlds_class_id::in, list(mlds_defn)::in, compilation_target::in,
     mlds_defn::out, mlds_class_id::out) is det.
 
-ml_gen_secondary_tag_class(MLDS_Context, BaseClassQualifier, BaseClassId,
+ml_gen_hld_secondary_tag_class(MLDS_Context, BaseClassQualifier, BaseClassId,
         Members, Target, MLDS_TypeDefn, SecondaryTagClassId) :-
     % Generate the class name for the secondary tag class.
     % Note: the secondary tag class is nested inside the
@@ -627,13 +665,16 @@ ml_gen_secondary_tag_class(MLDS_Context, BaseClassQualifier, BaseClassId,
     SecondaryTagClassId = mlds_class_type(ClassName, ClassArity, mlds_class),
 
     % The secondary tag class inherits the base class for this type,
-    % unless we're compiling to C -- in that case, we omit it,
-    % since it is empty, and we don't want to include empty base
-    % classes when compiling to C.
+    % unless we are compiling to C -- in that case, we omit it,
+    % since it is empty, and we don't want to include empty base classes
+    % when compiling to C.
     Imports = [],
-    ( target_uses_empty_base_classes(Target) = yes ->
+    EmptyBaseClasses = target_uses_empty_base_classes(Target),
+    (
+        EmptyBaseClasses = yes,
         Inherits = [BaseClassId]
     ;
+        EmptyBaseClasses = no,
         Inherits = []
     ),
     Implements = [],
@@ -644,12 +685,12 @@ ml_gen_secondary_tag_class(MLDS_Context, BaseClassQualifier, BaseClassId,
     TypeParams = [],
 
     % Put it all together.
-    MLDS_TypeName = entity_type(UnqualClassName, ClassArity),
+    MLDS_TypeName = mlds_type_name(UnqualClassName, ClassArity),
     MLDS_TypeFlags = ml_gen_type_decl_flags,
-    MLDS_TypeDefnBody = mlds_class(mlds_class_defn(mlds_class, Imports,
-        Inherits, Implements, TypeParams, Ctors, Members)),
-    MLDS_TypeDefn = mlds_defn(MLDS_TypeName, MLDS_Context,
-        MLDS_TypeFlags, MLDS_TypeDefnBody).
+    % XXX MLDS_DEFN
+    MLDS_TypeDefn = mlds_class(mlds_class_defn(MLDS_TypeName, MLDS_Context,
+        MLDS_TypeFlags, mlds_class, Imports, Inherits, Implements,
+        TypeParams, Ctors, Members)).
 
     % Generate definitions corresponding to a constructor of a discriminated
     % union type. This will be one of the following:
@@ -659,16 +700,16 @@ ml_gen_secondary_tag_class(MLDS_Context, BaseClassQualifier, BaseClassId,
     % - (for the single_functor case) a bunch of fields and
     %   a constructor method.
     %
-:- pred ml_gen_du_ctor_member(module_info::in, mlds_class_id::in,
+:- pred ml_gen_hld_du_ctor_member(module_info::in, mlds_class_id::in,
     mlds_module_name::in, mlds_class_id::in, type_ctor::in, hlds_type_defn::in,
     cons_tag_values::in, constructor::in,
     list(mlds_defn)::in, list(mlds_defn)::out,
     list(mlds_defn)::in, list(mlds_defn)::out) is det.
 
-ml_gen_du_ctor_member(ModuleInfo, BaseClassId, BaseClassQualifier,
+ml_gen_hld_du_ctor_member(ModuleInfo, BaseClassId, BaseClassQualifier,
         SecondaryTagClassId, TypeCtor, TypeDefn, ConsTagValues, Ctor,
         MLDS_Members0, MLDS_Members, MLDS_CtorMethods0, MLDS_CtorMethods) :-
-    Ctor = ctor(ExistQTVars, Constraints, CtorName, Args, _Ctxt),
+    Ctor = ctor(ExistQTVars, Constraints, CtorName, Args, CtorArity, _Ctxt),
 
     % XXX We should keep a context for the constructor,
     % but we don't, so we just use the context from the type.
@@ -676,15 +717,15 @@ ml_gen_du_ctor_member(ModuleInfo, BaseClassId, BaseClassQualifier,
     MLDS_Context = mlds_make_context(Context),
 
     % Generate the class name for this constructor.
-    list.length(Args, CtorArity),
     module_info_get_globals(ModuleInfo, Globals),
     globals.get_target(Globals, Target),
     UnqualCtorName = ml_gen_du_ctor_name(Target, TypeCtor,
         CtorName, CtorArity),
 
     TagVal = get_tagval(TypeCtor, ConsTagValues, Ctor),
-    ( tagval_is_reserved_addr(TagVal, ReservedAddr) ->
-        ( ReservedAddr = reserved_object(_, _, _) ->
+    ( if tagval_is_reserved_addr(TagVal, ReservedAddr) then
+        (
+            ReservedAddr = reserved_object(_, _, _),
             % Generate a reserved object for this constructor.
             % Note that we use the SecondaryTagClassId for the type of this
             % reserved object; we can't use the BaseClassId because for some
@@ -692,28 +733,30 @@ ml_gen_du_ctor_member(ModuleInfo, BaseClassId, BaseClassQualifier,
             % object has at least one data member, to make sure that each
             % reserved object gets a distinct address.
 
-            MLDS_ReservedObjName = ml_format_reserved_object_name(
-                UnqualCtorName, CtorArity),
-            MLDS_ReservedObjEntityName =
-                entity_data(mlds_data_var(MLDS_ReservedObjName)),
+            MLDS_ReservedObjName = mlds_comp_var(
+                mcv_reserved_obj_name(UnqualCtorName, CtorArity)),
+            MLDS_ReservedObjDataName = mlds_data_var(MLDS_ReservedObjName),
             % The GC never needs to trace static constants, because they can
             % never point into the heap; they can point only to other static
             % constants.
             GCStatement = gc_no_stmt,
-            EntityDefn = mlds_data(SecondaryTagClassId, no_initializer,
-                GCStatement),
-            DeclFlags = mlds.set_access(ml_static_const_decl_flags,
-                acc_public),
-            MLDS_ReservedObjDefn = mlds_defn(MLDS_ReservedObjEntityName,
-                MLDS_Context, DeclFlags, EntityDefn),
+            DeclFlags0 = ml_static_const_decl_flags,
+            set_data_access(acc_public, DeclFlags0, DeclFlags),
+            % XXX MLDS_DEFN
+            MLDS_ReservedObjDefn = mlds_data(mlds_data_defn(
+                MLDS_ReservedObjDataName, MLDS_Context, DeclFlags,
+                SecondaryTagClassId, no_initializer, GCStatement)),
             MLDS_Members = [MLDS_ReservedObjDefn | MLDS_Members0]
         ;
+            ( ReservedAddr = null_pointer
+            ; ReservedAddr = small_pointer(_)
+            ),
             % For reserved numeric addresses, we don't need to generate
             % any objects or types.
             MLDS_Members = MLDS_Members0
         ),
         MLDS_CtorMethods = MLDS_CtorMethods0
-    ;
+    else
         % Generate the members for this constructor.
 
         % Number any unnamed fields starting from 1.
@@ -728,27 +771,34 @@ ml_gen_du_ctor_member(ModuleInfo, BaseClassId, BaseClassQualifier,
         %   - finally the ordinary members
         (
             ExistQTVars = [],
-            % optimize common case
+            % Optimize this common case.
             ExtraMembers = [],
+            ExtraFieldInfos = [],
             ArgNum2 = ArgNum0
         ;
             ExistQTVars = [_ | _],
             constraint_list_get_tvars(Constraints, ConstrainedTVars),
             list.delete_elems(ExistQTVars, ConstrainedTVars,
                 UnconstrainedTVars),
-            list.map_foldl(ml_gen_type_info_member(ModuleInfo, Context),
-                UnconstrainedTVars, TypeInfoMembers, ArgNum0, ArgNum1),
-            list.map_foldl(ml_gen_typeclass_info_member(ModuleInfo, Context),
-                Constraints, TypeClassInfoMembers, ArgNum1, ArgNum2),
-            ExtraMembers = TypeInfoMembers ++ TypeClassInfoMembers
+            list.map2_foldl(
+                ml_gen_hld_du_ctor_type_info_field(ModuleInfo, Context),
+                UnconstrainedTVars, TypeInfoMembers, TypeInfoFieldInfos,
+                ArgNum0, ArgNum1),
+            list.map2_foldl(
+                ml_gen_hld_du_ctor_typeclass_info_field(ModuleInfo, Context),
+                Constraints, TypeClassInfoMembers, TypeClassInfoFieldInfos,
+                ArgNum1, ArgNum2),
+            ExtraMembers = TypeInfoMembers ++ TypeClassInfoMembers,
+            ExtraFieldInfos = TypeInfoFieldInfos ++ TypeClassInfoFieldInfos
         ),
 
         % Generate the class members for the ordinary fields
         % of this constructor.
-        list.map_foldl(ml_gen_du_ctor_field(ModuleInfo, Context),
-            Args, OrdinaryMembers, ArgNum2, _ArgNum3),
+        list.map2_foldl(ml_gen_hld_du_ctor_field(ModuleInfo, Context),
+            Args, OrdinaryMembers, OrdinaryFieldInfos, ArgNum2, _ArgNum3),
 
         Members = ExtraMembers ++ OrdinaryMembers,
+        FieldInfos = ExtraFieldInfos ++ OrdinaryFieldInfos,
 
         % Generate a constructor function to initialize the fields, if needed
         % (not all back-ends use constructor functions).
@@ -769,9 +819,9 @@ ml_gen_du_ctor_member(ModuleInfo, BaseClassId, BaseClassQualifier,
                 CtorClassQualifier = mlds_append_class_qualifier(Target,
                     BaseClassQualifier, type_qual, UnqualCtorName, CtorArity)
             ),
-            CtorFunction = ml_gen_constructor_function(Target,
-                BaseClassId, CtorClassType, CtorClassQualifier,
-                SecondaryTagClassId, MaybeSecTagVal, Members, MLDS_Context),
+            CtorFunction = ml_gen_constructor_function(Target, BaseClassId,
+                CtorClassType, CtorClassQualifier, SecondaryTagClassId,
+                MaybeSecTagVal, FieldInfos, MLDS_Context),
             % If this constructor is going to go in the base class, then we may
             % also need to generate an additional zero-argument constructor,
             % which is used to construct the class that is used for
@@ -779,7 +829,7 @@ ml_gen_du_ctor_member(ModuleInfo, BaseClassId, BaseClassQualifier,
             %
             % The implementation of deep copy in Java grades also depends on
             % zero-argument constructors.
-            (
+            ( if
                 (
                     Target = target_java
                 ;
@@ -791,12 +841,12 @@ ml_gen_du_ctor_member(ModuleInfo, BaseClassId, BaseClassQualifier,
                     )
                 ),
                 Members = [_ | _]
-            ->
+            then
                 ZeroArgCtor = ml_gen_constructor_function(Target, BaseClassId,
                     CtorClassType, CtorClassQualifier, SecondaryTagClassId,
                     no, [], MLDS_Context),
                 Ctors = [ZeroArgCtor, CtorFunction]
-            ;
+            else
                 Ctors = [CtorFunction]
             )
         ;
@@ -838,99 +888,41 @@ ml_gen_du_ctor_member(ModuleInfo, BaseClassId, BaseClassQualifier,
             get_type_defn_tparams(TypeDefn, TypeParams),
 
             % Put it all together.
-            MLDS_TypeName = entity_type(UnqualCtorName, CtorArity),
+            MLDS_TypeName = mlds_type_name(UnqualCtorName, CtorArity),
             MLDS_TypeFlags = ml_gen_type_decl_flags,
-            MLDS_TypeDefnBody = mlds_class(mlds_class_defn(mlds_class,
+            % XXX MLDS_DEFN
+            MLDS_TypeDefn = mlds_class(mlds_class_defn(MLDS_TypeName,
+                MLDS_Context, MLDS_TypeFlags, mlds_class,
                 Imports, Inherits, Implements, TypeParams, Ctors, Members)),
-            MLDS_TypeDefn = mlds_defn(MLDS_TypeName, MLDS_Context,
-                MLDS_TypeFlags, MLDS_TypeDefnBody),
+
             MLDS_Members = [MLDS_TypeDefn | MLDS_Members0],
             MLDS_CtorMethods = MLDS_CtorMethods0
         )
     ).
 
-% A constructor is represented using the base class rather than a derived
-% class if there is only a single functor, or if there is a single
-% functor and some constants represented using reserved addresses.
-ml_tag_uses_base_class(Tag) = UsesBaseClass :-
-    (
-        Tag = single_functor_tag,
-        UsesBaseClass = tag_uses_base_class
-    ;
-        Tag = shared_with_reserved_addresses_tag(_RAs, SubTag),
-        UsesBaseClass = ml_tag_uses_base_class(SubTag)
-    ;
-        Tag = ground_term_const_tag(_ConstNum, SubTag),
-        UsesBaseClass = ml_tag_uses_base_class(SubTag)
-    ;
-        ( Tag = string_tag(_)
-        ; Tag = float_tag(_)
-        ; Tag = int_tag(_)
-        ; Tag = foreign_tag(_, _)
-        ; Tag = closure_tag(_, _, _)
-        ; Tag = type_ctor_info_tag(_, _, _)
-        ; Tag = base_typeclass_info_tag(_, _, _)
-        ; Tag = type_info_const_tag(_)
-        ; Tag = typeclass_info_const_tag(_)
-        ; Tag = tabling_info_tag(_, _)
-        ; Tag = deep_profiling_proc_layout_tag(_, _)
-        ; Tag = table_io_decl_tag(_, _)
-        ; Tag = unshared_tag(_)
-        ; Tag = direct_arg_tag(_)
-        ; Tag = shared_remote_tag(_, _)
-        ; Tag = shared_local_tag(_, _)
-        ; Tag = no_tag
-        ; Tag = reserved_address_tag(_)
-        ),
-        UsesBaseClass = tag_does_not_use_base_class
-    ).
+:- pred tagval_is_reserved_addr(cons_tag::in, reserved_address::out)
+    is semidet.
 
-ml_target_uses_constructors(target_c) = no.
-ml_target_uses_constructors(target_il) = yes.
-ml_target_uses_constructors(target_csharp) = yes.
-ml_target_uses_constructors(target_java) = yes.
-ml_target_uses_constructors(target_x86_64) =
-    unexpected($module, $pred, "target_x86_64 and --high-level-code").
-ml_target_uses_constructors(target_erlang) =
-    unexpected($module, $pred, "target erlang").
+tagval_is_reserved_addr(reserved_address_tag(RA), RA).
+tagval_is_reserved_addr(shared_with_reserved_addresses_tag(_, TagVal), RA) :-
+    tagval_is_reserved_addr(TagVal, RA).
 
 :- func target_uses_empty_base_classes(compilation_target) = bool.
 
 target_uses_empty_base_classes(target_c) = no.
-target_uses_empty_base_classes(target_il) = yes.
 target_uses_empty_base_classes(target_csharp) = no.
 target_uses_empty_base_classes(target_java) = yes.
-target_uses_empty_base_classes(target_x86_64) =
-    unexpected($module, $pred, "target_x86_64 and --high-level-code").
 target_uses_empty_base_classes(target_erlang) =
     unexpected($module, $pred, "target erlang").
 
-    % This should return yes if references to function parameters in
-    % constructor functions must be qualified with the module name,
-    % not the class name.
-    % We need to do this for the Java back-end, since MLDS names which
-    % are qualified with the module name get unqualified when output
-    % as Java, and parameter names must all be unqualified.
-    % XXX perhaps we should do the same for all back-ends?
-    %
-:- func target_requires_module_qualified_params(compilation_target) = bool.
-
-target_requires_module_qualified_params(target_c) = no.
-target_requires_module_qualified_params(target_il) = no.
-target_requires_module_qualified_params(target_csharp) = yes.
-target_requires_module_qualified_params(target_java) = yes.
-target_requires_module_qualified_params(target_x86_64) =
-    unexpected($module, $pred, "target_x86_64 with --high-level-code").
-target_requires_module_qualified_params(target_erlang) =
-    unexpected($module, $pred, "target erlang").
-
 ml_gen_constructor_function(Target, BaseClassId, ClassType, ClassQualifier,
-        SecondaryTagClassId, MaybeTag, Members, Context) = CtorDefn :-
-    Args = list.map(make_arg, Members),
+        SecondaryTagClassId, MaybeTag, FieldInfos, Context) = CtorDefn :-
+    Args = list.map(make_arg, FieldInfos),
     ReturnValues = [],
 
-    InitMembers0 = list.map(gen_init_field(Target, BaseClassId,
-        ClassType, ClassQualifier), Members),
+    InitMembers0 = list.map(
+        gen_init_field(Target, BaseClassId, ClassType, ClassQualifier),
+        FieldInfos),
     (
         MaybeTag = yes(TagVal),
         InitTag = gen_init_tag(Target, ClassType, SecondaryTagClassId, TagVal,
@@ -941,63 +933,43 @@ ml_gen_constructor_function(Target, BaseClassId, ClassType, ClassQualifier,
         InitMembers = InitMembers0
     ),
 
+    % Note that the name of constructor is determined by the backend
+    % convention.
+    FunctionName = mlds_function_export("<constructor>"),
+    CtorFlags = init_function_decl_flags(acc_public, per_instance),
+    Params = mlds_func_params(Args, ReturnValues),
     Stmt = statement(ml_stmt_block([], InitMembers), Context),
     Attributes = [],
     EnvVarNames = set.init,
-    Ctor = mlds_function(no, mlds_func_params(Args, ReturnValues),
-        body_defined_here(Stmt), Attributes, EnvVarNames),
-    CtorFlags = init_decl_flags(acc_public, per_instance, non_virtual,
-        overridable, modifiable, concrete),
+    % XXX MLDS_DEFN
+    CtorDefn = mlds_function(mlds_function_defn(FunctionName, Context,
+        CtorFlags, no, Params, body_defined_here(Stmt), Attributes,
+        EnvVarNames, no)).
 
-    % Note that the name of constructor is determined by the backend
-    % convention.
-    CtorDefn = mlds_defn(entity_export("<constructor>"), Context, CtorFlags,
-        Ctor).
-
-    % Get the name and type from the field definition, for use as a
+    % Get the name and type from the field description, for use as a
     % constructor argument name and type.
     %
-:- func make_arg(mlds_defn) = mlds_argument is det.
+:- func make_arg(mlds_field_info) = mlds_argument is det.
 
-make_arg(mlds_defn(Name, _Context, _Flags, Defn)) = Arg :-
-    ( Defn = mlds_data(Type, _Init, GCStatement) ->
-        Arg = mlds_argument(Name, Type, GCStatement)
-    ;
-        unexpected($module, $pred, "non-data member")
-    ).
+make_arg(FieldInfo) = Arg :-
+    FieldInfo = mlds_field_info(VarName, Type, GcStmt, _Context),
+    Arg = mlds_argument(VarName, Type, GcStmt).
 
     % Generate "this-><fieldname> = <fieldname>;".
     %
 :- func gen_init_field(compilation_target, mlds_class_id, mlds_type,
-    mlds_module_name, mlds_defn) = statement is det.
+    mlds_module_name, mlds_field_info) = statement is det.
 
-gen_init_field(Target, BaseClassId, ClassType, ClassQualifier, Member) =
-        Statement :-
-    Member = mlds_defn(EntityName, Context, _Flags, Defn),
-    (
-        Defn = mlds_data(Type0, _Init, _GCStatement),
-        Type = Type0
-    ;
-        ( Defn = mlds_function(_, _, _, _, _)
-        ; Defn = mlds_class(_)
-        ),
-        unexpected($module, $pred, "non-data member")
-    ),
-    (
-        EntityName = entity_data(mlds_data_var(VarName0)),
-        VarName0 = mlds_var_name(Name0, no)
-    ->
-        Name = Name0,
-        VarName = VarName0
-    ;
-        unexpected($module, $pred, "non-var member")
-    ),
+gen_init_field(Target, BaseClassId, ClassType, ClassQualifier, FieldInfo)
+        = Statement :-
+    FieldInfo = mlds_field_info(VarName, Type, _GcStmt, Context),
+    Name = ml_var_name_to_string(VarName),
     RequiresQualifiedParams = target_requires_module_qualified_params(Target),
     (
         RequiresQualifiedParams = yes,
-        ( BaseClassId = mlds_class_type(qual(ModuleName, _, _), _, _) ->
+        ( if BaseClassId = mlds_class_type(qual(ModuleName, _, _), _, _) then
             QualVarName = qual(ModuleName, module_qual, VarName)
-        ;
+        else
             unexpected($module, $pred, "invalid BaseClassId")
         )
     ;
@@ -1014,6 +986,22 @@ gen_init_field(Target, BaseClassId, ClassType, ClassQualifier, Member) =
         Type, BaseClassId),
     Statement = statement(ml_stmt_atomic(assign(Field, Param)), Context).
 
+    % This should return yes if references to function parameters in
+    % constructor functions must be qualified with the module name,
+    % not the class name.
+    % We need to do this for the Java back-end, since MLDS names which
+    % are qualified with the module name get unqualified when output
+    % as Java, and parameter names must all be unqualified.
+    % XXX perhaps we should do the same for all back-ends?
+    %
+:- func target_requires_module_qualified_params(compilation_target) = bool.
+
+target_requires_module_qualified_params(target_c) = no.
+target_requires_module_qualified_params(target_csharp) = yes.
+target_requires_module_qualified_params(target_java) = yes.
+target_requires_module_qualified_params(target_erlang) =
+    unexpected($module, $pred, "target erlang").
+
     % Generate "this->data_tag = <TagVal>;".
     %
 :- func gen_init_tag(compilation_target, mlds_type, mlds_class_id, int,
@@ -1021,11 +1009,11 @@ gen_init_field(Target, BaseClassId, ClassType, ClassQualifier, Member) =
 
 gen_init_tag(Target, ClassType, SecondaryTagClassId, TagVal, Context)
         = Statement :-
-    ( SecondaryTagClassId = mlds_class_type(TagClass, TagArity, _) ->
+    ( if SecondaryTagClassId = mlds_class_type(TagClass, TagArity, _) then
         TagClass = qual(BaseClassQualifier, QualKind, TagClassName),
         TagClassQualifier = mlds_append_class_qualifier(Target,
             BaseClassQualifier, QualKind, TagClassName, TagArity)
-    ;
+    else
         unexpected($module, $pred, "class_id should be a class")
     ),
     Name = "data_tag",
@@ -1037,59 +1025,64 @@ gen_init_tag(Target, ClassType, SecondaryTagClassId, TagVal, Context)
         Type, ClassType),
     Statement = statement(ml_stmt_atomic(assign(Field, Val)), Context).
 
-:- pred ml_gen_typeclass_info_member(module_info::in, prog_context::in,
-    prog_constraint::in, mlds_defn::out, int::in, int::out) is det.
+:- pred ml_gen_hld_du_ctor_typeclass_info_field(module_info::in,
+    prog_context::in, prog_constraint::in,
+    mlds_defn::out, mlds_field_info::out, int::in, int::out) is det.
 
-ml_gen_typeclass_info_member(ModuleInfo, Context, Constraint, Defn, !ArgNum) :-
+ml_gen_hld_du_ctor_typeclass_info_field(ModuleInfo, Context, Constraint,
+        Defn, FieldInfo, !ArgNum) :-
     polymorphism.build_typeclass_info_type(Constraint, Type),
-    ml_gen_field(ModuleInfo, Context, no, Type, full_word, Defn, !ArgNum).
+    ml_gen_hld_du_ctor_field_gen(ModuleInfo, Context, no, Type, full_word,
+        Defn, FieldInfo, !ArgNum).
 
-:- pred ml_gen_type_info_member(module_info::in, prog_context::in, tvar::in,
-    mlds_defn::out, int::in, int::out) is det.
+:- pred ml_gen_hld_du_ctor_type_info_field(module_info::in,
+    prog_context::in, tvar::in,
+    mlds_defn::out, mlds_field_info::out, int::in, int::out) is det.
 
-ml_gen_type_info_member(ModuleInfo, Context, TypeVar, Defn, !ArgNum) :-
+ml_gen_hld_du_ctor_type_info_field(ModuleInfo, Context, TypeVar,
+        Defn, FieldInfo, !ArgNum) :-
     % We don't have access to the correct kind here. This won't matter though,
     % since the type will only be checked to see that it is a variable,
     % and won't be used in any other way.
     Kind = kind_star,
     polymorphism.build_type_info_type(type_variable(TypeVar, Kind), Type),
-    ml_gen_field(ModuleInfo, Context, no, Type, full_word, Defn, !ArgNum).
+    ml_gen_hld_du_ctor_field_gen(ModuleInfo, Context, no, Type, full_word,
+        Defn, FieldInfo, !ArgNum).
 
-:- pred ml_gen_du_ctor_field(module_info::in, prog_context::in,
-    constructor_arg::in, mlds_defn::out, int::in, int::out) is det.
-
-ml_gen_du_ctor_field(ModuleInfo, Context, Arg, Defn, !ArgNum) :-
-    Arg = ctor_arg(MaybeFieldName, Type, Width, _Context),
-    ml_gen_field(ModuleInfo, Context, MaybeFieldName, Type, Width, Defn,
-        !ArgNum).
-
-:- pred ml_gen_field(module_info::in, prog_context::in,
-    maybe(ctor_field_name)::in, mer_type::in, arg_width::in, mlds_defn::out,
+:- pred ml_gen_hld_du_ctor_field(module_info::in, prog_context::in,
+    constructor_arg::in, mlds_defn::out, mlds_field_info::out,
     int::in, int::out) is det.
 
-ml_gen_field(ModuleInfo, Context, MaybeFieldName, Type, Width, Defn,
-        !ArgNum) :-
-    ( ml_must_box_field_type(ModuleInfo, Type, Width) ->
+ml_gen_hld_du_ctor_field(ModuleInfo, Context, Arg, Defn, FieldInfo, !ArgNum) :-
+    Arg = ctor_arg(MaybeFieldName, Type, Width, _Context),
+    ml_gen_hld_du_ctor_field_gen(ModuleInfo, Context, MaybeFieldName,
+        Type, Width, Defn, FieldInfo, !ArgNum).
+
+:- pred ml_gen_hld_du_ctor_field_gen(module_info::in, prog_context::in,
+    maybe(ctor_field_name)::in, mer_type::in, arg_width::in,
+    mlds_defn::out, mlds_field_info::out, int::in, int::out) is det.
+
+ml_gen_hld_du_ctor_field_gen(ModuleInfo, Context, MaybeFieldName, Type, Width,
+        Defn, FieldInfo, !ArgNum) :-
+    FieldName = ml_gen_hld_field_name(MaybeFieldName, !.ArgNum),
+    FieldVarName = mlds_comp_var(mcv_du_ctor_field_hld(FieldName)),
+    DataName = mlds_data_var(FieldVarName),
+    MLDS_Context = mlds_make_context(Context),
+    DeclFlags = ml_gen_public_field_decl_flags,
+    ( if ml_must_box_field_type(ModuleInfo, Type, Width) then
         MLDS_Type = mlds_generic_type
-    ;
+    else
         MLDS_Type = mercury_type_to_mlds_type(ModuleInfo, Type)
     ),
-    FieldName = ml_gen_field_name(MaybeFieldName, !.ArgNum),
-    Defn = ml_gen_mlds_field_decl(
-        mlds_data_var(mlds_var_name(FieldName, no)),
-            MLDS_Type, mlds_make_context(Context)),
+    % We only need GC tracing code for top-level variables, not for fields.
+    GcStmt = gc_no_stmt,
+    % XXX MLDS_DEFN
+    Defn = mlds_data(mlds_data_defn(DataName, MLDS_Context, DeclFlags,
+        MLDS_Type, no_initializer, GcStmt)),
+
+    FieldInfo = mlds_field_info(FieldVarName, MLDS_Type, GcStmt, MLDS_Context),
+
     !:ArgNum = !.ArgNum + 1.
-
-:- func ml_gen_mlds_field_decl(mlds_data_name, mlds_type, mlds_context)
-    = mlds_defn.
-
-ml_gen_mlds_field_decl(DataName, MLDS_Type, Context) = Defn :-
-    Name = entity_data(DataName),
-    % We only need GC tracing code for top-level variables, not for fields
-    GCStatement = gc_no_stmt,
-    EntityDefn = mlds_data(MLDS_Type, no_initializer, GCStatement),
-    DeclFlags = ml_gen_public_field_decl_flags,
-    Defn = mlds_defn(Name, Context, DeclFlags, EntityDefn).
 
 %-----------------------------------------------------------------------------%
 %
@@ -1116,19 +1109,19 @@ ml_gen_du_ctor_name(CompilationTarget, TypeCtor, Name, Arity) = CtorName :-
 ml_gen_du_ctor_name_unqual_type(CompilationTarget, UnqualTypeName, TypeArity,
         Name, Arity) = CtorName :-
     UnqualName = unqualify_name(Name),
-    (
+    ( if
         ( CompilationTarget = target_java
         ; CompilationTarget = target_csharp
         ),
         UnqualName = UnqualTypeName,
         Arity = TypeArity
-    ->
+    then
         % In Java and C# we must not generate a class with the same name as its
-        % enclosing class.  We add the prefix to avoid that situation arising.
+        % enclosing class. We add the prefix to avoid that situation arising.
         % (A user may name another functor of the same type with "mr_" to
         % trigger the problem.)
         CtorName = "mr_" ++ UnqualName
-    ;
+    else
         CtorName = UnqualName
     ).
 
@@ -1147,84 +1140,110 @@ ml_gen_equality_members(_, []).
 % Routines for generating declaration flags.
 %
 
-ml_gen_type_decl_flags = MLDS_DeclFlags :-
+ml_gen_type_decl_flags = DeclFlags :-
     % XXX are these right?
-    Access = acc_public,
-    PerInstance = one_copy,
-    Virtuality = non_virtual,
+    Access = class_public,
     Overridability = overridable,
     Constness = modifiable,
-    Abstractness = concrete,
-    MLDS_DeclFlags = init_decl_flags(Access, PerInstance,
-        Virtuality, Overridability, Constness, Abstractness).
+    DeclFlags = init_class_decl_flags(Access, Overridability, Constness).
 
-ml_gen_member_decl_flags = MLDS_DeclFlags :-
+ml_gen_member_decl_flags = DeclFlags :-
     Access = acc_public,
     PerInstance = per_instance,
-    Virtuality = non_virtual,
-    Overridability = overridable,
+    DeclFlags = init_function_decl_flags(Access, PerInstance).
+
+ml_gen_member_data_decl_flags = DeclFlags :-
+    Access = acc_public,
+    PerInstance = per_instance,
     Constness = modifiable,
-    Abstractness = concrete,
-    MLDS_DeclFlags = init_decl_flags(Access, PerInstance,
-        Virtuality, Overridability, Constness, Abstractness).
+    DeclFlags = init_data_decl_flags(Access, PerInstance, Constness).
 
-ml_gen_const_member_decl_flags = MLDS_DeclFlags :-
+ml_gen_const_member_data_decl_flags = DeclFlags :-
     Access = acc_public,
     PerInstance = per_instance,
-    Virtuality = non_virtual,
-    Overridability = overridable,
     Constness = const,
-    Abstractness = concrete,
-    MLDS_DeclFlags = init_decl_flags(Access, PerInstance,
-        Virtuality, Overridability, Constness, Abstractness).
+    DeclFlags = init_data_decl_flags(Access, PerInstance, Constness).
 
-ml_gen_enum_constant_decl_flags = MLDS_DeclFlags :-
+ml_gen_enum_constant_data_decl_flags = DeclFlags :-
     Access = acc_public,
     PerInstance = one_copy,
-    Virtuality = non_virtual,
-    Overridability = overridable,
     Constness = const,
-    Abstractness = concrete,
-    MLDS_DeclFlags = init_decl_flags(Access, PerInstance,
-        Virtuality, Overridability, Constness, Abstractness).
+    DeclFlags = init_data_decl_flags(Access, PerInstance, Constness).
+
+%----------------------------------------------------------------------------%
+
+ml_uses_secondary_tag(TypeCtor, ConsTagValues, Ctor, SecondaryTag) :-
+    % BEWARE that this is NOT the same as ml_needs_secondary_tag.
+    %
+    TagVal = get_tagval(TypeCtor, ConsTagValues, Ctor),
+    get_secondary_tag(TagVal) = yes(SecondaryTag).
+
+%----------------------------------------------------------------------------%
+
+% A constructor is represented using the base class rather than a derived
+% class if there is only a single functor, or if there is a single
+% functor and some constants represented using reserved addresses.
+ml_tag_uses_base_class(Tag) = UsesBaseClass :-
+    (
+        Tag = single_functor_tag,
+        UsesBaseClass = tag_uses_base_class
+    ;
+        Tag = shared_with_reserved_addresses_tag(_RAs, SubTag),
+        UsesBaseClass = ml_tag_uses_base_class(SubTag)
+    ;
+        Tag = ground_term_const_tag(_ConstNum, SubTag),
+        UsesBaseClass = ml_tag_uses_base_class(SubTag)
+    ;
+        ( Tag = string_tag(_)
+        ; Tag = float_tag(_)
+        ; Tag = int_tag(_)
+        ; Tag = uint_tag(_)
+        ; Tag = foreign_tag(_, _)
+        ; Tag = closure_tag(_, _, _)
+        ; Tag = type_ctor_info_tag(_, _, _)
+        ; Tag = base_typeclass_info_tag(_, _, _)
+        ; Tag = type_info_const_tag(_)
+        ; Tag = typeclass_info_const_tag(_)
+        ; Tag = tabling_info_tag(_, _)
+        ; Tag = deep_profiling_proc_layout_tag(_, _)
+        ; Tag = table_io_entry_tag(_, _)
+        ; Tag = unshared_tag(_)
+        ; Tag = direct_arg_tag(_)
+        ; Tag = shared_remote_tag(_, _)
+        ; Tag = shared_local_tag(_, _)
+        ; Tag = no_tag
+        ; Tag = reserved_address_tag(_)
+        ),
+        UsesBaseClass = tag_does_not_use_base_class
+    ).
+
+ml_target_uses_constructors(target_c) = no.
+ml_target_uses_constructors(target_csharp) = yes.
+ml_target_uses_constructors(target_java) = yes.
+ml_target_uses_constructors(target_erlang) =
+    unexpected($module, $pred, "target erlang").
 
 %----------------------------------------------------------------------------%
 
 ml_gen_exported_enums(ModuleInfo, MLDS_ExportedEnums) :-
      module_info_get_exported_enums(ModuleInfo, ExportedEnumInfo),
-     module_info_get_type_table(ModuleInfo, TypeTable),
-     list.map(ml_gen_exported_enum(ModuleInfo, TypeTable),
-        ExportedEnumInfo, MLDS_ExportedEnums).
+     list.map(ml_gen_exported_enum, ExportedEnumInfo, MLDS_ExportedEnums).
 
-:- pred ml_gen_exported_enum(module_info::in, type_table::in,
-    exported_enum_info::in, mlds_exported_enum::out) is det.
+:- pred ml_gen_exported_enum(exported_enum_info::in,
+    mlds_exported_enum::out) is det.
 
-ml_gen_exported_enum(_ModuleInfo, TypeTable, ExportedEnumInfo,
-        MLDS_ExportedEnum) :-
-    ExportedEnumInfo = exported_enum_info(Lang, Context, TypeCtor, Mapping),
-    lookup_type_ctor_defn(TypeTable, TypeCtor, TypeDefn),
-    get_type_defn_body(TypeDefn, TypeBody),
-    (
-        ( TypeBody = hlds_eqv_type(_)
-        ; TypeBody = hlds_foreign_type(_)
-        ; TypeBody = hlds_solver_type(_, _)
-        ; TypeBody = hlds_abstract_type(_)
-        ),
-        unexpected($module, $pred, "invalid type")
-    ;
-        TypeBody = hlds_du_type(Ctors, TagValues, _CheaperTagTest,
-            _IsEnumOrDummy, _MaybeUserEq, _MaybeDirectArgCtors,
-            _ReservedTag, _ReservedAddr, _IsForeignType),
-        ml_gen_type_name(TypeCtor, QualifiedClassName, MLDS_ClassArity),
-        MLDS_Type = mlds_class_type(QualifiedClassName, MLDS_ClassArity,
-            mlds_enum),
-        list.foldl(
-            generate_foreign_enum_constant(TypeCtor, Mapping, TagValues,
-                MLDS_Type),
-            Ctors, [], ExportConstants),
-        MLDS_ExportedEnum = mlds_exported_enum(Lang, Context, TypeCtor,
-            ExportConstants)
-    ).
+ml_gen_exported_enum(ExportedEnumInfo, MLDS_ExportedEnum) :-
+    ExportedEnumInfo = exported_enum_info(Lang, Context, TypeCtor, Mapping,
+        Ctors, TagValues),
+    ml_gen_type_name(TypeCtor, QualifiedClassName, MLDS_ClassArity),
+    MLDS_Type = mlds_class_type(QualifiedClassName, MLDS_ClassArity,
+        mlds_enum),
+    list.foldl(
+        generate_foreign_enum_constant(TypeCtor, Mapping, TagValues,
+            MLDS_Type),
+        Ctors, [], ExportConstants),
+    MLDS_ExportedEnum = mlds_exported_enum(Lang, Context, TypeCtor,
+        ExportConstants).
 
 :- pred generate_foreign_enum_constant(type_ctor::in,
     map(sym_name, string)::in, cons_tag_values::in, mlds_type::in,
@@ -1234,8 +1253,7 @@ ml_gen_exported_enum(_ModuleInfo, TypeTable, ExportedEnumInfo,
 
 generate_foreign_enum_constant(TypeCtor, Mapping, TagValues, MLDS_Type, Ctor,
         !ExportConstants) :-
-    Ctor = ctor(_, _, QualName, Args, _),
-    list.length(Args, Arity),
+    Ctor = ctor(_, _, QualName, _Args, Arity, _),
     map.lookup(TagValues, cons(QualName, Arity, TypeCtor), TagVal),
     (
         TagVal = int_tag(Int),
@@ -1246,6 +1264,7 @@ generate_foreign_enum_constant(TypeCtor, Mapping, TagValues, MLDS_Type, Ctor,
     ;
         ( TagVal = string_tag(_)
         ; TagVal = float_tag(_)
+        ; TagVal = uint_tag(_)
         ; TagVal = closure_tag(_, _, _)
         ; TagVal = type_ctor_info_tag(_, _, _)
         ; TagVal = base_typeclass_info_tag(_, _, _)
@@ -1254,7 +1273,7 @@ generate_foreign_enum_constant(TypeCtor, Mapping, TagValues, MLDS_Type, Ctor,
         ; TagVal = ground_term_const_tag(_, _)
         ; TagVal = tabling_info_tag(_, _)
         ; TagVal = deep_profiling_proc_layout_tag(_, _)
-        ; TagVal = table_io_decl_tag(_, _)
+        ; TagVal = table_io_entry_tag(_, _)
         ; TagVal = single_functor_tag
         ; TagVal = unshared_tag(_)
         ; TagVal = direct_arg_tag(_)

@@ -11,7 +11,7 @@
 %
 % This module implements a linear constraint solver that finds an
 % optimal solution to a set of linear [in]equalities with respect
-% to some objective function. It does this using the simplex method.
+% to an objective function. It does this using the simplex method.
 %
 % The form of an [in]equation is
 %   a1.x1 + a2.x2 + ... + an.xn {=<,=,>=} b
@@ -34,7 +34,6 @@
 :- module libs.lp.
 :- interface.
 
-:- import_module io.
 :- import_module list.
 :- import_module map.
 :- import_module pair.
@@ -49,9 +48,9 @@
     --->    eqn(list(coeff), operator, float).
 
 :- type operator
-    --->    (=<)
-    ;       (=)
-    ;       (>=).
+    --->    op_le   % less than or equal
+    ;       op_eq   % equal
+    ;       op_ge.  % greater than or equal
 
 :- type equations == list(equation).
 
@@ -67,21 +66,20 @@
 
 %-----------------------------------------------------------------------------%
 
-    % lp_solve(Inequations, MaxOrMin, Objective, Varset, URSVars,
-    %       Result, IO0, IO)
-    % maximize (or minimize - depending on `MaxOrMin') `Objective'
-    % subject to the constraints `Inequations'. The variables in
-    % the objective and inequations are from `Varset' which is passed
-    % so that the solver can allocate fresh variables as required.
-    % URSVars is the list of variable that are unrestricted in sign.
-    % lp_solve binds Result either to `unsatisfiable' if the there
-    % was no optimum value of the objective function (ie the
-    % constraints were inconsistent, or the objective function
-    % is unbounded by the constraints), or `satisfiable(ObjVal,
-    % MapFromObjVarsToVals)'.
+    % lp_solve(Inequations, MaxOrMin, Objective, VarSet, URSVars, Result):
+    %
+    % Maximize (or minimize - depending on `MaxOrMin') `Objective' subject
+    % to the constraints `Inequations'. The variables in the objective
+    % and inequations are from `VarSet' which is passed in so that the solver
+    % can allocate fresh variables as required. URSVars is the list of
+    % variables that are unrestricted in sign. lp_solve binds Result
+    % either to `unsatisfiable' if the there was no optimum value of the
+    % objective function (i.e. the constraints were inconsistent, or the
+    % objective function is unbounded by the constraints), or
+    % `satisfiable(ObjVal, MapFromObjVarsToVals)'.
     %
 :- pred lp_solve(equations::in, direction::in, objective::in, varset::in,
-    list(var)::in, lp.result::out, io::di, io::uo) is det.
+    list(var)::in, lp.result::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -91,6 +89,7 @@
 :- import_module bool.
 :- import_module float.
 :- import_module int.
+:- import_module io.
 :- import_module maybe.
 :- import_module require.
 :- import_module set.
@@ -114,75 +113,62 @@
 
 %-----------------------------------------------------------------------------%
 
-lp_solve(Eqns, Dir, Obj, Varset0, URSVars, Result, !IO) :-
-    lp_info_init(Varset0, URSVars, Info0),
-    lp_solve_2(Eqns, Dir, Obj, Result, Info0, _, !IO).
+lp_solve(Eqns0, Dir, Obj0, VarSet0, URSVars, Result) :-
+    some [!Info] (
+        lp_info_init(VarSet0, URSVars, !:Info),
 
-    % lp_solve2(Eqns, Dir, Obj, Res, IO0, IO, LPInfo0, LPInfo) takes
-    % a list of inequations `Eqns', a direction for optimization
-    % `Dir', an objective function `Obj', an I/O state `IO0' and an
-    % lp_info structure `LPInfo0'.  See inline comments for details
-    % on the algorithm.
-    %
-:- pred lp_solve_2(equations::in, direction::in, objective::in,
-    lp.result::out, lp_info::in, lp_info::out, io::di, io::uo)
-    is det.
+        % Simplify the inequations and convert them to standard form by
+        % introducing slack/excess/artificial variables. We also expand
+        % URS variables by replacing them with the difference of two
+        % fresh variables.
+        standardize_equations(Eqns0, Eqns, !Info),
 
-lp_solve_2(Eqns0, Dir, Obj0, Result, !Info, !IO) :-
-    %
-    % Simplify the inequations and convert them to standard form by
-    % introducing slack/excess/artificial variables. We also expand
-    % URS variables by replacing them with the difference of two
-    % fresh variables.
-    %
-    standardize_equations(Eqns0, Eqns, !Info),
-    %
-    % If we're maximizing the objective function then we need
-    % to negate all the coefficients in the objective.
-    %
-    (
-        Dir = max,
-        negate_equation(eqn(Obj0, (=), 0.0), eqn(Obj1, _, _))
-    ;
-        Dir = min,
-        Obj1 = Obj0
-    ),
-    simplify_coeffs(Obj1, Obj2),
-
-    get_urs_vars(!.Info, URS),
-    expand_urs_vars(Obj2, URS, Obj),
-    list.length(Eqns, Rows),
-    collect_vars(Eqns, Obj, Vars),
-    set.to_sorted_list(Vars, VarList),
-    list.length(VarList, Cols),
-    map.init(VarNums0),
-    number_vars(VarList, 0, VarNums0, VarNums),
-    get_art_vars(!.Info, ArtVars),
-    some [!Tableau] (
-        init_tableau(Rows, Cols, VarNums, URS, !:Tableau),
-        insert_equations(Eqns, 1, Cols, VarNums, !Tableau),
+        % If we are maximizing the objective function, then we need to negate
+        % all the coefficients in the objective.
         (
-            ArtVars = [_|_],
-            % There are one or more artificial variables, so we use
-            % the two-phase method for solving the system.
-            two_phase(Obj0, Obj, ArtVars, VarNums, !.Tableau, Result0)
+            Dir = max,
+            negate_equation(eqn(Obj0, op_eq, 0.0), eqn(Obj1, _, _))
         ;
-            ArtVars = [],
-            one_phase(Obj0, Obj, VarNums, !.Tableau, Result0)
-        )
-    ),
-    (
-        Dir = max,
-        Result = Result0
-    ;
-        Dir = min,
+            Dir = min,
+            Obj1 = Obj0
+        ),
+        simplify_coeffs(Obj1, Obj2),
+
+        get_urs_vars(!.Info, URS),
+        expand_urs_vars(Obj2, URS, Obj),
+        list.length(Eqns, Rows),
+        collect_vars(Eqns, Obj, Vars),
+        set.to_sorted_list(Vars, VarList),
+        list.length(VarList, Cols),
+        map.init(VarNums0),
+        number_vars(VarList, 0, VarNums0, VarNums),
+        get_art_vars(!.Info, ArtVars),
+        some [!Tableau] (
+            init_tableau(Rows, Cols, VarNums, URS, !:Tableau),
+            insert_equations(Eqns, 1, Cols, VarNums, !Tableau),
+            (
+                ArtVars = [_ | _],
+                % There are one or more artificial variables, so we use
+                % the two-phase method for solving the system.
+                two_phase(Obj0, Obj, ArtVars, VarNums, !.Tableau, Result0)
+            ;
+                ArtVars = [],
+                one_phase(Obj0, Obj, VarNums, !.Tableau, Result0)
+            )
+        ),
         (
-            Result0 = unsatisfiable,
+            Dir = max,
             Result = Result0
         ;
-            Result0 = satisfiable(NOptVal, OptCoffs),
-            OptVal = -NOptVal,
-            Result = satisfiable(OptVal, OptCoffs)
+            Dir = min,
+            (
+                Result0 = unsatisfiable,
+                Result = Result0
+            ;
+                Result0 = satisfiable(NOptVal, OptCoffs),
+                OptVal = -NOptVal,
+                Result = satisfiable(OptVal, OptCoffs)
+            )
         )
     ).
 
@@ -216,9 +202,7 @@ get_vars_from_coeffs_2([Var - _ | Coeffs], !SetVar) :-
     map(var, int)::in, tableau::in, lp.result::out) is det.
 
 two_phase(Obj0, Obj, ArtVars, VarNums, Tableau0, Result) :-
-    %
     % Do phase 1: minimize the sum of the artificial variables.
-    %
     some [!Tableau] (
         !:Tableau = Tableau0,
         construct_art_objective(ArtVars, ArtObj),
@@ -230,9 +214,7 @@ two_phase(Obj0, Obj, ArtVars, VarNums, Tableau0, Result) :-
             Result = unsatisfiable
         ;
             Res0 = satisfiable(Val, _ArtRes),
-            ( Val \= 0.0 ->
-                Result = unsatisfiable
-            ;
+            ( if Val = 0.0 then
                 fix_basis_and_rem_cols(ArtVars, !Tableau),
                 % Do phase 2:
                 %   insert the real objective,
@@ -244,6 +226,8 @@ two_phase(Obj0, Obj, ArtVars, VarNums, Tableau0, Result) :-
                 ensure_zero_obj_coeffs(BasisVars, !Tableau),
                 ObjVars = get_vars_from_coeffs(Obj0),
                 optimize(ObjVars, !.Tableau, _, Result)
+            else
+                Result = unsatisfiable
             )
         )
     ).
@@ -264,53 +248,50 @@ construct_art_objective([V | Vs], [V - (1.0) | Rest]) :-
 standardize_equations(!Eqns, !Info) :-
     list.map_foldl(standardize_equation, !Eqns, !Info).
 
-    % standardize_equation peforms the following operations on an
-    % equation:
-    %   - ensures the constant is >= 0 (multiplying by -1 if
-    %       necessary)
+    % standardize_equation performs the following operations on an equation:
+    %   - ensures the constant is >= 0 (multiplying by -1 if necessary)
     %   - introduces slack, excess and artificial variables
-    %   - replace the URS variables with their corresponding
-    %       difference pair
+    %   - replace the URS variables with their corresponding difference pair.
     %
 :- pred standardize_equation(equation::in, equation::out,
     lp_info::in, lp_info::out) is det.
 
 standardize_equation(Eqn0, Eqn, !Info) :-
-    Eqn0 = eqn(Coeffs0, (=<), Const0),
-    ( Const0 < 0.0 ->
+    Eqn0 = eqn(Coeffs0, op_le, Const0),
+    ( if Const0 < 0.0 then
         negate_equation(Eqn0, Eqn1),
         standardize_equation(Eqn1, Eqn, !Info)
-    ;
+    else
         new_slack_var(Var, !Info),
         Coeffs = [Var - 1.0 | Coeffs0],
-        simplify_eq(eqn(Coeffs, (=<), Const0), Eqn1),
+        simplify_eq(eqn(Coeffs, op_le, Const0), Eqn1),
         get_urs_vars(!.Info, URS),
         expand_urs_vars_e(Eqn1, URS, Eqn)
     ).
 
 standardize_equation(Eqn0, Eqn, !Info) :-
-    Eqn0 = eqn(Coeffs0, (=), Const0),
-    ( Const0 < 0.0 ->
+    Eqn0 = eqn(Coeffs0, op_eq, Const0),
+    ( if Const0 < 0.0 then
         negate_equation(Eqn0, Eqn1),
         standardize_equation(Eqn1, Eqn, !Info)
-    ;
+    else
         new_art_var(Var, !Info),
         Coeffs = [Var - 1.0 | Coeffs0],
-        simplify_eq(eqn(Coeffs, (=<), Const0), Eqn1),
+        simplify_eq(eqn(Coeffs, op_le, Const0), Eqn1),
         get_urs_vars(!.Info, URS),
         expand_urs_vars_e(Eqn1, URS, Eqn)
     ).
 
 standardize_equation(Eqn0, Eqn, !Info) :-
-    Eqn0 = eqn(Coeffs0, (>=), Const0),
-    ( Const0 < 0.0 ->
+    Eqn0 = eqn(Coeffs0, op_ge, Const0),
+    ( if Const0 < 0.0 then
         negate_equation(Eqn0, Eqn1),
         standardize_equation(Eqn1, Eqn, !Info)
-    ;
+    else
         new_slack_var(SVar, !Info),
         new_art_var(AVar, !Info),
         Coeffs = [SVar - (-1.0), AVar - (1.0) | Coeffs0],
-        simplify_eq(eqn(Coeffs, (>=), Const0), Eqn1),
+        simplify_eq(eqn(Coeffs, op_ge, Const0), Eqn1),
         get_urs_vars(!.Info, URS),
         expand_urs_vars_e(Eqn1, URS, Eqn)
     ).
@@ -318,12 +299,9 @@ standardize_equation(Eqn0, Eqn, !Info) :-
 :- pred negate_equation(equation::in, equation::out) is det.
 
 negate_equation(eqn(Coeffs0, Op0, Const0), eqn(Coeffs, Op, Const)) :-
-    (
-        Op0 = (=<), Op = (>=)
-    ;
-        Op0 = (=), Op = (=)
-    ;
-        Op0 = (>=), Op = (=<)
+    ( Op0 = op_le, Op = op_ge
+    ; Op0 = op_eq, Op = op_eq
+    ; Op0 = op_ge, Op = op_le
     ),
     Coeffs = list.map((func(V - X) = V - (-X)), Coeffs0),
     Const = -Const0.
@@ -348,9 +326,9 @@ simplify_coeffs(Coeffs0, Coeffs) :-
     map(var, float)::in, map(var, float)::out) is det.
 
 add_var(Var, Coeff, !Map) :-
-    ( map.search(!.Map, Var, Acc0) ->
+    ( if map.search(!.Map, Var, Acc0) then
         Acc1 = Acc0
-    ;
+    else
         Acc1 = 0.0
     ),
     Acc = Acc1 + Coeff,
@@ -374,10 +352,10 @@ expand_urs_vars(Coeffs0, Vars, Coeffs) :-
 
 expand_urs_vars([], _Vars, !Coeffs).
 expand_urs_vars([Var - Coeff | Rest], Vars, !Coeffs) :-
-    ( map.search(Vars, Var, PVar - NVar) ->
+    ( if map.search(Vars, Var, PVar - NVar) then
         NCoeff = -Coeff,
         !:Coeffs = [NVar - NCoeff, PVar - Coeff | !.Coeffs]
-    ;
+    else
         !:Coeffs = [Var - Coeff | !.Coeffs]
     ),
     expand_urs_vars(Rest, Vars, !Coeffs).
@@ -423,7 +401,7 @@ insert_equations([Eqn | Eqns], Row, ConstCol, VarNums, !Tableau) :-
     tableau::in, tableau::out) is det.
 
 insert_coeffs([], _Row, _VarNums, !Tableau).
-insert_coeffs([Coeff|Coeffs], Row, VarNums, !Tableau) :-
+insert_coeffs([Coeff | Coeffs], Row, VarNums, !Tableau) :-
     Coeff = Var - Const,
     map.lookup(VarNums, Var, Col),
     set_index(Row, Col, Const, !Tableau),
@@ -458,11 +436,11 @@ extract_objective(ObjVars, Tab, Res) :-
 
 extract_obj_var(Tab, Var, !Map) :-
     urs_vars(Tab, Vars),
-    ( map.search(Vars, Var, Pos - Neg) ->
+    ( if map.search(Vars, Var, Pos - Neg) then
         extract_obj_var2(Tab, Pos, PosVal),
         extract_obj_var2(Tab, Neg, NegVal),
         Val = PosVal - NegVal
-    ;
+    else
         extract_obj_var2(Tab, Var, Val)
     ),
     map.set(Var, Val, !Map).
@@ -478,9 +456,9 @@ extract_obj_var2(Tab, Var, Val) :-
         index(Tab, Row, RHS, Val0)
     ),
     solutions.solutions(GetCell, Solns),
-    ( Solns = [Val1] ->
+    ( if Solns = [Val1] then
         Val = Val1
-    ;
+    else
         Val = 0.0
     ).
 
@@ -492,17 +470,17 @@ simplex(A0, A, Result) :-
         (
             Min0 = no,
             index(A0, 0, Col, MinVal),
-            ( MinVal < 0.0 ->
+            ( if MinVal < 0.0 then
                 Min = yes(Col - MinVal)
-            ;
+            else
                 Min = no
             )
         ;
             Min0 = yes(_ - MinVal0),
             index(A0, 0, Col, CellVal),
-            ( CellVal < MinVal0 ->
+            ( if CellVal < MinVal0 then
                 Min = yes(Col - CellVal)
-            ;
+            else
                 Min = Min0
             )
         )
@@ -519,12 +497,12 @@ simplex(A0, A, Result) :-
             (
                 Max0 = no,
                 index(A0, Row, Q, MaxVal),
-                ( MaxVal > 0.0 ->
+                ( if MaxVal > 0.0 then
                     rhs_col(A0, RHSC),
                     index(A0, Row, RHSC, MVal),
                     CVal = MVal/MaxVal,
                     Max = yes(Row - CVal)
-                ;
+                else
                     Max = no
                 )
             ;
@@ -532,13 +510,13 @@ simplex(A0, A, Result) :-
                 index(A0, Row, Q, CellVal),
                 rhs_col(A0, RHSC),
                 index(A0, Row, RHSC, MVal),
-                (
+                ( if
                     CellVal > 0.0,
                     MaxVal1 = MVal/CellVal,
                     MaxVal1 =< MaxVal0
-                ->
+                then
                     Max = yes(Row - MaxVal1)
-                ;
+                else
                     Max = Max0
                 )
             )
@@ -564,9 +542,9 @@ ensure_zero_obj_coeffs([], !Tableau).
 ensure_zero_obj_coeffs([V | Vs], !Tableau) :-
     var_col(!.Tableau, V, Col),
     index(!.Tableau, 0, Col, Val),
-    ( Val = 0.0 ->
+    ( if Val = 0.0 then
         ensure_zero_obj_coeffs(Vs, !Tableau)
-    ;
+    else
         FindOne = (pred(P::out) is nondet :-
             all_rows(!.Tableau, R),
             index(!.Tableau, R, Col, ValF0),
@@ -575,7 +553,7 @@ ensure_zero_obj_coeffs([V | Vs], !Tableau) :-
         ),
         solutions.solutions(FindOne, Ones),
         (
-            Ones = [Row - Fac0|_],
+            Ones = [Row - Fac0 | _],
             Fac = -Val/Fac0,
             row_op(Fac, Row, 0, !Tableau),
             ensure_zero_obj_coeffs(Vs, !Tableau)
@@ -593,14 +571,14 @@ fix_basis_and_rem_cols([V | Vs], !Tableau) :-
     var_col(!.Tableau, V, Col),
     BasisAgg = (pred(R::in, Ones0::in, Ones::out) is det :-
         index(!.Tableau, R, Col, Val),
-        ( Val = 0.0 ->
+        ( if Val = 0.0 then
             Ones = Ones0
-        ;
-            Ones = [Val - R|Ones0]
+        else
+            Ones = [Val - R | Ones0]
         )
     ),
     solutions.aggregate(all_rows(!.Tableau), BasisAgg, [], Res),
-    ( Res = [1.0 - Row] ->
+    ( if Res = [1.0 - Row] then
         PivGoal = (pred(Col1::out) is nondet :-
             all_cols(!.Tableau, Col1),
             Col \= Col1,
@@ -613,11 +591,11 @@ fix_basis_and_rem_cols([V | Vs], !Tableau) :-
             remove_col(Col, !Tableau),
             remove_row(Row, !Tableau)
         ;
-            PivSolns = [Col2|_],
+            PivSolns = [Col2 | _],
             pivot(Row, Col2, !Tableau),
             remove_col(Col, !Tableau)
         )
-    ;
+    else
         true
     ),
     remove_col(Col, !Tableau),
@@ -683,13 +661,13 @@ row_op(Scale, From, To, !Tableau) :-
 
 :- type tableau
     --->    tableau(
-                rows         :: int,
-                cols         :: int,
-                var_nums     :: map(var, int),
-                urs_vars     :: map(var, pair(var)),
-                shunned_rows :: list(int),
-                shunned_cols :: list(int),
-                cells        :: map(pair(int), float)
+                rows            :: int,
+                cols            :: int,
+                var_nums        :: map(var, int),
+                urs_vars        :: map(var, pair(var)),
+                shunned_rows    :: list(int),
+                shunned_cols    :: list(int),
+                cells           :: map(pair(int), float)
             ).
 
 :- pred init_tableau(int::in, int::in, map(var, int)::in,
@@ -703,18 +681,18 @@ init_tableau(Rows, Cols, VarNums, URSVars, Tableau) :-
 
 index(Tableau, J, K, R) :-
     Tableau = tableau(_, _, _, _, SR, SC, Cells),
-    (
-        (list.member(J, SR) ; list.member(K, SC))
-    ->
+    ( if
+        ( list.member(J, SR)
+        ; list.member(K, SC)
+        )
+    then
         unexpected($module, $pred, "attempt to address shunned row/col")
-    ;
+    else
         true
     ),
-    (
-        map.search(Cells, J - K, R0)
-    ->
+    ( if map.search(Cells, J - K, R0) then
         R = R0
-    ;
+    else
         R = 0.0
     ).
 
@@ -723,16 +701,18 @@ index(Tableau, J, K, R) :-
 
 set_index(J, K, R, !Tableau) :-
     !.Tableau = tableau(Rows, Cols, VarNums, URS, SR, SC, Cells0),
-    (
-        (list.member(J, SR) ; list.member(K, SC))
-    ->
+    ( if
+        ( list.member(J, SR)
+        ; list.member(K, SC)
+        )
+    then
         unexpected($module, $pred, "attempt to write shunned row/col")
-    ;
+    else
         true
     ),
-    ( R = 0.0 ->
+    ( if R = 0.0 then
         map.delete(J - K, Cells0, Cells)
-    ;
+    else
         map.set(J - K, R, Cells0, Cells)
     ),
     !:Tableau = tableau(Rows, Cols, VarNums, URS, SR, SC, Cells).
@@ -746,21 +726,21 @@ rhs_col(tableau(_, RHS, _, _, _, _, _), RHS).
 all_rows0(Tableau, Row) :-
     Tableau = tableau(Rows, _Cols, _, _, SR, _, _),
     between(0, Rows, Row),
-    \+ list.member(Row, SR).
+    not list.member(Row, SR).
 
 :- pred all_rows(tableau::in, int::out) is nondet.
 
 all_rows(Tableau, Row) :-
     Tableau = tableau(Rows, _Cols, _, _, SR, _, _),
     between(1, Rows, Row),
-    \+ list.member(Row, SR).
+    not list.member(Row, SR).
 
 :- pred all_cols0(tableau::in, int::out) is nondet.
 
 all_cols0(Tableau, Col) :-
     Tableau = tableau(_Rows, Cols, _, _, _, SC, _),
     between(0, Cols, Col),
-    \+ list.member(Col, SC).
+    not list.member(Col, SC).
 
 :- pred all_cols(tableau::in, int::out) is nondet.
 
@@ -768,7 +748,7 @@ all_cols(Tableau, Col) :-
     Tableau = tableau(_Rows, Cols, _, _, _, SC, _),
     Cols1 = Cols - 1,
     between(0, Cols1, Col),
-    \+ list.member(Col, SC).
+    not list.member(Col, SC).
 
 :- pred var_col(tableau::in, var::in, int::out) is det.
 
@@ -784,13 +764,13 @@ urs_vars(Tableau, Tableau ^ urs_vars).
 
 remove_row(R, Tableau0, Tableau) :-
     Tableau0 = tableau(Rows, Cols, VarNums, URS, SR, SC, Cells),
-    Tableau = tableau(Rows, Cols, VarNums, URS, [R|SR], SC, Cells).
+    Tableau = tableau(Rows, Cols, VarNums, URS, [R | SR], SC, Cells).
 
 :- pred remove_col(int::in, tableau::in, tableau::out) is det.
 
 remove_col(C, Tableau0, Tableau) :-
     Tableau0 = tableau(Rows, Cols, VarNums, URS, SR, SC, Cells),
-    Tableau = tableau(Rows, Cols, VarNums, URS, SR, [C|SC], Cells).
+    Tableau = tableau(Rows, Cols, VarNums, URS, SR, [C | SC], Cells).
 
 :- pred get_basis_vars(tableau::in, list(var)::out) is det.
 
@@ -818,7 +798,7 @@ get_basis_vars(Tab, Vars) :-
 
 :- pred lp_info_init(varset::in, list(var)::in, lp_info::out) is det.
 
-lp_info_init(Varset0, URSVars, LPInfo) :-
+lp_info_init(VarSet0, URSVars, LPInfo) :-
     Introduce = (pred(Orig::in, VP0::in, VP::out) is det :-
         VP0 = VS0 - VM0,
         varset.new_var(V1, VS0, VS1),
@@ -827,16 +807,16 @@ lp_info_init(Varset0, URSVars, LPInfo) :-
         VP = VS - VM
     ),
     map.init(URSMap0),
-    list.foldl(Introduce, URSVars, Varset0 - URSMap0, Varset - URSMap),
-    LPInfo = lp_info(Varset, URSMap, [], []).
+    list.foldl(Introduce, URSVars, VarSet0 - URSMap0, VarSet - URSMap),
+    LPInfo = lp_info(VarSet, URSMap, [], []).
 
 :- pred new_slack_var(var::out, lp_info::in, lp_info::out) is det.
 
 new_slack_var(Var, !Info) :-
-    some [!Varset] (
-        get_varset(!.Info, !:Varset),
-        varset.new_var(Var, !Varset),
-        set_varset(!.Varset, !Info)
+    some [!VarSet] (
+        get_varset(!.Info, !:VarSet),
+        varset.new_var(Var, !VarSet),
+        set_varset(!.VarSet, !Info)
     ),
     get_slack_vars(!.Info, Vars),
     set_slack_vars([Var | Vars], !Info).
@@ -844,10 +824,10 @@ new_slack_var(Var, !Info) :-
 :- pred new_art_var(var::out, lp_info::in, lp_info::out) is det.
 
 new_art_var(Var, !Info) :-
-    some [!Varset] (
-        get_varset(!.Info, !:Varset),
-        varset.new_var(Var, !Varset),
-        set_varset(!.Varset, !Info)
+    some [!VarSet] (
+        get_varset(!.Info, !:VarSet),
+        varset.new_var(Var, !VarSet),
+        set_varset(!.VarSet, !Info)
     ),
     get_art_vars(!.Info, Vars),
     set_art_vars([Var | Vars], !Info).
@@ -863,15 +843,11 @@ get_slack_vars(Info, Info ^ lpi_slack_vars).
 get_art_vars(Info, Info ^ lpi_art_vars).
 
 :- pred set_varset(varset::in, lp_info::in, lp_info::out) is det.
-:- pred set_urs_vars(map(var, pair(var))::in, lp_info::in, lp_info::out)
-    is det.
 :- pred set_slack_vars(list(var)::in, lp_info::in, lp_info::out) is det.
 :- pred set_art_vars(list(var)::in, lp_info::in, lp_info::out) is det.
 
-set_varset(Varset, !Info) :-
-    !Info ^ lpi_varset := Varset.
-set_urs_vars(URSVars, !Info) :-
-    !Info ^ lpi_urs_map := URSVars.
+set_varset(VarSet, !Info) :-
+    !Info ^ lpi_varset := VarSet.
 set_slack_vars(Slack, !Info) :-
     !Info ^ lpi_slack_vars := Slack.
 set_art_vars(Art, !Info) :-
@@ -896,6 +872,7 @@ between(Min, Max, I) :-
 %
 
 :- pred show_tableau(tableau::in, io::di, io::uo) is det.
+:- pragma consider_used(show_tableau/3).
 
 show_tableau(Tableau, !IO) :-
     Tableau = tableau(N, M, _, _, _, _, _),

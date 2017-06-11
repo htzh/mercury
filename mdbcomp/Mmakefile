@@ -1,4 +1,6 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab
+#-----------------------------------------------------------------------------#
 # Copyright (C) 2005-2007, 2009-2010, 2012 The University of Melbourne.
 # This file may only be copied under the terms of the GNU General
 # Public License - see the file COPYING in the Mercury distribution.
@@ -56,7 +58,7 @@ MLFLAGS      += -R$(FINAL_INSTALL_MERC_LIB_DIR)	\
 MCFLAGS      += -R$(FINAL_INSTALL_MERC_LIB_DIR)	\
 		-R$(FINAL_INSTALL_MERC_GC_LIB_DIR)
 endif
-ifeq ("$(filter il% csharp% java% erlang%,$(GRADE))","")
+ifeq ("$(filter csharp% java% erlang%,$(GRADE))","")
 MLLIBS       += $(SOCKET_LIBRARY) $(NSL_LIBRARY) $(DL_LIBRARY) \
 		$(READLINE_LIBRARIES)
 endif
@@ -71,12 +73,19 @@ endif
 # in the .dep files, so it must be passed here, however if a C source
 # distribution is generated on a Darwin system then by default the
 # -install_name option will be passed in the .dep files which will cause it to
-# be passed twice (here and in the .dep files) which is not allowed by the 
+# be passed twice (here and in the .dep files) which is not allowed by the
 # linker, so we disable the mmc option which causes the -install_name option
 # to be passed in the .dep files.
 
+ifeq "$(findstring apple-darwin,$(FULLARCH))" "apple-darwin"
+ifeq ($(MMAKE_USE_MMC_MAKE),yes)
+MCFLAGS += --ld-libflags \
+	"-install_name $(FINAL_INSTALL_MERC_LIB_DIR)/lib$(MDBCOMP_LIB_NAME).dylib"
+else
 LD_LIBFLAGS-libmer_mdbcomp.dylib = -install_name \
-	$(FINAL_INSTALL_MERC_LIB_DIR)/libmer_mdbcomp.dylib
+	$(FINAL_INSTALL_MERC_LIB_DIR)/lib$(MDBCOMP_LIB_NAME).dylib
+endif
+endif
 
 #-----------------------------------------------------------------------------#
 
@@ -86,11 +95,11 @@ LN	= ln
 
 #-----------------------------------------------------------------------------#
 
-# The IL, Java and Erlang implementations of the standard library are not yet
+# The C#, Java and Erlang implementations of the standard library are not yet
 # complete, so we need to pass `--allow-stubs' to get them to compile.
 # Since the standard library is compiled with `--halt-at-warn',
 # we also need `--no-warn-stubs'.
-ifneq ("$(filter il% csharp% java% erlang%,$(GRADE))","")
+ifneq ("$(filter csharp% java% erlang%,$(GRADE))","")
 MCFLAGS += --allow-stubs --no-warn-stubs
 endif
 
@@ -143,13 +152,13 @@ Mercury.modules: MDBCOMP_FLAGS
 .PHONY: check
 check:	$(CHECKS)
 
-.PHONY: all-ints 
+.PHONY: all-ints
 all-ints: ints int3s
 
-.PHONY: ints 
+.PHONY: ints
 ints:	$(INTS_TARGETS)
 
-.PHONY: int3s 
+.PHONY: int3s
 int3s:	$(INT3S_TARGETS)
 
 #-----------------------------------------------------------------------------#
@@ -181,15 +190,13 @@ dates:
 
 #-----------------------------------------------------------------------------#
 
-.PHONY: os cs ils
+.PHONY: os cs
 ifneq ($(MMAKE_USE_MMC_MAKE),yes)
 os: $($(MDBCOMP_LIB_NAME).os)
 cs: $($(MDBCOMP_LIB_NAME).cs)
-ils: $($(MDBCOMP_LIB_NAME).ils)
 else
 os: $(MDBCOMP_LIB_NAME).os
 cs: $(MDBCOMP_LIB_NAME).cs
-ils: $(MDBCOMP_LIB_NAME).ils
 endif
 
 #-----------------------------------------------------------------------------#
@@ -211,9 +218,9 @@ realclean_local:
 .PHONY: install
 install: install_library
 
-ifneq ("$(filter il% erlang%,$(GRADE))","")
+ifneq ("$(filter erlang%,$(GRADE))","")
 
-# there is no debugger in the .NET or Erlang backends
+# there is no debugger in the Erlang backends
 
 .PHONY: install_library
 install_library:

@@ -10,10 +10,7 @@
 % Main author: fjh.
 %
 % This module defines some predicates which output various parts
-% of the parse tree created by prog_io.
-%
-% WARNING - this module is mostly junk at the moment!
-% Only the first hundred lines or so are meaningful.
+% of the parse tree created by the parser.
 %
 %-----------------------------------------------------------------------------%
 
@@ -21,17 +18,20 @@
 :- interface.
 
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_pragma.
 
 :- import_module io.
 :- import_module list.
 :- import_module maybe.
 
-    % Write out the information in term context (at the moment, just
-    % the line number) in a form suitable for the beginning of an
-    % error message.
+    % Write out the information in term context (at the moment, just the
+    % line number) in a form suitable for the beginning of an error message.
     %
 :- pred write_context(prog_context::in, io::di, io::uo) is det.
+:- pred write_context(io.text_output_stream::in, prog_context::in,
+    io::di, io::uo) is det.
 
     % Write to a string the information in term context (at the moment,
     % just the line number) in a form suitable for the beginning of an
@@ -39,10 +39,9 @@
     %
 :- pred context_to_string(prog_context::in, string::out) is det.
 
-    % Write out a symbol name, with special characters escaped,
-    % but without any quotes.  This is suitable for use in
-    % error messages, where the caller should print out an
-    % enclosing forward/backward-quote pair (`...').
+    % Write out a symbol name, with special characters escaped, but without
+    % any quotes. This is suitable for use in error messages, where the
+    % caller should print out an enclosing forward/backward-quote pair (`...').
     %
 :- pred write_sym_name(sym_name::in, io::di, io::uo) is det.
 :- func sym_name_to_escaped_string(sym_name) = string.
@@ -78,10 +77,35 @@
 :- pred simple_call_id_to_sym_name_and_arity(simple_call_id::in,
     sym_name_and_arity::out) is det.
 
-    % Write out a module specifier.
+    % Write out a module name.
     %
-:- pred write_module_spec(module_specifier::in, io::di, io::uo) is det.
-:- func module_spec_to_escaped_string(module_specifier) = string.
+:- pred write_module_name(module_name::in, io::di, io::uo) is det.
+:- func module_name_to_escaped_string(module_name) = string.
+
+:- pred write_type_ctor(type_ctor::in, io::di, io::uo) is det.
+:- func type_ctor_to_string(type_ctor) = string.
+
+:- pred write_class_id(class_id::in, io::di, io::uo) is det.
+
+    % Convert a cons_id to a string.
+    %
+    % The maybe_quoted_cons_id_and_arity_to_string version is for use
+    % in error messages, while the cons_id_and_arity_to_string version
+    % is for use when generating target language code. The differences are
+    % that
+    %
+    % - the former puts quotation marks around user-defined cons_ids
+    %   (i.e. those that are represented by cons/3), as opposed to
+    %   builtin cons_ids such as integers, while the latter does not, and
+    %
+    % - the latter mangles user-defined cons_ids to ensure that they
+    %   are acceptable in our target languages e.g. in comments,
+    %   while the former does no mangling.
+    %
+    % The difference in the names refers to the first distinction above.
+    %
+:- func maybe_quoted_cons_id_and_arity_to_string(cons_id) = string.
+:- func cons_id_and_arity_to_string(cons_id) = string.
 
 :- pred write_string_list(list(string)::in, io::di, io::uo) is det.
 
@@ -95,10 +119,6 @@
 :- pred write_type_name(type_ctor::in, io::di, io::uo) is det.
 
 :- func type_name_to_string(type_ctor) = string.
-
-:- pred builtin_type_to_string(builtin_type, string).
-:- mode builtin_type_to_string(in, out) is det.
-:- mode builtin_type_to_string(out, in) is semidet.
 
     % Print "predicate" or "function" depending on the given value.
     %
@@ -147,12 +167,13 @@
 
 :- func can_fail_to_string(can_fail) = string.
 
+:- func goal_warning_to_string(goal_warning) = string.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
-:- import_module mdbcomp.prim_data.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_util.
 
@@ -165,15 +186,19 @@
 %-----------------------------------------------------------------------------%
 
 write_context(Context, !IO) :-
+    io.output_stream(Stream, !IO),
+    write_context(Stream, Context, !IO).
+
+write_context(Stream, Context, !IO) :-
     context_to_string(Context, ContextMessage),
-    io.write_string(ContextMessage, !IO).
+    io.write_string(Stream, ContextMessage, !IO).
 
 context_to_string(Context, ContextMessage) :-
     term.context_file(Context, FileName),
     term.context_line(Context, LineNumber),
-    ( FileName = "" ->
+    ( if FileName = "" then
         ContextMessage = ""
-    ;
+    else
         string.format("%s:%03d: ", [s(FileName), i(LineNumber)],
             ContextMessage)
     ).
@@ -181,20 +206,20 @@ context_to_string(Context, ContextMessage) :-
 %-----------------------------------------------------------------------------%
 
 write_sym_name(qualified(ModuleSpec, Name), !IO) :-
-    write_module_spec(ModuleSpec, !IO),
+    write_module_name(ModuleSpec, !IO),
     io.write_string(".", !IO),
     term_io.write_escaped_string(Name, !IO).
 write_sym_name(unqualified(Name), !IO) :-
     term_io.write_escaped_string(Name, !IO).
 
 sym_name_to_escaped_string(qualified(ModuleSpec, Name)) =
-    module_spec_to_escaped_string(ModuleSpec)
+    module_name_to_escaped_string(ModuleSpec)
     ++ "."
     ++ term_io.escaped_string(Name).
 sym_name_to_escaped_string(unqualified(Name)) =
     term_io.escaped_string(Name).
 
-write_sym_name_and_arity(Name / Arity, !IO) :-
+write_sym_name_and_arity(sym_name_arity(Name, Arity), !IO) :-
     write_sym_name(Name, !IO),
     io.write_string("/", !IO),
     io.write_int(Arity, !IO).
@@ -204,7 +229,7 @@ write_quoted_sym_name(SymName, !IO) :-
     write_sym_name(SymName, !IO),
     io.write_string("'", !IO).
 
-sym_name_and_arity_to_string(SymName/Arity) = String :-
+sym_name_and_arity_to_string(sym_name_arity(SymName, Arity)) = String :-
     SymNameString = sym_name_to_string(SymName),
     string.int_to_string(Arity, ArityString),
     string.append_list([SymNameString, "/", ArityString], String).
@@ -213,7 +238,7 @@ write_simple_call_id(simple_call_id(PredOrFunc, Name, Arity), !IO) :-
     Str = simple_call_id_to_string(PredOrFunc, Name, Arity),
     io.write_string(Str, !IO).
 
-write_simple_call_id(PredOrFunc, Name/Arity, !IO) :-
+write_simple_call_id(PredOrFunc, sym_name_arity(Name, Arity), !IO) :-
     Str = simple_call_id_to_string(PredOrFunc, Name, Arity),
     io.write_string(Str, !IO).
 
@@ -224,7 +249,7 @@ write_simple_call_id(PredOrFunc, SymName, Arity, !IO) :-
 simple_call_id_to_string(simple_call_id(PredOrFunc, SymName, Arity)) =
     simple_call_id_to_string(PredOrFunc, SymName, Arity).
 
-simple_call_id_to_string(PredOrFunc, SymName/Arity) =
+simple_call_id_to_string(PredOrFunc, sym_name_arity(SymName, Arity)) =
     simple_call_id_to_string(PredOrFunc, SymName, Arity).
 
 simple_call_id_to_string(PredOrFunc, SymName, Arity) = Str :-
@@ -234,15 +259,15 @@ simple_call_id_to_string(PredOrFunc, SymName, Arity) = Str :-
     % predicates should have more unusual module names.
     Name = unqualify_name(SymName),
     % Is it really a promise?
-    ( string.prefix(Name, "promise__") ->
+    ( if string.prefix(Name, "promise__") then
         MaybePromise = yes(promise_type_true)
-    ; string.prefix(Name, "promise_exclusive__") ->
+    else if string.prefix(Name, "promise_exclusive__") then
         MaybePromise = yes(promise_type_exclusive)
-    ; string.prefix(Name, "promise_exhaustive__") ->
+    else if string.prefix(Name, "promise_exhaustive__") then
         MaybePromise = yes(promise_type_exhaustive)
-    ; string.prefix(Name, "promise_exclusive_exhaustive__") ->
+    else if string.prefix(Name, "promise_exclusive_exhaustive__") then
         MaybePromise = yes(promise_type_exclusive_exhaustive)
-    ;
+    else
         MaybePromise = no   % No, it is really a pred or func.
     ),
     (
@@ -254,19 +279,163 @@ simple_call_id_to_string(PredOrFunc, SymName, Arity) = Str :-
         simple_call_id_to_sym_name_and_arity(SimpleCallId,
             AdjustedSymNameAndArity),
         Pieces = [p_or_f(PredOrFunc),
-            sym_name_and_arity(AdjustedSymNameAndArity)]
+            qual_sym_name_and_arity(AdjustedSymNameAndArity)]
     ),
     Str = error_pieces_to_string(Pieces).
 
-simple_call_id_to_sym_name_and_arity(SimpleCallId, SymName / OrigArity) :-
+simple_call_id_to_sym_name_and_arity(SimpleCallId, SNA) :-
     SimpleCallId = simple_call_id(PredOrFunc, SymName, Arity),
-    adjust_func_arity(PredOrFunc, OrigArity, Arity).
+    adjust_func_arity(PredOrFunc, OrigArity, Arity),
+    SNA = sym_name_arity(SymName, OrigArity).
 
-write_module_spec(ModuleSpec, !IO) :-
-    write_sym_name(ModuleSpec, !IO).
+write_module_name(ModuleName, !IO) :-
+    write_sym_name(ModuleName, !IO).
 
-module_spec_to_escaped_string(ModuleSpec) =
-    sym_name_to_escaped_string(ModuleSpec).
+module_name_to_escaped_string(ModuleName) =
+    sym_name_to_escaped_string(ModuleName).
+
+%-----------------------------------------------------------------------------%
+
+write_type_ctor(type_ctor(Name, Arity), !IO) :-
+    prog_out.write_sym_name_and_arity(sym_name_arity(Name, Arity), !IO).
+
+type_ctor_to_string(type_ctor(Name, Arity)) =
+    prog_out.sym_name_and_arity_to_string(sym_name_arity(Name, Arity)).
+
+write_class_id(class_id(Name, Arity), !IO) :-
+    prog_out.write_sym_name_and_arity(sym_name_arity(Name, Arity), !IO).
+
+%-----------------------------------------------------------------------------%
+
+maybe_quoted_cons_id_and_arity_to_string(ConsId) =
+    cons_id_and_arity_to_string_maybe_quoted(dont_mangle_cons, quote_cons,
+        ConsId).
+
+cons_id_and_arity_to_string(ConsId) =
+    cons_id_and_arity_to_string_maybe_quoted(mangle_cons, dont_quote_cons,
+        ConsId).
+
+:- type maybe_quote_cons
+    --->    dont_quote_cons
+    ;       quote_cons.
+
+:- type maybe_mangle_cons
+    --->    dont_mangle_cons
+    ;       mangle_cons.
+
+:- func cons_id_and_arity_to_string_maybe_quoted(maybe_mangle_cons,
+    maybe_quote_cons, cons_id) = string.
+
+cons_id_and_arity_to_string_maybe_quoted(MangleCons, QuoteCons, ConsId)
+        = String :-
+    (
+        ConsId = cons(SymName, Arity, _TypeCtor),
+        SymNameString0 = sym_name_to_string(SymName),
+        (
+            MangleCons = dont_mangle_cons,
+            SymNameString = SymNameString0
+        ;
+            MangleCons = mangle_cons,
+            ( if string.contains_char(SymNameString0, '*') then
+                % We need to protect against the * appearing next to a /.
+                Stuff =
+                    ( pred(Char::in, Str0::in, Str::out) is det :-
+                        ( if Char = ('*') then
+                            string.append(Str0, "star", Str)
+                        else
+                            string.char_to_string(Char, CharStr),
+                            string.append(Str0, CharStr, Str)
+                        )
+                    ),
+                string.foldl(Stuff, SymNameString0, "", SymNameString1)
+            else
+                SymNameString1 = SymNameString0
+            ),
+            SymNameString = term_io.escaped_string(SymNameString1)
+        ),
+        string.int_to_string(Arity, ArityString),
+        (
+            QuoteCons = dont_quote_cons,
+            String = SymNameString ++ "/" ++ ArityString
+        ;
+            QuoteCons = quote_cons,
+            String = "`" ++ SymNameString ++ "'/" ++ ArityString
+        )
+    ;
+        ConsId = tuple_cons(Arity),
+        String = "{}/" ++ string.int_to_string(Arity)
+    ;
+        ConsId = int_const(Int),
+        string.int_to_string(Int, String)
+    ;
+        ConsId = uint_const(UInt),
+        String = uint_to_string(UInt)
+    ;
+        ConsId = float_const(Float),
+        String = float_to_string(Float)
+    ;
+        ConsId = char_const(CharConst),
+        String = term_io.quoted_char(CharConst)
+    ;
+        ConsId = string_const(StringConst),
+        String = term_io.quoted_string(StringConst)
+    ;
+        ConsId = impl_defined_const(Name),
+        (
+            QuoteCons = dont_quote_cons,
+            String = "$" ++ Name
+        ;
+            QuoteCons = quote_cons,
+            String = "`$" ++ Name ++ "'"
+        )
+    ;
+        ConsId = closure_cons(PredProcId, _),
+        PredProcId = shrouded_pred_proc_id(PredId, ProcId),
+        String =
+            "<pred " ++ int_to_string(PredId) ++
+            " proc " ++ int_to_string(ProcId) ++ ">"
+    ;
+        ConsId = type_ctor_info_const(Module, Ctor, Arity),
+        String =
+            "<type_ctor_info " ++ sym_name_to_string(Module) ++ "." ++
+            Ctor ++ "/" ++ int_to_string(Arity) ++ ">"
+    ;
+        ConsId = base_typeclass_info_const(_, _, _, _),
+        String = "<base_typeclass_info>"
+    ;
+        ConsId = type_info_cell_constructor(_),
+        String = "<type_info_cell_constructor>"
+    ;
+        ConsId = typeclass_info_cell_constructor,
+        String = "<typeclass_info_cell_constructor>"
+    ;
+        ConsId = type_info_const(_),
+        String = "<type_info_const>"
+    ;
+        ConsId = typeclass_info_const(_),
+        String = "<typeclass_info_const>"
+    ;
+        ConsId = ground_term_const(_, _),
+        String = "<ground_term_const>"
+    ;
+        ConsId = tabling_info_const(PredProcId),
+        PredProcId = shrouded_pred_proc_id(PredId, ProcId),
+        String =
+            "<tabling_info " ++ int_to_string(PredId) ++
+            ", " ++ int_to_string(ProcId) ++ ">"
+    ;
+        ConsId = table_io_entry_desc(PredProcId),
+        PredProcId = shrouded_pred_proc_id(PredId, ProcId),
+        String =
+            "<table_io_entry_desc " ++ int_to_string(PredId) ++ ", " ++
+            int_to_string(ProcId) ++ ">"
+    ;
+        ConsId = deep_profiling_proc_layout(PredProcId),
+        PredProcId = shrouded_pred_proc_id(PredId, ProcId),
+        String =
+            "<deep_profiling_proc_layout " ++ int_to_string(PredId) ++ ", " ++
+            int_to_string(ProcId) ++ ">"
+    ).
 
 %-----------------------------------------------------------------------------%
 
@@ -289,11 +458,6 @@ write_type_name(type_ctor(Name, _Arity), !IO) :-
 
 type_name_to_string(type_ctor(Name, _Arity)) =
     sym_name_to_escaped_string(Name).
-
-builtin_type_to_string(builtin_type_int, "int").
-builtin_type_to_string(builtin_type_float, "float").
-builtin_type_to_string(builtin_type_string, "string").
-builtin_type_to_string(builtin_type_char, "character").
 
 write_promise_type(PromiseType, !IO) :-
     io.write_string(promise_to_string(PromiseType), !IO).
@@ -357,7 +521,7 @@ eval_method_to_pragma_name(eval_minimal(MinimalMethod)) = Str :-
         MinimalMethod = stack_copy,
         Str = "minimal_model"
     ).
-eval_method_to_pragma_name(eval_table_io(_IsDecl, _IsUnitize)) = _ :-
+eval_method_to_pragma_name(eval_table_io(_EntryKind, _IsUnitize)) = _ :-
     unexpected($module, $pred, "io").
 
 eval_method_to_string(eval_normal) = "normal".
@@ -374,13 +538,16 @@ eval_method_to_string(eval_minimal(MinimalMethod)) = Str :-
         MinimalMethod = stack_copy,
         Str = "minimal_model_stack_copy"
     ).
-eval_method_to_string(eval_table_io(IsDecl, IsUnitize)) = Str :-
+eval_method_to_string(eval_table_io(EntryKind, IsUnitize)) = Str :-
     (
-        IsDecl = table_io_decl,
-        DeclStr = "decl, "
+        EntryKind = entry_stores_outputs,
+        EntryKindStr = "entry_stores_outputs, "
     ;
-        IsDecl = table_io_proc,
-        DeclStr = "proc, "
+        EntryKind = entry_stores_procid_outputs,
+        EntryKindStr = "entry_stores_procid_outputs, "
+    ;
+        EntryKind = entry_stores_procid_inputs_outputs,
+        EntryKindStr = "entry_stores_procid_inputs_outputs, "
     ),
     (
         IsUnitize = table_io_unitize,
@@ -389,7 +556,7 @@ eval_method_to_string(eval_table_io(IsDecl, IsUnitize)) = Str :-
         IsUnitize = table_io_alone,
         UnitizeStr = "alone"
     ),
-    Str = "table_io(" ++ DeclStr ++ UnitizeStr ++ ")".
+    Str = "table_io(" ++ EntryKindStr ++ UnitizeStr ++ ")".
 
 write_eval_method(EvalMethod, !IO) :-
     io.write_string(eval_method_to_string(EvalMethod), !IO).
@@ -413,6 +580,15 @@ determinism_to_string(detism_failure) = "failure".
 
 can_fail_to_string(can_fail) = "can_fail".
 can_fail_to_string(cannot_fail) = "cannot_fail".
+
+goal_warning_to_string(Warning) = Str :-
+    (
+        Warning = goal_warning_non_tail_recursive_calls,
+        Str = "non_tail_recursive_calls"
+    ;
+        Warning = goal_warning_singleton_vars,
+        Str = "singleton_vars"
+    ).
 
 %-----------------------------------------------------------------------------%
 :- end_module parse_tree.prog_out.

@@ -1,4 +1,0 @@
-echo on
-exception
-retry 10
-quit -y

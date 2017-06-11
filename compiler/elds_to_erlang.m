@@ -17,8 +17,10 @@
 :- interface.
 
 :- import_module erl_backend.elds.
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 
+:- import_module bool.
 :- import_module io.
 
 %-----------------------------------------------------------------------------%
@@ -29,7 +31,8 @@
     % and exported foreign_decls to the corresponding .hrl file.
     % The file names are determined by the module name.
     %
-:- pred output_elds(module_info::in, elds::in, io::di, io::uo) is det.
+:- pred output_elds(module_info::in, elds::in, bool::out, io::di, io::uo)
+    is det.
 
     % Output a Erlang function definition to the current output stream.
     % This is exported for debugging purposes.
@@ -42,27 +45,32 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.rtti.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_rtti.
 :- import_module hlds.pred_table.
-:- import_module hlds.special_pred.
+:- import_module hlds.status.
+:- import_module libs.
 :- import_module libs.file_util.
 :- import_module libs.globals.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.file_names.
 :- import_module parse_tree.module_cmds.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.prog_foreign.
 :- import_module parse_tree.prog_type.
 
-:- import_module bool.
 :- import_module char.
 :- import_module int.
 :- import_module library.
 :- import_module list.
 :- import_module maybe.
-:- import_module pair.
 :- import_module require.
 :- import_module set.
 :- import_module string.
@@ -71,20 +79,34 @@
 
 %-----------------------------------------------------------------------------%
 
-output_elds(ModuleInfo, ELDS, !IO) :-
+output_elds(ModuleInfo, ELDS, Succeeded, !IO) :-
     Name = ELDS ^ elds_name,
     module_info_get_globals(ModuleInfo, Globals),
+    module_source_filename(Globals, Name, SourceFileName, !IO),
     module_name_to_file_name(Globals, Name, ".erl", do_create_dirs,
-        SourceFileName, !IO),
+        TargetFileName, !IO),
     module_name_to_file_name(Globals, Name, ".hrl", do_create_dirs,
         HeaderFileName, !IO),
-    output_to_file(Globals, SourceFileName, output_erl_file(ModuleInfo, ELDS,
-        SourceFileName), !IO),
-    % Avoid updating the timestamp on the `.hrl' file if it hasn't changed.
-    TmpHeaderFileName = HeaderFileName ++ ".tmp",
-    output_to_file(Globals, TmpHeaderFileName, output_hrl_file(Name, ELDS,
-        SourceFileName), !IO),
-    update_interface(Globals, HeaderFileName, !IO).
+    output_to_file(Globals, TargetFileName,
+        output_erl_file(ModuleInfo, ELDS, SourceFileName),
+        TargetCodeSucceeded, !IO),
+    (
+        TargetCodeSucceeded = yes,
+        % Avoid updating the timestamp on the `.hrl' file if it hasn't changed.
+        TmpHeaderFileName = HeaderFileName ++ ".tmp",
+        output_to_file(Globals, TmpHeaderFileName,
+            output_hrl_file(Name, ELDS, SourceFileName),
+            Succeeded, !IO),
+        (
+            Succeeded = yes,
+            update_interface(Globals, HeaderFileName, !IO)
+        ;
+            Succeeded = no
+        )
+    ;
+        TargetCodeSucceeded = no,
+        Succeeded = no
+    ).
 
 :- pred output_erl_file(module_info::in, elds::in, string::in,
     io::di, io::uo) is det.
@@ -119,7 +141,7 @@ output_erl_file(ModuleInfo, ELDS, SourceFileName, !IO) :-
     set.fold(output_include_header_ann(Globals), Imports, !IO),
 
     % Output foreign declarations.
-    list.foldl(output_foreign_decl_code, ForeignDecls, !IO),
+    list.foldl(output_foreign_decl_code(SourceFileName), ForeignDecls, !IO),
 
     % Write directives for mkinit_erl.
     ErlangModuleNameStr = erlang_module_name_to_str(ModuleName),
@@ -146,7 +168,7 @@ output_erl_file(ModuleInfo, ELDS, SourceFileName, !IO) :-
     io.write_string("% ENDINIT\n", !IO),
 
     % Output foreign code written in Erlang.
-    list.foldl(output_foreign_body_code, ForeignBodies, !IO),
+    list.foldl(output_foreign_body_code(SourceFileName), ForeignBodies, !IO),
 
     % Output the main wrapper, if any.
     (
@@ -191,14 +213,14 @@ output_export_ann(ModuleInfo, Defn, !NeedComma, !IO) :-
     Defn = elds_defn(PredProcId, _, Body, _),
     PredProcId = proc(PredId, ProcId),
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    ( procedure_is_exported(ModuleInfo, PredInfo, ProcId) ->
+    ( if procedure_is_exported(ModuleInfo, PredInfo, ProcId) then
         maybe_write_comma(!.NeedComma, !IO),
         nl_indent_line(1, !IO),
         output_pred_proc_id(ModuleInfo, PredProcId, !IO),
         io.write_char('/', !IO),
         io.write_int(elds_body_arity(Body), !IO),
         !:NeedComma = yes
-    ;
+    else
         true
     ).
 
@@ -270,14 +292,14 @@ output_wrapper_init_fn_export_ann(AddMainWrapper, InitPreds, FinalPreds,
 should_add_main_wrapper(ModuleInfo) = AddMainWrapper :-
     module_info_get_predicate_table(ModuleInfo, PredTable),
     predicate_table_lookup_pred_name_arity(PredTable, "main", 2, PredIds),
-    (
+    ( if
         list.member(PredId, PredIds),
         module_info_pred_info(ModuleInfo, PredId, PredInfo),
-        pred_info_get_import_status(PredInfo, ImportStatus),
-        status_is_exported_to_non_submodules(ImportStatus) = yes
-    ->
+        pred_info_get_status(PredInfo, PredStatus),
+        pred_status_is_exported_to_non_submodules(PredStatus) = yes
+    then
         AddMainWrapper = yes
-    ;
+    else
         AddMainWrapper = no
     ).
 
@@ -309,10 +331,10 @@ main_wrapper_code = "
 
     mercury__startup() ->
         mercury__erlang_builtin:'ML_start_global_server'(),
-        mercury__io:'ML_io_init_state'().
+        mercury__library:'ML_std_library_init'().
 
     mercury__shutdown(ForceBadExit) ->
-        mercury__io:'ML_io_finalize_state'(),
+        mercury__library:'ML_std_library_finalize'(),
         'ML_erlang_global_server' ! {get_exit_status, self()},
         receive
             {get_exit_status_ack, ExitStatus0} ->
@@ -391,20 +413,38 @@ output_include_header_ann(Globals, Import, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred output_foreign_decl_code(foreign_decl_code::in, io::di, io::uo) is det.
+:- pred output_foreign_decl_code(string::in, foreign_decl_code::in,
+    io::di, io::uo) is det.
 
-output_foreign_decl_code(foreign_decl_code(_Lang, _IsLocal, Code, Context),
+output_foreign_decl_code(SourceFileName, ForeignDecl, !IO) :-
+    ForeignDecl = foreign_decl_code(_Lang, _IsLocal, LiteralOrInclude,
+        Context),
+    output_foreign_literal_or_include(SourceFileName, LiteralOrInclude,
+        Context, !IO).
+
+:- pred output_foreign_body_code(string::in, foreign_body_code::in,
+    io::di, io::uo) is det.
+
+output_foreign_body_code(SourceFileName, ForeignBody, !IO) :-
+    ForeignBody = foreign_body_code(_Lang, LiteralOrInclude, Context),
+    output_foreign_literal_or_include(SourceFileName, LiteralOrInclude,
+        Context, !IO).
+
+:- pred output_foreign_literal_or_include(string::in,
+    foreign_literal_or_include::in, context::in, io::di, io::uo) is det.
+
+output_foreign_literal_or_include(SourceFileName, LiteralOrInclude, Context,
         !IO) :-
-    output_file_directive(Context, !IO),
-    io.write_string(Code, !IO),
-    io.nl(!IO),
-    reset_file_directive(!IO).
-
-:- pred output_foreign_body_code(foreign_body_code::in, io::di, io::uo) is det.
-
-output_foreign_body_code(foreign_body_code(_Lang, Code, Context), !IO) :-
-    output_file_directive(Context, !IO),
-    io.write_string(Code, !IO),
+    (
+        LiteralOrInclude = floi_literal(Code),
+        output_file_directive(Context, !IO),
+        io.write_string(Code, !IO)
+    ;
+        LiteralOrInclude = floi_include_file(IncludeFileName),
+        make_include_file_path(SourceFileName, IncludeFileName, IncludePath),
+        output_file_directive(context(IncludePath, 1), !IO),
+        write_include_file_contents_cur_stream(IncludePath, !IO)
+    ),
     io.nl(!IO),
     reset_file_directive(!IO).
 
@@ -457,7 +497,7 @@ output_defn(ModuleInfo, Defn, !IO) :-
     (
         Body = body_defined_here(Clause),
         io.nl(!IO),
-        (
+        ( if
             % If the function definition is for a pragma foreign_proc then
             % output ``-file(File, Line).'' before and after the function
             % definition.
@@ -468,7 +508,7 @@ output_defn(ModuleInfo, Defn, !IO) :-
                 elds_foreign_code(_Code, Context),
                 _PlaceOutputs
             ])
-        ->
+        then
             % We need to subtract 3 lines so that the line numbers in the
             % foreign code block will match up with the line numbers in the
             % source file.
@@ -477,7 +517,7 @@ output_defn(ModuleInfo, Defn, !IO) :-
             output_pred_proc_id(ModuleInfo, PredProcId, !IO),
             output_toplevel_clause(ModuleInfo, VarSet, Clause, !IO),
             reset_file_directive(!IO)
-        ;
+        else
             output_pred_proc_id(ModuleInfo, PredProcId, !IO),
             output_toplevel_clause(ModuleInfo, VarSet, Clause, !IO)
         )
@@ -525,7 +565,7 @@ output_clause(ModuleInfo, VarSet, Indent, Clause, !IO) :-
 
 %-----------------------------------------------------------------------------%
 %
-% Code to output expressions
+% Code to output expressions.
 %
 
 :- pred output_exprs_with_nl(module_info::in, prog_varset::in,
@@ -554,9 +594,9 @@ output_exprs(ModuleInfo, VarSet, Indent, Exprs, !IO) :-
     elds_expr::in, io::di, io::uo) is det.
 
 output_block_expr(ModuleInfo, VarSet, Indent, Expr, !IO) :-
-    ( Expr = elds_block(Exprs) ->
+    ( if Expr = elds_block(Exprs) then
         output_exprs_with_nl(ModuleInfo, VarSet, Indent, Exprs, !IO)
-    ;
+    else
         output_expr(ModuleInfo, VarSet, Indent, Expr, !IO)
     ).
 
@@ -738,6 +778,10 @@ output_term(ModuleInfo, VarSet, Indent, Term, !IO) :-
         io.write_int(Int, !IO),
         space(!IO)
     ;
+        Term = elds_uint(UInt),
+        io.write_uint(UInt, !IO),
+        space(!IO)
+    ;
         Term = elds_float(Float),
         output_float(Float, !IO),
         space(!IO)
@@ -792,11 +836,11 @@ output_term(ModuleInfo, VarSet, Indent, Term, !IO) :-
 
 output_float(Float, !IO) :-
     S = string.from_float(Float),
-    ( digit_then_e(S, no, 0, Pos) ->
+    ( if digit_then_e(S, no, 0, Pos) then
         io.write_string(string.between(S, 0, Pos), !IO),
         io.write_string(".0", !IO),
         io.write_string(string.between(S, Pos, length(S)), !IO)
-    ;
+    else
         io.write_string(S, !IO)
     ).
 
@@ -805,12 +849,12 @@ output_float(Float, !IO) :-
 digit_then_e(String, PrevDigit, Pos0, Pos) :-
     string.unsafe_index_next(String, Pos0, Pos1, Char),
     Char \= ('.'),
-    ( is_e(Char) ->
+    ( if is_e(Char) then
         PrevDigit = yes,
         Pos = Pos0
-    ; is_digit(Char) ->
+    else if is_digit(Char) then
         digit_then_e(String, yes, Pos1, Pos)
-    ;
+    else
         digit_then_e(String, no, Pos1, Pos)
     ).
 
@@ -824,27 +868,27 @@ is_e('E').
 
 output_tuple(ModuleInfo, VarSet, Indent, Args, !IO) :-
     % Treat lists and tuples specially.
-    (
+    ( if
         Args = [elds_term(elds_atom(SymName))],
         unqualify_name(SymName) = "[]"
-    ->
+    then
         io.write_string("[] ", !IO)
-    ;
+    else if
         Args = [elds_term(elds_atom(SymName)), A, B],
         unqualify_name(SymName) = "[|]"
-    ->
+    then
         io.write_char('[', !IO),
         output_expr(ModuleInfo, VarSet, Indent, A, !IO),
         io.write_string("| ", !IO),
         output_expr(ModuleInfo, VarSet, Indent, B, !IO),
         io.write_string("] ", !IO)
-    ;
+    else if
         Args = [elds_tuple | Args1]
-    ->
+    then
         io.write_char('{', !IO),
         output_exprs(ModuleInfo, VarSet, Indent, Args1, !IO),
         io.write_string("} ", !IO)
-    ;
+    else
         io.write_char('{', !IO),
         output_exprs(ModuleInfo, VarSet, Indent, Args, !IO),
         io.write_string("} ", !IO)
@@ -903,9 +947,9 @@ output_rtti_id(ModuleInfo, RttiId, !IO) :-
         RttiTypeCtor = rtti_type_ctor(ModuleName, _, _),
 
         % The only things with an empty module name should be the builtins.
-        ( ModuleName = unqualified("") ->
+        ( if ModuleName = unqualified("") then
             InstanceModule = mercury_public_builtin_module
-        ;
+        else
             InstanceModule = ModuleName
         ),
 
@@ -914,21 +958,21 @@ output_rtti_id(ModuleInfo, RttiId, !IO) :-
     ;
         RttiId = elds_rtti_type_info_id(TypeInfo),
 
-            % TypeInfos are always local to the current module.
+        % TypeInfos are always local to the current module.
         InstanceModule = CurModuleName,
         Atom0 = "ti_" ++ type_info_to_string(TypeInfo),
 
-            % Erlang atoms have a maximum length, so shorten names
+        % Erlang atoms have a maximum length, so shorten names.
         Atom1 = string.replace_all(Atom0, "type_ctor_info", "tci")
     ;
         RttiId = elds_rtti_pseudo_type_info_id(PseudoTypeInfo),
-        ( PseudoTypeInfo = type_var(_) ->
+        ( if PseudoTypeInfo = type_var(_) then
             Prefix = "type_var_"
-        ;
+        else
             Prefix = "pti_"
         ),
 
-            % PseudoTypeInfos are always local to the current module.
+        % PseudoTypeInfos are always local to the current module.
         InstanceModule = CurModuleName,
         Atom0 = Prefix ++ pseudo_type_info_to_string(PseudoTypeInfo),
 
@@ -944,11 +988,11 @@ output_rtti_id(ModuleInfo, RttiId, !IO) :-
             "__arity", string.from_int(ClassArity), "__", InstanceStr])
     ),
     Atom = shorten_long_atom_name(Atom1),
-    ( if CurModuleName \= InstanceModule then
+    ( if CurModuleName = InstanceModule then
+        true
+    else
         output_atom(erlang_module_name_to_str(InstanceModule), !IO),
         io.write_char(':', !IO)
-    else
-        true
     ),
     output_atom(Atom, !IO).
 
@@ -995,18 +1039,19 @@ erlang_proc_name(ModuleInfo, PredProcId, MaybeExtModule, ProcNameStr) :-
         Origin, _ProcIsExported, _ProcIsImported),
 
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    pred_info_get_import_status(PredInfo, ImportStatus),
-    ( ImportStatus = status_external(_) ->
-        % pred_info_is_imported returns `yes' for :- external predicates.
+    pred_info_get_status(PredInfo, PredStatus),
+    ( if PredStatus = pred_status(status_external(_)) then
+        % pred_info_is_imported returns `yes' for
+        % `:- pragma % external_{pred/func}' predicates.
         PredIsImported = no
-    ;
+    else
         PredIsImported = PredIsImported0
     ),
 
-    ( Origin = origin_special_pred(SpecialPred) ->
-        erlang_special_proc_name(ThisModule, PredName, ProcId, SpecialPred,
-            MaybeExtModule, ProcNameStr)
-    ;
+    ( if Origin = origin_special_pred(SpecialPredId, TypeCtor) then
+        erlang_special_proc_name(ThisModule, PredName, ProcId,
+            SpecialPredId, TypeCtor, MaybeExtModule, ProcNameStr)
+    else
         erlang_nonspecial_proc_name(ThisModule, PredModule, PredName,
             PredOrFunc, PredArity, ProcId, PredIsImported,
             MaybeExtModule, ProcNameStr)
@@ -1039,15 +1084,15 @@ erlang_nonspecial_proc_name(ThisModule, PredModule, PredName, PredOrFunc,
 
     PredLabelStr0 = PredName ++ "_" ++ string.from_int(OrigArity) ++
         "_" ++ Suffix,
-    (
+    ( if
         % Work out which module supplies the code for the predicate.
         ThisModule \= PredModule,
         PredIsImported = no
-    ->
+    then
         % This predicate is a specialized version of a pred from a `.opt' file.
         PredLabelStr = PredLabelStr0 ++ "_in__" ++
             erlang_module_name_to_str(PredModule)
-    ;
+    else
         % The predicate was declared in the same module that it is defined in.
         PredLabelStr = PredLabelStr0
     ),
@@ -1056,11 +1101,12 @@ erlang_nonspecial_proc_name(ThisModule, PredModule, PredName, PredOrFunc,
     ProcNameStr = PredLabelStr ++ "_" ++ string.from_int(ModeNum).
 
 :- pred erlang_special_proc_name(sym_name::in, string::in, proc_id::in,
-    special_pred::in, maybe(string)::out, string::out) is det.
+    special_pred_id::in, type_ctor::in, maybe(string)::out, string::out)
+    is det.
 
-erlang_special_proc_name(ThisModule, PredName, ProcId, SpecialPred - TypeCtor,
+erlang_special_proc_name(ThisModule, PredName, ProcId, SpecialPredId, TypeCtor,
         MaybeExtModule, ProcNameStr) :-
-    (
+    ( if
         % All type_ctors other than tuples here should be module qualified,
         % since builtin types are handled separately in polymorphism.m.
         TypeCtor = type_ctor(TypeCtorSymName, TypeArity),
@@ -1071,32 +1117,32 @@ erlang_special_proc_name(ThisModule, PredName, ProcId, SpecialPred - TypeCtor,
         ;
             TypeCtorSymName = qualified(TypeModule, TypeName)
         )
-    ->
+    then
         ProcNameStr0 = PredName ++ "__",
         TypeModuleStr = erlang_module_name_to_str(TypeModule),
-        (
+        ( if
             ThisModule \= TypeModule,
-            SpecialPred = spec_pred_unify,
+            SpecialPredId = spec_pred_unify,
             \+ hlds_pred.in_in_unification_proc_id(ProcId)
-        ->
+        then
             % This is a locally-defined instance of a unification procedure
             % for a type defined in some other module.
             ProcNameStr1 = ProcNameStr0 ++ TypeModuleStr,
             MaybeExtModule = no
-        ;
+        else
             % The module declaring the type is the same as the module
             % defining this special pred.
             ProcNameStr1 = ProcNameStr0,
-            ( TypeModule \= ThisModule ->
+            ( if TypeModule \= ThisModule then
                 MaybeExtModule = yes(TypeModuleStr)
-            ;
+            else
                 MaybeExtModule = no
             )
         ),
         proc_id_to_int(ProcId, ModeNum),
         ProcNameStr = ProcNameStr1 ++ TypeName ++ "_" ++
             string.from_int(TypeArity) ++ "_" ++ string.from_int(ModeNum)
-    ;
+    else
         unexpected($module, $pred,
             "cannot make label for special pred " ++ PredName)
     ).
@@ -1210,7 +1256,7 @@ write_with_escaping(StringOrAtom, String, !IO) :-
 
 write_with_escaping_2(StringOrAtom, Char, !IO) :-
     char.to_int(Char, Int),
-    (
+    ( if
         32 =< Int,
         Char \= ('\\'),
         (
@@ -1220,13 +1266,13 @@ write_with_escaping_2(StringOrAtom, Char, !IO) :-
             StringOrAtom = in_atom,
             Char \= '\''
         )
-    ->
+    then
         io.write_char(Char, !IO)
-    ;
+    else if
         escape(Esc, Int)
-    ->
+    then
         io.write_string(Esc, !IO)
-    ;
+    else
         string.int_to_base_string(Int, 8, OctalString),
         io.write_char('\\', !IO),
         io.write_string(OctalString, !IO)
@@ -1292,20 +1338,21 @@ output_hrl_file(ModuleName, ELDS, SourceFileName, !IO) :-
     ], !IO),
 
     ForeignDecls = ELDS ^ elds_foreign_decls,
-    list.foldl(output_exported_foreign_decl_code, ForeignDecls, !IO),
+    list.foldl(output_exported_foreign_decl_code(SourceFileName), ForeignDecls,
+        !IO),
 
     io.write_string("-endif.\n", !IO).
 
-:- pred output_exported_foreign_decl_code(foreign_decl_code::in,
+:- pred output_exported_foreign_decl_code(string::in, foreign_decl_code::in,
     io::di, io::uo) is det.
 
-output_exported_foreign_decl_code(ForeignDecl, !IO) :-
+output_exported_foreign_decl_code(SourceFileName, ForeignDecl, !IO) :-
     IsLocal = ForeignDecl ^ fdecl_is_local,
     (
         IsLocal = foreign_decl_is_local
     ;
         IsLocal = foreign_decl_is_exported,
-        output_foreign_decl_code(ForeignDecl, !IO)
+        output_foreign_decl_code(SourceFileName, ForeignDecl, !IO)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -1322,9 +1369,9 @@ nl_indent_line(N, !IO) :-
 :- pred indent_line(indent::in, io::di, io::uo) is det.
 
 indent_line(N, !IO) :-
-    ( N =< 0 ->
+    ( if N =< 0 then
         true
-    ;
+    else
         io.write_string("  ", !IO),
         indent_line(N - 1, !IO)
     ).

@@ -17,7 +17,8 @@
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
-:- import_module mdbcomp.prim_data.
+:- import_module hlds.vartypes.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.equiv_type.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.module_qual.
@@ -31,18 +32,18 @@
 
 :- type qual_info.
 
-:- pred init_qual_info(mq_info::in, eqv_map::in, qual_info::out) is det.
+:- pred init_qual_info(mq_info::in, type_eqv_map::in, qual_info::out) is det.
 
     % Update the qual_info when processing a new clause.
     %
-:- pred update_qual_info(tvar_name_map::in, tvarset::in,
-    vartypes::in, import_status::in,
-    qual_info::in, qual_info::out) is det.
+:- pred update_qual_info(tvar_name_map::in, tvarset::in, vartypes::in,
+    maybe_opt_imported::in, qual_info::in, qual_info::out) is det.
 
 :- pred qual_info_get_tvarset(qual_info::in, tvarset::out) is det.
 :- pred qual_info_get_var_types(qual_info::in, vartypes::out) is det.
 :- pred qual_info_get_mq_info(qual_info::in, mq_info::out) is det.
-:- pred qual_info_get_import_status(qual_info::in, import_status::out) is det.
+:- pred qual_info_get_maybe_opt_imported(qual_info::in,
+    maybe_opt_imported::out) is det.
 :- pred qual_info_get_found_syntax_error(qual_info::in, bool::out) is det.
 
 :- pred qual_info_set_mq_info(mq_info::in, qual_info::in, qual_info::out)
@@ -96,6 +97,7 @@
 :- implementation.
 
 :- import_module hlds.hlds_data.
+:- import_module hlds.make_goal.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.prog_type_subst.
 :- import_module parse_tree.prog_util.
@@ -111,7 +113,7 @@
 :- type qual_info
     --->    qual_info(
                 % Used to expand equivalence types.
-                qual_eqv_map            :: eqv_map,
+                qual_type_eqv_map       :: type_eqv_map,
 
                 % All type variables for predicate.
                 qual_tvarset            :: tvarset,
@@ -129,40 +131,42 @@
                 % Module qualification info.
                 qual_mq_info            :: mq_info,
 
-                qual_import_status      :: import_status,
+                qual_maybe_opt_imported :: maybe_opt_imported,
 
                 % Was there a syntax error in a field update?
                 qual_found_syntax_error :: bool
             ).
 
-init_qual_info(MQInfo0, EqvMap, QualInfo) :-
-    mq_info_set_need_qual_flag(may_be_unqualified, MQInfo0, MQInfo),
+init_qual_info(MQInfo, TypeEqvMap, QualInfo) :-
     varset.init(TVarSet),
     map.init(Renaming),
     map.init(Index),
     init_vartypes(VarTypes),
     FoundSyntaxError = no,
-    QualInfo = qual_info(EqvMap, TVarSet, Renaming, Index, VarTypes,
-        MQInfo, status_local, FoundSyntaxError).
+    QualInfo = qual_info(TypeEqvMap, TVarSet, Renaming, Index, VarTypes,
+        MQInfo, is_not_opt_imported, FoundSyntaxError).
 
-update_qual_info(TVarNameMap, TVarSet, VarTypes, Status, !QualInfo) :-
-    !.QualInfo = qual_info(EqvMap, _TVarSet0, _Renaming0, _TVarNameMap0,
-        _VarTypes0, MQInfo, _Status, _FoundError),
+update_qual_info(TVarNameMap, TVarSet, VarTypes, MaybeOptImported,
+        !QualInfo) :-
+    !.QualInfo = qual_info(TypeEqvMap, _TVarSet0, _Renaming0, _TVarNameMap0,
+        _VarTypes0, MQInfo, _MaybeOptImported, _FoundError),
     % The renaming for one clause is useless in the others.
     map.init(Renaming),
-    !:QualInfo = qual_info(EqvMap, TVarSet, Renaming, TVarNameMap,
-        VarTypes, MQInfo, Status, no).
+    !:QualInfo = qual_info(TypeEqvMap, TVarSet, Renaming, TVarNameMap,
+        VarTypes, MQInfo, MaybeOptImported, no).
 
 qual_info_get_tvarset(Info, Info ^ qual_tvarset).
 qual_info_get_var_types(Info, Info ^ qual_vartypes).
 qual_info_get_mq_info(Info, Info ^ qual_mq_info).
-qual_info_get_import_status(Info, Info ^ qual_import_status).
+qual_info_get_maybe_opt_imported(Info, Info ^ qual_maybe_opt_imported).
 qual_info_get_found_syntax_error(Info, Info ^ qual_found_syntax_error).
 
-qual_info_set_mq_info(MQInfo, Info, Info ^ qual_mq_info := MQInfo).
-qual_info_set_var_types(VarTypes, Info, Info ^ qual_vartypes := VarTypes).
-qual_info_set_found_syntax_error(FoundError, Info,
-    Info ^ qual_found_syntax_error := FoundError).
+qual_info_set_mq_info(MQInfo, !Info) :-
+    !Info ^ qual_mq_info := MQInfo.
+qual_info_set_var_types(VarTypes, !Info) :-
+    !Info ^ qual_vartypes := VarTypes.
+qual_info_set_found_syntax_error(FoundError, !Info) :-
+    !Info ^ qual_found_syntax_error := FoundError.
 
 apply_to_recompilation_info(Pred, !QualInfo) :-
     MQInfo0 = !.QualInfo ^ qual_mq_info,
@@ -184,15 +188,18 @@ set_module_recompilation_info(QualInfo, !ModuleInfo) :-
 
 process_type_qualification(Var, Type0, VarSet, Context, !ModuleInfo,
         !QualInfo, !Specs) :-
-    !.QualInfo = qual_info(EqvMap, TVarSet0, TVarRenaming0,
-        TVarNameMap0, VarTypes0, MQInfo0, Status, FoundError),
-    ( Status = status_opt_imported ->
+    !.QualInfo = qual_info(TypeEqvMap, TVarSet0, TVarRenaming0,
+        TVarNameMap0, VarTypes0, MQInfo0, MaybeOptImported, FoundError),
+    (
+        MaybeOptImported = is_opt_imported,
         % Types in `.opt' files should already be fully module qualified.
         Type1 = Type0,
         MQInfo = MQInfo0
     ;
-        qualify_type_qualification(Type0, Type1, Context, MQInfo0, MQInfo,
-            !Specs)
+        MaybeOptImported = is_not_opt_imported,
+        % Type qualifications cannot appear in the interface of a module.
+        qualify_type_qualification(mq_not_used_in_interface, Context,
+            Type0, Type1, MQInfo0, MQInfo, !Specs)
     ),
 
     % Find any new type variables introduced by this type, and
@@ -210,28 +217,28 @@ process_type_qualification(Var, Type0, VarSet, Context, !ModuleInfo,
     % because at the moment no recompilation.item_id can depend on a
     % clause item.
     RecordExpanded = no,
-    equiv_type.replace_in_type(EqvMap, Type2, Type, _, TVarSet1, TVarSet,
+    equiv_type.replace_in_type(TypeEqvMap, Type2, Type, _, TVarSet1, TVarSet,
         RecordExpanded, _),
     update_var_types(Var, Type, Context, VarTypes0, VarTypes, !Specs),
-    !:QualInfo = qual_info(EqvMap, TVarSet, TVarRenaming,
-        TVarNameMap, VarTypes, MQInfo, Status, FoundError).
+    !:QualInfo = qual_info(TypeEqvMap, TVarSet, TVarRenaming,
+        TVarNameMap, VarTypes, MQInfo, MaybeOptImported, FoundError).
 
 :- pred update_var_types(prog_var::in, mer_type::in, prog_context::in,
     vartypes::in, vartypes::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
 update_var_types(Var, Type, Context, !VarTypes, !Specs) :-
-    ( search_var_type(!.VarTypes, Var, Type0) ->
-        ( Type = Type0 ->
+    ( if search_var_type(!.VarTypes, Var, Type0) then
+        ( if Type = Type0 then
             true
-        ;
+        else
             Pieces = [words("Error: explicit type qualification"),
                 words("does not match prior qualification."), nl],
             Msg = simple_msg(Context, [always(Pieces)]),
             Spec = error_spec(severity_error, phase_parse_tree_to_hlds, [Msg]),
             !:Specs = [Spec | !.Specs]
         )
-    ;
+    else
         add_var_type(Var, Type, !VarTypes)
     ).
 
@@ -263,11 +270,11 @@ record_called_pred_or_func(PredOrFunc, SymName, Arity, !QualInfo) :-
 :- pred record_used_functor(cons_id::in, qual_info::in, qual_info::out) is det.
 
 record_used_functor(ConsId, !QualInfo) :-
-    ( ConsId = cons(SymName, Arity, _) ->
+    ( if ConsId = cons(SymName, Arity, _) then
         Id = item_name(SymName, Arity),
         apply_to_recompilation_info(record_used_item(functor_item, Id, Id),
             !QualInfo)
-    ;
+    else
         true
     ).
 
@@ -295,12 +302,12 @@ do_construct_pred_or_func_call(PredId, PredOrFunc, SymName, Args,
         TypeCtor = cons_id_dummy_type_ctor,
         ConsId = cons(SymName, Arity, TypeCtor),
         Context = goal_info_get_context(GoalInfo),
-        RHS = rhs_functor(ConsId, no, FuncArgs),
+        RHS = rhs_functor(ConsId, is_not_exist_constr, FuncArgs),
         create_pure_atomic_complicated_unification(RetArg, RHS,
             Context, umc_explicit, [], hlds_goal(GoalExpr, _)),
         Goal = hlds_goal(GoalExpr, GoalInfo)
     ).
 
 %-----------------------------------------------------------------------------%
-:- end_module qual_info.
+:- end_module hlds.make_hlds.qual_info.
 %-----------------------------------------------------------------------------%

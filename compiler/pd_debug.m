@@ -16,8 +16,10 @@
 :- module transform_hlds.pd_debug.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module transform_hlds.pd_info.
 
@@ -65,12 +67,12 @@
 :- import_module hlds.hlds_out.hlds_out_mode.
 :- import_module hlds.hlds_out.hlds_out_util.
 :- import_module hlds.instmap.
-:- import_module hlds.instmap.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
-:- import_module parse_tree.mercury_to_mercury.
+:- import_module parse_tree.parse_tree_out_info.
+:- import_module parse_tree.parse_tree_out_term.
 :- import_module parse_tree.prog_out.
-:- import_module parse_tree.set_of_var.
 
 :- import_module set.
 
@@ -158,13 +160,14 @@ pd_debug_output_version(ModuleInfo, PredProcId, Version, WriteUnfoldedGoal,
     proc_info_get_varset(ProcInfo, VarSet),
     instmap_restrict(NonLocals, InstMap, InstMap1),
     io.write_string(" args: ", !IO),
-    mercury_output_vars(VarSet, yes, Args, !IO),
+    mercury_output_vars(VarSet, print_name_and_num, Args, !IO),
     io.nl(!IO),
-    write_instmap(InstMap1, VarSet, yes, 1, !IO),
+    write_instmap(VarSet, print_name_and_num, 1, InstMap1, !IO),
     io.nl(!IO),
     module_info_get_globals(ModuleInfo, Globals),
-    OutInfo = init_hlds_out_info(Globals),
-    write_goal(OutInfo, Goal, ModuleInfo, VarSet, yes, 1, "\n", !IO),
+    OutInfo = init_hlds_out_info(Globals, output_debug),
+    write_goal(OutInfo, ModuleInfo, VarSet, print_name_and_num, 1, "\n",
+        Goal, !IO),
     io.nl(!IO),
     io.write_string("Parents: ", !IO),
     set.to_sorted_list(Parents, ParentsList),
@@ -174,7 +177,8 @@ pd_debug_output_version(ModuleInfo, PredProcId, Version, WriteUnfoldedGoal,
         WriteUnfoldedGoal = yes,
         proc_info_get_goal(ProcInfo, ProcGoal),
         io.write_string("Unfolded goal\n", !IO),
-        write_goal(OutInfo, ProcGoal, ModuleInfo, VarSet, yes, 1, "\n", !IO),
+        write_goal(OutInfo, ModuleInfo, VarSet, print_name_and_num, 1, "\n",
+            ProcGoal, !IO),
         io.nl(!IO)
     ;
         WriteUnfoldedGoal = no
@@ -189,7 +193,8 @@ pd_debug_write_instmap(PDInfo, !IO) :-
     pd_info_get_module_info(PDInfo, ModuleInfo),
     module_info_get_globals(ModuleInfo, Globals),
     globals.lookup_bool_option(Globals, debug_pd, DebugPD),
-    pd_debug_do_io(DebugPD, write_instmap(InstMap, VarSet, yes, 1), !IO).
+    pd_debug_do_io(DebugPD,
+        write_instmap(VarSet, print_name_and_num, 1, InstMap), !IO).
 
 %-----------------------------------------------------------------------------%
 
@@ -227,11 +232,12 @@ pd_debug_output_goal_2(PDInfo, Msg, Goal, !IO) :-
     io.write_string(Msg, !IO),
     goal_util.goal_vars(hlds_goal(GoalExpr, GoalInfo), Vars),
     instmap_restrict(Vars, InstMap, InstMap1),
-    write_instmap(InstMap1, VarSet, yes, 1, !IO),
+    write_instmap(VarSet, print_name_and_num, 1, InstMap1, !IO),
     io.nl(!IO),
     module_info_get_globals(ModuleInfo, Globals),
-    OutInfo = init_hlds_out_info(Globals),
-    write_goal(OutInfo, Goal, ModuleInfo, VarSet, yes, 1, "\n", !IO),
+    OutInfo = init_hlds_out_info(Globals, output_debug),
+    write_goal(OutInfo, ModuleInfo, VarSet, print_name_and_num, 1, "\n",
+        Goal, !IO),
     io.nl(!IO),
     io.flush_output(!IO).
 
@@ -250,4 +256,5 @@ pd_debug_write(DebugPD, Thing, !IO) :-
     pd_debug_do_io(DebugPD, io.write(Thing), !IO).
 
 %-----------------------------------------------------------------------------%
+:- end_module transform_hlds.pd_debug.
 %-----------------------------------------------------------------------------%

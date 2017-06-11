@@ -17,12 +17,16 @@
 :- module ll_backend.call_gen.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module ll_backend.code_info.
+:- import_module ll_backend.code_loc_dep.
 :- import_module ll_backend.llds.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module assoc_list.
@@ -32,15 +36,16 @@
 
 :- pred generate_call(code_model::in, pred_id::in, proc_id::in,
     list(prog_var)::in, hlds_goal_info::in, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out) is det.
 
 :- pred generate_generic_call(code_model::in, generic_call::in,
     list(prog_var)::in, list(mer_mode)::in, arg_reg_type_info::in,
     determinism::in, hlds_goal_info::in, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out) is det.
 
 :- pred generate_builtin(code_model::in, pred_id::in, proc_id::in,
-    list(prog_var)::in, llds_code::out, code_info::in, code_info::out) is det.
+    list(prog_var)::in, llds_code::out,
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out) is det.
 
 :- type known_call_variant
     --->    ho_call_known_num
@@ -65,23 +70,25 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
 :- import_module hlds.arg_info.
 :- import_module hlds.hlds_llds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.instmap.
+:- import_module hlds.vartypes.
 :- import_module libs.options.
 :- import_module ll_backend.code_util.
 :- import_module ll_backend.continuation_info.
 :- import_module ll_backend.trace_gen.
 :- import_module mdbcomp.goal_path.
+:- import_module parse_tree.prog_data_event.
 :- import_module parse_tree.prog_event.
 :- import_module parse_tree.set_of_var.
 
 :- import_module bool.
 :- import_module cord.
 :- import_module int.
-:- import_module map.
 :- import_module maybe.
 :- import_module pair.
 :- import_module require.
@@ -91,18 +98,19 @@
 %---------------------------------------------------------------------------%
 %---------------------------------------------------------------------------%
 
-generate_call(CodeModel, PredId, ProcId, ArgVars, GoalInfo, Code, !CI) :-
+generate_call(CodeModel, PredId, ProcId, ArgVars, GoalInfo, Code, !CI, !CLD) :-
     % Find out which arguments are input and which are output.
     ArgInfo = get_pred_proc_arginfo(!.CI, PredId, ProcId),
     assoc_list.from_corresponding_lists(ArgVars, ArgInfo, ArgsInfos),
 
     % Save the necessary vars on the stack and move the input args
     % to their registers.
-    setup_call(GoalInfo, ArgsInfos, LiveVals, SetupCode, !CI),
-    kill_dead_input_vars(ArgsInfos, GoalInfo, NonLiveOutputs, !CI),
+    setup_call(GoalInfo, ArgsInfos, LiveVals, SetupCode, !.CI, !CLD),
+    kill_dead_input_vars(ArgsInfos, GoalInfo, NonLiveOutputs, !CLD),
 
     % Figure out what the call model is.
-    prepare_for_call(CodeModel, GoalInfo, CallModel, TraceResetCode, !CI),
+    prepare_for_call(CodeModel, GoalInfo, CallModel, TraceResetCode,
+        !CI, !CLD),
 
     % Make the call. Note that the construction of CallCode will be moved
     % *after* the code that computes ReturnLiveLvalues.
@@ -112,7 +120,7 @@ generate_call(CodeModel, PredId, ProcId, ArgVars, GoalInfo, Code, !CI) :-
     call_gen.call_comment(!.CI, PredId, CodeModel, CallComment),
     Context = goal_info_get_context(GoalInfo),
     GoalId = goal_info_get_goal_id(GoalInfo),
-    get_containing_goal_map(!.CI, MaybeContainingGoalMap),
+    get_maybe_containing_goal_map(!.CI, MaybeContainingGoalMap),
     (
         MaybeContainingGoalMap = yes(ContainingGoalMap),
         GoalPath = goal_id_to_forward_path(ContainingGoalMap, GoalId),
@@ -130,38 +138,40 @@ generate_call(CodeModel, PredId, ProcId, ArgVars, GoalInfo, Code, !CI) :-
 
     % Figure out what variables will be live at the return point, and where,
     % for use in the accurate garbage collector, and in the debugger.
-    get_instmap(!.CI, InstMap),
+    get_instmap(!.CLD, InstMap),
     InstMapDelta = goal_info_get_instmap_delta(GoalInfo),
     instmap.apply_instmap_delta(InstMap, InstMapDelta, ReturnInstMap),
 
     % Update the code generator state to reflect the situation after the call.
     handle_return(ArgsInfos, GoalInfo, NonLiveOutputs,
-        ReturnInstMap, ReturnLiveLvalues, !CI),
+        ReturnInstMap, ReturnLiveLvalues, !.CI, !CLD),
 
     % If the call can fail, generate code to check for and handle the failure.
-    handle_call_failure(CodeModel, GoalInfo, FailHandlingCode, !CI),
+    remember_position(!.CLD, AfterReturn),
+    handle_call_failure(CodeModel, GoalInfo, FailHandlingCode, !CI, !.CLD),
+    reset_to_position(AfterReturn, !.CI, !:CLD),
 
-    get_maybe_trace_info(!.CI, MaybeTraceInfo),
-    (
-        goal_info_has_feature(GoalInfo, feature_debug_tail_rec_call),
+    ( if
+        goal_info_has_feature(GoalInfo, feature_debug_self_tail_rec_call),
+        get_maybe_trace_info(!.CI, MaybeTraceInfo),
         MaybeTraceInfo = yes(TraceInfo)
-    ->
+    then
         generate_tailrec_event_code(TraceInfo, ArgsInfos, GoalId, Context,
-            TraceTailRecResetAndEventCode, TailRecLabel, !CI),
+            TraceTailRecResetAndEventCode, TailRecLabel, !CI, !CLD),
         JumpCode = from_list([
             llds_instr(livevals(LiveVals), ""),
             llds_instr(goto(code_label(TailRecLabel)),
                 "tail recursive jump")
         ]),
         Code = SetupCode ++ TraceTailRecResetAndEventCode ++ JumpCode
-    ;
+    else
         Code = SetupCode ++ TraceResetCode ++ CallCode ++ FailHandlingCode
     ).
 
 %---------------------------------------------------------------------------%
 
 generate_generic_call(OuterCodeModel, GenericCall, Args, Modes,
-        MaybeRegTypes, Det, GoalInfo, Code, !CI) :-
+        MaybeRegTypes, Det, GoalInfo, Code, !CI, !CLD) :-
     % For a generic_call, we split the arguments into inputs and outputs,
     % put the inputs in the locations expected by mercury.do_call_closure in
     % runtime/mercury_ho_call.c, generate the call to that code, and pick up
@@ -176,29 +186,28 @@ generate_generic_call(OuterCodeModel, GenericCall, Args, Modes,
         ; GenericCall = class_method(_, _, _, _)
         ),
         generate_main_generic_call(OuterCodeModel, GenericCall, Args, Modes,
-            MaybeRegTypes, Det, GoalInfo, Code, !CI)
+            MaybeRegTypes, Det, GoalInfo, Code, !CI, !CLD)
     ;
         GenericCall = event_call(EventName),
-        generate_event_call(EventName, Args, GoalInfo, Code, !CI)
+        generate_event_call(EventName, Args, GoalInfo, Code, !CI, !CLD)
     ;
         GenericCall = cast(_),
-        ( Args = [InputArg, OutputArg] ->
+        ( if Args = [InputArg, OutputArg] then
             get_module_info(!.CI, ModuleInfo),
             get_proc_info(!.CI, ProcInfo),
             proc_info_get_vartypes(ProcInfo, VarTypes),
-            ( var_is_of_dummy_type(ModuleInfo, VarTypes, InputArg) ->
+            ( if var_is_of_dummy_type(ModuleInfo, VarTypes, InputArg) then
                 % Dummy types don't actually have values, which is
                 % normally harmless. However using the constant zero means
                 % that we don't need to allocate space for an existentially
-                % typed version of a dummy type.  Using the constant zero
-                % also avoids keeping pointers to memory that could be
-                % freed.
+                % typed version of a dummy type. Using the constant zero
+                % also avoids keeping pointers to memory that could be freed.
                 Rval = int_const(0)
-            ;
+            else
                 Rval = leaf(InputArg)
             ),
-            generate_assign_builtin(OutputArg, Rval, Code, !CI)
-        ;
+            generate_assign_builtin(OutputArg, Rval, Code, !CLD)
+        else
             unexpected($module, $pred, "invalid type/inst cast call")
         )
     ).
@@ -206,12 +215,12 @@ generate_generic_call(OuterCodeModel, GenericCall, Args, Modes,
 :- pred generate_main_generic_call(code_model::in, generic_call::in,
     list(prog_var)::in, list(mer_mode)::in, arg_reg_type_info::in,
     determinism::in, hlds_goal_info::in, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out) is det.
 
 generate_main_generic_call(_OuterCodeModel, GenericCall, Args, Modes,
-        MaybeRegTypes, Det, GoalInfo, Code, !CI) :-
+        MaybeRegTypes, Det, GoalInfo, Code, !CI, !CLD) :-
     get_module_info(!.CI, ModuleInfo),
-    VarTypes = get_var_types(!.CI),
+    get_vartypes(!.CI, VarTypes),
     lookup_var_types(VarTypes, Args, Types),
     arg_info.generic_call_arg_reg_types(ModuleInfo, VarTypes, GenericCall,
         Args, MaybeRegTypes, ArgRegTypes),
@@ -246,19 +255,19 @@ generate_main_generic_call(_OuterCodeModel, GenericCall, Args, Modes,
 
     % Save the necessary vars on the stack and move the input args defined
     % by variables to their registers.
-    setup_call(GoalInfo, ArgInfos, LiveVals0, SetupCode, !CI),
-    kill_dead_input_vars(ArgInfos, GoalInfo, NonLiveOutputs, !CI),
+    setup_call(GoalInfo, ArgInfos, LiveVals0, SetupCode, !.CI, !CLD),
+    kill_dead_input_vars(ArgInfos, GoalInfo, NonLiveOutputs, !CLD),
 
     % Move the input args not defined by variables to their registers.
     % Setting up these arguments last results in slightly more efficient code,
     % since we can use their registers when placing the variables.
     generic_call_nonvar_setup(GenericCall, HoCallVariant, InVarsR, InVarsF,
-        OutVarsR, OutVarsF, NonVarCode, !CI),
+        NonVarCode, !CLD),
 
     extra_livevals(FirstImmInputR, ExtraLiveVals),
     set.insert_list(ExtraLiveVals, LiveVals0, LiveVals),
 
-    prepare_for_call(CodeModel, GoalInfo, CallModel, TraceCode, !CI),
+    prepare_for_call(CodeModel, GoalInfo, CallModel, TraceCode, !CI, !CLD),
 
     % Make the call.
     get_next_label(ReturnLabel, !CI),
@@ -267,16 +276,16 @@ generate_main_generic_call(_OuterCodeModel, GenericCall, Args, Modes,
 
     % Figure out what variables will be live at the return point, and where,
     % for use in the accurate garbage collector, and in the debugger.
-    get_instmap(!.CI, InstMap),
+    get_instmap(!.CLD, InstMap),
     InstMapDelta = goal_info_get_instmap_delta(GoalInfo),
     instmap.apply_instmap_delta(InstMap, InstMapDelta, ReturnInstMap),
 
     % Update the code generator state to reflect the situation after the call.
     OutArgsInfos = OutArgsInfosR ++ OutArgsInfosF,
     handle_return(OutArgsInfos, GoalInfo, NonLiveOutputs,
-        ReturnInstMap, ReturnLiveLvalues, !CI),
+        ReturnInstMap, ReturnLiveLvalues, !.CI, !CLD),
 
-    get_containing_goal_map(!.CI, MaybeContainingGoalMap),
+    get_maybe_containing_goal_map(!.CI, MaybeContainingGoalMap),
     (
         MaybeContainingGoalMap = yes(ContainingGoalMap),
         GoalPath = goal_id_to_forward_path(ContainingGoalMap, GoalId),
@@ -293,7 +302,9 @@ generate_main_generic_call(_OuterCodeModel, GenericCall, Args, Modes,
     ]),
 
     % If the call can fail, generate code to check for and handle the failure.
-    handle_call_failure(CodeModel, GoalInfo, FailHandlingCode, !CI),
+    remember_position(!.CLD, AfterReturn),
+    handle_call_failure(CodeModel, GoalInfo, FailHandlingCode, !CI, !.CLD),
+    reset_to_position(AfterReturn, !.CI, !:CLD),
 
     Code = SetupCode ++ NonVarCode ++ TraceCode ++ CallCode ++
         FailHandlingCode.
@@ -301,30 +312,32 @@ generate_main_generic_call(_OuterCodeModel, GenericCall, Args, Modes,
 %---------------------------------------------------------------------------%
 
 :- pred generate_event_call(string::in, list(prog_var)::in, hlds_goal_info::in,
-    llds_code::out, code_info::in, code_info::out) is det.
+    llds_code::out,
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out) is det.
 
-generate_event_call(EventName, Args, GoalInfo, Code, !CI) :-
+generate_event_call(EventName, Args, GoalInfo, Code, !CI, !CLD) :-
     get_module_info(!.CI, ModuleInfo),
     module_info_get_event_set(ModuleInfo, EventSet),
     EventSpecMap = EventSet ^ event_set_spec_map,
-    (
+    ( if
         event_attributes(EventSpecMap, EventName, Attributes),
         event_number(EventSpecMap, EventName, EventNumber)
-    ->
+    then
         generate_event_attributes(Attributes, Args, MaybeUserAttributes,
-            AttrCodes, !CI),
+            AttrCodes, !.CI, !CLD),
         UserEventInfo = user_event_info(EventNumber, MaybeUserAttributes),
-        generate_user_event_code(UserEventInfo, GoalInfo, EventCode, !CI),
+        generate_user_event_code(UserEventInfo, GoalInfo, EventCode,
+            !CI, !CLD),
         Code = cord_list_to_cord(AttrCodes) ++ EventCode
-    ;
+    else
         unexpected($module, $pred, "bad event name")
     ).
 
 :- pred generate_event_attributes(list(event_attribute)::in,
     list(prog_var)::in, list(maybe(user_attribute))::out, list(llds_code)::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_loc_dep::in, code_loc_dep::out) is det.
 
-generate_event_attributes([], !.Vars, [], [], !CI) :-
+generate_event_attributes([], !.Vars, [], [], _CI, !CLD) :-
     (
         !.Vars = [_ | _],
         unexpected($module, $pred, "var")
@@ -332,13 +345,13 @@ generate_event_attributes([], !.Vars, [], [], !CI) :-
         !.Vars = []
     ).
 generate_event_attributes([Attribute | Attributes], !.Vars,
-        [MaybeUserAttr | MaybeUserAttrs], [Code | Codes], !CI) :-
+        [MaybeUserAttr | MaybeUserAttrs], [Code | Codes], CI, !CLD) :-
     SynthCall = Attribute ^ attr_maybe_synth_call,
     (
         SynthCall = no,
         (
             !.Vars = [Var | !:Vars],
-            produce_variable(Var, Code, Rval, !CI),
+            produce_variable(Var, Code, Rval, CI, !CLD),
             UserAttr = user_attribute(Rval, Var),
             MaybeUserAttr = yes(UserAttr)
         ;
@@ -350,7 +363,8 @@ generate_event_attributes([Attribute | Attributes], !.Vars,
         MaybeUserAttr = no,
         Code = empty
     ),
-    generate_event_attributes(Attributes, !.Vars, MaybeUserAttrs, Codes, !CI).
+    generate_event_attributes(Attributes, !.Vars, MaybeUserAttrs, Codes,
+        CI, !CLD).
 
 %---------------------------------------------------------------------------%
 
@@ -364,11 +378,11 @@ extra_livevals(FirstInput, ExtraLiveVals) :-
 :- pred extra_livevals_from(int::in, int::in, list(lval)::out) is det.
 
 extra_livevals_from(Reg, FirstInput, ExtraLiveVals) :-
-    ( Reg < FirstInput ->
+    ( if Reg < FirstInput then
         ExtraLiveVals = [reg(reg_r, Reg) | ExtraLiveVals1],
         NextReg = Reg + 1,
         extra_livevals_from(NextReg, FirstInput, ExtraLiveVals1)
-    ;
+    else
         ExtraLiveVals = []
     ).
 
@@ -380,15 +394,15 @@ generic_call_info(Globals, GenericCall, NumInputArgsR, NumInputArgsF,
         SpecifierArgInfos = [PredVar - arg_info(Reg, top_in)],
         globals.lookup_int_option(Globals,
             max_specialized_do_call_closure, MaxSpec),
-        (
+        ( if
             MaxSpec >= 0,
             NumInputArgsR =< MaxSpec,
             NumInputArgsF = 0
-        ->
+        then
             CodeAddr = do_call_closure(specialized_known(NumInputArgsR)),
             HoCallVariant = ho_call_known_num,
             FirstImmediateInputReg = 2
-        ;
+        else
             CodeAddr = do_call_closure(generic),
             HoCallVariant = ho_call_unknown,
             FirstImmediateInputReg = 3
@@ -398,23 +412,23 @@ generic_call_info(Globals, GenericCall, NumInputArgsR, NumInputArgsF,
         Reg = reg(reg_r, 1),
         SpecifierArgInfos = [TCVar - arg_info(Reg, top_in)],
         % XXX we do not use float registers for method calls yet
-        ( NumInputArgsF = 0 ->
+        ( if NumInputArgsF = 0 then
             globals.lookup_int_option(Globals,
                 max_specialized_do_call_class_method, MaxSpec),
-            (
+            ( if
                 MaxSpec >= 0,
                 NumInputArgsR =< MaxSpec
-            ->
+            then
                 CodeAddr = do_call_class_method(
                     specialized_known(NumInputArgsR)),
                 HoCallVariant = ho_call_known_num,
                 FirstImmediateInputReg = 3
-            ;
+            else
                 CodeAddr = do_call_class_method(generic),
                 HoCallVariant = ho_call_unknown,
                 FirstImmediateInputReg = 4
             )
-        ;
+        else
             sorry($module, $pred, "float reg inputs")
         )
     ;
@@ -442,17 +456,16 @@ generic_call_info(Globals, GenericCall, NumInputArgsR, NumInputArgsF,
     %
 :- pred generic_call_nonvar_setup(generic_call::in, known_call_variant::in,
     list(prog_var)::in, list(prog_var)::in,
-    list(prog_var)::in, list(prog_var)::in,
-    llds_code::out, code_info::in, code_info::out) is det.
+    llds_code::out, code_loc_dep::in, code_loc_dep::out) is det.
 
 generic_call_nonvar_setup(higher_order(_, _, _, _), HoCallVariant,
-        InVarsR, InVarsF, _OutVarsR, _OutVarsF, Code, !CI) :-
+        InVarsR, InVarsF, Code, !CLD) :-
     (
         HoCallVariant = ho_call_known_num,
         Code = empty
     ;
         HoCallVariant = ho_call_unknown,
-        clobber_regs([reg(reg_r, 2)], !CI),
+        clobber_reg(reg(reg_r, 2), !CLD),
         list.length(InVarsR, NumInVarsR),
         list.length(InVarsF, NumInVarsF),
         NumInVars = encode_num_generic_call_vars(NumInVarsR, NumInVarsF),
@@ -462,7 +475,7 @@ generic_call_nonvar_setup(higher_order(_, _, _, _), HoCallVariant,
         )
     ).
 generic_call_nonvar_setup(class_method(_, Method, _, _), HoCallVariant,
-        InVarsR, InVarsF, _OutVarsR, _OutVarsF, Code, !CI) :-
+        InVarsR, InVarsF, Code, !CLD) :-
     (
         InVarsF = []
     ;
@@ -471,14 +484,14 @@ generic_call_nonvar_setup(class_method(_, Method, _, _), HoCallVariant,
     ),
     (
         HoCallVariant = ho_call_known_num,
-        clobber_regs([reg(reg_r, 2)], !CI),
+        clobber_reg(reg(reg_r, 2), !CLD),
         Code = singleton(
             llds_instr(assign(reg(reg_r, 2), const(llconst_int(Method))),
                 "Index of class method in typeclass info")
         )
     ;
         HoCallVariant = ho_call_unknown,
-        clobber_regs([reg(reg_r, 2), reg(reg_r, 3)], !CI),
+        clobber_regs([reg(reg_r, 2), reg(reg_r, 3)], !CLD),
         list.length(InVarsR, NumInVarsR),
         % Currently we do not use float registers for method calls.
         NumInVarsF = 0,
@@ -490,23 +503,22 @@ generic_call_nonvar_setup(class_method(_, Method, _, _), HoCallVariant,
                 "Assign number of immediate regular input arguments")
         ])
     ).
-generic_call_nonvar_setup(event_call(_), _, _, _, _, _, _, !CI) :-
+generic_call_nonvar_setup(event_call(_), _, _, _, _, !CLD) :-
     unexpected($module, $pred, "event_call").
-generic_call_nonvar_setup(cast(_), _, _, _, _, _, _, !CI) :-
+generic_call_nonvar_setup(cast(_), _, _, _, _, !CLD) :-
     unexpected($module, $pred, "cast").
 
 %---------------------------------------------------------------------------%
 
 :- pred prepare_for_call(code_model::in, hlds_goal_info::in, call_model::out,
-    llds_code::out, code_info::in, code_info::out) is det.
+    llds_code::out,
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out) is det.
 
-prepare_for_call(CodeModel, GoalInfo, CallModel, TraceCode, !CI) :-
+prepare_for_call(CodeModel, GoalInfo, CallModel, TraceCode, !CI, !CLD) :-
     succip_is_used(!CI),
-    (
-        goal_info_has_feature(GoalInfo, feature_do_not_tailcall)
-    ->
+    ( if goal_info_has_feature(GoalInfo, feature_do_not_tailcall) then
         AllowLCO = do_not_allow_lco
-    ;
+    else
         AllowLCO = allow_lco
     ),
     (
@@ -517,28 +529,28 @@ prepare_for_call(CodeModel, GoalInfo, CallModel, TraceCode, !CI) :-
         CallModel = call_model_semidet(AllowLCO)
     ;
         CodeModel = model_non,
-        may_use_nondet_tailcall(!.CI, TailCallStatus),
+        may_use_nondet_tailcall(!.CLD, TailCallStatus),
         CallModel = call_model_nondet(TailCallStatus),
-        set_resume_point_and_frame_to_unknown(!CI)
+        set_resume_point_and_frame_to_unknown(!CLD)
     ),
     trace_prepare_for_call(!.CI, TraceCode).
 
-:- pred handle_call_failure(code_model::in, hlds_goal_info::in,
-    llds_code::out, code_info::in, code_info::out) is det.
+:- pred handle_call_failure(code_model::in, hlds_goal_info::in, llds_code::out,
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
-handle_call_failure(CodeModel, GoalInfo, FailHandlingCode, !CI) :-
+handle_call_failure(CodeModel, GoalInfo, FailHandlingCode, !CI, !.CLD) :-
     (
         CodeModel = model_semi,
         Detism = goal_info_get_determinism(GoalInfo),
-        ( Detism = detism_failure ->
-            generate_failure(FailHandlingCode, !CI)
-        ;
+        ( if Detism = detism_failure then
+            generate_failure(FailHandlingCode, !CI, !.CLD)
+        else
             get_next_label(ContLab, !CI),
             FailTestCode = singleton(
                 llds_instr(if_val(lval(reg(reg_r, 1)), code_label(ContLab)),
                     "test for success")
             ),
-            generate_failure(FailCode, !CI),
+            generate_failure(FailCode, !CI, !.CLD),
             ContLabelCode = singleton(
                 llds_instr(label(ContLab), "")
             ),
@@ -600,31 +612,31 @@ call_comment(CI, PredId, CodeModel, Msg) :-
     %
 :- pred kill_dead_input_vars(assoc_list(prog_var, arg_info)::in,
     hlds_goal_info::in, set_of_progvar::out,
-    code_info::in, code_info::out) is det.
+    code_loc_dep::in, code_loc_dep::out) is det.
 
-kill_dead_input_vars(ArgsInfos, GoalInfo, NonLiveOutputs, !CI) :-
-    get_forward_live_vars(!.CI, Liveness),
+kill_dead_input_vars(ArgsInfos, GoalInfo, NonLiveOutputs, !CLD) :-
+    get_forward_live_vars(!.CLD, Liveness),
     find_nonlive_outputs(ArgsInfos, Liveness, set_of_var.init, NonLiveOutputs),
     goal_info_get_post_deaths(GoalInfo, PostDeaths),
     set_of_var.difference(PostDeaths, NonLiveOutputs, ImmediatePostDeaths),
-    make_vars_forward_dead(ImmediatePostDeaths, !CI).
+    make_vars_forward_dead(ImmediatePostDeaths, !CLD).
 
 :- pred handle_return(assoc_list(prog_var, arg_info)::in,
-    hlds_goal_info::in, set_of_progvar::in, instmap::in,
-    list(liveinfo)::out, code_info::in, code_info::out) is det.
+    hlds_goal_info::in, set_of_progvar::in, instmap::in, list(liveinfo)::out,
+    code_info::in, code_loc_dep::in, code_loc_dep::out) is det.
 
 handle_return(ArgsInfos, GoalInfo, _NonLiveOutputs, ReturnInstMap,
-        ReturnLiveLvalues, !CI) :-
+        ReturnLiveLvalues, CI, !CLD) :-
     InstMapDelta = goal_info_get_instmap_delta(GoalInfo),
-    ( instmap_delta_is_reachable(InstMapDelta) ->
+    ( if instmap_delta_is_reachable(InstMapDelta) then
         OkToDeleteAny = no
-    ;
+    else
         OkToDeleteAny = yes
     ),
-    clear_all_registers(OkToDeleteAny, !CI),
-    get_forward_live_vars(!.CI, Liveness),
-    rebuild_registers(ArgsInfos, Liveness, OutputArgLocs, !CI),
-    generate_return_live_lvalues(!.CI, OutputArgLocs,
+    clear_all_registers(OkToDeleteAny, !CLD),
+    get_forward_live_vars(!.CLD, Liveness),
+    rebuild_registers(ArgsInfos, Liveness, OutputArgLocs, !CLD),
+    generate_return_live_lvalues(CI, !.CLD, OutputArgLocs,
         ReturnInstMap, OkToDeleteAny, ReturnLiveLvalues).
 
 :- pred find_nonlive_outputs(assoc_list(prog_var, arg_info)::in,
@@ -635,9 +647,9 @@ find_nonlive_outputs([Var - arg_info(_ArgLoc, Mode) | Args],
         Liveness, !NonLiveOutputs) :-
     (
         Mode = top_out,
-        ( set_of_var.member(Liveness, Var) ->
+        ( if set_of_var.member(Liveness, Var) then
             true
-        ;
+        else
             set_of_var.insert(Var, !NonLiveOutputs)
         )
     ;
@@ -649,49 +661,40 @@ find_nonlive_outputs([Var - arg_info(_ArgLoc, Mode) | Args],
 
 :- pred rebuild_registers(assoc_list(prog_var, arg_info)::in,
     set_of_progvar::in, assoc_list(prog_var, arg_loc)::out,
-    code_info::in, code_info::out) is det.
+    code_loc_dep::in, code_loc_dep::out) is det.
 
-rebuild_registers([], _, [], !CI).
+rebuild_registers([], _, [], !CLD).
 rebuild_registers([Var - arg_info(ArgLoc, Mode) | Args], Liveness,
-        OutputArgLocs, !CI) :-
-    rebuild_registers(Args, Liveness, OutputArgLocs1, !CI),
-    (
+        OutputArgLocs, !CLD) :-
+    rebuild_registers(Args, Liveness, OutputArgLocs1, !CLD),
+    ( if
         Mode = top_out,
         set_of_var.member(Liveness, Var)
-    ->
+    then
         code_util.arg_loc_to_register(ArgLoc, Register),
-        set_var_location(Var, Register, !CI),
+        set_var_location(Var, Register, !CLD),
         OutputArgLocs = [Var - ArgLoc | OutputArgLocs1]
-    ;
+    else
         OutputArgLocs = OutputArgLocs1
     ).
 
 %---------------------------------------------------------------------------%
 
-generate_builtin(CodeModel, PredId, ProcId, Args, Code, !CI) :-
+generate_builtin(CodeModel, PredId, ProcId, Args, Code, !CI, !CLD) :-
     get_module_info(!.CI, ModuleInfo),
     ModuleName = predicate_module(ModuleInfo, PredId),
     PredName = predicate_name(ModuleInfo, PredId),
-    (
-        builtin_ops.translate_builtin(ModuleName, PredName,
-            ProcId, Args, SimpleCode0)
-    ->
-        SimpleCode = SimpleCode0
-    ;
-        length(Args, Arity),
-        format("unknown builtin predicate: %s/%d",
-            [s(PredName), i(Arity)], Msg),
-        unexpected($module, $pred, Msg)
-    ),
+    builtin_ops.translate_builtin(ModuleName, PredName, ProcId, Args,
+        SimpleCode),
     (
         CodeModel = model_det,
         (
             SimpleCode = assign(Var, AssignExpr),
-            generate_assign_builtin(Var, AssignExpr, Code, !CI)
+            generate_assign_builtin(Var, AssignExpr, Code, !CLD)
         ;
             SimpleCode = ref_assign(AddrVar, ValueVar),
-            produce_variable(AddrVar, AddrVarCode, AddrRval, !CI),
-            produce_variable(ValueVar, ValueVarCode, ValueRval, !CI),
+            produce_variable(AddrVar, AddrVarCode, AddrRval, !.CI, !CLD),
+            produce_variable(ValueVar, ValueVarCode, ValueRval, !.CI, !CLD),
             StoreInstr = llds_instr(assign(mem_ref(AddrRval), ValueRval), ""),
             StoreCode = singleton(StoreInstr),
             Code = AddrVarCode ++ ValueVarCode ++ StoreCode
@@ -700,15 +703,15 @@ generate_builtin(CodeModel, PredId, ProcId, Args, Code, !CI) :-
             unexpected($module, $pred, "malformed model_det builtin predicate")
         ;
             SimpleCode = noop(DefinedVars),
-            list.foldl(magically_put_var_in_unused_reg, DefinedVars, !CI),
+            list.foldl(magically_put_var_in_unused_reg, DefinedVars, !CLD),
             Code = empty
         )
     ;
         CodeModel = model_semi,
         (
             SimpleCode = test(TestExpr),
-            generate_simple_test(TestExpr, Rval, ArgCode, !CI),
-            fail_if_rval_is_false(Rval, TestCode, !CI),
+            generate_simple_test(TestExpr, Rval, ArgCode, !.CI, !CLD),
+            fail_if_rval_is_false(Rval, TestCode, !CI, !CLD),
             Code = ArgCode ++ TestCode
         ;
             SimpleCode = assign(_, _),
@@ -729,13 +732,13 @@ generate_builtin(CodeModel, PredId, ProcId, Args, Code, !CI) :-
     ).
 
 :- pred generate_assign_builtin(prog_var::in, simple_expr(prog_var)::in,
-    llds_code::out, code_info::in, code_info::out) is det.
+    llds_code::out, code_loc_dep::in, code_loc_dep::out) is det.
 
-generate_assign_builtin(Var, AssignExpr, Code, !CI) :-
-    ( variable_is_forward_live(!.CI, Var) ->
+generate_assign_builtin(Var, AssignExpr, Code, !CLD) :-
+    ( if variable_is_forward_live(!.CLD, Var) then
         Rval = convert_simple_expr(AssignExpr),
-        assign_expr_to_var(Var, Rval, Code, !CI)
-    ;
+        assign_expr_to_var(Var, Rval, Code, !CLD)
+    else
         Code = empty
     ).
 
@@ -743,6 +746,7 @@ generate_assign_builtin(Var, AssignExpr, Code, !CI) :-
 
 convert_simple_expr(leaf(Var)) = var(Var).
 convert_simple_expr(int_const(Int)) = const(llconst_int(Int)).
+convert_simple_expr(uint_const(UInt)) = const(llconst_uint(UInt)).
 convert_simple_expr(float_const(Float)) = const(llconst_float(Float)).
 convert_simple_expr(unary(UnOp, Expr)) =
     unop(UnOp, convert_simple_expr(Expr)).
@@ -750,31 +754,32 @@ convert_simple_expr(binary(BinOp, Expr1, Expr2)) =
     binop(BinOp, convert_simple_expr(Expr1), convert_simple_expr(Expr2)).
 
 :- pred generate_simple_test(simple_expr(prog_var)::in(simple_test_expr),
-    rval::out, llds_code::out, code_info::in, code_info::out) is det.
+    rval::out, llds_code::out,
+    code_info::in, code_loc_dep::in, code_loc_dep::out) is det.
 
-generate_simple_test(TestExpr, Rval, ArgCode, !CI) :-
+generate_simple_test(TestExpr, Rval, ArgCode, CI, !CLD) :-
     (
         TestExpr = binary(BinOp, X0, Y0),
         X1 = convert_simple_expr(X0),
         Y1 = convert_simple_expr(Y0),
-        generate_builtin_arg(X1, X, CodeX, !CI),
-        generate_builtin_arg(Y1, Y, CodeY, !CI),
+        generate_builtin_arg(X1, X, CodeX, CI, !CLD),
+        generate_builtin_arg(Y1, Y, CodeY, CI, !CLD),
         Rval = binop(BinOp, X, Y),
         ArgCode = CodeX ++ CodeY
     ;
         TestExpr = unary(UnOp, X0),
         X1 = convert_simple_expr(X0),
-        generate_builtin_arg(X1, X, ArgCode, !CI),
+        generate_builtin_arg(X1, X, ArgCode, CI, !CLD),
         Rval = unop(UnOp, X)
     ).
 
 :- pred generate_builtin_arg(rval::in, rval::out, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_loc_dep::in, code_loc_dep::out) is det.
 
-generate_builtin_arg(Rval0, Rval, Code, !CI) :-
+generate_builtin_arg(Rval0, Rval, Code, CI, !CLD) :-
     (
         Rval0 = var(Var),
-        produce_variable(Var, Code, Rval, !CI)
+        produce_variable(Var, Code, Rval, CI, !CLD)
     ;
         ( Rval0 = const(_)
         ; Rval0 = unop(_, _)
@@ -819,27 +824,17 @@ output_arg_locs([Var - arg_info(Loc, Mode) | Args], Vs) :-
 
 %---------------------------------------------------------------------------%
 
-:- pred generate_call_vn_livevals(list(arg_loc)::in, set_of_progvar::in,
-    llds_code::out, code_info::in, code_info::out) is det.
-
-generate_call_vn_livevals(InputArgLocs, OutputArgs, Code, !CI) :-
-    generate_call_vn_livevals(!.CI, InputArgLocs, OutputArgs, LiveVals),
-    Code = singleton(
-        llds_instr(livevals(LiveVals), "")
-    ).
-
-%---------------------------------------------------------------------------%
-
 :- pred give_vars_consecutive_arg_infos(list(prog_var)::in,
-    reg_type::in, int::in, arg_mode::in, assoc_list(prog_var, arg_info)::out)
-    is det.
+    reg_type::in, int::in, top_functor_mode::in,
+    assoc_list(prog_var, arg_info)::out) is det.
 
-give_vars_consecutive_arg_infos([], _RegType, _N, _M, []).
-give_vars_consecutive_arg_infos([Var | Vars], RegType, N, ArgMode,
+give_vars_consecutive_arg_infos([], _RegType, _N, _TopFunctorMode, []).
+give_vars_consecutive_arg_infos([Var | Vars], RegType, N, TopFunctorMode,
         [Var - ArgInfo | ArgInfos]) :-
-    ArgInfo = arg_info(reg(RegType, N), ArgMode),
-    give_vars_consecutive_arg_infos(Vars, RegType, N + 1, ArgMode, ArgInfos).
+    ArgInfo = arg_info(reg(RegType, N), TopFunctorMode),
+    give_vars_consecutive_arg_infos(Vars, RegType, N + 1, TopFunctorMode,
+        ArgInfos).
 
 %---------------------------------------------------------------------------%
-:- end_module call_gen.
+:- end_module ll_backend.call_gen.
 %---------------------------------------------------------------------------%

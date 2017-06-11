@@ -421,7 +421,8 @@ add_ordering_constraint(Constraint, !OCI) :-
         constraint_transitive_closure(!.OCI, Constraint, NewConstraints),
 
         % No cycles. (lt(X, X) is a contradiction)
-        set.empty(set.filter(pred(lt(X, X)::in) is semidet, NewConstraints)),
+        set.is_empty(
+            set.filter(pred(lt(X, X)::in) is semidet, NewConstraints)),
 
         !OCI ^ oci_constraints :=
             set.union(NewConstraints, !.OCI ^ oci_constraints)
@@ -611,6 +612,7 @@ minimum_reordering(OCI, Order) :-
     %
 :- pred original_order_constraints(int::in,
     mode_ordering_constraints::out) is det.
+:- pragma consider_used(original_order_constraints/2).
 
 original_order_constraints(N, MOCs) :-
     complete_order_constraints(1 `..` N, MOCs).
@@ -645,6 +647,7 @@ add_complete_order_constraints([Conjunct | Conjuncts], !MOCs) :-
     %
 :- pred constrain_if_possible(mode_ordering_constraints::in,
     ordering_constraints_info::in, ordering_constraints_info::out) is det.
+:- pragma consider_used(constrain_if_possible/3).
 
 constrain_if_possible([], !OCI).
 constrain_if_possible([Constraint | Constraints], !OCI) :-
@@ -681,7 +684,7 @@ topological_sort_min_reordering(Constraints0, Conjuncts0, Ordering) :-
     ;
         % No cantidates for First, so we are only done if there were
         % no nodes (conjuncts) left to begin with.
-        set.empty(Conjuncts0),
+        set.is_empty(Conjuncts0),
         Ordering = []
     ).
 
@@ -703,7 +706,7 @@ dump_goal_paths(ModuleInfo, PredIds0, !IO) :-
 
 dump_pred_goal_paths(ModuleInfo, PredId, !IO) :-
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    pred_info_get_procedures(PredInfo, ProcTable),
+    pred_info_get_proc_table(PredInfo, ProcTable),
     ProcIds = map.keys(ProcTable),
 
     % Start with a blank line.
@@ -720,7 +723,7 @@ dump_pred_goal_paths(ModuleInfo, PredId, !IO) :-
         ProcIds = [],
         pred_info_get_clauses_info(PredInfo, ClausesInfo),
         clauses_info_get_clauses_rep(ClausesInfo, ClausesRep, _ItemNumbers),
-        get_clause_list(ClausesRep, Clauses),
+        get_clause_list_maybe_repeated(ClausesRep, Clauses),
         Goals = list.map(func(Clause) = clause_body(Clause), Clauses),
         Indent = 0,
         list.foldl(dump_goal_goal_paths(Globals, Indent), Goals, !IO)
@@ -811,5 +814,5 @@ dump_goal_goal_paths(Globals, Indent, Goal, !IO) :-
     ).
 
 %-----------------------------------------------------------------------------%
-:- end_module ordering_mode_constraints.
+:- end_module check_hlds.ordering_mode_constraints.
 %-----------------------------------------------------------------------------%

@@ -21,14 +21,17 @@
 :- import_module hlds.
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_module.
+:- import_module hlds.vartypes.
 :- import_module mdbcomp.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module parse_tree.prog_type.
+:- import_module parse_tree.set_of_var.
 
 :- import_module list.
 :- import_module maybe.
+:- import_module set.
 
 %-----------------------------------------------------------------------------%
 
@@ -109,12 +112,6 @@
 
 :- pred type_body_has_solver_type_details(module_info::in,
     hlds_type_body::in, solver_type_details::out) is semidet.
-
-    % Succeeds if this type is a solver type that has an initialisation
-    % predicate specified by the user in the solver type definition.
-    %
-:- pred type_is_solver_type_with_auto_init(module_info::in, mer_type::in)
-    is semidet.
 
 :- pred type_is_solver_type(module_info::in, mer_type::in) is semidet.
 :- pred type_is_solver_type_from_type_table(type_table::in, mer_type::in)
@@ -286,6 +283,10 @@
     %
 :- pred type_not_stored_in_region(mer_type::in, module_info::in) is semidet.
 
+    % Succeed iff the given variable is of region_type.
+    %
+:- pred is_region_var(vartypes::in, prog_var::in) is semidet.
+
 %-----------------------------------------------------------------------------%
 
     % If possible, get the argument types for the cons_id. We need to pass in
@@ -298,6 +299,23 @@
 
 :- pred maybe_get_higher_order_arg_types(maybe(mer_type)::in, arity::in,
     list(maybe(mer_type))::out) is det.
+
+    % Given a list of variables, return the permutation
+    % of that list which has all the type_info-related variables
+    % preceding the non-type_info-related variables (with the relative
+    % order of variables within each group being the same as in the
+    % original list).
+    %
+:- func put_typeinfo_vars_first(list(prog_var), vartypes) = list(prog_var).
+
+    % Given a list of variables, remove all the type_info-related
+    % variables.
+    %
+:- func remove_typeinfo_vars(vartypes, list(prog_var)) = list(prog_var).
+:- func remove_typeinfo_vars_from_set(vartypes, set(prog_var))
+    = set(prog_var).
+:- func remove_typeinfo_vars_from_set_of_var(vartypes, set_of_progvar)
+    = set_of_progvar.
 
 %-----------------------------------------------------------------------------%
 %
@@ -337,13 +355,13 @@
 
 %-------------%
 
-:- pred apply_variable_renaming_to_constraint_proofs(tvar_renaming::in,
+:- pred apply_variable_renaming_to_constraint_proof_map(tvar_renaming::in,
     constraint_proof_map::in, constraint_proof_map::out) is det.
 
-:- pred apply_subst_to_constraint_proofs(tsubst::in,
+:- pred apply_subst_to_constraint_proof_map(tsubst::in,
     constraint_proof_map::in, constraint_proof_map::out) is det.
 
-:- pred apply_rec_subst_to_constraint_proofs(tsubst::in,
+:- pred apply_rec_subst_to_constraint_proof_map(tsubst::in,
     constraint_proof_map::in, constraint_proof_map::out) is det.
 
 %-------------%
@@ -364,20 +382,19 @@
 
 :- import_module backend_libs.
 :- import_module backend_libs.foreign.
+:- import_module backend_libs.string_encoding.
 :- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
+:- import_module mdbcomp.builtin_modules.
 :- import_module parse_tree.builtin_lib_types.
-:- import_module parse_tree.prog_util.
-:- import_module parse_tree.prog_type.
 :- import_module parse_tree.prog_type_subst.
+:- import_module parse_tree.prog_util.
 
 :- import_module bool.
-:- import_module char.
 :- import_module int.
 :- import_module map.
 :- import_module require.
-:- import_module set.
 :- import_module term.
 
 %-----------------------------------------------------------------------------%
@@ -451,15 +468,16 @@ type_has_user_defined_equality_pred(ModuleInfo, Type, UserEqComp) :-
 type_body_has_user_defined_equality_pred(ModuleInfo, TypeBody, UserEqComp) :-
     module_info_get_globals(ModuleInfo, Globals),
     globals.get_target(Globals, Target),
+    require_complete_switch [TypeBody]
     (
         TypeBody = hlds_du_type(_, _, _, _, _, _, _, _, _),
-        (
+        ( if
             TypeBody ^ du_type_is_foreign_type = yes(ForeignTypeBody),
             have_foreign_type_for_backend(Target, ForeignTypeBody, yes)
-        ->
+        then
             foreign_type_body_has_user_defined_eq_comp_pred(
                 ModuleInfo, ForeignTypeBody, UserEqComp)
-        ;
+        else
             TypeBody ^ du_type_usereq = yes(UserEqComp)
         )
     ;
@@ -468,6 +486,11 @@ type_body_has_user_defined_equality_pred(ModuleInfo, TypeBody, UserEqComp) :-
             ForeignTypeBody, UserEqComp)
     ;
         TypeBody = hlds_solver_type(_SolverTypeDetails, yes(UserEqComp))
+    ;
+        ( TypeBody = hlds_abstract_type(_)
+        ; TypeBody = hlds_eqv_type(_)
+        ),
+        fail
     ).
 
 type_definitely_has_no_user_defined_equality_pred(ModuleInfo, Type) :-
@@ -478,11 +501,12 @@ type_definitely_has_no_user_defined_equality_pred(ModuleInfo, Type) :-
     mer_type::in, set(mer_type)::in, set(mer_type)::out) is semidet.
 
 type_definitely_has_no_user_defined_eq_pred_2(ModuleInfo, Type, !SeenTypes) :-
-    (if set.contains(!.SeenTypes, Type) then
+    ( if set.contains(!.SeenTypes, Type) then
         % Don't loop on recursive types.
         true
     else
         set.insert(Type, !SeenTypes),
+        require_complete_switch [Type]
         (
             Type = builtin_type(_)
         ;
@@ -491,7 +515,7 @@ type_definitely_has_no_user_defined_eq_pred_2(ModuleInfo, Type, !SeenTypes) :-
                 Args, !SeenTypes)
         ;
             ( Type = defined_type(_, _, _)
-            ; Type = higher_order_type(_, _, _, _)
+            ; Type = higher_order_type(_, _, _, _, _)
             ; Type = apply_n_type(_, _, _)
             ; Type = kinded_type(_, _)
             ),
@@ -501,6 +525,9 @@ type_definitely_has_no_user_defined_eq_pred_2(ModuleInfo, Type, !SeenTypes) :-
             type_to_ctor_and_args_det(Type, _, Args),
             types_definitely_have_no_user_defined_eq_pred(ModuleInfo,
                 Args, !SeenTypes)
+        ;
+            Type = type_variable(_, _),
+            fail
         )
     ).
 
@@ -521,13 +548,13 @@ type_body_definitely_has_no_user_defined_equality_pred(ModuleInfo, Type,
     globals.get_target(Globals, Target),
     (
         TypeBody = hlds_du_type(_, _, _, _, _, _, _, _, _),
-        (
+        ( if
             TypeBody ^ du_type_is_foreign_type = yes(ForeignTypeBody),
             have_foreign_type_for_backend(Target, ForeignTypeBody, yes)
-        ->
+        then
             not foreign_type_body_has_user_defined_eq_comp_pred(ModuleInfo,
                 ForeignTypeBody, _)
-        ;
+        else
             TypeBody ^ du_type_usereq = no,
             % type_constructors does substitution of types variables.
             type_constructors(ModuleInfo, Type, Ctors),
@@ -553,7 +580,7 @@ type_body_definitely_has_no_user_defined_equality_pred(ModuleInfo, Type,
 
 ctor_definitely_has_no_user_defined_eq_pred(ModuleInfo, Ctor, !SeenTypes) :-
     % There must not be any existentially quantified type variables.
-    Ctor = ctor([], _, _, Args, _),
+    Ctor = ctor([], _, _, Args, _, _),
     % The data constructor argument types must not have user-defined equality
     % or comparison predicates.
     ArgTypes = list.map((func(A) = A ^ arg_type), Args),
@@ -563,28 +590,6 @@ ctor_definitely_has_no_user_defined_eq_pred(ModuleInfo, Ctor, !SeenTypes) :-
 var_is_or_may_contain_solver_type(ModuleInfo, VarTypes, Var) :-
     lookup_var_type(VarTypes, Var, VarType),
     type_is_or_may_contain_solver_type(ModuleInfo, VarType).
-
-type_is_solver_type_with_auto_init(ModuleInfo, Type) :-
-    type_to_type_defn_body(ModuleInfo, Type, TypeBody),
-    (
-        TypeBody = hlds_solver_type(_, _),
-        ActualType = Type
-    ;
-        % XXX the current implementation doesn't provide enough information
-        % to determine whether abstract solver types support automatic
-        % initialisation or not. In the absence of such information we assume
-        % that they do not. Since we don't officially support automatic
-        % initialisation anyway this shouldn't be too much of a problem.
-        % (In the event that we do re-add some form of support for automatic
-        % solver initialisation then we will need to make sure that this
-        % information ends up in interface files somehow.)
-        TypeBody = hlds_abstract_type(abstract_solver_type),
-        fail
-    ;
-        TypeBody = hlds_eqv_type(ActualType)
-    ),
-    type_has_solver_type_details(ModuleInfo, ActualType, SolverTypeDetails),
-    SolverTypeDetails ^ std_init_pred = solver_init_automatic(_).
 
 type_is_or_may_contain_solver_type(ModuleInfo, Type) :-
     (
@@ -607,11 +612,18 @@ type_has_solver_type_details(ModuleInfo, Type, SolverTypeDetails) :-
         SolverTypeDetails).
 
 type_body_has_solver_type_details(ModuleInfo, Type, SolverTypeDetails) :-
+    require_complete_switch [Type]
     (
         Type = hlds_solver_type(SolverTypeDetails, _MaybeUserEqComp)
     ;
         Type = hlds_eqv_type(EqvType),
         type_has_solver_type_details(ModuleInfo, EqvType, SolverTypeDetails)
+    ;
+        ( Type = hlds_du_type(_, _, _, _, _, _, _, _, _)
+        ; Type = hlds_foreign_type(_)
+        ; Type = hlds_abstract_type(_)
+        ),
+        fail
     ).
 
 type_is_solver_type(ModuleInfo, Type) :-
@@ -634,24 +646,68 @@ type_is_solver_type_from_type_table(TypeTable, Type) :-
     type_body_is_solver_type_from_type_table(TypeTable, TypeBody).
 
 type_body_is_solver_type(ModuleInfo, TypeBody) :-
+    require_complete_switch [TypeBody]
     (
-        TypeBody = hlds_solver_type(_, _)
+        TypeBody = hlds_solver_type(_, _),
+        IsSolverType = yes
     ;
-        TypeBody = hlds_abstract_type(abstract_solver_type)
+        TypeBody = hlds_abstract_type(AbstractType),
+        require_complete_switch [AbstractType]
+        (
+            AbstractType = abstract_solver_type,
+            IsSolverType = yes
+        ;
+            ( AbstractType = abstract_enum_type(_)
+            ; AbstractType = abstract_type_general
+            ),
+            IsSolverType = no
+        )
     ;
         TypeBody = hlds_eqv_type(Type),
-        type_is_solver_type(ModuleInfo, Type)
-    ).
+        ( if type_is_solver_type(ModuleInfo, Type) then
+            IsSolverType = yes
+        else
+            IsSolverType = no
+        )
+    ;
+        ( TypeBody = hlds_du_type(_, _, _,_, _, _, _, _, _)
+        ; TypeBody = hlds_foreign_type(_)
+        ),
+        IsSolverType = no
+    ),
+    IsSolverType = yes.
 
 type_body_is_solver_type_from_type_table(TypeTable, TypeBody) :-
+    require_complete_switch [TypeBody]
     (
-        TypeBody = hlds_solver_type(_, _)
+        TypeBody = hlds_solver_type(_, _),
+        IsSolverType = yes
     ;
-        TypeBody = hlds_abstract_type(abstract_solver_type)
+        TypeBody = hlds_abstract_type(AbstractType),
+        require_complete_switch [AbstractType]
+        (
+            AbstractType = abstract_solver_type,
+            IsSolverType = yes
+        ;
+            ( AbstractType = abstract_enum_type(_)
+            ; AbstractType = abstract_type_general
+            ),
+            IsSolverType = no
+        )
     ;
         TypeBody = hlds_eqv_type(Type),
-        type_is_solver_type_from_type_table(TypeTable, Type)
-    ).
+        ( if type_is_solver_type_from_type_table(TypeTable, Type) then
+            IsSolverType = yes
+        else
+            IsSolverType = no
+        )
+    ;
+        ( TypeBody = hlds_du_type(_, _, _,_, _, _, _, _, _)
+        ; TypeBody = hlds_foreign_type(_)
+        ),
+        IsSolverType = no
+    ),
+    IsSolverType = yes.
 
 type_is_existq_type(ModuleInfo, Type) :-
     type_constructors(ModuleInfo, Type, Constructors),
@@ -669,10 +725,10 @@ check_dummy_type(ModuleInfo, Type) =
 check_dummy_type_2(ModuleInfo, Type, CoveredTypes) = IsDummy :-
     % Since the sizes of types in any given program is bounded, this test
     % will ensure termination.
-    ( list.member(Type, CoveredTypes) ->
+    ( if list.member(Type, CoveredTypes) then
         % The type is circular.
         IsDummy = is_not_dummy_type
-    ; type_to_ctor_and_args(Type, TypeCtor, ArgTypes) ->
+    else if type_to_ctor_and_args(Type, TypeCtor, ArgTypes) then
         % Keep this in sync with is_dummy_argument_type_with_constructors
         % above.
         IsBuiltinDummy = check_builtin_dummy_type_ctor(TypeCtor),
@@ -684,7 +740,7 @@ check_dummy_type_2(ModuleInfo, Type, CoveredTypes) = IsDummy :-
             module_info_get_type_table(ModuleInfo, TypeTable),
             % This can fail for some builtin type constructors such as func,
             % pred, and tuple, none of which are dummy types.
-            ( search_type_ctor_defn(TypeTable, TypeCtor, TypeDefn)->
+            ( if search_type_ctor_defn(TypeTable, TypeCtor, TypeDefn) then
                 get_type_defn_body(TypeDefn, TypeBody),
                 (
                     TypeBody = hlds_du_type(_, _, _, DuTypeKind,
@@ -717,11 +773,11 @@ check_dummy_type_2(ModuleInfo, Type, CoveredTypes) = IsDummy :-
                     ),
                     IsDummy = is_not_dummy_type
                 )
-            ;
+            else
                 IsDummy = is_not_dummy_type
             )
         )
-    ;
+    else
         IsDummy = is_not_dummy_type
     ).
 
@@ -732,17 +788,35 @@ type_ctor_has_hand_defined_rtti(Type, Body) :-
     ; Name = "typeclass_info"
     ; Name = "base_typeclass_info"
     ),
-    \+ ( Body = hlds_du_type(_, _, _, _, _, _, _, _, yes(_))
-       ; Body = hlds_foreign_type(_)
-       ; Body = hlds_solver_type(_, _)
-       ).
+    require_complete_switch [Body]
+    (
+        Body = hlds_du_type(_, _, _, _, _, _, _, _, IsForeignType),
+        (
+            IsForeignType = yes(_),
+            HasHandDefinedRtti = no
+        ;
+            IsForeignType = no,
+            HasHandDefinedRtti = yes
+        )
+    ;
+        ( Body = hlds_foreign_type(_)
+        ; Body = hlds_solver_type(_, _)
+        ),
+        HasHandDefinedRtti = no
+    ;
+        ( Body = hlds_abstract_type(_)
+        ; Body = hlds_eqv_type(_)
+        ),
+        HasHandDefinedRtti = yes
+    ),
+    HasHandDefinedRtti = yes.
 
 %-----------------------------------------------------------------------------%
 
 classify_type(ModuleInfo, VarType) = TypeCategory :-
-    ( type_to_ctor(VarType, TypeCtor) ->
+    ( if type_to_ctor(VarType, TypeCtor) then
         TypeCategory = classify_type_ctor(ModuleInfo, TypeCtor)
-    ;
+    else
         TypeCategory = ctor_cat_variable
     ).
 
@@ -751,12 +825,15 @@ classify_type_ctor(ModuleInfo, TypeCtor) = TypeCategory :-
     % classify_type_ctor_and_defn.
 
     TypeCtor = type_ctor(TypeSymName, Arity),
-    (
+    ( if
         TypeSymName = unqualified(TypeName),
         Arity = 0,
         (
             TypeName = "character",
             TypeCategoryPrime = ctor_cat_builtin(cat_builtin_char)
+        ;
+            TypeName = "uint",
+            TypeCategoryPrime = ctor_cat_builtin(cat_builtin_uint)
         ;
             TypeName = "int",
             TypeCategoryPrime = ctor_cat_builtin(cat_builtin_int)
@@ -770,9 +847,9 @@ classify_type_ctor(ModuleInfo, TypeCtor) = TypeCategory :-
             TypeName = "void",
             TypeCategoryPrime = ctor_cat_void
         )
-    ->
+    then
         TypeCategory = TypeCategoryPrime
-    ;
+    else if
         TypeSymName = qualified(ModuleSymName, TypeName),
         ModuleSymName = mercury_public_builtin_module,
         Arity = 0,
@@ -789,9 +866,9 @@ classify_type_ctor(ModuleInfo, TypeCtor) = TypeCategory :-
             TypeName = "void",
             TypeCategoryPrime = ctor_cat_void
         )
-    ->
+    then
         TypeCategory = TypeCategoryPrime
-    ;
+    else if
         TypeSymName = qualified(ModuleSymName, TypeName),
         ModuleSymName = mercury_private_builtin_module,
         Arity = 0,
@@ -808,21 +885,21 @@ classify_type_ctor(ModuleInfo, TypeCtor) = TypeCategory :-
             TypeName = "base_typeclass_info",
             TypeCategoryPrime = ctor_cat_system(cat_system_base_typeclass_info)
         )
-    ->
+    then
         TypeCategory = TypeCategoryPrime
-    ;
+    else if
         check_builtin_dummy_type_ctor(TypeCtor) = is_builtin_dummy_type_ctor
-    ->
+    then
         TypeCategory = ctor_cat_builtin_dummy
-    ;
+    else if
         type_ctor_is_higher_order(TypeCtor, _, _, _)
-    ->
+    then
         TypeCategory = ctor_cat_higher_order
-    ;
+    else if
         type_ctor_is_tuple(TypeCtor)
-    ->
+    then
         TypeCategory = ctor_cat_tuple
-    ;
+    else
         module_info_get_type_table(ModuleInfo, TypeTable),
         lookup_type_ctor_defn(TypeTable, TypeCtor, TypeDefn),
         hlds_data.get_type_defn_body(TypeDefn, TypeBody),
@@ -880,6 +957,7 @@ type_may_use_atomic_alloc(ModuleInfo, Type) = TypeMayUseAtomic :-
     TypeCategory = classify_type(ModuleInfo, Type),
     (
         ( TypeCategory = ctor_cat_builtin(cat_builtin_int)
+        ; TypeCategory = ctor_cat_builtin(cat_builtin_uint)
         ; TypeCategory = ctor_cat_builtin(cat_builtin_char)
         ; TypeCategory = ctor_cat_enum(_)
         ; TypeCategory = ctor_cat_builtin_dummy
@@ -915,7 +993,7 @@ type_may_use_atomic_alloc(ModuleInfo, Type) = TypeMayUseAtomic :-
 
 type_constructors(ModuleInfo, Type, Constructors) :-
     type_to_ctor_and_args(Type, TypeCtor, TypeArgs),
-    ( type_ctor_is_tuple(TypeCtor) ->
+    ( if type_ctor_is_tuple(TypeCtor) then
         % Tuples are never existentially typed.
         ExistQVars = [],
         ClassConstraints = [],
@@ -924,8 +1002,8 @@ type_constructors(ModuleInfo, Type, Constructors) :-
             (func(ArgType) = ctor_arg(no, ArgType, full_word, Context)),
             TypeArgs),
         Constructors = [ctor(ExistQVars, ClassConstraints, unqualified("{}"),
-            CtorArgs, Context)]
-    ;
+            CtorArgs, list.length(CtorArgs), Context)]
+    else
         module_info_get_type_table(ModuleInfo, TypeTable),
         search_type_ctor_defn(TypeTable, TypeCtor, TypeDefn),
         hlds_data.get_type_defn_tparams(TypeDefn, TypeParams),
@@ -955,15 +1033,15 @@ substitute_type_args(TypeParams, TypeArgs, Constructors0, Constructors) :-
 
 substitute_type_args_2(_, [], []).
 substitute_type_args_2(Subst, [Ctor0 | Ctors0], [Ctor | Ctors]) :-
-    % Note: prog_io.m ensures that the existentially quantified variables,
+    % Note: the parser ensures that the existentially quantified variables,
     % if any, are distinct from the parameters, and that the (existential)
     % constraints can only contain existentially quantified variables,
     % so there's no need to worry about applying the substitution to ExistQVars
     % or Constraints.
-    Ctor0 = ctor(ExistQVars, Constraints, Name, Args0, Ctxt),
+    Ctor0 = ctor(ExistQVars, Constraints, Name, Args0, Arity, Ctxt),
     substitute_type_args_3(Subst, Args0, Args),
     substitute_type_args_2(Subst, Ctors0, Ctors),
-    Ctor = ctor(ExistQVars, Constraints, Name, Args, Ctxt).
+    Ctor = ctor(ExistQVars, Constraints, Name, Args, Arity, Ctxt).
 
 :- pred substitute_type_args_3(tsubst::in, list(constructor_arg)::in,
     list(constructor_arg)::out) is det.
@@ -978,16 +1056,14 @@ substitute_type_args_3(Subst, [Arg0 | Args0], [Arg | Args]) :-
 
 switch_type_num_functors(ModuleInfo, Type, NumFunctors) :-
     type_to_ctor(Type, TypeCtor),
-    ( TypeCtor = type_ctor(unqualified("character"), 0) ->
-        % XXX The following code uses the source machine's character size,
-        % not the target's, so it won't work if cross-compiling to a machine
-        % with a different size character.
-        char.max_char_value(MaxChar),
-        char.min_char_value(MinChar),
+    ( if TypeCtor = type_ctor(unqualified("character"), 0) then
+        module_info_get_globals(ModuleInfo, Globals),
+        globals.get_target(Globals, Target),
+        target_char_range(Target, MinChar, MaxChar),
         NumFunctors = MaxChar - MinChar + 1
-    ; type_ctor_is_tuple(TypeCtor) ->
+    else if type_ctor_is_tuple(TypeCtor) then
         NumFunctors = 1
-    ;
+    else
         module_info_get_type_table(ModuleInfo, TypeTable),
         search_type_ctor_defn(TypeTable, TypeCtor, TypeDefn),
         hlds_data.get_type_defn_body(TypeDefn, TypeBody),
@@ -1016,19 +1092,19 @@ get_cons_id_non_existential_arg_types(ModuleInfo, Type, ConsId, ArgTypes) :-
     in, out) is det.
 
 get_cons_id_arg_types_2(EQVarAction, ModuleInfo, VarType, ConsId, ArgTypes) :-
-    ( type_to_ctor_and_args(VarType, TypeCtor, TypeArgs) ->
-        (
+    ( if type_to_ctor_and_args(VarType, TypeCtor, TypeArgs) then
+        ( if
             % The argument types of a tuple cons_id are the arguments
             % of the tuple type.
             type_ctor_is_tuple(TypeCtor)
-        ->
+        then
             ArgTypes = TypeArgs
-        ;
+        else if
             get_cons_defn(ModuleInfo, TypeCtor, ConsId, ConsDefn),
             ConsDefn = hlds_cons_defn(_, _, TypeParams, _, ExistQVars0, _,
                 Args, _),
             Args = [_ | _]
-        ->
+        then
             % XXX handle ExistQVars
             (
                 ExistQVars0 = []
@@ -1046,10 +1122,10 @@ get_cons_id_arg_types_2(EQVarAction, ModuleInfo, VarType, ConsId, ArgTypes) :-
             map.from_corresponding_lists(TypeParams, TypeArgs, TSubst),
             ArgTypes0 = list.map(func(C) = C ^ arg_type, Args),
             apply_subst_to_type_list(TSubst, ArgTypes0, ArgTypes)
-        ;
+        else
             ArgTypes = []
         )
-    ;
+    else
         ArgTypes = []
     ).
 
@@ -1091,9 +1167,9 @@ get_cons_defn(ModuleInfo, TypeCtor, ConsId, ConsDefn) :-
     search_cons_table_of_type_ctor(Ctors, TypeCtor, ConsId, ConsDefn).
 
 get_cons_defn_det(ModuleInfo, TypeCtor, ConsId, ConsDefn) :-
-    ( get_cons_defn(ModuleInfo, TypeCtor, ConsId, ConsDefnPrime) ->
+    ( if get_cons_defn(ModuleInfo, TypeCtor, ConsId, ConsDefnPrime) then
         ConsDefn = ConsDefnPrime
-    ;
+    else
         unexpected($module, $pred, "get_cons_defn failed")
     ).
 
@@ -1144,7 +1220,7 @@ cons_id_adjusted_arity(ModuleInfo, Type, ConsId) = AdjustedArity :-
     % Figure out the arity of this constructor, _including_ any type-infos
     % or typeclass-infos inserted for existential data types.
     ConsArity = cons_id_arity(ConsId),
-    ( get_existq_cons_defn(ModuleInfo, Type, ConsId, ConsDefn) ->
+    ( if get_existq_cons_defn(ModuleInfo, Type, ConsId, ConsDefn) then
         ConsDefn = ctor_defn(_TVarSet, ExistQTVars, _KindMap,
             Constraints, _ArgTypes, _ResultType),
         list.length(Constraints, NumTypeClassInfos),
@@ -1153,7 +1229,7 @@ cons_id_adjusted_arity(ModuleInfo, Type, ConsId) = AdjustedArity :-
             UnconstrainedExistQTVars),
         list.length(UnconstrainedExistQTVars, NumTypeInfos),
         AdjustedArity = ConsArity + NumTypeClassInfos + NumTypeInfos
-    ;
+    else
         AdjustedArity = ConsArity
     ).
 
@@ -1167,16 +1243,20 @@ type_not_stored_in_region(Type, ModuleInfo) :-
     ; type_is_var(Type)
     ).
 
+is_region_var(VarTypes, Var)  :-
+    lookup_var_type(VarTypes, Var, Type),
+    Type = region_type.
+
 %-----------------------------------------------------------------------------%
 
 maybe_get_cons_id_arg_types(ModuleInfo, MaybeType, ConsId, Arity,
         MaybeTypes) :-
-    (
+    ( if
         ( ConsId = cons(_SymName, _, _)
         ; ConsId = tuple_cons(_)
         )
-    ->
-        (
+    then
+        ( if
             MaybeType = yes(Type),
 
             % XXX get_cons_id_non_existential_arg_types will fail
@@ -1184,42 +1264,78 @@ maybe_get_cons_id_arg_types(ModuleInfo, MaybeType, ConsId, Arity,
             get_cons_id_non_existential_arg_types(ModuleInfo, Type,
                 ConsId, Types),
             list.length(Types, Arity)
-        ->
+        then
             MaybeTypes = list.map(func(T) = yes(T), Types)
-        ;
+        else
             list.duplicate(Arity, no, MaybeTypes)
         )
-    ;
+    else
         MaybeTypes = []
     ).
 
 maybe_get_higher_order_arg_types(MaybeType, Arity, MaybeTypes) :-
-    (
+    ( if
         MaybeType = yes(Type),
         type_is_higher_order_details(Type, _, _, _, ArgTypes)
-    ->
+    then
         MaybeTypes = list.map(func(T) = yes(T), ArgTypes)
-    ;
+    else
         list.duplicate(Arity, no, MaybeTypes)
     ).
 
 %-----------------------------------------------------------------------------%
 
+put_typeinfo_vars_first(VarsList, VarTypes) =
+        TypeInfoVarsList ++ NonTypeInfoVarsList :-
+    split_vars_typeinfo_no_typeinfo(VarsList, VarTypes,
+        TypeInfoVarsList, NonTypeInfoVarsList).
+
+remove_typeinfo_vars(VarTypes, VarsList) = NonTypeInfoVarsList :-
+    list.negated_filter(var_is_introduced_type_info_type(VarTypes),
+        VarsList, NonTypeInfoVarsList).
+
+remove_typeinfo_vars_from_set(VarTypes, VarsSet0) = VarsSet :-
+    VarsList0 = set.to_sorted_list(VarsSet0),
+    VarsList = remove_typeinfo_vars(VarTypes, VarsList0),
+    VarsSet = set.sorted_list_to_set(VarsList).
+
+remove_typeinfo_vars_from_set_of_var(VarTypes, VarsSet0) = VarsSet :-
+    % XXX could be done more efficiently, operating directly on the set_of_var
+    VarsList0 = set_of_var.to_sorted_list(VarsSet0),
+    VarsList = remove_typeinfo_vars(VarTypes, VarsList0),
+    VarsSet = set_of_var.sorted_list_to_set(VarsList).
+
+:- pred split_vars_typeinfo_no_typeinfo(list(prog_var)::in,
+    vartypes::in, list(prog_var)::out, list(prog_var)::out) is det.
+
+split_vars_typeinfo_no_typeinfo(VarsList, VarTypes, TypeInfoVarsList,
+        NonTypeInfoVarsList) :-
+    list.filter(var_is_introduced_type_info_type(VarTypes),
+        VarsList, TypeInfoVarsList, NonTypeInfoVarsList).
+
+:- pred var_is_introduced_type_info_type(vartypes::in, prog_var::in)
+    is semidet.
+
+var_is_introduced_type_info_type(VarTypes, Var) :-
+    lookup_var_type(VarTypes, Var, Type),
+    is_introduced_type_info_type(Type).
+
+%-----------------------------------------------------------------------------%
+
 apply_variable_renaming_to_constraint(Renaming, !Constraint) :-
-    !.Constraint = hlds_constraint(Ids, ClassName, ClassArgTypes0),
-    apply_variable_renaming_to_type_list(Renaming, ClassArgTypes0,
-        ClassArgTypes),
-    !:Constraint = hlds_constraint(Ids, ClassName, ClassArgTypes).
+    !.Constraint = hlds_constraint(Ids, ClassName, ArgTypes0),
+    apply_variable_renaming_to_type_list(Renaming, ArgTypes0, ArgTypes),
+    !:Constraint = hlds_constraint(Ids, ClassName, ArgTypes).
 
 apply_subst_to_constraint(Subst, !Constraint) :-
-    !.Constraint = hlds_constraint(Ids, ClassName, Types0),
-    apply_subst_to_type_list(Subst, Types0, Types),
-    !:Constraint = hlds_constraint(Ids, ClassName, Types).
+    !.Constraint = hlds_constraint(Ids, ClassName, ArgTypes0),
+    apply_subst_to_type_list(Subst, ArgTypes0, ArgTypes),
+    !:Constraint = hlds_constraint(Ids, ClassName, ArgTypes).
 
 apply_rec_subst_to_constraint(Subst, !Constraint) :-
-    !.Constraint = hlds_constraint(Ids, Name, Types0),
-    apply_rec_subst_to_type_list(Subst, Types0, Types),
-    !:Constraint = hlds_constraint(Ids, Name, Types).
+    !.Constraint = hlds_constraint(Ids, ClassName, ArgTypes0),
+    apply_rec_subst_to_type_list(Subst, ArgTypes0, ArgTypes),
+    !:Constraint = hlds_constraint(Ids, ClassName, ArgTypes).
 
 %-----------------------------------------------------------------------------%
 
@@ -1239,21 +1355,21 @@ apply_variable_renaming_to_constraints(Renaming, !Constraints) :-
         Redundant0, Ancestors0),
     % Most of the time, !.Constraints contains nothing. Even when some
     % of its fields are not empty, some others may be.
-    (
+    ( if
         Unproven0 = [],
         Assumed0 = [],
         map.is_empty(Redundant0),
         map.is_empty(Ancestors0)
-    ->
+    then
         true
-    ;
+    else
         apply_variable_renaming_to_constraint_list(Renaming,
             Unproven0, Unproven),
         apply_variable_renaming_to_constraint_list(Renaming,
             Assumed0, Assumed),
-        ( map.is_empty(Redundant0) ->
+        ( if map.is_empty(Redundant0) then
             Redundant = Redundant0
-        ;
+        else
             Pred = (pred(C0::in, C::out) is det :-
                 set.to_sorted_list(C0, L0),
                 apply_variable_renaming_to_constraint_list(Renaming, L0, L),
@@ -1261,9 +1377,9 @@ apply_variable_renaming_to_constraints(Renaming, !Constraints) :-
             ),
             map.map_values_only(Pred, Redundant0, Redundant)
         ),
-        ( map.is_empty(Ancestors0) ->
+        ( if map.is_empty(Ancestors0) then
             Ancestors = Ancestors0
-        ;
+        else
             map.keys(Ancestors0, AncestorsKeys0),
             map.values(Ancestors0, AncestorsValues0),
             apply_variable_renaming_to_prog_constraint_list(Renaming,
@@ -1318,38 +1434,44 @@ apply_rec_subst_to_constraints(Subst, !Constraints) :-
 
 %-----------------------------------------------------------------------------%
 
-apply_variable_renaming_to_constraint_proofs(Renaming, Proofs0, Proofs) :-
-    ( map.is_empty(Proofs0) ->
+apply_variable_renaming_to_constraint_proof_map(Renaming,
+        ProofMap0, ProofMap) :-
+    ( if map.is_empty(ProofMap0) then
         % Optimize the simple case.
-        Proofs = Proofs0
-    ;
-        map.keys(Proofs0, Keys0),
-        map.values(Proofs0, Values0),
+        ProofMap = ProofMap0
+    else
+        map.keys(ProofMap0, Keys0),
+        map.values(ProofMap0, Values0),
         apply_variable_renaming_to_prog_constraint_list(Renaming, Keys0, Keys),
         list.map(rename_constraint_proof(Renaming), Values0, Values),
-        map.from_corresponding_lists(Keys, Values, Proofs)
+        map.from_corresponding_lists(Keys, Values, ProofMap)
     ).
 
     % Apply a type variable renaming to a class constraint proof.
     %
-:- pred rename_constraint_proof(tvar_renaming::in, constraint_proof::in,
-    constraint_proof::out) is det.
+:- pred rename_constraint_proof(tvar_renaming::in,
+    constraint_proof::in, constraint_proof::out) is det.
 
-rename_constraint_proof(_TSubst, apply_instance(Num), apply_instance(Num)).
-rename_constraint_proof(TSubst, superclass(ClassConstraint0),
-        superclass(ClassConstraint)) :-
-    apply_variable_renaming_to_prog_constraint(TSubst, ClassConstraint0,
-        ClassConstraint).
+rename_constraint_proof(TSubst, Proof0, Proof) :-
+    (
+        Proof0 = apply_instance(_Num),
+        Proof = Proof0
+    ;
+        Proof0 = superclass(ClassConstraint0),
+        apply_variable_renaming_to_prog_constraint(TSubst,
+            ClassConstraint0, ClassConstraint),
+        Proof = superclass(ClassConstraint)
+    ).
 
-apply_subst_to_constraint_proofs(Subst, Proofs0, Proofs) :-
-    map.foldl(apply_subst_to_constraint_proofs_2(Subst), Proofs0,
-        map.init, Proofs).
+apply_subst_to_constraint_proof_map(Subst, ProofMap0, ProofMap) :-
+    map.foldl(apply_subst_to_constraint_proof_map_2(Subst), ProofMap0,
+        map.init, ProofMap).
 
-:- pred apply_subst_to_constraint_proofs_2(tsubst::in,
+:- pred apply_subst_to_constraint_proof_map_2(tsubst::in,
     prog_constraint::in, constraint_proof::in,
     constraint_proof_map::in, constraint_proof_map::out) is det.
 
-apply_subst_to_constraint_proofs_2(Subst, Constraint0, Proof0, !Map) :-
+apply_subst_to_constraint_proof_map_2(Subst, Constraint0, Proof0, !ProofMap) :-
     apply_subst_to_prog_constraint(Subst, Constraint0, Constraint),
     (
         Proof0 = apply_instance(_),
@@ -1359,17 +1481,18 @@ apply_subst_to_constraint_proofs_2(Subst, Constraint0, Proof0, !Map) :-
         apply_subst_to_prog_constraint(Subst, Super0, Super),
         Proof = superclass(Super)
     ),
-    map.set(Constraint, Proof, !Map).
+    map.set(Constraint, Proof, !ProofMap).
 
-apply_rec_subst_to_constraint_proofs(Subst, Proofs0, Proofs) :-
-    map.foldl(apply_rec_subst_to_constraint_proofs_2(Subst), Proofs0,
-        map.init, Proofs).
+apply_rec_subst_to_constraint_proof_map(Subst, ProofMap0, ProofMap) :-
+    map.foldl(apply_rec_subst_to_constraint_proof_map_2(Subst), ProofMap0,
+        map.init, ProofMap).
 
-:- pred apply_rec_subst_to_constraint_proofs_2(tsubst::in,
+:- pred apply_rec_subst_to_constraint_proof_map_2(tsubst::in,
     prog_constraint::in, constraint_proof::in,
     constraint_proof_map::in, constraint_proof_map::out) is det.
 
-apply_rec_subst_to_constraint_proofs_2(Subst, Constraint0, Proof0, !Map) :-
+apply_rec_subst_to_constraint_proof_map_2(Subst, Constraint0, Proof0,
+        !ProofMap) :-
     apply_rec_subst_to_prog_constraint(Subst, Constraint0, Constraint),
     (
         Proof0 = apply_instance(_),
@@ -1379,7 +1502,7 @@ apply_rec_subst_to_constraint_proofs_2(Subst, Constraint0, Proof0, !Map) :-
         apply_rec_subst_to_prog_constraint(Subst, Super0, Super),
         Proof = superclass(Super)
     ),
-    map.set(Constraint, Proof, !Map).
+    map.set(Constraint, Proof, !ProofMap).
 
 %-----------------------------------------------------------------------------%
 

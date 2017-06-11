@@ -19,6 +19,7 @@
 :- interface.
 
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_pragma.
 
 :- import_module bool.
 :- import_module io.
@@ -30,7 +31,7 @@
 
 %-----------------------------------------------------------------------------%
 %
-% Parsing routines
+% Parsing routines.
 %
 
 :- func parse_unit_selector(term(T)) = unit_selector.
@@ -56,7 +57,7 @@
 
 %-----------------------------------------------------------------------------%
 %
-% Printing routines
+% Printing routines.
 %
 
 :- pred print_selector(tvarset::in, selector::in, io::di, io::uo) is det.
@@ -108,14 +109,13 @@
 :- pred print_structure_sharing_domain(prog_varset::in, tvarset::in, bool::in,
     maybe(int)::in, structure_sharing_domain::in, io::di, io::uo) is det.
 
-    % Print the available structure sharing information as a Mercury comment.
+    % Print structure sharing or reuse information as a Mercury comment.
     % This is used in HLDS dumps.
     %
-:- pred dump_maybe_structure_sharing_domain(prog_varset::in, tvarset::in,
-    maybe(structure_sharing_domain)::in, io::di, io::uo) is det.
-
-:- pred dump_maybe_structure_reuse_domain(prog_varset::in, tvarset::in,
-    maybe(structure_reuse_domain)::in, io::di, io::uo) is det.
+:- pred dump_structure_sharing_domain(prog_varset::in, tvarset::in,
+    structure_sharing_domain::in, io::di, io::uo) is det.
+:- pred dump_structure_reuse_domain(prog_varset::in, tvarset::in,
+    structure_reuse_domain::in, io::di, io::uo) is det.
 
 :- pred print_interface_structure_sharing_domain(prog_varset::in,
     tvarset::in, maybe(structure_sharing_domain)::in, io::di, io::uo) is det.
@@ -125,7 +125,7 @@
 
 %-----------------------------------------------------------------------------%
 %
-% Renaming operations
+% Renaming operations.
 %
 
 :- pred rename_unit_selector(tsubst::in, unit_selector::in,
@@ -172,8 +172,8 @@
 :- implementation.
 
 :- import_module parse_tree.mercury_to_mercury.
-:- import_module parse_tree.prog_io_sym_name.
-:- import_module parse_tree.prog_io_util.
+:- import_module parse_tree.parse_sym_name.
+:- import_module parse_tree.parse_type_name.
 :- import_module parse_tree.prog_out.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.prog_type_subst.
@@ -184,132 +184,132 @@
 :- import_module require.
 :- import_module set.
 :- import_module string.
-:- import_module varset.
 
 %-----------------------------------------------------------------------------%
 %
-% Parsing routines
+% Parsing routines.
 %
 
 parse_unit_selector(Term) = UnitSelector :-
-    (
-        Term = term.functor(term.atom(Cons), Args, _)
-    ->
+    ( if Term = term.functor(term.atom(Cons), Args, _) then
         % XXX We should include non-dummy type_ctors in cons ConsIds.
         % XXX Why do we parse int, float, and string ConsIds when they
         % never have any arguments and thus cannot select anything?
-        (
+        ( if
             Cons = "sel",
             Args = [ConsTerm, ArityTerm, PosTerm]
-        ->
-            (
+        then
+            ( if
                 try_parse_sym_name_and_no_args(ConsTerm, ConsIdName),
-                ArityTerm = term.functor(term.integer(Arity), _, _),
-                PosTerm = term.functor(term.integer(Pos), _, _)
-            ->
+                decimal_term_to_int(ArityTerm, Arity),
+                decimal_term_to_int(PosTerm, Pos)
+            then
                 ConsId = cons(ConsIdName, Arity, cons_id_dummy_type_ctor),
                 UnitSelector = termsel(ConsId, Pos)
-            ;
-                ConsTerm = term.functor(term.integer(Int), _, _)
-            ->
+            else if
+                % XXX UINT, presuambly we need to handle uints here too.
+                decimal_term_to_int(ConsTerm, Int)
+            then
                 ConsId = int_const(Int),
                 UnitSelector = termsel(ConsId, 0)
-            ;
+            else if
                 ConsTerm = term.functor(term.float(Float), _, _)
-            ->
+            then
                 ConsId = float_const(Float),
                 UnitSelector = termsel(ConsId, 0)
-            ;
+            else if
                 ConsTerm = term.functor(term.string(Str), _, _)
-            ->
+            then
                 ConsId = string_const(Str),
                 UnitSelector = termsel(ConsId, 0)
-            ;
+            else
                 unexpected($module, $pred, "unknown cons_id in unit selector")
             )
-        ;
+        else if
             Cons = "typesel",
             Args = [TypeSelectorTerm]
-        ->
-            ( maybe_parse_type(term.coerce(TypeSelectorTerm), TypeSelector) ->
+        then
+            ( if
+                maybe_parse_type(
+                    no_allow_ho_inst_info(wnhii_ctgc_type_selector),
+                    term.coerce(TypeSelectorTerm), TypeSelector)
+            then
                 UnitSelector = typesel(TypeSelector)
-            ;
+            else
                 unexpected($module, $pred, "error in parsing type selector")
             )
-        ;
+        else
             unexpected($module, $pred,
                 "selector is neither sel/3 nor typesel/1.")
         )
-    ;
+    else
         unexpected($module, $pred, "term not a functor")
     ).
 
 parse_selector(Term) = Selector :-
-    ( Term = term.functor(term.atom(Cons), Args, _) ->
-        (
+    ( if Term = term.functor(term.atom(Cons), Args, _) then
+        ( if
             Cons = "[|]",
             Args = [First, Rest]
-        ->
+        then
             Selector = [parse_unit_selector(First) | parse_selector(Rest)]
-        ;
+        else
             Selector = []
         )
-    ;
+    else
         unexpected($module, $pred, "term not a functor")
     ).
 
 parse_datastruct(Term) = Datastruct :-
-    (
+    ( if
         Term = term.functor(term.atom(Cons), Args, _),
         Cons = "cel",
         Args = [VarTerm, SelectorTerm],
         VarTerm = term.variable(Var, _)
-    ->
+    then
         Datastruct = selected_cel(term.coerce_var(Var),
             parse_selector(SelectorTerm))
-    ;
+    else
         unexpected($module, $pred, "error while parsing datastruct.")
     ).
 
 :- func parse_datastruct_list(term(T)) = list(datastruct).
 
 parse_datastruct_list(Term) = Datastructs :-
-    (
-        Term = term.functor(term.atom(Cons), Args, _)
-    ->
-        (
+    ( if Term = term.functor(term.atom(Cons), Args, _) then
+        ( if
             Cons = "[|]",
             Args = [FirstDataTerm, RestDataTerm]
-        ->
-            Datastructs = [parse_datastruct(FirstDataTerm)|
+        then
+            Datastructs = [parse_datastruct(FirstDataTerm) |
                 parse_datastruct_list(RestDataTerm)]
-        ;
+        else if
             Cons = "[]"
-        ->
+        then
             Datastructs = []
-        ;
+        else
             unexpected($module, $pred,
                 "error while parsing list of datastructs")
         )
-    ;
+    else
         unexpected($module, $pred,
             "error while parsing list of datastructs (term not a functor)")
     ).
 
 parse_structure_sharing_pair(Term) = SharingPair :-
-    (
+    ( if
         Term = term.functor(term.atom(Cons), Args, _),
         Cons = "pair",
         Args = [First, Second]
-    ->
+    then
         SharingPair = parse_datastruct(First) - parse_datastruct(Second)
-    ;
+    else
         unexpected($module, $pred,
             "error while parsing structure sharing pair")
     ).
 
 parse_structure_sharing(Term) = SharingPairs :-
-    (
+    ( if
         Term = term.functor(term.atom(Cons), Args, _),
         (
             Cons = "[|]",
@@ -320,15 +320,15 @@ parse_structure_sharing(Term) = SharingPairs :-
             Cons = "[]",
             SharingPairs0 = []
         )
-    ->
+    then
         SharingPairs = SharingPairs0
-    ;
+    else
         unexpected($module, $pred,
             "error while parsing list of structure sharing pairs")
     ).
 
 parse_structure_sharing_domain(Term) = SharingAs :-
-    (
+    ( if
         Term = term.functor(term.atom(Cons), _, _Context),
         (
             Cons = "[|]",
@@ -342,79 +342,75 @@ parse_structure_sharing_domain(Term) = SharingAs :-
                 set.make_singleton_set(
                     top_cannot_improve("from parse_structure_sharing_domain")))
         )
-    ->
+    then
         SharingAs = SharingAs0
-    ;
+    else
         unexpected($module, $pred,
             "error while parsing structure sharing domain")
     ).
 
 parse_structure_reuse_condition(Term) = ReuseCondition :-
-    (
-        Term = term.functor(term.atom(Cons), Args, _)
-    ->
-        (
+    ( if Term = term.functor(term.atom(Cons), Args, _) then
+        ( if
             Cons = "condition",
             Args = [DeadNodesTerm, InUseNodesTerm, SharingTerm]
-        ->
+        then
             DeadNodesList = parse_datastruct_list(DeadNodesTerm),
             DeadNodes = set.from_list(DeadNodesList),
             InUseNodes = parse_datastruct_list(InUseNodesTerm),
             Sharing = parse_structure_sharing_domain(SharingTerm),
             ReuseCondition = structure_reuse_condition(DeadNodes,
                 InUseNodes, Sharing)
-        ;
+        else
             unexpected($module, $pred, "error while parsing reuse condition")
         )
-    ;
+    else
         unexpected($module, $pred,
             "error while parsing reuse condition (term not a functor)")
     ).
 
 parse_structure_reuse_conditions(Term) = ReuseConditions :-
-    (
-        Term = term.functor(term.atom(Cons), Args, _)
-    ->
-        (
+    ( if Term = term.functor(term.atom(Cons), Args, _) then
+        ( if
             Cons = "[|]",
             Args = [FirstTupleTerm, RestTuplesTerm]
-        ->
-            ReuseConditions = [parse_structure_reuse_condition(FirstTupleTerm)|
+        then
+            ReuseConditions = [parse_structure_reuse_condition(FirstTupleTerm) |
                 parse_structure_reuse_conditions(RestTuplesTerm)]
-        ;
+        else if
             Cons = "[]"
-        ->
+        then
             ReuseConditions = []
-        ;
+        else
             unexpected($module, $pred, "error while parsing reuse conditions")
         )
-    ;
+    else
         unexpected($module, $pred,
             "error while parsing reuse conditions (term not a functor)")
     ).
 
 parse_structure_reuse_domain(Term) = ReuseDomain :-
-    (
+    ( if
         Term = term.functor(term.atom(Cons), Args, _)
-    ->
-        (
+    then
+        ( if
             Cons = "has_no_reuse"
-        ->
+        then
             ReuseDomain = has_no_reuse
-        ;
+        else if
             Cons = "has_only_unconditional_reuse"
-        ->
+        then
             ReuseDomain = has_only_unconditional_reuse
-        ;
+        else if
             Cons = "has_conditional_reuse",
             Args = [ReuseConditionsTerm]
-        ->
+        then
             ReuseDomain = has_conditional_reuse(
                 parse_structure_reuse_conditions(ReuseConditionsTerm))
-        ;
+        else
             unexpected($module, $pred, "error while parsing reuse domain")
         )
-    ;
+    else
         unexpected($module, $pred,
             "error while parsing reuse domain (term not a functor)")
     ).
@@ -437,7 +433,8 @@ parse_user_annotated_sharing(!.Varset, Term, UserSharing) :-
             [TypesTerm, UserSharingTerm], _),
         (
             TypesTerm = term.functor(term.atom("yes"), ListTypeTerms, _),
-            maybe_parse_types(ListTypeTerms, Types),
+            maybe_parse_types(no_allow_ho_inst_info(wnhii_user_struct_sharing),
+                ListTypeTerms, Types),
             term.vars_list(ListTypeTerms, TypeVars),
             varset.select(set.list_to_set(TypeVars), !Varset),
             MaybeUserTypes = yes(user_type_info(Types,
@@ -459,7 +456,7 @@ parse_user_annotated_sharing_term(SharingDomainUserTerm, SharingDomain) :-
         SharingPairTerms = [],
         SharingDomain = structure_sharing_bottom
     ;
-        SharingPairTerms = [_|_],
+        SharingPairTerms = [_ | _],
         list.map(parse_user_annotated_sharing_pair_term, SharingPairTerms,
             SharingPairs),
         SharingDomain = structure_sharing_real(SharingPairs)
@@ -496,7 +493,8 @@ parse_user_annotated_datastruct_term(Term, Datastruct) :-
     VarTerm = term.variable(GenericVar, _),
     term.coerce_var(GenericVar, ProgVar),
     get_list_term_arguments(TypesTerm, TypeTermsList),
-    maybe_parse_types(TypeTermsList, Types),
+    maybe_parse_types(no_allow_ho_inst_info(wnhii_user_struct_sharing),
+        TypeTermsList, Types),
     list.map(mer_type_to_typesel, Types, Selector),
     Datastruct = selected_cel(ProgVar, Selector).
 
@@ -506,7 +504,7 @@ mer_type_to_typesel(Type, typesel(Type)).
 
 %-----------------------------------------------------------------------------%
 %
-% Printing routines
+% Printing routines.
 %
 
 :- func selector_to_string(tvarset, selector) = string.
@@ -536,7 +534,7 @@ unit_selector_to_string(_, termsel(ConsId, Index)) =
 
 unit_selector_to_string(TVarSet, typesel(TypeSel)) =
     string.append_list(["typesel(",
-        mercury_type_to_string(TVarSet, bool.no, TypeSel),
+        mercury_type_to_string(TVarSet, print_name_only, TypeSel),
         ")"]).
 
 print_selector(TVarSet, Selector, !IO) :-
@@ -567,9 +565,9 @@ print_structure_sharing(ProgVarSet, TypeVarSet, MaybeLimit, Start, Sep, End,
     (
         MaybeLimit = yes(Limit),
         list.take_upto(Limit, SharingPairs0, SharingPairs),
-        ( Limit >= list.length(SharingPairs0) ->
+        ( if Limit >= list.length(SharingPairs0) then
             CompleteList = yes
-        ;
+        else
             CompleteList = no
         )
     ;
@@ -626,10 +624,7 @@ do_print_structure_sharing_domain(ProgVarSet, TypeVarSet, VerboseTop,
     ),
     io.write_string(End, !IO).
 
-dump_maybe_structure_sharing_domain(_, _, no, !IO) :-
-    io.write_string("% no sharing information available.\n", !IO).
-dump_maybe_structure_sharing_domain(ProgVarSet, TypeVarSet, yes(SharingAs),
-        !IO) :-
+dump_structure_sharing_domain(ProgVarSet, TypeVarSet, SharingAs, !IO) :-
     do_print_structure_sharing_domain(ProgVarSet, TypeVarSet, yes,
         no, "%\t ", "\n%\t", "\n", SharingAs, !IO).
 
@@ -642,9 +637,7 @@ print_interface_structure_sharing_domain(ProgVarSet, TypeVarSet,
         !IO),
     io.write_string(")", !IO).
 
-dump_maybe_structure_reuse_domain(_, _, no, !IO) :-
-    io.write_string("% no reuse information available.\n", !IO).
-dump_maybe_structure_reuse_domain(ProgVarSet, TypeVarSet, yes(ReuseAs), !IO) :-
+dump_structure_reuse_domain(ProgVarSet, TypeVarSet, ReuseAs, !IO) :-
     print_structure_reuse_domain(ProgVarSet, TypeVarSet, ReuseAs,
         "%\t ", ", \n%\t ", "\n", !IO).
 
@@ -695,7 +688,6 @@ print_structure_reuse_domain(ProgVarSet, TypeVarSet, ReuseDomain,
 
 print_interface_maybe_structure_reuse_domain(_, _, no, !IO) :-
     io.write_string("not_available", !IO).
-
 print_interface_maybe_structure_reuse_domain(ProgVarSet, TypeVarSet,
         yes(ReuseDomain), !IO) :-
     io.write_string("yes(", !IO),
@@ -705,7 +697,7 @@ print_interface_maybe_structure_reuse_domain(ProgVarSet, TypeVarSet,
 
 %-----------------------------------------------------------------------------%
 %
-% Renaming operations
+% Renaming operations.
 %
 
 rename_unit_selector(Subst, !UnitSelector) :-
@@ -760,13 +752,13 @@ rename_user_annotated_sharing(HeadVars, NewHeadVars, NewTypes,
                 !.SharingDomain = structure_sharing_real(SharingPairs),
                 map.from_corresponding_lists(HeadVars, NewHeadVars,
                     VarRenaming),
-                (
+                ( if
                     MaybeTypes = yes(user_type_info(UserSharingTypes,
                         _UserSharingTVarSet))
-                ->
+                then
                     type_list_subsumes_det(UserSharingTypes, NewTypes,
                         TypeSubst)
-                ;
+                else
                     TypeSubst = map.init
                 ),
                 rename_structure_sharing(VarRenaming, TypeSubst,

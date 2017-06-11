@@ -2,19 +2,17 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 1999-2009 The University of Melbourne.
+% Copyright (C) 2017 The Mercury Team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
 %
 % File: ml_tailcall.m
-% Main author: fjh
+% Authors: fjh, pbone
 %
 % This module is an MLDS-to-MLDS transformation that marks function calls
 % as tail calls whenever it is safe to do so, based on the assumptions
 % described below.
-%
-% This module also contains a pass over the MLDS that detects functions
-% which are directly recursive, but not tail-recursive, and warns about them.
 %
 % A function call can safely be marked as a tail call if all three of the
 % following conditions are satisfied:
@@ -51,26 +49,38 @@
 % `erroneous' as `no_return_call's (a special case of tail calls)
 % when it generates them.
 %
+% Note also that the job that this module does on the MLDS is very similar
+% to the job done by mark_tail_calls.m on the HLDS. The two are separate
+% because with the MLDS backend, figuring out which recursive calls will end up
+% as tail calls cannot be done without doing a large part of the job of the
+% HLDS-to-MLDS code generator. Nevertheless, what parts *can* be kept in common
+% between this module and mark_tail_calls.m *should* be kept in common.
+% This is why this module calls predicates in mark_tail_calls.m to construct
+% the warning messages it generates.
+%
 %-----------------------------------------------------------------------------%
 
 :- module ml_backend.ml_tailcall.
 :- interface.
 
+:- import_module hlds.
+:- import_module hlds.hlds_module.
 :- import_module ml_backend.mlds.
+:- import_module parse_tree.
+:- import_module parse_tree.error_util.
+:- import_module libs.
 :- import_module libs.globals.
 
-:- import_module io.
+:- import_module list.
 
 %-----------------------------------------------------------------------------%
 
     % Traverse the MLDS, marking all optimizable tail calls as tail calls.
     %
-:- pred ml_mark_tailcalls(mlds::in, mlds::out, io::di, io::uo) is det.
-
-    % Traverse the MLDS, warning about all directly recursive calls
-    % that are not marked as tail calls.
+    % If enabled, warn for calls that "look like" tail calls, but aren't.
     %
-:- pred ml_warn_tailcalls(globals::in, mlds::in, io::di, io::uo) is det.
+:- pred ml_mark_tailcalls(globals::in, module_info::in, list(error_spec)::out,
+    mlds::in, mlds::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -78,30 +88,85 @@
 :- implementation.
 
 :- import_module hlds.hlds_pred.
-:- import_module mdbcomp.prim_data.
+:- import_module hlds.mark_tail_calls.
+:- import_module libs.compiler_util.
+:- import_module libs.options.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
 :- import_module ml_backend.ml_util.
-:- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_pragma.
 
-:- import_module int.
-:- import_module list.
+:- import_module bool.
 :- import_module maybe.
-:- import_module solutions.
+:- import_module set.
 
 %-----------------------------------------------------------------------------%
 
-ml_mark_tailcalls(!MLDS, !IO) :-
-    Defns0 = !.MLDS ^ mlds_defns,
-    mark_tailcalls_in_defns(Defns0, Defns),
-    !MLDS ^ mlds_defns := Defns.
+ml_mark_tailcalls(Globals, ModuleInfo, Specs, !MLDS) :-
+    Defns0 = !.MLDS ^ mlds_proc_defns,
+    ModuleName = mercury_module_name_to_mlds(!.MLDS ^ mlds_name),
+    globals.lookup_bool_option(Globals, warn_non_tail_recursion_self,
+        WarnTailCallsBool),
+    (
+        WarnTailCallsBool = yes,
+        WarnTailCalls = warn_tail_calls
+    ;
+        WarnTailCallsBool = no,
+        WarnTailCalls = do_not_warn_tail_calls
+    ),
+    mark_tailcalls_in_defns(ModuleInfo, ModuleName, WarnTailCalls,
+        Defns0, Defns, [], Specs),
+    !MLDS ^ mlds_proc_defns := Defns.
 
 %-----------------------------------------------------------------------------%
 
-    % The `at_tail' type indicates whether or not a subgoal is at a tail
-    % position, i.e. is followed by a return statement or the end of the
-    % function, and if so, specifies the return values (if any) in the return
-    % statement.
-:- type at_tail == maybe(list(mlds_rval)).
+    % We identify tail calls in the body of a function by walking backwards
+    % through that body in the MLDS, tracking (via at_tail) whether a given
+    % position in the body (either just before or just after a statement)
+    % is in a tail position or not. The distinction between at_tail and
+    % not_at_tail* records this.
+    %
+    % The `at_tail' functor indicates that the current statement is at a tail
+    % position, i.e. it is followed by a return statement or the end of the
+    % function. Its argument specifies the (possibly empty) vector of values
+    % being returned.
+    %
+    % The `not_at_tail_seen_reccall' and `not_at_tail_have_not_seen_reccall'
+    % functors indicate that the current statement is not at a tail position.
+    % Which one reflects the current position depends on whether we have
+    % already seen a recursive call in our backwards traversal. We use
+    % this distinction to avoid creating warnings for recursive calls that are
+    % obviously followed by the other, later recursive calls (like the first
+    % recursive call in the double-recursive clause of quicksort).
+    %
+    % The reason why we need this distinction, and cannot just stop walking
+    % backward through the function body when we find a recursive call
+    % is code like this:
+    %
+    %   if (...) {
+    %     ...
+    %     recursive call 1
+    %     return
+    %   }
+    %   ...
+    %   recursive call 2
+    %   return
+    %
+    % For such code, we *want* to continue our backwards traversal past
+    % recursive call 2, so we can find recursive call 1.
+    %
+:- type at_tail
+    --->        at_tail(list(mlds_rval))
+    ;           not_at_tail_seen_reccall
+    ;           not_at_tail_have_not_seen_reccall.
+
+:- pred not_at_tail(at_tail::in, at_tail::out) is det.
+
+not_at_tail(at_tail(_), not_at_tail_have_not_seen_reccall).
+not_at_tail(not_at_tail_seen_reccall, not_at_tail_seen_reccall).
+not_at_tail(not_at_tail_have_not_seen_reccall,
+    not_at_tail_have_not_seen_reccall).
 
     % The `locals' type contains a list of local definitions
     % which are in scope.
@@ -109,6 +174,33 @@ ml_mark_tailcalls(!MLDS, !IO) :-
 :- type local_defns
     --->    local_params(mlds_arguments)
     ;       local_defns(list(mlds_defn)).
+
+:- type found_recursive_call
+    --->    found_recursive_call
+    ;       not_found_recursive_call.
+
+:- type tc_in_body_info
+    --->    tc_in_body_info(
+                tibi_found                  :: found_recursive_call,
+                tibi_specs                  :: list(error_spec)
+            ).
+
+%-----------------------------------------------------------------------------%
+
+:- type tailcall_info
+    --->    tailcall_info(
+                tci_module_info             :: module_info,
+                tci_module_name             :: mlds_module_name,
+                tci_function_name           :: mlds_function_name,
+                tci_maybe_pred_info         :: maybe(pred_info),
+                tci_locals                  :: locals,
+                tci_warn_tail_calls         :: warn_tail_calls,
+                tci_maybe_require_tailrec   :: maybe(require_tail_recursion)
+            ).
+
+:- type warn_tail_calls
+    --->    warn_tail_calls
+    ;       do_not_warn_tail_calls.
 
 %-----------------------------------------------------------------------------%
 
@@ -123,254 +215,508 @@ ml_mark_tailcalls(!MLDS, !IO) :-
 % mark_tailcalls_in_stmt:
 % mark_tailcalls_in_case:
 % mark_tailcalls_in_default:
-%   Recursively process the statement(s),
+%   Recursively process the statement(s) and their components,
 %   marking each optimizable tail call in them as a tail call.
-%   The `AtTail' argument indicates whether or not this
-%   construct is in a tail call position.
-%   The `Locals' argument contains a list of the
-%   local definitions which are in scope at this point.
+%   The `AtTail' argument indicates whether or not this construct
+%   is in a tail call position, and if not, whether we *have* seen a tailcall
+%   earlier in the backwards traversal (i.e. after the current position,
+%   in terms of forward execution).
+%   The `Locals' argument contains the local definitions which are in scope
+%   at the current point.
 
-:- pred mark_tailcalls_in_defns(list(mlds_defn)::in, list(mlds_defn)::out)
-    is det.
+:- pred mark_tailcalls_in_defns(module_info::in, mlds_module_name::in,
+    warn_tail_calls::in, list(mlds_defn)::in, list(mlds_defn)::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
 
-mark_tailcalls_in_defns(Defns0, Defns) :-
-    list.map(mark_tailcalls_in_defn, Defns0, Defns).
+mark_tailcalls_in_defns(ModuleInfo, ModuleName, WarnTailCalls,
+        !Defns, !Specs) :-
+    list.map_foldl(
+        mark_tailcalls_in_defn(ModuleInfo, ModuleName, WarnTailCalls),
+        !Defns, !Specs).
 
-:- pred mark_tailcalls_in_defn(mlds_defn::in, mlds_defn::out) is det.
+:- pred mark_tailcalls_in_defn(module_info::in, mlds_module_name::in,
+    warn_tail_calls::in, mlds_defn::in, mlds_defn::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
 
-mark_tailcalls_in_defn(Defn0, Defn) :-
-    Defn0 = mlds_defn(Name, Context, Flags, DefnBody0),
+mark_tailcalls_in_defn(ModuleInfo, ModuleName, WarnTailCalls,
+        Defn0, Defn, !Specs) :-
     (
-        DefnBody0 = mlds_function(PredProcId, Params, FuncBody0, Attributes,
-            EnvVarNames),
-        % Compute the initial value of the `Locals' and `AtTail' arguments.
+        Defn0 = mlds_data(_),
+        Defn = Defn0
+    ;
+        Defn0 = mlds_function(FunctionDefn0),
+        FunctionDefn0 = mlds_function_defn(Name, Context, Flags,
+            MaybePredProcId, Params, FuncBody0, Attributes,
+            EnvVarNames, MaybeRequireTailrecInfo),
+        % Compute the initial values of the `Locals' and `AtTail' arguments.
         Params = mlds_func_params(Args, RetTypes),
         Locals = [local_params(Args)],
         (
             RetTypes = [],
-            AtTail = yes([])
+            AtTail = at_tail([])
         ;
             RetTypes = [_ | _],
-            AtTail = no
+            AtTail = not_at_tail_have_not_seen_reccall
         ),
-        mark_tailcalls_in_function_body(AtTail, Locals, FuncBody0, FuncBody),
-        DefnBody = mlds_function(PredProcId, Params, FuncBody, Attributes,
-            EnvVarNames),
-        Defn = mlds_defn(Name, Context, Flags, DefnBody)
+        (
+            MaybePredProcId = yes(proc(PredId, _)),
+            module_info_pred_info(ModuleInfo, PredId, PredInfo),
+            MaybePredInfo = yes(PredInfo)
+        ;
+            MaybePredProcId = no,
+            MaybePredInfo = no
+        ),
+        TCallInfo = tailcall_info(ModuleInfo, ModuleName, Name,
+            MaybePredInfo, Locals, WarnTailCalls, MaybeRequireTailrecInfo),
+        mark_tailcalls_in_function_body(TCallInfo, AtTail,
+            FuncBody0, FuncBody, !Specs),
+        FunctionDefn = mlds_function_defn(Name, Context, Flags,
+            MaybePredProcId, Params, FuncBody, Attributes,
+            EnvVarNames, MaybeRequireTailrecInfo),
+        Defn = mlds_function(FunctionDefn)
     ;
-        DefnBody0 = mlds_data(_, _, _),
-        Defn = Defn0
-    ;
-        DefnBody0 = mlds_class(ClassDefn0),
-        ClassDefn0 = mlds_class_defn(Kind, Imports, BaseClasses, Implements,
+        Defn0 = mlds_class(ClassDefn0),
+        ClassDefn0 = mlds_class_defn(Name, Context, Flags, Kind,
+            Imports, BaseClasses, Implements,
             TypeParams, CtorDefns0, MemberDefns0),
-        mark_tailcalls_in_defns(CtorDefns0, CtorDefns),
-        mark_tailcalls_in_defns(MemberDefns0, MemberDefns),
-        ClassDefn = mlds_class_defn(Kind, Imports, BaseClasses, Implements,
+        mark_tailcalls_in_defns(ModuleInfo, ModuleName, WarnTailCalls,
+            CtorDefns0, CtorDefns, !Specs),
+        mark_tailcalls_in_defns(ModuleInfo, ModuleName, WarnTailCalls,
+            MemberDefns0, MemberDefns, !Specs),
+        ClassDefn = mlds_class_defn(Name, Context, Flags, Kind,
+            Imports, BaseClasses, Implements,
             TypeParams, CtorDefns, MemberDefns),
-        DefnBody = mlds_class(ClassDefn),
-        Defn = mlds_defn(Name, Context, Flags, DefnBody)
+        Defn = mlds_class(ClassDefn)
     ).
 
-:- pred mark_tailcalls_in_function_body(at_tail::in, locals::in,
-    mlds_function_body::in, mlds_function_body::out) is det.
+:- pred mark_tailcalls_in_function_body(tailcall_info::in, at_tail::in,
+    mlds_function_body::in, mlds_function_body::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
 
-mark_tailcalls_in_function_body(AtTail, Locals, Body0, Body) :-
+mark_tailcalls_in_function_body(TCallInfo, AtTail, Body0, Body, !Specs) :-
     (
         Body0 = body_external,
         Body = body_external
     ;
         Body0 = body_defined_here(Statement0),
-        mark_tailcalls_in_statement(AtTail, Locals, Statement0, Statement),
-        Body = body_defined_here(Statement)
+        InBodyInfo0 = tc_in_body_info(not_found_recursive_call, !.Specs),
+        mark_tailcalls_in_statement(TCallInfo, AtTail, _,
+            Statement0, Statement, InBodyInfo0, InBodyInfo),
+        InBodyInfo = tc_in_body_info(FoundRecCall, !:Specs),
+        Body = body_defined_here(Statement),
+        (
+            FoundRecCall = found_recursive_call
+        ;
+            FoundRecCall = not_found_recursive_call,
+            MaybeRequireTailrecInfo = TCallInfo ^ tci_maybe_require_tailrec,
+            (
+                MaybeRequireTailrecInfo = yes(RequireTailrecInfo),
+                ( RequireTailrecInfo = suppress_tailrec_warnings(Context)
+                ; RequireTailrecInfo = enable_tailrec_warnings(_, _, Context)
+                ),
+                MaybePredInfo = TCallInfo ^ tci_maybe_pred_info,
+                (
+                    MaybePredInfo = yes(PredInfo),
+                    PredOrFunc = pred_info_is_pred_or_func(PredInfo),
+                    pred_info_get_name(PredInfo, Name),
+                    pred_info_get_orig_arity(PredInfo, Arity),
+                    SymName = unqualified(Name),
+                    SimpleCallId = simple_call_id(PredOrFunc, SymName, Arity),
+                    add_message_for_no_tail_or_nontail_recursive_calls(
+                        SimpleCallId, Context, !Specs)
+                ;
+                    % If this function wasn't generated from a Mercury
+                    % predicate, then don't create this warning.
+                    % This cannot happen anyway because the require tail
+                    % recursion pragma cannot be attached to predicates
+                    % that don't exist.
+                    MaybePredInfo = no
+                )
+            ;
+                MaybeRequireTailrecInfo = no
+            )
+        )
     ).
 
-:- pred mark_tailcalls_in_maybe_statement(at_tail::in, locals::in,
-    maybe(statement)::in, maybe(statement)::out) is det.
+:- pred mark_tailcalls_in_maybe_statement(tailcall_info::in,
+    at_tail::in, at_tail::out, maybe(statement)::in, maybe(statement)::out,
+    tc_in_body_info::in, tc_in_body_info::out) is det.
 
-mark_tailcalls_in_maybe_statement(AtTail, Locals,
-        MaybeStatement0, MaybeStatement) :-
+mark_tailcalls_in_maybe_statement(TCallInfo, !AtTail,
+        MaybeStatement0, MaybeStatement, !InBodyInfo) :-
     (
         MaybeStatement0 = no,
         MaybeStatement = no
     ;
         MaybeStatement0 = yes(Statement0),
-        mark_tailcalls_in_statement(AtTail, Locals, Statement0, Statement),
+        mark_tailcalls_in_statement(TCallInfo, !AtTail, Statement0, Statement,
+            !InBodyInfo),
         MaybeStatement = yes(Statement)
     ).
 
-:- pred mark_tailcalls_in_statements(at_tail::in, locals::in,
-    list(statement)::in, list(statement)::out) is det.
+:- pred mark_tailcalls_in_statements(tailcall_info::in,
+    at_tail::in, at_tail::out, list(statement)::in, list(statement)::out,
+    tc_in_body_info::in, tc_in_body_info::out) is det.
 
-mark_tailcalls_in_statements(_, _, [], []).
-mark_tailcalls_in_statements(AtTail, Locals,
-        [First0 | Rest0], [First | Rest]) :-
-    % If there are no statements after the first, then the first statement
-    % is in a tail call position iff the statement list is in a tail call
-    % position. If the First statement is followed by a `return' statement,
-    % then it is in a tailcall position. Otherwise, i.e. if the first statement
-    % is followed by anything other than a `return' statement, then
-    % the first statement is not in a tail call position.
-    mark_tailcalls_in_statements(AtTail, Locals, Rest0, Rest),
+mark_tailcalls_in_statements(_, !AtTail, [], [], !InBodyInfo).
+mark_tailcalls_in_statements(TCallInfo, !AtTail,
+        [Stmt0 | Stmts0], [Stmt | Stmts], !InBodyInfo) :-
+    mark_tailcalls_in_statements(TCallInfo, !AtTail, Stmts0, Stmts,
+        !InBodyInfo),
+    mark_tailcalls_in_statement(TCallInfo, !AtTail, Stmt0, Stmt,
+        !InBodyInfo).
+
+:- pred mark_tailcalls_in_statement(tailcall_info::in,
+    at_tail::in, at_tail::out, statement::in, statement::out,
+    tc_in_body_info::in, tc_in_body_info::out) is det.
+
+mark_tailcalls_in_statement(TCallInfo, !AtTail, !Statement, !InBodyInfo) :-
+    !.Statement = statement(Stmt0, Context),
+    mark_tailcalls_in_stmt(TCallInfo, Context, !AtTail, Stmt0, Stmt,
+        !InBodyInfo),
+    !:Statement = statement(Stmt, Context).
+
+:- pred mark_tailcalls_in_stmt(tailcall_info::in, mlds_context::in,
+    at_tail::in, at_tail::out, mlds_stmt::in, mlds_stmt::out,
+    tc_in_body_info::in, tc_in_body_info::out) is det.
+
+mark_tailcalls_in_stmt(TCallInfo, Context, AtTailAfter0, AtTailBefore,
+        Stmt0, Stmt, !InBodyInfo) :-
     (
-        Rest = [],
-        FirstAtTail = AtTail
-    ;
-        Rest = [FirstRest | _],
-        ( FirstRest = statement(ml_stmt_return(ReturnVals), _) ->
-            FirstAtTail = yes(ReturnVals)
-        ;
-            FirstAtTail = no
-        )
-    ),
-    mark_tailcalls_in_statement(FirstAtTail, Locals, First0, First).
-
-:- pred mark_tailcalls_in_statement(at_tail::in, locals::in,
-    statement::in, statement::out) is det.
-
-mark_tailcalls_in_statement(AtTail, Locals, Statement0, Statement) :-
-    Statement0 = statement(Stmt0, Context),
-    mark_tailcalls_in_stmt(AtTail, Locals, Stmt0, Stmt),
-    Statement = statement(Stmt, Context).
-
-:- pred mark_tailcalls_in_stmt(at_tail::in, locals::in,
-    mlds_stmt::in, mlds_stmt::out) is det.
-
-mark_tailcalls_in_stmt(AtTail, Locals, Stmt0, Stmt) :-
-    (
+        Stmt0 = ml_stmt_block(Defns0, Statements0),
         % Whenever we encounter a block statement, we recursively mark
         % tailcalls in any nested functions defined in that block.
         % We also need to add any local definitions in that block to the list
         % of currently visible local declarations before processing the
         % statements in that block. The statement list will be in a tail
         % position iff the block is in a tail position.
-        Stmt0 = ml_stmt_block(Defns0, Statements0),
-        mark_tailcalls_in_defns(Defns0, Defns),
-        NewLocals = [local_defns(Defns) | Locals],
-        mark_tailcalls_in_statements(AtTail, NewLocals,
-            Statements0, Statements),
+        ModuleInfo = TCallInfo ^ tci_module_info,
+        ModuleName = TCallInfo ^ tci_module_name,
+        WarnTailCalls = TCallInfo ^ tci_warn_tail_calls,
+        Specs0 = !.InBodyInfo ^ tibi_specs,
+        mark_tailcalls_in_defns(ModuleInfo, ModuleName, WarnTailCalls,
+            Defns0, Defns, Specs0, Specs),
+        !InBodyInfo ^ tibi_specs := Specs,
+        Locals = TCallInfo ^ tci_locals,
+        NewTCallInfo = TCallInfo ^ tci_locals := [local_defns(Defns) | Locals],
+        mark_tailcalls_in_statements(NewTCallInfo, AtTailAfter0, AtTailBefore,
+            Statements0, Statements, !InBodyInfo),
         Stmt = ml_stmt_block(Defns, Statements)
     ;
+        Stmt0 = ml_stmt_while(Kind, Rval, Statement0),
         % The statement in the body of a while loop is never in a tail
         % position.
-        Stmt0 = ml_stmt_while(Kind, Rval, Statement0),
-        mark_tailcalls_in_statement(no, Locals, Statement0, Statement),
+        not_at_tail(AtTailAfter0, AtTailAfter),
+        mark_tailcalls_in_statement(TCallInfo, AtTailAfter, AtTailBefore0,
+            Statement0, Statement, !InBodyInfo),
+        % Neither is any statement before the loop.
+        not_at_tail(AtTailBefore0, AtTailBefore),
         Stmt = ml_stmt_while(Kind, Rval, Statement)
     ;
+        Stmt0 = ml_stmt_if_then_else(Cond, Then0, MaybeElse0),
         % Both the `then' and the `else' parts of an if-then-else are in a
         % tail position iff the if-then-else is in a tail position.
-        Stmt0 = ml_stmt_if_then_else(Cond, Then0, MaybeElse0),
-        mark_tailcalls_in_statement(AtTail, Locals, Then0, Then),
-        mark_tailcalls_in_maybe_statement(AtTail, Locals,
-            MaybeElse0, MaybeElse),
+        mark_tailcalls_in_statement(TCallInfo,
+            AtTailAfter0, AtTailBeforeThen, Then0, Then, !InBodyInfo),
+        mark_tailcalls_in_maybe_statement(TCallInfo,
+            AtTailAfter0, AtTailBeforeElse, MaybeElse0, MaybeElse,
+            !InBodyInfo),
+        ( if
+            ( AtTailBeforeThen = not_at_tail_seen_reccall
+            ; AtTailBeforeElse = not_at_tail_seen_reccall
+            )
+        then
+            AtTailBefore = not_at_tail_seen_reccall
+        else
+            AtTailBefore = not_at_tail_have_not_seen_reccall
+        ),
         Stmt = ml_stmt_if_then_else(Cond, Then, MaybeElse)
     ;
+        Stmt0 = ml_stmt_switch(Type, Val, Range, Cases0, Default0),
         % All of the cases of a switch (including the default) are in a
         % tail position iff the switch is in a tail position.
-        Stmt0 = ml_stmt_switch(Type, Val, Range, Cases0, Default0),
-        mark_tailcalls_in_cases(AtTail, Locals, Cases0, Cases),
-        mark_tailcalls_in_default(AtTail, Locals, Default0, Default),
+        mark_tailcalls_in_cases(TCallInfo, AtTailAfter0, AtTailBeforeCases,
+            Cases0, Cases, !InBodyInfo),
+        mark_tailcalls_in_default(TCallInfo, AtTailAfter0, AtTailBeforeDefault,
+            Default0, Default, !InBodyInfo),
+        ( if
+            % Have we seen a tailcall, in either a case or in the default?
+            (
+                find_first_match(unify(not_at_tail_seen_reccall),
+                    AtTailBeforeCases, _)
+            ;
+                AtTailBeforeDefault = not_at_tail_seen_reccall
+            )
+        then
+            AtTailBefore = not_at_tail_seen_reccall
+        else
+            AtTailBefore = not_at_tail_have_not_seen_reccall
+        ),
         Stmt = ml_stmt_switch(Type, Val, Range, Cases, Default)
     ;
-        Stmt0 = ml_stmt_call(Sig, Func, Obj, Args, ReturnLvals, CallKind0),
-
-        % Check if we can mark this call as a tail call.
-        (
-            CallKind0 = ordinary_call,
-
-            % We must be in a tail position.
-            AtTail = yes(ReturnRvals),
-
-            % The values returned in this call must match those returned
-            % by the `return' statement that follows.
-            match_return_vals(ReturnRvals, ReturnLvals),
-
-            % The call must not take the address of any local variables
-            % or nested functions.
-            check_maybe_rval(Obj, Locals) = will_not_yield_dangling_stack_ref,
-            check_rvals(Args, Locals) = will_not_yield_dangling_stack_ref,
-
-            % The call must not be to a function nested within this function.
-            check_rval(Func, Locals) = will_not_yield_dangling_stack_ref
-        ->
-            % Mark this call as a tail call.
-            CallKind = tail_call,
-            Stmt = ml_stmt_call(Sig, Func, Obj, Args, ReturnLvals, CallKind)
-        ;
-            % Leave this call unchanged.
-            Stmt = Stmt0
-        )
+        Stmt0 = ml_stmt_call(_, _, _, _, _, _, _),
+        mark_tailcalls_in_stmt_call(TCallInfo, Context,
+            AtTailAfter0, AtTailBefore, Stmt0, Stmt, !InBodyInfo)
     ;
         Stmt0 = ml_stmt_try_commit(Ref, Statement0, Handler0),
         % Both the statement inside a `try_commit' and the handler are in
         % tail call position iff the `try_commit' statement is in a tail call
         % position.
-        mark_tailcalls_in_statement(AtTail, Locals, Statement0, Statement),
-        mark_tailcalls_in_statement(AtTail, Locals, Handler0, Handler),
+        mark_tailcalls_in_statement(TCallInfo, AtTailAfter0, _,
+            Statement0, Statement, !InBodyInfo),
+        mark_tailcalls_in_statement(TCallInfo, AtTailAfter0, _,
+            Handler0, Handler, !InBodyInfo),
+        AtTailBefore = not_at_tail_have_not_seen_reccall,
         Stmt = ml_stmt_try_commit(Ref, Statement, Handler)
     ;
-        ( Stmt0 = ml_stmt_label(_)
-        ; Stmt0 = ml_stmt_goto(_)
+        ( Stmt0 = ml_stmt_goto(_)
         ; Stmt0 = ml_stmt_computed_goto(_, _)
-        ; Stmt0 = ml_stmt_return(_Rvals)
         ; Stmt0 = ml_stmt_do_commit(_Ref)
         ; Stmt0 = ml_stmt_atomic(_)
         ),
+        not_at_tail(AtTailAfter0, AtTailBefore),
+        Stmt = Stmt0
+    ;
+        Stmt0 = ml_stmt_label(_),
+        AtTailBefore = AtTailAfter0,
+        Stmt = Stmt0
+    ;
+        Stmt0 = ml_stmt_return(ReturnVals),
+        % The statement before a return statement is in a tail position.
+        AtTailBefore = at_tail(ReturnVals),
         Stmt = Stmt0
     ).
 
-:- pred mark_tailcalls_in_cases(at_tail::in, locals::in,
-    list(mlds_switch_case)::in, list(mlds_switch_case)::out) is det.
+:- pred mark_tailcalls_in_stmt_call(tailcall_info::in, mlds_context::in,
+    at_tail::in, at_tail::out, mlds_stmt::in(ml_stmt_is_call), mlds_stmt::out,
+    tc_in_body_info::in, tc_in_body_info::out) is det.
 
-mark_tailcalls_in_cases(_, _, [], []).
-mark_tailcalls_in_cases(AtTail, Locals, [Case0 | Cases0], [Case | Cases]) :-
-    mark_tailcalls_in_case(AtTail, Locals, Case0, Case),
-    mark_tailcalls_in_cases(AtTail, Locals, Cases0, Cases).
+mark_tailcalls_in_stmt_call(TCallInfo, Context, AtTailAfter, AtTailBefore,
+        Stmt0, Stmt, !InBodyInfo) :-
+    Stmt0 = ml_stmt_call(Sig, CalleeRval, MaybeObj, Args,
+        CallReturnLvals, CallKind0, Markers),
+    ModuleName = TCallInfo ^ tci_module_name,
+    FuncName = TCallInfo ^ tci_function_name,
 
-:- pred mark_tailcalls_in_case(at_tail::in, locals::in,
-    mlds_switch_case::in, mlds_switch_case::out) is det.
+    % Check if we can mark this call as a tail call.
+    ( if
+        CallKind0 = ordinary_call,
+        CalleeRval = ml_const(mlconst_code_addr(CalleeCodeAddr)),
+        % Currently, we can turn self-recursive calls into tail calls,
+        % but we cannot do the same with mutually-recursive calls.
+        % We therefore require the callee to be the same function
+        % as the caller.
+        code_address_is_for_this_function(CalleeCodeAddr, ModuleName, FuncName)
+    then
+        !InBodyInfo ^ tibi_found := found_recursive_call,
+        ( if
+            % We must be in a tail position.
+            AtTailAfter = at_tail(ReturnStmtRvals),
 
-mark_tailcalls_in_case(AtTail, Locals, Case0, Case) :-
+            % The values returned in this call must match those returned
+            % by the `return' statement that follows.
+            call_returns_same_local_lvals_as_return_stmt(ReturnStmtRvals,
+                CallReturnLvals),
+
+            % The call must not take the address of any local variables
+            % or nested functions.
+            Locals = TCallInfo ^ tci_locals,
+            may_maybe_rval_yield_dangling_stack_ref(MaybeObj, Locals) =
+                will_not_yield_dangling_stack_ref,
+            may_rvals_yield_dangling_stack_ref(Args, Locals) =
+                will_not_yield_dangling_stack_ref,
+
+            % The call must not be to a function nested within this function.
+            may_rval_yield_dangling_stack_ref(CalleeRval, Locals) =
+                will_not_yield_dangling_stack_ref
+        then
+            % Mark this call as a tail call.
+            Stmt = ml_stmt_call(Sig, CalleeRval, MaybeObj, Args,
+                CallReturnLvals, tail_call, Markers),
+            AtTailBefore = not_at_tail_seen_reccall
+        else
+            (
+                AtTailAfter = not_at_tail_seen_reccall
+            ;
+                (
+                    AtTailAfter = not_at_tail_have_not_seen_reccall
+                ;
+                    % This might happen if one of the other tests above fails.
+                    % If so, a warning may be useful.
+                    AtTailAfter = at_tail(_)
+                ),
+                maybe_warn_tailcalls(TCallInfo, CalleeCodeAddr, Markers,
+                    Context, !InBodyInfo)
+            ),
+            Stmt = Stmt0,
+            AtTailBefore = not_at_tail_seen_reccall
+        )
+    else
+        % Leave this call unchanged.
+        Stmt = Stmt0,
+        not_at_tail(AtTailAfter, AtTailBefore)
+    ).
+
+:- pred mark_tailcalls_in_cases(tailcall_info::in,
+    at_tail::in, list(at_tail)::out,
+    list(mlds_switch_case)::in, list(mlds_switch_case)::out,
+    tc_in_body_info::in, tc_in_body_info::out) is det.
+
+mark_tailcalls_in_cases(_, _, [], [], [], !InBodyInfo).
+mark_tailcalls_in_cases(TCallInfo, AtTailAfter, [AtTailBefore | AtTailBefores],
+        [Case0 | Cases0], [Case | Cases], !InBodyInfo) :-
+    mark_tailcalls_in_case(TCallInfo, AtTailAfter, AtTailBefore,
+        Case0, Case, !InBodyInfo),
+    mark_tailcalls_in_cases(TCallInfo, AtTailAfter, AtTailBefores,
+        Cases0, Cases, !InBodyInfo).
+
+:- pred mark_tailcalls_in_case(tailcall_info::in, at_tail::in, at_tail::out,
+    mlds_switch_case::in, mlds_switch_case::out,
+    tc_in_body_info::in, tc_in_body_info::out) is det.
+
+mark_tailcalls_in_case(TCallInfo, AtTailAfter, AtTailBefore,
+        Case0, Case, !InBodyInfo) :-
     Case0 = mlds_switch_case(FirstCond, LaterConds, Statement0),
-    mark_tailcalls_in_statement(AtTail, Locals, Statement0, Statement),
+    mark_tailcalls_in_statement(TCallInfo, AtTailAfter, AtTailBefore,
+        Statement0, Statement, !InBodyInfo),
     Case = mlds_switch_case(FirstCond, LaterConds, Statement).
 
-:- pred mark_tailcalls_in_default(at_tail::in, locals::in,
-    mlds_switch_default::in, mlds_switch_default::out) is det.
+:- pred mark_tailcalls_in_default(tailcall_info::in, at_tail::in, at_tail::out,
+    mlds_switch_default::in, mlds_switch_default::out,
+    tc_in_body_info::in, tc_in_body_info::out) is det.
 
-mark_tailcalls_in_default(AtTail, Locals, Default0, Default) :-
+mark_tailcalls_in_default(TCallInfo, AtTailAfter, AtTailBefore,
+        Default0, Default, !InBodyInfo) :-
     (
         ( Default0 = default_is_unreachable
         ; Default0 = default_do_nothing
         ),
+        AtTailBefore = AtTailAfter,
         Default = Default0
     ;
         Default0 = default_case(Statement0),
-        mark_tailcalls_in_statement(AtTail, Locals, Statement0, Statement),
+        mark_tailcalls_in_statement(TCallInfo, AtTailAfter, AtTailBefore,
+            Statement0, Statement, !InBodyInfo),
         Default = default_case(Statement)
     ).
 
 %-----------------------------------------------------------------------------%
 
-% match_return_vals(Rvals, Lvals):
-% match_return_val(Rval, Lval):
-%   Check that the Lval(s) returned by a call match
-%   the Rval(s) in the `return' statement that follows,
-%   and those Lvals are local variables
+:- pred maybe_warn_tailcalls(tailcall_info::in, mlds_code_addr::in,
+    set(ml_call_marker)::in, mlds_context::in,
+    tc_in_body_info::in, tc_in_body_info::out) is det.
+
+maybe_warn_tailcalls(TCallInfo, CodeAddr, Markers, Context, !InBodyInfo) :-
+    WarnTailCalls = TCallInfo ^ tci_warn_tail_calls,
+    MaybeRequireTailrecInfo = TCallInfo ^ tci_maybe_require_tailrec,
+    ( if
+        % Trivially reject the common case.
+        WarnTailCalls = do_not_warn_tail_calls,
+        MaybeRequireTailrecInfo = no
+    then
+        true
+    else if
+        require_complete_switch [WarnTailCalls]
+        (
+            WarnTailCalls = do_not_warn_tail_calls,
+
+            % We always warn/error if the pragma says so.
+            MaybeRequireTailrecInfo = yes(RequireTailrecInfo),
+            RequireTailrecInfo = enable_tailrec_warnings(WarnOrError,
+                TailrecType, _)
+        ;
+            WarnTailCalls = warn_tail_calls,
+
+            % if warnings are enabled then we check the pragma.  We check
+            % that it doesn't disable warnings and also determine whether
+            % this should be a warning or error.
+            require_complete_switch [MaybeRequireTailrecInfo]
+            (
+                MaybeRequireTailrecInfo = no,
+                % Choose some defaults.
+                WarnOrError = we_warning,
+                TailrecType = both_self_and_mutual_recursion_must_be_tail
+            ;
+                MaybeRequireTailrecInfo = yes(RequireTailrecInfo),
+                require_complete_switch [RequireTailrecInfo]
+                (
+                    RequireTailrecInfo =
+                        enable_tailrec_warnings(WarnOrError, TailrecType, _)
+                ;
+                    RequireTailrecInfo = suppress_tailrec_warnings(_),
+                    false
+                )
+            )
+        ),
+        require_complete_switch [TailrecType]
+        (
+            TailrecType = both_self_and_mutual_recursion_must_be_tail
+        ;
+            TailrecType = only_self_recursion_must_be_tail
+            % XXX: Currently this has no effect since all tailcalls on MLDS
+            % are direct tail calls.
+        )
+    then
+        (
+            CodeAddr = code_addr_proc(QualProcLabel, _Sig)
+        ;
+            CodeAddr = code_addr_internal(QualProcLabel,
+                _SeqNum, _Sig)
+        ),
+        QualProcLabel = qual(_, _, ProcLabel),
+        ProcLabel = mlds_proc_label(PredLabel, ProcId),
+        (
+            PredLabel = mlds_special_pred_label(_, _, _, _)
+            % Don't warn about special preds.
+        ;
+            PredLabel = mlds_user_pred_label(PredOrFunc, _MaybeModule,
+                Name, Arity, _CodeModel, _NonOutputFunc),
+            ( if set.contains(Markers, mcm_disable_non_tail_rec_warning) then
+                true
+            else
+                SymName = unqualified(Name),
+                SimpleCallId = simple_call_id(PredOrFunc, SymName, Arity),
+                Specs0 = !.InBodyInfo ^ tibi_specs,
+                add_message_for_nontail_self_recursive_call(SimpleCallId,
+                    ProcId, mlds_get_prog_context(Context), WarnOrError,
+                    Specs0, Specs),
+                !InBodyInfo ^ tibi_specs := Specs
+            )
+        )
+    else
+        true
+    ).
+
+%-----------------------------------------------------------------------------%
+
+% call_returns_same_local_lvals_as_return_stmt(ReturnStmtRvals,
+%   CallReturnLvals):
+% call_returns_same_local_lval_as_return_stmt(ReturnStmtRval,
+%   CallReturnLval):
+%
+%   Check that the lval(s) returned by a call match the rval(s) in the
+%   `return' statement that follows, and those lvals are local variables
 %   (so that assignments to them won't have any side effects),
 %   so that we can optimize the call into a tailcall.
 
-:- pred match_return_vals(list(mlds_rval)::in, list(mlds_lval)::in) is semidet.
+:- pred call_returns_same_local_lvals_as_return_stmt(list(mlds_rval)::in,
+    list(mlds_lval)::in) is semidet.
 
-match_return_vals([], []).
-match_return_vals([Rval|Rvals], [Lval|Lvals]) :-
-    match_return_val(Rval, Lval),
-    match_return_vals(Rvals, Lvals).
+call_returns_same_local_lvals_as_return_stmt([], []).
+call_returns_same_local_lvals_as_return_stmt(
+        [ReturnStmtRval | ReturnStmtRvals],
+        [CallReturnLval | CallReturnLvals]) :-
+    call_returns_same_local_lval_as_return_stmt(ReturnStmtRval,
+        CallReturnLval),
+    call_returns_same_local_lvals_as_return_stmt(ReturnStmtRvals,
+        CallReturnLvals).
 
-:- pred match_return_val(mlds_rval::in, mlds_lval::in) is semidet.
+:- pred call_returns_same_local_lval_as_return_stmt(mlds_rval::in,
+    mlds_lval::in) is semidet.
 
-match_return_val(ml_lval(Lval), Lval) :-
-    lval_is_local(Lval) = is_local.
+call_returns_same_local_lval_as_return_stmt(ReturnStmtRval, CallReturnLval) :-
+    ReturnStmtRval = ml_lval(CallReturnLval),
+    lval_is_local(CallReturnLval) = is_local.
 
 :- type is_local
     --->    is_local
@@ -387,9 +733,9 @@ lval_is_local(Lval) = IsLocal :-
     ;
         Lval = ml_field(_Tag, Rval, _Field, _, _),
         % A field of a local variable is local.
-        ( Rval = ml_mem_addr(BaseLval) ->
+        ( if Rval = ml_mem_addr(BaseLval) then
             IsLocal = lval_is_local(BaseLval)
-        ;
+        else
             IsLocal = is_not_local
         )
     ;
@@ -405,59 +751,83 @@ lval_is_local(Lval) = IsLocal :-
     --->    may_yield_dangling_stack_ref
     ;       will_not_yield_dangling_stack_ref.
 
-% check_rvals:
-% check_maybe_rval:
-% check_rval:
+% may_rvals_yield_dangling_stack_ref:
+% may_maybe_rval_yield_dangling_stack_ref:
+% may_rval_yield_dangling_stack_ref:
 %   Find out if the specified rval(s) might evaluate to the addresses of
 %   local variables (or fields of local variables) or nested functions.
 
-:- func check_rvals(list(mlds_rval), locals) = may_yield_dangling_stack_ref.
+:- func may_rvals_yield_dangling_stack_ref(list(mlds_rval), locals) =
+    may_yield_dangling_stack_ref.
 
-check_rvals([], _) = will_not_yield_dangling_stack_ref.
-check_rvals([Rval | Rvals], Locals) = MayYieldDanglingStackRef :-
-    ( check_rval(Rval, Locals) = may_yield_dangling_stack_ref ->
+may_rvals_yield_dangling_stack_ref([], _) = will_not_yield_dangling_stack_ref.
+may_rvals_yield_dangling_stack_ref([Rval | Rvals], Locals)
+        = MayYieldDanglingStackRef :-
+    MayYieldDanglingStackRef0 = may_rval_yield_dangling_stack_ref(Rval, Locals),
+    (
+        MayYieldDanglingStackRef0 = may_yield_dangling_stack_ref,
         MayYieldDanglingStackRef = may_yield_dangling_stack_ref
     ;
-        MayYieldDanglingStackRef = check_rvals(Rvals, Locals)
+        MayYieldDanglingStackRef0 = will_not_yield_dangling_stack_ref,
+        MayYieldDanglingStackRef =
+            may_rvals_yield_dangling_stack_ref(Rvals, Locals)
     ).
 
-:- func check_maybe_rval(maybe(mlds_rval), locals)
+:- func may_maybe_rval_yield_dangling_stack_ref(maybe(mlds_rval), locals)
     = may_yield_dangling_stack_ref.
 
-check_maybe_rval(no, _) = will_not_yield_dangling_stack_ref.
-check_maybe_rval(yes(Rval), Locals) = check_rval(Rval, Locals).
+may_maybe_rval_yield_dangling_stack_ref(MaybeRval, Locals)
+        = MayYieldDanglingStackRef :-
+    (
+        MaybeRval = no,
+        MayYieldDanglingStackRef = will_not_yield_dangling_stack_ref
+    ;
+        MaybeRval = yes(Rval),
+        MayYieldDanglingStackRef =
+            may_rval_yield_dangling_stack_ref(Rval, Locals)
+    ).
 
-:- func check_rval(mlds_rval, locals) = may_yield_dangling_stack_ref.
+:- func may_rval_yield_dangling_stack_ref(mlds_rval, locals)
+    = may_yield_dangling_stack_ref.
 
-check_rval(Rval, Locals) = MayYieldDanglingStackRef :-
+may_rval_yield_dangling_stack_ref(Rval, Locals) = MayYieldDanglingStackRef :-
     (
         Rval = ml_lval(_Lval),
         % Passing the _value_ of an lval is fine.
         MayYieldDanglingStackRef = will_not_yield_dangling_stack_ref
     ;
         Rval = ml_mkword(_Tag, SubRval),
-        MayYieldDanglingStackRef = check_rval(SubRval, Locals)
+        MayYieldDanglingStackRef =
+            may_rval_yield_dangling_stack_ref(SubRval, Locals)
     ;
         Rval = ml_const(Const),
         MayYieldDanglingStackRef = check_const(Const, Locals)
     ;
-        Rval = ml_unop(_Op, XRval),
-        MayYieldDanglingStackRef = check_rval(XRval, Locals)
+        Rval = ml_unop(_Op, SubRval),
+        MayYieldDanglingStackRef =
+            may_rval_yield_dangling_stack_ref(SubRval, Locals)
     ;
-        Rval = ml_binop(_Op, XRval, YRval),
-        ( check_rval(XRval, Locals) = may_yield_dangling_stack_ref ->
+        Rval = ml_binop(_Op, SubRvalA, SubRvalB),
+        MayYieldDanglingStackRefA =
+            may_rval_yield_dangling_stack_ref(SubRvalA, Locals),
+        (
+            MayYieldDanglingStackRefA = may_yield_dangling_stack_ref,
             MayYieldDanglingStackRef = may_yield_dangling_stack_ref
         ;
-            MayYieldDanglingStackRef = check_rval(YRval, Locals)
+            MayYieldDanglingStackRefA = will_not_yield_dangling_stack_ref,
+            MayYieldDanglingStackRef =
+                may_rval_yield_dangling_stack_ref(SubRvalB, Locals)
         )
     ;
         Rval = ml_mem_addr(Lval),
         % Passing the address of an lval is a problem,
         % if that lval names a local variable.
-        MayYieldDanglingStackRef = check_lval(Lval, Locals)
+        MayYieldDanglingStackRef =
+            may_lval_yield_dangling_stack_ref(Lval, Locals)
     ;
         Rval = ml_vector_common_row(_VectorCommon, RowRval),
-        MayYieldDanglingStackRef = check_rval(RowRval, Locals)
+        MayYieldDanglingStackRef =
+            may_rval_yield_dangling_stack_ref(RowRval, Locals)
     ;
         ( Rval = ml_scalar_common(_)
         ; Rval = ml_self(_)
@@ -468,19 +838,21 @@ check_rval(Rval, Locals) = MayYieldDanglingStackRef :-
     % Find out if the specified lval might be a local variable
     % (or a field of a local variable).
     %
-:- func check_lval(mlds_lval, locals) = may_yield_dangling_stack_ref.
+:- func may_lval_yield_dangling_stack_ref(mlds_lval, locals)
+    = may_yield_dangling_stack_ref.
 
-check_lval(Lval, Locals) = MayYieldDanglingStackRef :-
+may_lval_yield_dangling_stack_ref(Lval, Locals) = MayYieldDanglingStackRef :-
     (
         Lval = ml_var(Var0, _),
-        ( var_is_local(Var0, Locals) ->
+        ( if var_is_local(Var0, Locals) then
             MayYieldDanglingStackRef = may_yield_dangling_stack_ref
-        ;
+        else
             MayYieldDanglingStackRef = will_not_yield_dangling_stack_ref
         )
     ;
         Lval = ml_field(_MaybeTag, Rval, _FieldId, _, _),
-        MayYieldDanglingStackRef = check_rval(Rval, Locals)
+        MayYieldDanglingStackRef =
+            may_rval_yield_dangling_stack_ref(Rval, Locals)
     ;
         ( Lval = ml_mem_ref(_, _)
         ; Lval = ml_global_var_ref(_)
@@ -504,27 +876,30 @@ check_lval(Lval, Locals) = MayYieldDanglingStackRef :-
 check_const(Const, Locals) = MayYieldDanglingStackRef :-
     (
         Const = mlconst_code_addr(CodeAddr),
-        ( function_is_local(CodeAddr, Locals) ->
+        ( if function_is_local(CodeAddr, Locals) then
             MayYieldDanglingStackRef = may_yield_dangling_stack_ref
-        ;
+        else
             MayYieldDanglingStackRef = will_not_yield_dangling_stack_ref
         )
     ;
         Const = mlconst_data_addr(DataAddr),
         DataAddr = data_addr(ModuleName, DataName),
-        ( DataName = mlds_data_var(VarName) ->
-            ( var_is_local(qual(ModuleName, module_qual, VarName), Locals) ->
+        ( if DataName = mlds_data_var(VarName) then
+            ( if
+                var_is_local(qual(ModuleName, module_qual, VarName), Locals)
+            then
                 MayYieldDanglingStackRef = may_yield_dangling_stack_ref
-            ;
+            else
                 MayYieldDanglingStackRef = will_not_yield_dangling_stack_ref
             )
-        ;
+        else
             MayYieldDanglingStackRef = will_not_yield_dangling_stack_ref
         )
     ;
         ( Const = mlconst_true
         ; Const = mlconst_false
         ; Const = mlconst_int(_)
+        ; Const = mlconst_uint(_)
         ; Const = mlconst_enum(_, _)
         ; Const = mlconst_char(_)
         ; Const = mlconst_foreign(_, _, _)
@@ -549,8 +924,8 @@ var_is_local(Var, Locals) :-
     % XXX we ignore the ModuleName -- that is safe, but overly conservative.
     Var = qual(_ModuleName, _QualKind, VarName),
     some [Local] (
-        locals_member(Local, Locals),
-        Local = entity_data(mlds_data_var(VarName))
+        locals_member_data(LocalDataName, Locals),
+        LocalDataName = mlds_data_var(VarName)
     ).
 
     % Check whether the specified function is defined locally (i.e. as a
@@ -571,120 +946,47 @@ function_is_local(CodeAddr, Locals) :-
     QualifiedProcLabel = qual(_ModuleName, _QualKind, ProcLabel),
     ProcLabel = mlds_proc_label(PredLabel, ProcId),
     some [Local] (
-        locals_member(Local, Locals),
-        Local = entity_function(PredLabel, ProcId, MaybeSeqNum, _PredId)
+        locals_member_func(LocalFuncName, Locals),
+        LocalFuncName = mlds_function_name(PlainFuncName),
+        PlainFuncName =
+            mlds_plain_func_name(PredLabel, ProcId, MaybeSeqNum, _PredId)
     ).
 
-    % locals_member(Name, Locals):
+    % locals_member_data(Name, Locals):
     %
-    % Nondeterministically enumerates the names of all the entities in Locals.
+    % Nondeterministically enumerates the names of all the
+    % data entities in Locals.
     %
-:- pred locals_member(mlds_entity_name::out, locals::in) is nondet.
+:- pred locals_member_data(mlds_data_name::out, locals::in) is nondet.
 
-locals_member(Name, LocalsList) :-
+locals_member_data(DataName, LocalsList) :-
     list.member(Locals, LocalsList),
     (
         Locals = local_defns(Defns),
         list.member(Defn, Defns),
-        Defn = mlds_defn(Name, _, _, _)
+        Defn = mlds_data(DataDefn),
+        DataName = DataDefn ^ mdd_data_name
     ;
         Locals = local_params(Params),
         list.member(Param, Params),
-        Param = mlds_argument(Name, _, _)
+        Param = mlds_argument(VarName, _, _),
+        DataName = mlds_data_var(VarName)
     ).
+
+    % locals_member_func(FuncName, Locals):
+    %
+    % Nondeterministically enumerates the names of all the
+    % function entities in Locals.
+    %
+:- pred locals_member_func(mlds_function_name::out, locals::in) is nondet.
+
+locals_member_func(FuncName, LocalsList) :-
+    list.member(Locals, LocalsList),
+    Locals = local_defns(Defns),
+    list.member(Defn, Defns),
+    Defn = mlds_function(FuncDefn),
+    FuncName = FuncDefn ^ mfd_function_name.
 
 %-----------------------------------------------------------------------------%
-
-ml_warn_tailcalls(Globals, MLDS, !IO) :-
-    solutions.solutions(nontailcall_in_mlds(MLDS), Warnings),
-    list.foldl(report_nontailcall_warning(Globals), Warnings, !IO).
-
-:- type tailcall_warning
-    --->    tailcall_warning(
-                mlds_pred_label,
-                proc_id,
-                mlds_context
-            ).
-
-:- pred nontailcall_in_mlds(mlds::in, tailcall_warning::out) is nondet.
-
-nontailcall_in_mlds(MLDS, Warning) :-
-    MLDS = mlds(ModuleName, _ForeignCode, _Imports, _GlobalData, Defns,
-        _InitPreds, _FinalPreds, _ExportedEnums),
-    MLDS_ModuleName = mercury_module_name_to_mlds(ModuleName),
-    nontailcall_in_defns(MLDS_ModuleName, Defns, Warning).
-
-:- pred nontailcall_in_defns(mlds_module_name::in, list(mlds_defn)::in,
-    tailcall_warning::out) is nondet.
-
-nontailcall_in_defns(ModuleName, Defns, Warning) :-
-    list.member(Defn, Defns),
-    nontailcall_in_defn(ModuleName, Defn, Warning).
-
-:- pred nontailcall_in_defn(mlds_module_name::in, mlds_defn::in,
-    tailcall_warning::out) is nondet.
-
-nontailcall_in_defn(ModuleName, Defn, Warning) :-
-    Defn = mlds_defn(Name, _Context, _Flags, DefnBody),
-    (
-        DefnBody = mlds_function(_PredProcId, _Params, FuncBody,
-            _Attributes, _EnvVarNames),
-        FuncBody = body_defined_here(Body),
-        nontailcall_in_statement(ModuleName, Name, Body, Warning)
-    ;
-        DefnBody = mlds_class(ClassDefn),
-        ClassDefn = mlds_class_defn(_Kind, _Imports, _BaseClasses,
-            _Implements, _TypeParams, CtorDefns, MemberDefns),
-        ( nontailcall_in_defns(ModuleName, CtorDefns, Warning)
-        ; nontailcall_in_defns(ModuleName, MemberDefns, Warning)
-        )
-    ).
-
-:- pred nontailcall_in_statement(mlds_module_name::in, mlds_entity_name::in,
-    statement::in, tailcall_warning::out) is nondet.
-
-nontailcall_in_statement(CallerModule, CallerFuncName, Statement, Warning) :-
-    % Nondeterministically find a non-tail call.
-    statement_contains_statement(Statement, SubStatement),
-    SubStatement = statement(SubStmt, Context),
-    SubStmt = ml_stmt_call(_CallSig, Func, _This, _Args, _RetVals, CallKind),
-    CallKind = ordinary_call,
-    % Check if this call is a directly recursive call.
-    Func = ml_const(mlconst_code_addr(CodeAddr)),
-    (
-        CodeAddr = code_addr_proc(QualProcLabel, _Sig),
-        MaybeSeqNum = no
-    ;
-        CodeAddr = code_addr_internal(QualProcLabel, SeqNum, _Sig),
-        MaybeSeqNum = yes(SeqNum)
-    ),
-    ProcLabel = mlds_proc_label(PredLabel, ProcId),
-    QualProcLabel = qual(CallerModule, module_qual, ProcLabel),
-    CallerFuncName = entity_function(PredLabel, ProcId, MaybeSeqNum, _PredId),
-    % If so, construct an appropriate warning.
-    Warning = tailcall_warning(PredLabel, ProcId, Context).
-
-:- pred report_nontailcall_warning(globals::in, tailcall_warning::in,
-    io::di, io::uo) is det.
-
-report_nontailcall_warning(Globals, Warning, !IO) :-
-    Warning = tailcall_warning(PredLabel, ProcId, Context),
-    (
-        PredLabel = mlds_user_pred_label(PredOrFunc, _MaybeModule, Name, Arity,
-            _CodeModel, _NonOutputFunc),
-        SimpleCallId = simple_call_id(PredOrFunc, unqualified(Name), Arity),
-        proc_id_to_int(ProcId, ProcNumber0),
-        ProcNumber = ProcNumber0 + 1,
-        Pieces =
-            [words("In mode number"), int_fixed(ProcNumber),
-            words("of"), simple_call(SimpleCallId), suffix(":"), nl,
-            words("warning: recursive call is not tail recursive."), nl],
-        Msg = simple_msg(mlds_get_prog_context(Context), [always(Pieces)]),
-        Spec = error_spec(severity_warning, phase_code_gen, [Msg]),
-        write_error_spec(Spec, Globals, 0, _NumWarnings, 0, _NumErrors, !IO)
-    ;
-        PredLabel = mlds_special_pred_label(_, _, _, _)
-        % Don't warn about these.
-    ).
-
+:- end_module ml_backend.ml_tailcall.
 %-----------------------------------------------------------------------------%

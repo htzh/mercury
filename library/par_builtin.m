@@ -11,16 +11,16 @@
 % Stability: low.
 %
 % This file is automatically imported, as if via `use_module', into every
-% module in lowlevel parallel grades. It is intended to hold the builtin
-% procedures that the compiler generates implicit calls to when implementing
-% parallel conjunctions.
+% module in lowlevel parallel grades. It holds the builtin procedures
+% that the compiler generates implicit calls to when implementing parallel
+% conjunctions.
 %
 % This module is a private part of the Mercury implementation; user modules
 % should never explicitly import this module. The interface for this module
 % does not get included in the Mercury library reference manual.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module par_builtin.
 :- interface.
@@ -43,8 +43,8 @@
     % Wait until Future is signalled, blocking if necessary. Then set Var
     % to the value bound to the variable associated with the future.
     %
-    % wait_future/2 doesn't actually have a side effect.  However once it has
-    % returned get_future/2 is guaranteed to be safe.  Therefore it must be
+    % wait_future/2 doesn't actually have a side effect. However once it has
+    % returned get_future/2 is guaranteed to be safe. Therefore it must be
     % impure to prevent it from being optimized away, especially in (valid)
     % cases where its output occurs only once in a procedure.
     %
@@ -89,26 +89,23 @@
     % For documentation, see MR_lc_try_get_free_slot in mercury_par_builtin.h
     % This call fails if there is no free slot available.
     %
-:- impure pred lc_free_slot(loop_control::in, int::out)
-    is semidet.
+:- impure pred lc_free_slot(loop_control::in, int::out) is semidet.
 
     % Allocate a free slot from the loop control structure and return it.
     % This call blocks the context until a free slot is available.
     %
-:- impure pred lc_wait_free_slot(loop_control::in, int::out)
-    is det.
+:- impure pred lc_wait_free_slot(loop_control::in, int::out) is det.
 
     % Finish one iteration of the loop. This call does not return.
     % For documentation, see MR_lc_join_and_terminate in mercury_par_builtin.h.
     %
-:- impure pred lc_join_and_terminate(loop_control::in, int::in)
-    is det.
+:- impure pred lc_join_and_terminate(loop_control::in, int::in) is det.
 
     % Get the default number of contexts to use for loop control.
     %
 :- impure pred lc_default_num_contexts(int::out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 % The following predicates are intended to be used as conditions to decide
 % whether the conjuncts of a conjunction should be executed in parallel or
@@ -124,15 +121,6 @@
     %
 :- impure pred evaluate_parallelism_condition is semidet.
 
-    % num_os_threads(Num)
-    %
-    % Num is the number of OS threads the runtime is configured to use, which
-    % the runtime records in the variable MR_num_threads. This is the value
-    % given by the user as the argument of the -P option in the MERCURY_OPTIONS
-    % environment variable.
-    %
-:- pred num_os_threads(int::out) is det.
-
     % Close the file that was used to log the parallel condition decisions.
     %
     % The parallel condition stats file is opened the first time it is
@@ -144,8 +132,8 @@
     %
 :- pred par_cond_close_stats_file(io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -153,12 +141,11 @@
     [can_pass_as_mercury_type]).
 
     % Placeholders only.
-:- pragma foreign_type(il, future(T), "class [mscorlib]System.Object").
 :- pragma foreign_type("Erlang", future(T), "").
 :- pragma foreign_type("C#", future(T), "object").
 :- pragma foreign_type("Java", future(T), "java.lang.Object").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
     new_future(Name::in, Future::uo),
@@ -204,7 +191,7 @@
     MR_fatal_error(""evaluate_parallelism_condition called"");
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % `wait_resume' is the piece of code we jump to when a thread suspended
     % on a future resumes after the future is signalled.
@@ -275,13 +262,12 @@ INIT mercury_sys_init_par_builtin_modules
     #endif
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_type("C", loop_control, "MR_LoopControl *",
     [can_pass_as_mercury_type]).
 
     % Placeholders only.
-:- pragma foreign_type(il, loop_control, "class [mscorlib]System.Object").
 :- pragma foreign_type("Erlang", loop_control, "").
 :- pragma foreign_type("C#", loop_control, "object").
 :- pragma foreign_type("Java", loop_control, "java.lang.Object").
@@ -300,12 +286,11 @@ INIT mercury_sys_init_par_builtin_modules
 
 % IMPORTANT: any changes or additions to external predicates should be
 % reflected in the definition of pred_is_external in mdbcomp/
-% program_representation.m.  The debugger needs to know what predicates
+% program_representation.m. The debugger needs to know what predicates
 % are defined externally, so that it knows not to expect events for those
 % predicates.
-
-:- external(lc_finish/1).
-:- external(lc_wait_free_slot/2).
+:- pragma external_pred(lc_finish/1).
+:- pragma external_pred(lc_wait_free_slot/2).
 
 :- pragma foreign_code("C",
 "
@@ -504,20 +489,7 @@ mercury_sys_init_lc_write_out_proc_statics(FILE *deep_fp,
     NumContexts = MR_num_contexts_per_loop_control;
 ").
 
-%-----------------------------------------------------------------------------%
-
-:- pragma foreign_proc("C",
-    num_os_threads(NThreads::out),
-    [will_not_call_mercury, will_not_throw_exception, thread_safe,
-        promise_pure],
-"
-    /*
-    ** MR_num_threads is available in all grades. Although it won't make sense
-    ** for non-parallel grades, it will still reflect the value configured by
-    ** the user.
-    */
-    NThreads = MR_num_threads
-").
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
     par_cond_close_stats_file(_IO0::di, _IO::uo),
@@ -531,7 +503,7 @@ mercury_sys_init_lc_write_out_proc_statics(FILE *deep_fp,
 #endif
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_code("Erlang",
 "
@@ -542,5 +514,5 @@ lc_wait_free_slot_2_p_0(_) ->
     throw(""lc_wait_free_slot is unavailable in this grade"").
 ").
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

@@ -68,14 +68,14 @@ DEFAULT_MCFLAGS=\
 		--cflags-for-warnings "@CFLAGS_FOR_WARNINGS@" \
 		--cflags-for-threads "@CFLAGS_FOR_THREADS@" \
 		--cflags-for-debug "@CFLAGS_FOR_DEBUG@" \
+		--cflags-for-sanitizers "@CFLAGS_FOR_SANITIZERS@" \
 		--cflags-for-regs "@CFLAGS_FOR_REGS@" \
 		--cflags-for-gotos "@CFLAGS_FOR_GOTOS@" \
 		--cflags-for-pic "@CFLAGS_FOR_PIC@" \
 		--c-flag-to-name-object-file "@OBJFILE_OPT@" \
-		--java-flags "@JAVAC_FLAGS_FOR_HEAP_SIZE@" \
+		--java-flags "@JAVAC_FLAGS_FOR_HEAP_SIZE_CONFIG@" \
 		--object-file-extension ".@OBJ_SUFFIX@" \
 		--pic-object-file-extension ".@EXT_FOR_PIC_OBJECTS@" \
-		--link-with-pic-object-file-extension ".@EXT_FOR_LINK_WITH_PIC_OBJECTS@" \
 		--executable-file-extension "@EXT_FOR_EXE@" \
 		--shared-library-extension ".@EXT_FOR_SHARED_LIB@" \
 		--library-extension ".@LIB_SUFFIX@" \
@@ -86,6 +86,9 @@ DEFAULT_MCFLAGS=\
 		--ranlib-flags "@RANLIBFLAGS@" \
 		--link-executable-command "@LINK_EXE@" \
 		--link-shared-lib-command "@LINK_SHARED_OBJ@" \
+		--strip-executable-command "@STRIP_EXE@" \
+		--strip-executable-shared-flags "@STRIP_EXE_SHARED_FLAGS@" \
+		--strip-executable-static-flags "@STRIP_EXE_STATIC_FLAGS@" \
 		--trace-libs "@TRACE_BASE_LIBS_SYSTEM@" \
 		--thread-libs "@THREAD_LIBS@" \
 		--hwloc-libs "@HWLOC_LIBS@" \
@@ -102,6 +105,7 @@ DEFAULT_MCFLAGS=\
 		--linker-strip-flag "@LD_STRIP_FLAG@" \
 		--linker-debug-flags "@LDFLAGS_FOR_DEBUG@" \
 		--shlib-linker-debug-flags "@LD_LIBFLAGS_FOR_DEBUG@" \
+		--linker-sanitizer-flags "@LDFLAGS_FOR_SANITIZERS@" \
 		--linker-link-lib-flag "@LINK_LIB@" \
 		--linker-link-lib-suffix "@LINK_LIB_SUFFIX@" \
 		--shlib-linker-link-lib-flag "@LINK_LIB@" \
@@ -123,7 +127,6 @@ DEFAULT_MCFLAGS=\
 		--bits-per-word "@BITS_PER_WORD@" \
 		--bytes-per-word "@BYTES_PER_WORD@" \
 		--sync-term-size "@SYNC_TERM_SIZE@" \
-		--dotnet-library-version "@MS_DOTNET_LIBRARY_VERSION@" \
 		--host-env-type "@HOST_ENV_TYPE@" \
 		--target-env-type "@TARGET_ENV_TYPE@" \
 		@RESTRICTED_COMMAND_LINE_OPT@ \

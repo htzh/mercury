@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2004-2012 The University of Melbourne.
+% Copyright (C) 2015 The Mercury team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -188,7 +189,7 @@
 
 :- implementation.
 
-:- import_module check_hlds.inst_match.
+:- import_module check_hlds.inst_test.
 :- import_module check_hlds.mode_util.
 :- import_module hlds.hlds_args.
 :- import_module hlds.hlds_clauses.
@@ -337,7 +338,7 @@ add_clauses_constraints(ModuleInfo, PredId, PredInfo, !VarInfo,
     pred_info_get_clauses_info(PredInfo, ClausesInfo),
     clauses_info_get_headvars(ClausesInfo, HeadVars),
     clauses_info_get_clauses_rep(ClausesInfo, ClausesRep, _ItemNumbers),
-    get_clause_list(ClausesRep, Clauses),
+    get_clause_list_maybe_repeated(ClausesRep, Clauses),
     clauses_info_get_varset(ClausesInfo, ProgVarset),
 
     (
@@ -450,7 +451,7 @@ add_goal_expr_constraints(ModuleInfo, ProgVarset, PredId, GoalExpr,
                 !VarInfo, !Constraints)
         ;
             % At least one declared mode
-            pred_info_get_procedures(CalleePredInfo, CalleeProcTable),
+            pred_info_get_proc_table(CalleePredInfo, CalleeProcTable),
             map.values(CalleeProcTable, CalleeProcInfos),
             list.map(proc_info_get_argmodes, CalleeProcInfos,
                 CalleeArgModeDecls),
@@ -819,12 +820,12 @@ single_mode_constraints(ModuleInfo, MCVar, Mode) = Constraint :-
     mode_util.mode_get_insts(ModuleInfo, Mode, InitialInst, FinalInst),
     (
         % Already produced?
-        not inst_match.inst_is_free(ModuleInfo, InitialInst)
+        not inst_is_free(ModuleInfo, InitialInst)
     ->
         IsProduced = no     % Not produced here.
     ;
         % free -> non-free
-        not inst_match.inst_is_free(ModuleInfo, FinalInst)
+        not inst_is_free(ModuleInfo, FinalInst)
     ->
         IsProduced = yes    % Produced here.
     ;
@@ -1055,22 +1056,6 @@ lookup_prog_var_at_path(VarMap, PredId, GoalId, ProgVar) =
 cons_prog_var_at_path(VarMap, PredId, GoalId, ProgVar, MCVars0, MCVars) :-
     MCVar = lookup_prog_var_at_path(VarMap, PredId, GoalId, ProgVar),
     MCVars = [MCVar | MCVars0].
-
-    % prog_var_at_paths(VarMap, GoalIds, ProgVar) = ConstraintVars
-    % consults the map to form a list of the constraint variable
-    % propositions that ProgVar is produced at each of the paths in
-    % GoalIds respectively.  The lookup function will report an
-    % error if the key (ProgVar `in` PredId) `at` GoalId does not
-    % exist in the map for any of the goal ids in GoalIds.
-    %
-:- func prog_var_at_paths(mc_var_map, pred_id, list(goal_id), prog_var) =
-    list(mc_var).
-
-prog_var_at_paths(VarMap, PredId, GoalIds, ProgVar) =
-    list.map(
-        func(GoalId) =
-            lookup_prog_var_at_path(VarMap, PredId, GoalId, ProgVar),
-        GoalIds).
 
     % nonlocals_at_path_and_subpaths(ProgVarset, GoalId, SubIds,
     %   Nonlocals, NonlocalsAtId, NonlocalsAtSubIds, !VarInfo)

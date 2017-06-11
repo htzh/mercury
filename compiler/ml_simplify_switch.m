@@ -36,13 +36,15 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
 :- import_module backend_libs.switch_util.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
 :- import_module ml_backend.ml_code_util.
-:- import_module ml_backend.ml_switch_gen.
 :- import_module ml_backend.ml_target_util.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_type.
 
 :- import_module bool.
@@ -56,7 +58,7 @@
 
 ml_simplify_switch(Stmt0, MLDS_Context, Statement, !Info) :-
     ml_gen_info_get_globals(!.Info, Globals),
-    (
+    ( if
         % Convert dense int switches into computed gotos,
         % unless the target prefers switches.
 
@@ -67,7 +69,7 @@ ml_simplify_switch(Stmt0, MLDS_Context, Statement, !Info) :-
         % Does the target want us to convert dense int switches
         % into computed gotos?
         globals_target_supports_computed_goto(Globals) = yes,
-        \+ (
+        not (
             globals_target_supports_int_switch(Globals) = yes,
             globals.lookup_bool_option(Globals, prefer_switch, yes)
         ),
@@ -81,7 +83,7 @@ ml_simplify_switch(Stmt0, MLDS_Context, Statement, !Info) :-
         globals.lookup_int_option(Globals, dense_switch_req_density,
             ReqDensity),
         is_dense_switch(Cases, ReqDensity)
-    ->
+    then
         maybe_eliminate_default(Range, Cases, Default, ReqDensity,
             FirstVal, LastVal, NeedRangeCheck),
         generate_dense_switch(Cases, Default, FirstVal, LastVal,
@@ -89,30 +91,30 @@ ml_simplify_switch(Stmt0, MLDS_Context, Statement, !Info) :-
             Decls, Statements, !Info),
         Stmt = ml_stmt_block(Decls, Statements),
         Statement = statement(Stmt, MLDS_Context)
-    ;
+    else if
         % Convert the remaining (sparse) int switches into if-then-else chains,
         % unless the target prefers switches.
 
         Stmt0 = ml_stmt_switch(Type, Rval, _Range, Cases, Default),
         is_integral_type(Type) = yes,
-        \+ (
+        not (
             globals_target_supports_int_switch(Globals) = yes,
             globals.lookup_bool_option(Globals, prefer_switch, yes)
         )
-    ->
+    then
         Statement = ml_switch_to_if_else_chain(Cases, Default, Rval,
             MLDS_Context)
-    ;
+    else if
         % Optimize away trivial switches (these can occur e.g. with
         % --tags none, where the tag test always has only one reachable case)
 
         Stmt0 = ml_stmt_switch(_Type, _Rval, _Range, Cases, Default),
         Cases = [SingleCase],
         Default = default_is_unreachable
-    ->
+    then
         SingleCase = mlds_switch_case(_FirstCond, _LaterConds, CaseStatement),
         Statement = CaseStatement
-    ;
+    else
         Stmt = Stmt0,
         Statement = statement(Stmt, MLDS_Context)
     ).
@@ -122,6 +124,7 @@ ml_simplify_switch(Stmt0, MLDS_Context, Statement, !Info) :-
 is_integral_type(MLDSType) = IsIntegral :-
     (
         ( MLDSType = mlds_native_int_type
+        ; MLDSType = mlds_native_uint_type
         ; MLDSType = mlds_native_char_type
         ),
         IsIntegral = yes
@@ -150,6 +153,7 @@ is_integral_type(MLDSType) = IsIntegral :-
         MLDSType = mercury_type(_, CtorCat, _),
         (
             ( CtorCat = ctor_cat_builtin(cat_builtin_int)
+            ; CtorCat = ctor_cat_builtin(cat_builtin_uint)
             ; CtorCat = ctor_cat_builtin(cat_builtin_char)
             ; CtorCat = ctor_cat_enum(cat_enum_mercury)
             ),
@@ -201,18 +205,18 @@ is_dense_switch(Cases, ReqDensity) :-
 
 maybe_eliminate_default(Range, Cases, Default, ReqDensity,
         FirstVal, LastVal, NeedRangeCheck) :-
-    (
+    ( if
         Default \= default_is_unreachable,
         Range = mlds_switch_range(Min, Max),
         TypeRange = Max - Min + 1,
         NumCases = list.length(Cases),
         NoDefaultDensity = switch_density(NumCases, TypeRange),
         NoDefaultDensity > ReqDensity
-    ->
+    then
         NeedRangeCheck = no,
         FirstVal = Min,
         LastVal = Max
-    ;
+    else
         (
             Default = default_is_unreachable,
             NeedRangeCheck = no
@@ -250,23 +254,22 @@ find_min_and_max_in_case(Case, !Min, !Max) :-
     int::in, int::out, int::in, int::out) is det.
 
 find_min_and_max_in_case_cond(match_value(Rval), !Min, !Max) :-
-    (
+    ( if
         Rval = ml_const(mlconst_int(Val))
-    ->
+    then
         int.min(Val, !Min),
         int.max(Val, !Max)
-    ;
+    else
         unexpected($module, $pred, "non-int case")
     ).
-find_min_and_max_in_case_cond(match_range(MinRval, MaxRval),
-        !Min, !Max) :-
-    (
+find_min_and_max_in_case_cond(match_range(MinRval, MaxRval), !Min, !Max) :-
+    ( if
         MinRval = ml_const(mlconst_int(RvalMin)),
         MaxRval = ml_const(mlconst_int(RvalMax))
-    ->
+    then
         int.min(RvalMin, !Min),
         int.max(RvalMax, !Max)
-    ;
+    else
         unexpected($module, $pred, "non-int case")
     ).
 
@@ -284,9 +287,9 @@ generate_dense_switch(Cases, Default, FirstVal, LastVal, NeedRangeCheck,
         _Type, Rval, MLDS_Context, Decls, Statements, !Info) :-
     % If the case values start at some number other than 0,
     % then subtract that number to give us a zero-based index.
-    ( FirstVal = 0 ->
+    ( if FirstVal = 0 then
         Index = Rval
-    ;
+    else
         Index = ml_binop(int_sub, Rval, ml_const(mlconst_int(FirstVal)))
     ),
 
@@ -399,19 +402,19 @@ generate_case(Case, EndLabel, !CaseLabelsMap, Decls, Statements, !Info) :-
 insert_case_into_map(ThisLabel, Cond, !CaseLabelsMap) :-
     (
         Cond = match_value(Rval),
-        ( Rval = ml_const(mlconst_int(Val)) ->
+        ( if Rval = ml_const(mlconst_int(Val)) then
             map.det_insert(Val, ThisLabel, !CaseLabelsMap)
-        ;
+        else
             unexpected($module, $pred, "non-int case")
         )
     ;
         Cond = match_range(MinRval, MaxRval),
-        (
+        ( if
             MinRval = ml_const(mlconst_int(Min)),
             MaxRval = ml_const(mlconst_int(Max))
-        ->
+        then
             insert_range_into_map(Min, Max, ThisLabel, !CaseLabelsMap)
-        ;
+        else
             unexpected($module, $pred, "non-int case")
         )
     ).
@@ -420,9 +423,9 @@ insert_case_into_map(ThisLabel, Cond, !CaseLabelsMap) :-
     case_labels_map::in, case_labels_map::out) is det.
 
 insert_range_into_map(Min, Max, ThisLabel, !CaseLabelsMap) :-
-    ( Min > Max ->
+    ( if Min > Max then
         true
-    ;
+    else
         map.det_insert(Min, ThisLabel, !CaseLabelsMap),
         insert_range_into_map(Min + 1, Max, ThisLabel, !CaseLabelsMap)
     ).
@@ -438,12 +441,12 @@ insert_range_into_map(Min, Max, ThisLabel, !CaseLabelsMap) :-
     = list(mlds_label).
 
 get_case_labels(ThisVal, LastVal, CaseLabelsMap, DefaultLabel) = CaseLabels :-
-    ( ThisVal > LastVal ->
+    ( if ThisVal > LastVal then
         CaseLabels = []
-    ;
-        ( map.search(CaseLabelsMap, ThisVal, CaseLabel0) ->
+    else
+        ( if map.search(CaseLabelsMap, ThisVal, CaseLabel0) then
             CaseLabel = CaseLabel0
-        ;
+        else
             CaseLabel = DefaultLabel
         ),
         CaseLabels1 = get_case_labels(ThisVal + 1, LastVal,
@@ -472,12 +475,12 @@ ml_switch_to_if_else_chain([], Default, _Rval, MLDS_Context) = Statement :-
 ml_switch_to_if_else_chain([Case | Cases], Default, SwitchRval, MLDS_Context) =
         Statement :-
     Case = mlds_switch_case(FirstMatchCond, LaterMatchConds, CaseStatement),
-    (
+    ( if
         Cases = [],
         Default = default_is_unreachable
-    ->
+    then
         Statement = CaseStatement
-    ;
+    else
         AllMatchConds = [FirstMatchCond | LaterMatchConds],
         CaseMatchedRval = ml_gen_case_match_conds(AllMatchConds, SwitchRval),
         RestStatement = ml_switch_to_if_else_chain(Cases, Default, SwitchRval,

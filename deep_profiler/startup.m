@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2001-2002, 2004-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: startup.m.
 % Authors: conway, zs.
@@ -14,7 +14,7 @@
 % requests for web pages. The algorithm it implements is documented in the
 % deep profiling paper.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module startup.
 :- interface.
@@ -27,7 +27,7 @@
 :- import_module list.
 :- import_module maybe.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred read_and_startup_default_deep_options(string::in, string::in,
     string::in, bool::in, maybe(io.output_stream)::in, list(string)::in,
@@ -37,8 +37,8 @@
     string::in, bool::in, maybe(io.output_stream)::in, list(string)::in,
     dump_options::in, maybe_error(deep)::out, io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -50,7 +50,6 @@
 :- import_module mdbcomp.program_representation.
 :- import_module mdbcomp.shared_utilities.
 :- import_module measurements.
-:- import_module profile.
 :- import_module read_profile.
 
 :- import_module array.
@@ -59,7 +58,7 @@
 :- import_module require.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 read_and_startup_default_deep_options(Machine, ScriptName, DataFileName,
         Canonical, MaybeOutputStream, DumpStages, Res, !IO) :-
@@ -96,9 +95,9 @@ read_and_startup(Machine, ScriptName, DataFileName, Canonical,
 :- func make_progrep_filename(string) = string.
 
 make_progrep_filename(DataFileName) = ProgrepFileName :-
-    ( remove_suffix(DataFileName, ".data", BaseFileName) ->
+    ( if string.remove_suffix(DataFileName, ".data", BaseFileName) then
         ProgrepFileName = BaseFileName ++ ".procrep"
-    ;
+    else
         error("Couldn't remove suffix from deep file name: " ++ DataFileName)
     ).
 
@@ -368,9 +367,9 @@ startup(Machine, ScriptName, DataFileName, Canonical, MaybeOutputStream,
 :- func contour_file_name(string) = string.
 
 contour_file_name(DataFileName) = ContourFileName :-
-    ( remove_suffix(DataFileName, ".data", BaseFileName) ->
+    ( if string.remove_suffix(DataFileName, ".data", BaseFileName) then
         ContourFileName = BaseFileName ++ ".contour"
-    ;
+    else
         error("Couldn't remove suffix from deep file name: " ++ DataFileName)
     ).
 
@@ -388,9 +387,9 @@ initialize_module_data(PSPtrs) =
     map(string, module_data)::in, map(string, module_data)::out) is det.
 
 ensure_module_has_module_data(Module, !ModuleDataMap) :-
-    ( map.search(!.ModuleDataMap, Module, _) ->
+    ( if map.search(!.ModuleDataMap, Module, _) then
         true
-    ;
+    else
         Data = module_data(zero_own_prof_info, zero_inherit_prof_info, []),
         map.det_insert(Module, Data, !ModuleDataMap)
     ).
@@ -400,13 +399,11 @@ ensure_module_has_module_data(Module, !ModuleDataMap) :-
 
 maybe_dump(BaseName, DumpStages, ThisStageNum, Action, !IO) :-
     string.int_to_string(ThisStageNum, ThisStage),
-    (
-        (
-            list.member("all", DumpStages)
-        ;
-            list.member(ThisStage, DumpStages)
+    ( if
+        ( list.member("all", DumpStages)
+        ; list.member(ThisStage, DumpStages)
         )
-    ->
+    then
         string.append_list([BaseName, ".deepdump.", ThisStage], FileName),
         io.open_output(FileName, OpenRes, !IO),
         (
@@ -420,11 +417,11 @@ maybe_dump(BaseName, DumpStages, ThisStageNum, Action, !IO) :-
             io.error_message(Error, Msg),
             io.format("%s: %s\n", [s(FileName), s(Msg)], !IO)
         )
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred record_css_containers_module_procs(int::in, proc_static::in,
     array(call_site_static)::array_di,
@@ -438,9 +435,9 @@ record_css_containers_module_procs(PSI, PS, !CallSiteStatics, !ModuleProcs) :-
     array.max(CSSPtrs, MaxCS),
     record_css_containers_2(MaxCS, PSPtr, CSSPtrs, !CallSiteStatics),
     DeclModule = PS ^ ps_decl_module,
-    ( map.search(!.ModuleProcs, DeclModule, PSPtrs0) ->
+    ( if map.search(!.ModuleProcs, DeclModule, PSPtrs0) then
         map.det_update(DeclModule, [PSPtr | PSPtrs0], !ModuleProcs)
-    ;
+    else
         map.det_insert(DeclModule, [PSPtr], !ModuleProcs)
     ).
 
@@ -450,7 +447,7 @@ record_css_containers_module_procs(PSI, PS, !CallSiteStatics, !ModuleProcs) :-
     array(call_site_static)::array_uo) is det.
 
 record_css_containers_2(SlotNum, PSPtr, CSSPtrs, !CallSiteStatics) :-
-    ( SlotNum >= 0 ->
+    ( if SlotNum >= 0 then
         array.lookup(CSSPtrs, SlotNum, CSSPtr),
         lookup_call_site_statics(!.CallSiteStatics, CSSPtr, CSS0),
         CSS0 = call_site_static(PSPtr0, SlotNum0,
@@ -463,11 +460,11 @@ record_css_containers_2(SlotNum, PSPtr, CSSPtrs, !CallSiteStatics) :-
             Kind, LineNumber, GoalPath),
         update_call_site_statics(CSSPtr, CSS, !CallSiteStatics),
         record_css_containers_2(SlotNum - 1, PSPtr, CSSPtrs, !CallSiteStatics)
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred record_csd_containers_zeroed_pss(int::in, proc_dynamic::in,
     array(call_site_dynamic)::array_di,
@@ -504,7 +501,7 @@ record_csd_containers_2(PDPtr, [CSDPtr | CSDPtrs], !CallSiteDynamics) :-
     update_call_site_dynamics(CSDPtr, CSD, !CallSiteDynamics),
     record_csd_containers_2(PDPtr, CSDPtrs, !CallSiteDynamics).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred construct_clique_parents(initial_deep::in, array(clique_ptr)::in,
     int::in, clique_ptr::in,
@@ -515,13 +512,13 @@ record_csd_containers_2(PDPtr, [CSDPtr | CSDPtrs], !CallSiteDynamics) :-
 
 construct_clique_parents(InitDeep, CliqueIndex, PDI, CliquePtr,
         !CliqueParents, !CliqueMaybeChildren) :-
-    ( PDI > 0 ->
+    ( if PDI > 0 then
         flat_call_sites(InitDeep ^ init_proc_dynamics,
             proc_dynamic_ptr(PDI), CSDPtrs),
         array_list_foldl2(
             construct_clique_parents_2(InitDeep, CliqueIndex, CliquePtr),
             CSDPtrs, !CliqueParents, !CliqueMaybeChildren)
-    ;
+    else
         error("construct_clique_parents: invalid pdi")
     ).
 
@@ -535,27 +532,27 @@ construct_clique_parents(InitDeep, CliqueIndex, PDI, CliquePtr,
 construct_clique_parents_2(InitDeep, CliqueIndex, ParentCliquePtr, CSDPtr,
         !CliqueParents, !CliqueMaybeChildren) :-
     CSDPtr = call_site_dynamic_ptr(CSDI),
-    ( CSDI > 0 ->
+    ( if CSDI > 0 then
         array.lookup(InitDeep ^ init_call_site_dynamics, CSDI, CSD),
         ChildPDPtr = CSD ^ csd_callee,
         ChildPDPtr = proc_dynamic_ptr(ChildPDI),
-        ( ChildPDI > 0 ->
+        ( if ChildPDI > 0 then
             array.lookup(CliqueIndex, ChildPDI, ChildCliquePtr),
-            ( ChildCliquePtr \= ParentCliquePtr ->
+            ( if ChildCliquePtr \= ParentCliquePtr then
                 ChildCliquePtr = clique_ptr(ChildCliqueNum),
                 array.set(ChildCliqueNum, CSDPtr, !CliqueParents),
                 array.set(CSDI, yes(ChildCliquePtr), !CliqueMaybeChildren)
-            ;
+            else
                 true
             )
-        ;
+        else
             true
         )
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred construct_proc_callers(initial_deep::in, int::in,
     call_site_dynamic::in,
@@ -564,13 +561,13 @@ construct_clique_parents_2(InitDeep, CliqueIndex, ParentCliquePtr, CSDPtr,
 
 construct_proc_callers(InitDeep, CSDI, CSD, !ProcCallers) :-
     PDPtr = CSD ^ csd_callee,
-    ( valid_proc_dynamic_ptr_raw(InitDeep ^ init_proc_dynamics, PDPtr) ->
+    ( if valid_proc_dynamic_ptr_raw(InitDeep ^ init_proc_dynamics, PDPtr) then
         lookup_proc_dynamics(InitDeep ^ init_proc_dynamics, PDPtr, PD),
         PSPtr = PD ^ pd_proc_static,
         lookup_proc_callers(!.ProcCallers, PSPtr, Callers0),
         Callers = [call_site_dynamic_ptr(CSDI) | Callers0],
         update_proc_callers(PSPtr, Callers, !ProcCallers)
-    ;
+    else
         true
     ).
 
@@ -596,7 +593,7 @@ construct_call_site_caller(InitDeep, _PDI, PD, !CallSiteStaticMap) :-
 
 construct_call_site_caller_2(SlotNum, Deep, CSSPtrs, CSDArraySlots,
         !CallSiteStaticMap) :-
-    ( SlotNum >= 0 ->
+    ( if SlotNum >= 0 then
         array.lookup(CSDArraySlots, SlotNum, CSDArraySlot),
         array.lookup(CSSPtrs, SlotNum, CSSPtr),
         (
@@ -610,7 +607,7 @@ construct_call_site_caller_2(SlotNum, Deep, CSSPtrs, CSDArraySlots,
         ),
         construct_call_site_caller_2(SlotNum - 1, Deep, CSSPtrs,
             CSDArraySlots, !CallSiteStaticMap)
-    ;
+    else
         true
     ).
 
@@ -621,13 +618,13 @@ construct_call_site_caller_2(SlotNum, Deep, CSSPtrs, CSDArraySlots,
 
 construct_call_site_caller_3(CallSiteDynamics, CSSPtr, _Dummy, CSDPtr,
         !CallSiteStaticMap) :-
-    ( valid_call_site_dynamic_ptr_raw(CallSiteDynamics, CSDPtr) ->
+    ( if valid_call_site_dynamic_ptr_raw(CallSiteDynamics, CSDPtr) then
         update_call_site_static_map(CSDPtr, CSSPtr, !CallSiteStaticMap)
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred construct_call_site_calls(initial_deep::in, int::in, proc_dynamic::in,
     array(map(proc_static_ptr, list(call_site_dynamic_ptr)))::array_di,
@@ -655,7 +652,7 @@ construct_call_site_calls(InitDeep, _PDI, PD, !CallSiteCalls) :-
 
 construct_call_site_calls_2(CallSiteDynamics, ProcDynamics, SlotNum,
         CSSPtrs, CSDArraySlots, !CallSiteCalls) :-
-    ( SlotNum >= 0 ->
+    ( if SlotNum >= 0 then
         array.lookup(CSDArraySlots, SlotNum, CSDArraySlot),
         array.lookup(CSSPtrs, SlotNum, CSSPtr),
         (
@@ -671,7 +668,7 @@ construct_call_site_calls_2(CallSiteDynamics, ProcDynamics, SlotNum,
         ),
         construct_call_site_calls_2(CallSiteDynamics, ProcDynamics,
             SlotNum - 1, CSSPtrs, CSDArraySlots, !CallSiteCalls)
-    ;
+    else
         true
     ).
 
@@ -684,7 +681,7 @@ construct_call_site_calls_2(CallSiteDynamics, ProcDynamics, SlotNum,
 construct_call_site_calls_3(CallSiteDynamics, ProcDynamics, CSSPtr,
         _Dummy, CSDPtr, !CallSiteCalls) :-
     CSDPtr = call_site_dynamic_ptr(CSDI),
-    ( CSDI > 0 ->
+    ( if CSDI > 0 then
         array.lookup(CallSiteDynamics, CSDI, CSD),
         PDPtr = CSD ^ csd_callee,
         PDPtr = proc_dynamic_ptr(PDI),
@@ -693,19 +690,19 @@ construct_call_site_calls_3(CallSiteDynamics, ProcDynamics, CSSPtr,
 
         CSSPtr = call_site_static_ptr(CSSI),
         array.lookup(!.CallSiteCalls, CSSI, CallMap0),
-        ( map.search(CallMap0, PSPtr, CallList0) ->
+        ( if map.search(CallMap0, PSPtr, CallList0) then
             CallList = [CSDPtr | CallList0],
             map.det_update(PSPtr, CallList, CallMap0, CallMap)
-        ;
+        else
             CallList = [CSDPtr],
             map.det_insert(PSPtr, CallList, CallMap0, CallMap)
         ),
         array.set(CSSI, CallMap, !CallSiteCalls)
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred sum_call_sites_in_proc_dynamic(int::in, call_site_dynamic::in,
     array(own_prof_info)::array_di, array(own_prof_info)::array_uo) is det.
@@ -714,15 +711,15 @@ sum_call_sites_in_proc_dynamic(_, CSD, !PDOwnArray) :-
     CalleeOwn = CSD ^ csd_own_prof,
     PDPtr = CSD ^ csd_callee,
     PDPtr = proc_dynamic_ptr(PDI),
-    ( PDI > 0 ->
+    ( if PDI > 0 then
         array.lookup(!.PDOwnArray, PDI, ProcOwn0),
         ProcOwn = add_own_to_own(CalleeOwn, ProcOwn0),
         array.set(PDI, ProcOwn, !PDOwnArray)
-    ;
+    else
         error("sum_call_sites_in_proc_dynamic: invalid pdptr")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred summarize_proc_dynamics(deep::in, deep::out) is det.
 
@@ -753,9 +750,9 @@ summarize_proc_dynamic(PDOwnArray, PDDescArray, PDCompTableArray, PDI, PD,
     lookup_pd_own(PDOwnArray, PDPtr, PDOwn),
     lookup_pd_desc(PDDescArray, PDPtr, PDDesc0),
     lookup_pd_comp_table(PDCompTableArray, PDPtr, PDCompTable),
-    ( map.search(PDCompTable, PSPtr, InnerTotal) ->
+    ( if map.search(PDCompTable, PSPtr, InnerTotal) then
         PDDesc = subtract_inherit_from_inherit(InnerTotal, PDDesc0)
-    ;
+    else
         PDDesc = PDDesc0
     ),
     lookup_ps_own(PSOwnArray0, PSPtr, PSOwn0),
@@ -769,7 +766,7 @@ summarize_proc_dynamic(PDOwnArray, PDDescArray, PDCompTableArray, PDI, PD,
 
 summarize_proc_dynamics_with_coverage_data(!Deep) :-
     % These arrays are one based, the +1 here is necessary to allocate the
-    % correect amount of storage.
+    % correct amount of storage.
     NPS = !.Deep ^ profile_stats ^ prs_num_ps + 1,
     array_foldl3_from_1(
         summarize_proc_dynamic_with_coverage(!.Deep ^ pd_own,
@@ -809,7 +806,7 @@ summarize_proc_dynamic_with_coverage(PDOwnArray, PDDescArray, PDCompTableArray,
         unexpected($module, $pred, "no coverage point array in proc dynamic")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred summarize_call_site_dynamics(deep::in, deep::out) is det.
 
@@ -839,14 +836,14 @@ summarize_call_site_dynamic(CallSiteStaticMap, CallSiteStatics,
     CSDPtr = call_site_dynamic_ptr(CSDI),
     lookup_call_site_static_map(CallSiteStaticMap, CSDPtr, CSSPtr),
     CSSPtr = call_site_static_ptr(CSSI),
-    ( CSSI > 0 ->
+    ( if CSSI > 0 then
         CSDOwn = CSD ^ csd_own_prof,
         lookup_csd_desc(CSDDescs, CSDPtr, CSDDesc0),
         lookup_csd_comp_table(CSDCompTableArray, CSDPtr, CSDCompTable),
         lookup_call_site_statics(CallSiteStatics, CSSPtr, CSS),
-        ( map.search(CSDCompTable, CSS ^ css_container, InnerTotal) ->
+        ( if map.search(CSDCompTable, CSS ^ css_container, InnerTotal) then
             CSDDesc = subtract_inherit_from_inherit(InnerTotal, CSDDesc0)
-        ;
+        else
             CSDDesc = CSDDesc0
         ),
         lookup_css_own(CSSOwnArray0, CSSPtr, CSSOwn0),
@@ -855,11 +852,11 @@ summarize_call_site_dynamic(CallSiteStaticMap, CallSiteStatics,
         add_inherit_to_inherit(CSDDesc, CSSDesc0) = CSSDesc,
         update_css_own(CSSPtr, CSSOwn, u(CSSOwnArray0), CSSOwnArray),
         update_css_desc(CSSPtr, CSSDesc, u(CSSDescArray0), CSSDescArray)
-    ;
+    else
         error("summarize_call_site_dynamic: invalid css ptr")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred summarize_modules(deep::in, deep::out) is det.
 
@@ -876,7 +873,7 @@ summarize_module_costs(Deep, ModuleData0) = ModuleData :-
     list.foldl2(accumulate_ps_costs(Deep), PSPtrs, Own0, Own, Desc0, Desc),
     ModuleData = module_data(Own, Desc, PSPtrs).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred summarize_proc_statics_coverage(deep::in, deep::out) is det.
 
@@ -903,7 +900,7 @@ summarize_proc_static_coverage(Index, PS, !CoverageArray) :-
         unexpected($module, $pred, "no coverage data in proc static")
     ).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred accumulate_ps_costs(deep::in, proc_static_ptr::in,
     own_prof_info::in, own_prof_info::out,
@@ -915,7 +912,7 @@ accumulate_ps_costs(Deep, PSPtr, Own0, Own, Desc0, Desc) :-
     Own = add_own_to_own(Own0, PSOwn),
     Desc = add_inherit_to_inherit(Desc0, PSDesc).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred propagate_to_clique(int::in, list(proc_dynamic_ptr)::in,
     deep::in, deep::out) is det.
@@ -924,7 +921,7 @@ propagate_to_clique(CliqueNumber, Members, !Deep) :-
     array.lookup(!.Deep ^ clique_parents, CliqueNumber, ParentCSDPtr),
     list.foldl3(propagate_to_proc_dynamic(CliqueNumber, ParentCSDPtr), Members,
         !Deep, map.init, SumTable, map.init, OverrideMap),
-    ( valid_call_site_dynamic_ptr(!.Deep, ParentCSDPtr) ->
+    ( if valid_call_site_dynamic_ptr(!.Deep, ParentCSDPtr) then
         deep_lookup_call_site_dynamics(!.Deep, ParentCSDPtr, ParentCSD),
         ParentOwn = ParentCSD ^ csd_own_prof,
         deep_lookup_csd_desc(!.Deep, ParentCSDPtr, ParentDesc0),
@@ -932,7 +929,7 @@ propagate_to_clique(CliqueNumber, Members, !Deep) :-
         deep_update_csd_desc(ParentCSDPtr, ParentDesc, !Deep),
         CSDCompTable = apply_override(OverrideMap, SumTable),
         deep_update_csd_comp_table(ParentCSDPtr, CSDCompTable, !Deep)
-    ;
+    else
         true
     ).
 
@@ -956,17 +953,17 @@ propagate_to_proc_dynamic(CliqueNumber, ParentCSDPtr, PDPtr, !Deep,
     deep_lookup_proc_dynamics(!.Deep, PDPtr, PD),
     PSPtr = PD ^ pd_proc_static,
     deep_lookup_proc_statics(!.Deep, PSPtr, PS),
-    ( PS ^ ps_is_zeroed = zeroed ->
+    ( if PS ^ ps_is_zeroed = zeroed then
         !:OverrideTable = add_to_override(!.OverrideTable, PSPtr, ProcTotal)
-    ;
+    else
         true
     ),
 
-    ( valid_call_site_dynamic_ptr(!.Deep, ParentCSDPtr) ->
+    ( if valid_call_site_dynamic_ptr(!.Deep, ParentCSDPtr) then
         deep_lookup_csd_desc(!.Deep, ParentCSDPtr, ParentDesc0),
         ParentDesc = add_inherit_to_inherit(ParentDesc0, ProcTotal),
         deep_update_csd_desc(ParentCSDPtr, ParentDesc, !Deep)
-    ;
+    else
         true
     ).
 
@@ -980,10 +977,10 @@ propagate_to_call_site(CliqueNumber, PDPtr, CSDPtr, !Deep, !PDCompTable) :-
     CalleePDPtr = CSD ^ csd_callee,
     deep_lookup_clique_index(!.Deep, CalleePDPtr, ChildCliquePtr),
     ChildCliquePtr = clique_ptr(ChildCliqueNumber),
-    ( ChildCliqueNumber = CliqueNumber ->
+    ( if ChildCliqueNumber = CliqueNumber then
         % We don't propagate profiling measurements along intra-clique calls.
         true
-    ;
+    else
         deep_lookup_pd_desc(!.Deep, PDPtr, ProcDesc0),
         deep_lookup_csd_desc(!.Deep, CSDPtr, CalleeDesc),
         CalleeTotal = add_own_to_inherit(CalleeOwn, CalleeDesc),
@@ -993,17 +990,17 @@ propagate_to_call_site(CliqueNumber, PDPtr, CSDPtr, !Deep, !PDCompTable) :-
         !:PDCompTable = add_comp_tables(!.PDCompTable, CSDCompTable)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func add_comp_tables(compensation_table, compensation_table)
     = compensation_table.
 
 add_comp_tables(CompTableA, CompTableB) = CompTable :-
-    ( map.is_empty(CompTableA) ->
+    ( if map.is_empty(CompTableA) then
         CompTable = CompTableB
-    ; map.is_empty(CompTableB) ->
+    else if map.is_empty(CompTableB) then
         CompTable = CompTableA
-    ;
+    else
         CompTable = map.union(add_inherit_to_inherit, CompTableA, CompTableB)
     ).
 
@@ -1011,11 +1008,11 @@ add_comp_tables(CompTableA, CompTableB) = CompTable :-
     = compensation_table.
 
 apply_override(CompTableA, CompTableB) = CompTable :-
-    ( map.is_empty(CompTableA) ->
+    ( if map.is_empty(CompTableA) then
         CompTable = CompTableB
-    ; map.is_empty(CompTableB) ->
+    else if map.is_empty(CompTableB) then
         CompTable = CompTableA
-    ;
+    else
         CompTable = map.union(select_override_comp, CompTableA, CompTableB)
     ).
 
@@ -1028,14 +1025,14 @@ select_override_comp(OverrideComp, _) = OverrideComp.
     proc_static_ptr, inherit_prof_info) = compensation_table.
 
 add_to_override(!.CompTable, PSPtr, PDTotal) = !:CompTable :-
-    ( map.search(!.CompTable, PSPtr, Comp0) ->
+    ( if map.search(!.CompTable, PSPtr, Comp0) then
         Comp = add_inherit_to_inherit(Comp0, PDTotal),
         map.det_update(PSPtr, Comp, !CompTable)
-    ;
+    else
         map.det_insert(PSPtr, PDTotal, !CompTable)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred flat_call_sites(proc_dynamics::in, proc_dynamic_ptr::in,
     list(call_site_dynamic_ptr)::out) is det.
@@ -1064,9 +1061,9 @@ gather_call_site_csdptrs(Slot, CSDPtrs0, CSDPtrs1, IsZeroed0, IsZeroed) :-
     (
         Slot = slot_normal(CSDPtr),
         CSDPtr = call_site_dynamic_ptr(CSDI),
-        ( CSDI > 0 ->
+        ( if CSDI > 0 then
             CSDPtrs1 = [[CSDPtr] | CSDPtrs0]
-        ;
+        else
             CSDPtrs1 = CSDPtrs0
         ),
         IsZeroed = IsZeroed0
@@ -1087,7 +1084,7 @@ gather_call_site_csdptrs(Slot, CSDPtrs0, CSDPtrs1, IsZeroed0, IsZeroed) :-
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_report_stats(maybe(io.output_stream)::in,
     io::di, io::uo) is det.
@@ -1110,6 +1107,6 @@ maybe_report_msg(yes(OutputStream), Msg, !IO) :-
     flush_output(OutputStream, !IO).
 maybe_report_msg(no, _, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module startup.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

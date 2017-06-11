@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2011-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: autopar_search_callgraph.m
 % Author: pbone.
@@ -13,7 +13,7 @@
 % in order to determine how best to automatically parallelise the program.
 % This code is used by the mdprof_create_feedback tool.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdprof_fb.automatic_parallelism.autopar_search_callgraph.
 :- interface.
@@ -26,7 +26,7 @@
 
 :- import_module cord.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Build the candidate parallel conjunctions feedback information used for
     % implicit parallelism.
@@ -35,8 +35,8 @@
     deep::in, cord(message)::out, feedback_info::in, feedback_info::out)
     is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -53,24 +53,23 @@
 :- import_module program_representation_utils.
 :- import_module recursion_patterns.
 :- import_module report.
-:- import_module var_use_analysis.
 
-:- import_module pair.
-:- import_module list.
 :- import_module array.
 :- import_module assoc_list.
 :- import_module bool.
+:- import_module exception.
 :- import_module float.
-:- import_module io.
 :- import_module int.
-:- import_module lazy.
+:- import_module io.
+:- import_module list.
 :- import_module map.
 :- import_module maybe.
+:- import_module pair.
 :- import_module require.
 :- import_module set.
 :- import_module string.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % The code in this section has some trace goals that can be enabled with:
 %
@@ -99,12 +98,14 @@ candidate_parallel_conjunctions(Params, Deep, Messages, !Feedback) :-
     assoc_list.map_values_only(
         convert_candidate_par_conjunctions_proc(pard_goal_detail_to_pard_goal),
         ConjunctionsAssocList0, ConjunctionsAssocList),
-    CandidateParallelConjunctions =
-        feedback_data_candidate_parallel_conjunctions(Params,
+    CandidateInfo =
+        feedback_info_candidate_parallel_conjunctions(Params,
             ConjunctionsAssocList),
-    put_feedback_data(CandidateParallelConjunctions, !Feedback).
+    ProfiledProgramName = Deep ^ profile_stats ^ prs_program_name,
+    add_feedback_candidate_parallel_conjunctions(ProfiledProgramName,
+        CandidateInfo, !Feedback).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Recurse the call graph searching for parallelisation opportunities.
 %
@@ -134,10 +135,10 @@ candidate_parallel_conjunctions_clique(Opts, Deep, ParentParallelism,
     ;
         MaybeFirstPDPtr = no,
         deep_lookup_clique_index(Deep, Deep ^ root, RootCliquePtr),
-        ( CliquePtr = RootCliquePtr ->
+        ( if CliquePtr = RootCliquePtr then
             % It is okay, this clique never has an entry procedure.
             PDPtrs = OtherPDPtrs
-        ;
+        else
             CliquePtr = clique_ptr(CliqueNum),
             string.format("Clique %d has no entry proc", [i(CliqueNum)], Msg),
             unexpected($module, $pred, Msg)
@@ -225,7 +226,7 @@ pd_slot_callees(Deep, Parallelism, ProcLabel, CSSPtr - Slot, ChildCliques) :-
         list.map(
             call_site_dynamic_callees(Deep, Parallelism, ProcLabel,
                 RevGoalPath),
-            to_list(CSDPtrs), ChildCliqueCords),
+            array.to_list(CSDPtrs), ChildCliqueCords),
         ChildCliques = cord_list_to_cord(ChildCliqueCords)
     ).
 
@@ -235,7 +236,7 @@ pd_slot_callees(Deep, Parallelism, ProcLabel, CSSPtr - Slot, ChildCliques) :-
 
 call_site_dynamic_callees(Deep, Parallelism, ProcLabel, RevGoalPath, CSDPtr,
         ChildCliques) :-
-    ( valid_call_site_dynamic_ptr(Deep, CSDPtr) ->
+    ( if valid_call_site_dynamic_ptr(Deep, CSDPtr) then
         deep_lookup_clique_maybe_child(Deep, CSDPtr, MaybeClique),
         (
             MaybeClique = yes(CliquePtr),
@@ -250,7 +251,7 @@ call_site_dynamic_callees(Deep, Parallelism, ProcLabel, RevGoalPath, CSDPtr,
             MaybeClique = no,
             ChildCliques = empty
         )
-    ;
+    else
         ChildCliques = empty
     ).
 
@@ -262,24 +263,24 @@ call_site_dynamic_callees(Deep, Parallelism, ProcLabel, RevGoalPath, CSDPtr,
 
 candidate_parallel_conjunctions_callee(Opts, Deep, CliquePtr, CliqueCandidates,
         !.Callee, Candidates, Messages) :-
-    ( not_callee(CliquePtr, !.Callee) ->
-        ( cost_threshold(Opts, !.Callee) ->
+    ( if not_callee(CliquePtr, !.Callee) then
+        ( if cost_threshold(Opts, !.Callee) then
             update_parallelism_available(CliqueCandidates, !Callee),
-            ( not exceeded_parallelism(Opts, !.Callee) ->
+            ( if not exceeded_parallelism(Opts, !.Callee) then
                 AnalyzeChild = yes
-            ;
+            else
                 trace [compile_time(flag("debug_cpc_search")), io(!IO)] (
                     debug_cliques_exceeded_parallelism(!.Callee, !IO)
                 ),
                 AnalyzeChild = no
             )
-        ;
+        else
             trace [compile_time(flag("debug_cpc_search")), io(!IO)] (
                 debug_cliques_below_threshold(!.Callee, !IO)
             ),
             AnalyzeChild = no
         )
-    ;
+    else
         AnalyzeChild = no
     ),
 
@@ -321,10 +322,10 @@ exceeded_parallelism(Opts, ChildClique) :-
 
 update_parallelism_available(CandidateConjunctions, !ChildClique) :-
     ProcLabel = !.ChildClique ^ ccc_proc,
-    ( map.search(CandidateConjunctions, ProcLabel, ProcConjs) ->
+    ( if map.search(CandidateConjunctions, ProcLabel, ProcConjs) then
         Conjs = ProcConjs ^ cpcp_par_conjs,
         list.foldl(update_parallelism_available_conj, Conjs, !ChildClique)
-    ;
+    else
         true
     ).
 
@@ -340,7 +341,7 @@ update_parallelism_available_conj(Conj, !ChildClique) :-
         list.length(Conj ^ cpc_goals_before),
     Length = list.foldl((func(seq_conj(ConjsI), Acc) = Acc + length(ConjsI)),
         Conj ^ cpc_conjs, 0),
-    (
+    ( if
         RevGoalPath \= RevConjGoalPath,
         rev_goal_path_inside_relative(RevConjGoalPath, RevGoalPath,
             RevRelativePath),
@@ -349,7 +350,7 @@ update_parallelism_available_conj(Conj, !ChildClique) :-
         Step = step_conj(ConjNum),
         ConjNum > FirstConjunct,
         ConjNum =< FirstConjunct + Length
-    ->
+    then
         % The call into this clique gets parallelised by Conj.
         % XXX: If we knew the parallelisation type used for Conj, we could
         % do this calculation more accurately. For instance, if this is a loop,
@@ -364,7 +365,7 @@ update_parallelism_available_conj(Conj, !ChildClique) :-
         sub_computation_parallelism(Parallelism0, probable(Efficiency),
             Parallelism),
         !ChildClique ^ ccc_parallelism := Parallelism
-    ;
+    else
         true
     ).
 
@@ -403,8 +404,28 @@ candidate_parallel_conjunctions_clique_proc(Opts, Deep, RecursionType,
         ),
 
         % Analyse this procedure for parallelism opportunities.
-        candidate_parallel_conjunctions_proc(Opts, Deep, PDPtr, RecursionType,
-            RecursiveCallSiteCostMap, Candidates, ProcMessages),
+        promise_equivalent_solutions [Candidates, ProcMessages]
+        ( try [] (
+            candidate_parallel_conjunctions_proc(Opts, Deep, PDPtr,
+                RecursionType, RecursiveCallSiteCostMap, CandidatesPrime,
+                ProcMessagesPrime)
+        )
+        then (
+            Candidates = CandidatesPrime,
+            ProcMessages = ProcMessagesPrime
+        )
+        catch_any Exp -> (
+            trace [io(!IO)] (
+                PDPtr = proc_dynamic_ptr(PDId),
+                deep_lookup_proc_dynamics(Deep, PDPtr, PD),
+                deep_lookup_proc_statics(Deep, PD ^ pd_proc_static, PS),
+                ProcName = PS ^ ps_q_refined_id,
+                io.format(io.stderr_stream,
+                    "Exception while analyising proc dynamic %d (%s)\n",
+                    [i(PDId), s(ProcName)], !IO)
+            ),
+            throw(Exp)
+        )),
         !:Messages = !.Messages ++ ProcMessages,
         Messages = !.Messages
     ).
@@ -419,10 +440,10 @@ merge_candidate_par_conjs_proc(A, B, Result) :-
     B = candidate_par_conjunctions_proc(VarNameTableB, PushGoalsB, CPCsB),
     CPCs = CPCsA ++ CPCsB,
     merge_pushes_for_proc(PushGoalsA ++ PushGoalsB, PushGoals),
-    ( VarNameTableA = VarNameTableB ->
+    ( if VarNameTableA = VarNameTableB then
         Result = candidate_par_conjunctions_proc(VarNameTableA, PushGoals,
             CPCs)
-    ;
+    else
         unexpected($module, $pred, "var tables do not match")
     ).
 
@@ -440,25 +461,25 @@ merge_pushes_for_proc(Pushes0 @ [_ | _], Pushes) :-
 
 insert_into_push_map(PushGoal, !Map) :-
     PushGoal = push_goal(GoalPathStr, Lo, Hi, TargetGoalPathStrs),
-    ( map.search(!.Map, GoalPathStr, OldTriple) ->
+    ( if map.search(!.Map, GoalPathStr, OldTriple) then
         OldTriple = {OldLo, OldHi, OldTargetGoalPathStrSet},
-        (
+        ( if
             Lo = OldLo,
             Hi = OldHi
-        ->
+        then
             set.insert_list(TargetGoalPathStrs,
                 OldTargetGoalPathStrSet, NewTargetGoalPathStrSet),
             NewTriple = {OldLo, OldHi, NewTargetGoalPathStrSet},
             map.det_update(GoalPathStr, NewTriple, !Map)
-        ;
+        else
             % There seem to be separate push requests inside the same
-            % conjunction that want to push different seets of conjuncts.
+            % conjunction that want to push different sets of conjuncts.
             % Since they could interfere with each other, we keep only one.
             % Since we don't have any good basis on which to make the choice,
             % we keep the earlier pushes.
             true
         )
-    ;
+    else
         NewTriple = {Lo, Hi, set.list_to_set(TargetGoalPathStrs)},
         map.det_insert(GoalPathStr, NewTriple, !Map)
     ).
@@ -473,7 +494,7 @@ extract_from_push_map(GoalPathStr, Triple, !Pushes) :-
         set.to_sorted_list(TargetGoalPathStrSet)),
     !:Pushes = [Push | !.Pushes].
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Search for parallelisation opportunities within a procedure.
 %
@@ -497,15 +518,15 @@ candidate_parallel_conjunctions_proc(Opts, Deep, PDPtr, RecursionType,
     ; ProcLabel = str_special_proc_label(_, ModuleName, _, _, _, _)
     ),
 
-    (
+    ( if
         ( ModuleName = "Mercury runtime"
         ; ModuleName = "exception"
         )
-    ->
+    then
         % Silently skip over any code from the runtime, since
         % we can't expect to find its procedure representation.
         Candidates = map.init
-    ;
+    else
         deep_lookup_clique_index(Deep, PDPtr, CliquePtr),
         PSPtr = PD ^ pd_proc_static,
         deep_get_maybe_procrep(Deep, PSPtr, MaybeProcRep),
@@ -601,13 +622,13 @@ candidate_parallel_conjunctions_proc(Opts, Deep, PDPtr, RecursionType,
 build_candidate_par_conjunction_maps(ProcLabel, VarNameTable, Candidate,
         !Map) :-
     % XXX: This predicate will also need to add pushes to CandidateProc.
-    ( map.search(!.Map, ProcLabel, CandidateProc0) ->
+    ( if map.search(!.Map, ProcLabel, CandidateProc0) then
         CandidateProc0 = candidate_par_conjunctions_proc(VarNameTablePrime,
             PushGoals, CPCs0),
         CPCs = [Candidate | CPCs0],
         expect(unify(VarNameTable, VarNameTablePrime), $module, $pred,
             "var tables do not match")
-    ;
+    else
         CPCs = [Candidate],
         PushGoals = []
     ),
@@ -615,7 +636,7 @@ build_candidate_par_conjunction_maps(ProcLabel, VarNameTable, Candidate,
         CPCs),
     map.set(ProcLabel, CandidateProc, !Map).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred pardgoal_consumed_vars_accum(pard_goal_detail::in,
     set(var_rep)::in, set(var_rep)::out) is det.
@@ -624,7 +645,7 @@ pardgoal_consumed_vars_accum(Goal, !Vars) :-
     RefedVars = Goal ^ goal_annotation ^ pgd_inst_map_info ^ im_consumed_vars,
     set.union(RefedVars, !Vars).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Useful utility predicates.
 %
@@ -650,8 +671,8 @@ debug_cliques_exceeded_parallelism(Clique, !IO) :-
     CliquePtr = Clique ^ ccc_clique,
     CliquePtr = clique_ptr(CliqueNum),
     io.format(
-        "D: Not entiring clique %d, " ++
+        "D: Not entering clique %d, " ++
         "no more parallelisation resources available at this context\n\n",
         [i(CliqueNum)], !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

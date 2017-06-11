@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
 % test_array2d.m
 % Ralph Becket <rafe@cs.mu.oz.au>
 % Tue Jan 21 12:38:05 EST 2003
-% vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module test_array2d.
 
@@ -12,21 +12,23 @@
 
 :- import_module io.
 
-
-
 :- pred main(io::di, io::uo) is cc_multi.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
-:- import_module int, list, string, array2d, pprint, exception.
+:- import_module array2d.
+:- import_module exception.
+:- import_module int.
+:- import_module list.
+:- import_module pprint.
+:- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 main(!IO) :-
-
     Empty = array2d([]) `with_type` array2d(int),
     write_array2d("Empty", Empty, !IO),
     io.nl(!IO),
@@ -42,6 +44,23 @@ main(!IO) :-
     write_array2d_elem("Two", Two, 0, 1, !IO),
     write_array2d_elem("Two", Two, 1, 0, !IO),
     write_array2d_elem("Two", Two, 1, 1, !IO),
+    io.nl(!IO),
+
+    ( if array2d.is_empty(Empty) then
+        io.write_string("Empty is empty\n", !IO)
+    else
+        io.write_string("Empty is not empty\n", !IO)
+    ),
+    ( if array2d.is_empty(One) then
+        io.write_string("One is empty\n", !IO)
+    else
+        io.write_string("One is not empty\n", !IO)
+    ),
+    ( if array2d.is_empty(Two) then
+        io.write_string("Two is empty\n", !IO)
+    else
+        io.write_string("Two is not empty\n", !IO)
+    ),
     io.nl(!IO),
 
     Two_a = Two ^ elem(0, 1) := 3,
@@ -66,7 +85,7 @@ main(!IO) :-
 
     true.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred write_array2d(string, array2d(T), io, io).
 :- mode write_array2d(in,     array2d_ui, di, uo) is det.
@@ -74,7 +93,7 @@ main(!IO) :-
 write_array2d(Name, Table, !IO) :-
     io.format("%s =\n%s\n", [s(Name), s(test_array2d.string(Table))], !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred write_array2d_elem(string, array2d(T), int, int, io, io).
 :- mode write_array2d_elem(in,     array2d_ui, in,  in,  di, uo) is cc_multi.
@@ -91,12 +110,11 @@ write_array2d_elem(Name, Table, I, J, !IO) :-
     ),
     io.nl(!IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func string(array2d(T)) = string.
 :- mode string(array2d_ui) = out is det.
 
 string(T) = to_string(80, brackets(nest(1, separated(to_doc, line, lists(T))))).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

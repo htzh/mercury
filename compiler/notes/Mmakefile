@@ -1,4 +1,6 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab
+#-----------------------------------------------------------------------------#
 # Copyright (C) 1996-1997, 1999, 2001, 2003 The University of Melbourne.
 # This file may only be copied under the terms of the GNU General
 # Public License - see the file COPYING in the Mercury distribution.
@@ -29,15 +31,33 @@ HTML_TO_TEXT=TERM=vt100 lynx -dump
 
 #-----------------------------------------------------------------------------#
 
-DOCS_TEXT=allocation.text authors.text coding_standards.text \
-	compiler_design.text gc_and_c_code.text glossary.text \
-	release_checklist.text reviews.text todo.text \
-	work_in_progress.text
-DOCS_HTML=allocation.html authors.html coding_standards.html \
-	compiler_design.html gc_and_c_code.html glossary.html \
-	release_checklist.html reviews.html todo.html \
+DOCS_HTML = \
+	allocation.html \
+	analysis.html \
+	bootstrapping.html \
+	bytecode.html \
+	c_coding_standard.html \
+	coding_standards.html \
+	compiler_design.html \
+	developer_intro.html \
+	failure.html \
+	gc_and_c_code.html \
+	glossary.html \
+	grade_library.html \
+	index.html \
+	overall_design.html \
+	promise_ex.html \
+	release_checklist.html \
+	reviews.html \
+	todo.html \
+	trailing.html \
+	type_class_transformation.html \
+	upgrade_boehm_gc.html \
 	work_in_progress.html
-DOCS_ALL=$(DOCS_TEXT) $(DOCS_HTML)
+
+DOCS_TEXT = $(subst .html,.text,$(DOCS_HTML))
+
+DOCS_ALL = $(DOCS_TEXT) $(DOCS_HTML)
 
 #-----------------------------------------------------------------------------#
 
@@ -47,6 +67,9 @@ all: $(DOCS_ALL)
 # This install is for installing the Mercury webpage, which goes to
 # a different directory (supplied by the environment variable
 # INSTALL_WEBDIR).
+# Currently the webpage and this documentation on it is installed by
+# a different method. A copy if the repository is checked out on the
+# webserver and linked to.
 
 .PHONY: install
 install: $(DOCS_ALL)

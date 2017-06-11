@@ -1,3 +1,7 @@
+#-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab
+#-----------------------------------------------------------------------------#
+#
 # To build the GLUT binding, do the following:
 #
 # $ mmake depend
@@ -11,7 +15,7 @@
 MAIN_TARGET = libmercury_glut
 
 # The following libraries are for X on Linux (Debian) using Mesa.
-	
+
 # Libaries required by X windows.
 X_LIBS = -lX11 -lXext -lXt -lXi -lSM -lICE -L/usr/X11R6/lib
 
@@ -23,7 +27,6 @@ MCFLAGS-mercury_glut+=--no-warn-nothing-exported --no-warn-interface-imports
 MCFLAGS += --halt-at-warn --transitive-intermodule-optimization \
 	--enable-termination
 
-MGNUCFLAGS = --pic-reg
 EXTRA_MLFLAGS = -shared
 
 MLLIBS = -lglut $(X_LIBS) $(GL_LIBS)

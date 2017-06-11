@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1995-1997, 1999, 2002, 2004-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Mercury profiler
 % Main author: petdr.
@@ -16,8 +16,8 @@
 % McKusick "Gprof: a call graph execution profiler", Proceedings of the 1982
 % SIGPLAN Symposium on Compiler Construction, pages 120-126.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mercury_profile.
 :- interface.
@@ -26,8 +26,8 @@
 
 :- pred main(io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -46,7 +46,7 @@
 :- import_module list.
 :- import_module maybe.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 main(!IO) :-
     io.command_line_arguments(Args0, !IO),
@@ -71,15 +71,15 @@ postprocess_options(ok(OptionTable), Args, no, !IO) :-
 
     % --very-verbose implies --verbose
     globals.io_lookup_bool_option(very_verbose, VeryVerbose, !IO),
-    ( VeryVerbose = yes ->
+    (
+        VeryVerbose = yes,
         globals.io_set_option(verbose, bool(yes), !IO)
     ;
-        true
+        VeryVerbose = no
     ),
-    %
+
     % Any empty list of arguments implies that we must build the call
     % graph from the dynamic information.
-    %
     (
         Args = [],
         globals.io_set_option(dynamic_cg, bool(yes), !IO)
@@ -108,7 +108,8 @@ usage(!IO) :-
     library.version(Version, Fullarch),
     io.write_strings(StdErr, [
         "Mercury Profiler, version ", Version, ", on ", Fullarch, ".\n",
-        "Copyright (C) 1995-2014 The University of Melbourne\n",
+        "Copyright (C) 1995-2012 The University of Melbourne\n",
+        "Copyright (C) 2013-2017 The Mercury team\n",
             "Usage: ", ProgName, " [<options>] [<files>]\n",
             "Use `", ProgName, " --help' for more information.\n"
         ], !IO).
@@ -120,8 +121,9 @@ long_usage(!IO) :-
     library.version(Version, Fullarch),
     io.write_strings([
         "Mercury Profiler, version ", Version, ", on ", Fullarch, ".\n",
-        "Copyright (C) 1995-2014 The University of Melbourne\n\n",
-            "Usage: ", ProgName, "[<options>] [<files>]\n",
+        "Copyright (C) 1995-2012 The University of Melbourne\n",
+        "Copyright (C) 2013-2017 The Mercury team\n\n",
+            "Usage: ", ProgName, " [<options>] [<files>]\n",
         "\n",
         "Description:\n",
         "\t`mprof' produces execution profiles for Mercury programs.\n",
@@ -141,7 +143,7 @@ long_usage(!IO) :-
         ], !IO),
     options_help(!IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred main_2(list(string)::in, io::di, io::uo) is det.
 
@@ -197,6 +199,6 @@ main_3(Args, !IO) :-
     output_profile(OutputProf, IndexMap, !IO),
     io.nl(!IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module mercury_profile.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

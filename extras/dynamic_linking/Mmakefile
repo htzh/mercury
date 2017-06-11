@@ -1,4 +1,6 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab
+#-----------------------------------------------------------------------------#
 # Copyright (C) 2000-2005 The University of Melbourne.
 # This file may only be copied under the terms of the GNU Library General
 # Public License - see the file COPYING.LIB in the Mercury distribution.
@@ -7,7 +9,6 @@
 INSTALL_PREFIX := $(INSTALL_PREFIX)/extras
 
 # Use shared libraries, since they're needed for dynamic linking
-MGNUCFLAGS = --pic-reg
 MLFLAGS = --shared
 
 # Link in the `-ldl' library (this may not be needed on some systems)
@@ -37,11 +38,11 @@ ifeq "$(findstring hl,$(GRADE))" ""
 check: dl_test2.res
 endif
 
-dl_test.res: dl_test dl_test.exp libhello.so
+dl_test.res: dl_test dl_test.exp libhello.$(EXT_FOR_SHARED_LIB)
 	./dl_test > dl_test.out
 	diff -c dl_test.out dl_test.exp
 
-dl_test2.res: dl_test2 dl_test2.exp libhello.so
+dl_test2.res: dl_test2 dl_test2.exp libhello.$(EXT_FOR_SHARED_LIB)
 	./dl_test2 > dl_test2.out
 	diff -c dl_test2.out dl_test2.exp
 

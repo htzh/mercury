@@ -1,12 +1,14 @@
 %---------------------------------------------------------------------------%
+% vim: ft=mercury ts=4 sw=4 et
+%---------------------------------------------------------------------------%
 % Copyright (C) 2001-2006, 2010-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %---------------------------------------------------------------------------%
-% 
+%
 % File: mode_robdd.equiv_vars.m.
 % Main author: dmo
-% 
+%
 %---------------------------------------------------------------------------%
 
 :- module mode_robdd.equiv_vars.
@@ -300,9 +302,9 @@ delete(E0, V) = E :-
 
 restrict_threshold(Th, E) = equiv_vars(normalise_leader_map(LM)) :-
 	LL0 = map.to_assoc_list(E ^ leader_map),
-	list.takewhile((pred((V - _)::in) is semidet :-
+	list.take_while((pred((V - _)::in) is semidet :-
 		\+ compare(>, V, Th)
-		), LL0, LL, _),
+		), LL0, LL),
 	LM = map.from_assoc_list(LL).
 
 % XXX not terribly efficient.
@@ -375,3 +377,7 @@ remove_equiv(EQVars, Robdd) =
 	;
 	    rename_vars(func(V) = EQVars ^ det_leader(V), Robdd)
 	).
+
+%---------------------------------------------------------------------------%
+:- end_module mode_robdd.equiv_vars.
+%---------------------------------------------------------------------------%

@@ -17,13 +17,21 @@
 % part of the mdb module.
 
 :- module mdbcomp.
-
 :- interface.
 
 :- pred mdbcomp.version(string::out) is det.
 
-% If you add any modules here, you should update the lists in
-% deep_profiler/Mmakefile and slice/Mmakefile.
+% If you add any modules here, you should update the lists in the following
+% places:
+%
+%   deep_profiler/Mmakefile
+%   deep_profiler/.gitignore
+%   slice/Mmakefile
+%   slice/.gitignore
+%
+% Also, the definition of mercury_mdbcomp_module/1 below should be updated.
+
+:- include_module builtin_modules.
 :- include_module feedback.
 :- include_module goal_path.
 :- include_module prim_data.
@@ -31,6 +39,7 @@
 :- include_module rtti_access.
 :- include_module shared_utilities.
 :- include_module slice_and_dice.
+:- include_module sym_name.
 :- include_module trace_counts.
 
 :- implementation.
@@ -52,5 +61,20 @@
 ").
 
 mdbcomp.version("unknown version").
+
+:- pred mercury_mdbcomp_module(string::in) is semidet.
+
+mercury_mdbcomp_module("mdbcomp.builtin_modules").
+mercury_mdbcomp_module("mdbcomp").
+mercury_mdbcomp_module("mdbcomp.feedback.automatic_parallelism").
+mercury_mdbcomp_module("mdbcomp.feedback").
+mercury_mdbcomp_module("mdbcomp.goal_path").
+mercury_mdbcomp_module("mdbcomp.prim_data").
+mercury_mdbcomp_module("mdbcomp.program_representation").
+mercury_mdbcomp_module("mdbcomp.rtti_access").
+mercury_mdbcomp_module("mdbcomp.shared_utilities").
+mercury_mdbcomp_module("mdbcomp.slice_and_dice").
+mercury_mdbcomp_module("mdbcomp.sym_name").
+mercury_mdbcomp_module("mdbcomp.trace_counts").
 
 %---------------------------------------------------------------------------%

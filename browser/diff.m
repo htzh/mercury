@@ -1,16 +1,16 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2005-2006 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: diff.m.
-% 
+%
 % This module computes diffs between terms.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdb.diff.
 :- interface.
@@ -21,11 +21,12 @@
 :- pred report_diffs(int::in, int::in, univ::in, univ::in, io::di, io::uo)
     is cc_multi.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module mdbcomp.
 :- import_module mdbcomp.program_representation.
 
 :- import_module deconstruct.
@@ -34,45 +35,45 @@
 :- import_module require.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_export("C", report_diffs(in, in, in, in, di, uo),
     "ML_report_diffs").
 
 report_diffs(Drop, Max, Univ1, Univ2, !IO) :-
-    (
+    ( if
         Type1 = univ_type(Univ1),
         Type2 = univ_type(Univ2),
         Type1 = Type2
-    ->
+    then
         compute_diffs(Univ1, Univ2, [], [], RevDiffs),
         list.reverse(RevDiffs, AllDiffs),
         list.length(AllDiffs, NumAllDiffs),
-        (
+        ( if
             list.drop(Drop, AllDiffs, Diffs),
             Diffs = [_ | _]
-        ->
+        then
             FirstShown = Drop + 1,
             LastShown = min(Drop + Max, NumAllDiffs),
-            ( FirstShown = LastShown ->
+            ( if FirstShown = LastShown then
                 io.format("There are %d diffs, showing diff %d:\n",
                     [i(NumAllDiffs), i(FirstShown)], !IO)
-            ;
+            else
                 io.format("There are %d diffs, showing diffs %d-%d:\n",
                     [i(NumAllDiffs), i(FirstShown), i(LastShown)], !IO)
             ),
             list.take_upto(Max, Diffs, ShowDiffs),
             list.foldl2(show_diff, ShowDiffs, Drop, _, !IO)
-        ;
-            ( NumAllDiffs = 0 ->
+        else
+            ( if NumAllDiffs = 0 then
                 io.write_string("There are no diffs.\n", !IO)
-            ; NumAllDiffs = 1 ->
+            else if NumAllDiffs = 1 then
                 io.write_string("There is only one diff.\n", !IO)
-            ;
+            else
                 io.format("There are only %d diffs.\n", [i(NumAllDiffs)], !IO)
             )
         )
-    ;
+    else
         io.write_string("The two values are of different types.\n", !IO)
     ).
 
@@ -85,9 +86,9 @@ report_diffs(Drop, Max, Univ1, Univ2, !IO) :-
 compute_diffs(Univ1, Univ2, !.RevPath, !RevDiffs) :-
     deconstruct(univ_value(Univ1), include_details_cc, Functor1, _, Args1),
     deconstruct(univ_value(Univ2), include_details_cc, Functor2, _, Args2),
-    ( Functor1 = Functor2 ->
+    ( if Functor1 = Functor2 then
         compute_arg_diffs(Args1, Args2, !.RevPath, 1, !RevDiffs)
-    ;
+    else
         list.reverse(!.RevPath, Path),
         !:RevDiffs = [term_path_diff(Path, Univ1, Univ2) | !.RevDiffs]
     ).

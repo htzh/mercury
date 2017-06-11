@@ -1,5 +1,8 @@
 @BOOTSTRAP_MC_ARGS@
 --no-infer-all
+--warn-known-bad-format-calls
+--warn-unknown-format-calls
+--warn-unused-imports
 --halt-at-warn
 --no-warn-inferred-erroneous
 --no-mercury-stdlib-dir
@@ -29,5 +32,4 @@
 --java-classpath ../library/mer_std.jar
 --java-classpath ../browser/mer_browser.jar
 --java-classpath ../mdbcomp/mer_mdbcomp.jar
---no-main
 --config-file ../scripts/Mercury.config.bootstrap

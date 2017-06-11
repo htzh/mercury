@@ -5,17 +5,17 @@
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %---------------------------------------------------------------------------%
-% 
+%
 % File: prolog.m.
 % Main author: fjh.
 % Stability: high.
-% 
+%
 % This file contains predicates that are intended to help people
 % porting Prolog programs, or writing programs in the intersection
 % of Mercury and Prolog.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module prolog.
 :- interface.
@@ -24,9 +24,9 @@
 :- import_module pair.
 :- import_module univ.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% Prolog arithmetic operators
+% Prolog arithmetic operators.
 %
 
 :- pred T =:= T.            % In Mercury, just use =
@@ -35,17 +35,15 @@
 :- pred T =\= T.            % In Mercury, just use \=
 :- mode in =\= in is semidet.
 
-/*******
-is/2 is currently defined in int.m, for historical reasons.
-
-:- pred is(T, T) is det.        % In Mercury, just use =
-:- mode is(uo, di) is det.
-:- mode is(out, in) is det.
-******/
-
-%-----------------------------------------------------------------------------%
+% is/2 is currently defined in int.m, for historical reasons.
 %
-% Prolog term comparison operators
+% :- pred is(T, T) is det.        % In Mercury, just use =
+% :- mode is(uo, di) is det.
+% :- mode is(out, in) is det.
+
+%---------------------------------------------------------------------------%
+%
+% Prolog term comparison operators.
 %
 
 :- pred T == T.             % In Mercury, just use =
@@ -82,8 +80,8 @@ is/2 is currently defined in int.m, for historical reasons.
     %
 :- pred det_arg(int::in, T::in, univ::out) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -91,31 +89,31 @@ is/2 is currently defined in int.m, for historical reasons.
 :- import_module int.
 :- import_module require.
 
-%-----------------------------------------------------------------------------%
-
-% we use module qualifiers here to avoid
-% overriding the builtin Prolog versions
-
-'=='(X, X).
-'\\=='(X, Y) :- X \= Y.
+%---------------------------------------------------------------------------%
 
 '=:='(X, X).
-'=\\='(X, Y) :- X \= Y.
+
+'=\\='(X, Y) :-
+    X \= Y.
+
+'=='(X, X).
+'\\=='(X, Y) :-
+    X \= Y.
 
 '=..'(Term, Functor - Args) :-
     deconstruct(Term, canonicalize, Functor, _Arity, Args).
 
-% we use a module qualifier here to avoid
-% overriding the builtin Prolog version
+% We use module qualifiers here to avoid overriding
+% the builtin Prolog versions.
 prolog.arg(ArgumentIndex, Type, Univ) :-
     deconstruct.arg(Type, canonicalize, ArgumentIndex - 1, Arg),
     type_to_univ(Arg, Univ).
 
 det_arg(ArgumentIndex, Type, Argument) :-
-    ( arg(ArgumentIndex, Type, Arg) ->
+    ( if arg(ArgumentIndex, Type, Arg) then
         Argument = Arg
-    ;
+    else
         error("det_arg: arg failed")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

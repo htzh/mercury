@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %----------------------------------------------------------------------------%
 % Copyright (C) 2010 The University of Melbourne.
+% Copyright (C) 2017 The Mercury team.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -138,15 +139,15 @@
     get_matrix(Ctxt::in, Matrix::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
-   Matrix = MR_GC_NEW(cairo_matrix_t);
-   cairo_get_matrix(Ctxt->mcairo_raw_context, Matrix);
+    Matrix = MR_GC_NEW(cairo_matrix_t);
+    cairo_get_matrix(Ctxt->mcairo_raw_context, Matrix);
 ").
- 
+
 :- pragma foreign_proc("C",
     identity_matrix(Ctxt::in, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
-   cairo_identity_matrix(Ctxt->mcairo_raw_context);
+    cairo_identity_matrix(Ctxt->mcairo_raw_context);
 ").
 
 :- pragma foreign_proc("C",
@@ -154,10 +155,10 @@
         _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
-    MR_Float	x;
-    MR_Float	y;
+    double  x;
+    double  y;
 
-    x = Ux; 
+    x = Ux;
     y = Uy;
     cairo_user_to_device(Ctxt->mcairo_raw_context, &x, &y);
     Dx = x;
@@ -169,10 +170,10 @@
         _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
-    MR_Float	x;
-    MR_Float	y;
+    double  x;
+    double  y;
 
-    x = Ux; 
+    x = Ux;
     y = Uy;
     cairo_user_to_device_distance(Ctxt->mcairo_raw_context, &x, &y);
     Dx = x;
@@ -184,14 +185,14 @@
        _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
-   MR_Float	x;
-   MR_Float	y;
+    double  x;
+    double  y;
 
-   x = Dx;
-   y = Dy;
-   cairo_device_to_user(Ctxt->mcairo_raw_context, &x, &y);
-   Ux = x;
-   Uy = y;
+    x = Dx;
+    y = Dy;
+    cairo_device_to_user(Ctxt->mcairo_raw_context, &x, &y);
+    Ux = x;
+    Uy = y;
 ").
 
 :- pragma foreign_proc("C",
@@ -199,14 +200,14 @@
        _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
-   MR_Float	x;
-   MR_Float	y;
+    double  x;
+    double  y;
 
-   x = Dx;
-   y = Dy;
-   cairo_device_to_user_distance(Ctxt->mcairo_raw_context, &x, &y);
-   Ux = x;
-   Uy = y;
+    x = Dx;
+    y = Dy;
+    cairo_device_to_user_distance(Ctxt->mcairo_raw_context, &x, &y);
+    Ux = x;
+    Uy = y;
 ").
 
 %---------------------------------------------------------------------------%

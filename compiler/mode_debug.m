@@ -39,10 +39,10 @@
 :- import_module hlds.
 :- import_module hlds.hlds_out.
 :- import_module hlds.hlds_out.hlds_out_mode.
-:- import_module hlds.hlds_out.hlds_out_util.
 :- import_module hlds.instmap.
 :- import_module parse_tree.
-:- import_module parse_tree.mercury_to_mercury.
+:- import_module parse_tree.parse_tree_out_info.
+:- import_module parse_tree.parse_tree_out_term.
 :- import_module parse_tree.prog_data.
 
 :- import_module assoc_list.
@@ -92,7 +92,7 @@ mode_checkpoint(Port, Msg, !ModeInfo) :-
                 io.write_string(":\n", !IO),
                 maybe_report_stats(Statistics, !IO),
                 maybe_flush_output(Statistics, !IO),
-                ( instmap_is_reachable(InstMap) ->
+                ( if instmap_is_reachable(InstMap) then
                     instmap_to_assoc_list(InstMap, NewInsts),
                     mode_info_get_last_checkpoint_insts(!.ModeInfo,
                         OldInstMap),
@@ -100,7 +100,7 @@ mode_checkpoint(Port, Msg, !ModeInfo) :-
                     mode_info_get_instvarset(!.ModeInfo, InstVarSet),
                     write_var_insts(NewInsts, OldInstMap, VarSet, InstVarSet,
                         Verbose, Minimal, !IO)
-                ;
+                else
                     io.write_string("\tUnreachable\n", !IO)
                 )
             ;
@@ -125,25 +125,25 @@ write_var_insts([], _, _, _, _, _, !IO).
 write_var_insts([Var - Inst | VarInsts], OldInstMap, VarSet, InstVarSet,
         Verbose, Minimal, !IO) :-
     instmap_lookup_var(OldInstMap, Var, OldInst),
-    (
+    ( if
         (
             identical_insts(Inst, OldInst)
         ;
             Inst = OldInst
         )
-    ->
+    then
         (
             Verbose = yes,
             io.write_string("\t", !IO),
-            mercury_output_var(VarSet, no, Var, !IO),
+            mercury_output_var(VarSet, print_name_only, Var, !IO),
             io.write_string(" ::", !IO),
             io.write_string(" unchanged\n", !IO)
         ;
             Verbose = no
         )
-    ;
+    else
         io.write_string("\t", !IO),
-        mercury_output_var(VarSet, no, Var, !IO),
+        mercury_output_var(VarSet, print_name_only, Var, !IO),
         io.write_string(" ::", !IO),
         (
             Minimal = yes,
@@ -158,14 +158,13 @@ write_var_insts([Var - Inst | VarInsts], OldInstMap, VarSet, InstVarSet,
     write_var_insts(VarInsts, OldInstMap, VarSet, InstVarSet,
         Verbose, Minimal, !IO).
 
-    % In the usual case of a C backend, this predicate allows us to
-    % conclude that two insts are identical without traversing them.
-    % Since the terms can be very large, this is a big gain; it can
-    % turn the complexity of printing a checkpoint from quadratic in the
-    % number of variables live at the checkpoint (when the variables
-    % are e.g. all part of a single long list) to linear. The minor
-    % increase in the constant factor in cases where identical_insts fails
-    % is much easier to live with.
+    % In the usual case of a C backend, this predicate allows us to conclude
+    % that two insts are identical without traversing them. Since the terms
+    % can be very large, this is a big gain; it can turn the complexity
+    % of printing a checkpoint from quadratic in the number of variables
+    % live at the checkpoint (when the variables are e.g. all part of a
+    % single long list) to linear. The minor increase in the constant factor
+    % in cases where identical_insts fails is much easier to live with.
     %
 :- pred identical_insts(mer_inst::in, mer_inst::in) is semidet.
 
@@ -184,4 +183,5 @@ identical_insts(_, _) :-
 ").
 
 %-----------------------------------------------------------------------------%
+:- end_module check_hlds.mode_debug.
 %-----------------------------------------------------------------------------%

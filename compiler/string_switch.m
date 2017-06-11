@@ -42,44 +42,48 @@
 :- module ll_backend.string_switch.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_llds.
 :- import_module ll_backend.code_info.
+:- import_module ll_backend.code_loc_dep.
 :- import_module ll_backend.llds.
 :- import_module ll_backend.lookup_switch.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
 
 :- pred generate_string_hash_switch(list(tagged_case)::in, rval::in,
     string::in, code_model::in, can_fail::in, hlds_goal_info::in, label::in,
-    branch_end::out, llds_code::out, code_info::in, code_info::out) is det.
+    branch_end::out, llds_code::out,
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
 :- pred generate_string_hash_lookup_switch(rval::in,
     lookup_switch_info(string)::in, can_fail::in, label::in, abs_store_map::in,
     branch_end::in, branch_end::out, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
 :- pred generate_string_binary_switch(list(tagged_case)::in, rval::in,
     string::in, code_model::in, can_fail::in, hlds_goal_info::in, label::in,
-    branch_end::out, llds_code::out, code_info::in, code_info::out) is det.
+    branch_end::out, llds_code::out,
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
 :- pred generate_string_binary_lookup_switch(rval::in,
     lookup_switch_info(string)::in, can_fail::in, label::in, abs_store_map::in,
     branch_end::in, branch_end::out, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
 :- import_module backend_libs.switch_util.
 :- import_module hlds.hlds_data.
-:- import_module hlds.hlds_goal.
-:- import_module hlds.hlds_llds.
 :- import_module ll_backend.lookup_util.
 :- import_module ll_backend.switch_case.
 :- import_module parse_tree.set_of_var.
@@ -92,15 +96,14 @@
 :- import_module maybe.
 :- import_module pair.
 :- import_module require.
-:- import_module set.
 :- import_module std_util.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 generate_string_hash_switch(Cases, VarRval, VarName, CodeModel, CanFail,
-        SwitchGoalInfo, EndLabel, MaybeEnd, Code, !CI) :-
-    init_string_hash_switch_info(CanFail, HashSwitchInfo, !CI),
+        SwitchGoalInfo, EndLabel, MaybeEnd, Code, !CI, CLD) :-
+    init_string_hash_switch_info(CanFail, HashSwitchInfo, !CI, CLD),
     BranchStart = HashSwitchInfo ^ shsi_branch_start,
     Params = represent_params(VarName, SwitchGoalInfo, CodeModel, BranchStart,
         EndLabel),
@@ -126,11 +129,11 @@ generate_string_hash_switch(Cases, VarRval, VarName, CodeModel, CanFail,
     list.reverse(RevTargets, Targets),
 
     % Generate the code for the hash table lookup.
-    ( NumCollisions = 0 ->
+    ( if NumCollisions = 0 then
         NumColumns = 1,
         RowElemTypes = [lt_string],
         ArrayElemTypes = [scalar_elem_string]
-    ;
+    else
         NumColumns = 2,
         RowElemTypes = [lt_string, lt_integer],
         ArrayElemTypes = [scalar_elem_string, scalar_elem_int]
@@ -165,22 +168,22 @@ generate_string_hash_switch(Cases, VarRval, VarName, CodeModel, CanFail,
 
 construct_string_hash_jump_vectors(Slot, TableSize, HashSlotMap, FailLabel,
         NumCollisions, !RevTableRows, !RevMaybeTargets) :-
-    ( Slot = TableSize ->
+    ( if Slot = TableSize then
         true
-    ;
-        ( map.search(HashSlotMap, Slot, SlotInfo) ->
+    else
+        ( if map.search(HashSlotMap, Slot, SlotInfo) then
             SlotInfo = string_hash_slot(String, Next, CaseLabel),
             NextSlotRval = const(llconst_int(Next)),
             StringRval = const(llconst_string(String)),
             Target = CaseLabel
-        ;
+        else
             StringRval = const(llconst_int(0)),
             NextSlotRval = const(llconst_int(-2)),
             Target = FailLabel
         ),
-        ( NumCollisions = 0 ->
+        ( if NumCollisions = 0 then
             TableRow = [StringRval]
-        ;
+        else
             TableRow = [StringRval, NextSlotRval]
         ),
         !:RevTableRows = [TableRow | !.RevTableRows],
@@ -211,9 +214,9 @@ represent_tagged_cases_in_string_switch(Params, [Case | Cases], !:StrsLabels,
 
 add_to_strs_labels(Label, TaggedConsId, !StrsLabels) :-
     TaggedConsId = tagged_cons_id(_ConsId, Tag),
-    ( Tag = string_tag(String) ->
+    ( if Tag = string_tag(String) then
         !:StrsLabels = [String - Label | !.StrsLabels]
-    ;
+    else
         unexpected($module, $pred, "non-string tag")
     ).
 
@@ -221,20 +224,22 @@ add_to_strs_labels(Label, TaggedConsId, !StrsLabels) :-
 %-----------------------------------------------------------------------------%
 
 generate_string_hash_lookup_switch(VarRval, LookupSwitchInfo,
-        CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI) :-
+        CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI, CLD) :-
     LookupSwitchInfo = lookup_switch_info(CaseConsts, OutVars, OutTypes,
         Liveness),
     (
-        CaseConsts = all_one_soln(CaseValues),
+        CaseConsts = all_one_soln(CaseValueMap),
+        map.to_assoc_list(CaseValueMap, CaseValues),
         generate_string_hash_simple_lookup_switch(VarRval, CaseValues,
             OutVars, OutTypes, Liveness, CanFail, EndLabel, StoreMap,
-            !MaybeEnd, Code, !CI)
+            !MaybeEnd, Code, !CI, CLD)
     ;
-        CaseConsts = some_several_solns(CaseSolns,
+        CaseConsts = some_several_solns(CaseSolnMap,
             case_consts_several_llds(ResumeVars, GoalsMayModifyTrail)),
+        map.to_assoc_list(CaseSolnMap, CaseSolns),
         generate_string_hash_several_soln_lookup_switch(VarRval, CaseSolns,
             ResumeVars, GoalsMayModifyTrail, OutVars, OutTypes, Liveness,
-            CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI)
+            CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI, CLD)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -244,17 +249,17 @@ generate_string_hash_lookup_switch(VarRval, LookupSwitchInfo,
     list(llds_type)::in, set_of_progvar::in,
     can_fail::in, label::in, abs_store_map::in,
     branch_end::in, branch_end::out, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
 generate_string_hash_simple_lookup_switch(VarRval, CaseValues,
         OutVars, OutTypes, Liveness, CanFail, EndLabel, StoreMap,
-        !MaybeEnd, Code, !CI) :-
+        !MaybeEnd, Code, !CI, !.CLD) :-
     % This predicate, generate_string_hash_several_soln_lookup_switch,
     % and generate_string_hash_lookup_switch do similar tasks using
     % similar code, so if you need to update one, you probably need to
     % update them all.
 
-    init_string_hash_switch_info(CanFail, HashSwitchInfo, !CI),
+    init_string_hash_switch_info(CanFail, HashSwitchInfo, !CI, !.CLD),
     CommentCode = singleton(
         llds_instr(comment("string hash simple lookup switch"), "")
     ),
@@ -269,12 +274,12 @@ generate_string_hash_simple_lookup_switch(VarRval, CaseValues,
     % types, so it is ok to lie for OutElemTypes.
     list.duplicate(NumOutVars, scalar_elem_generic, OutElemTypes),
     DummyOutRvals = list.map(default_value_for_type, OutTypes),
-    ( NumCollisions = 0 ->
+    ( if NumCollisions = 0 then
         NumPrevColumns = 1,
         NumColumns = 1 + NumOutVars,
         ArrayElemTypes = [scalar_elem_string | OutElemTypes],
         RowElemTypes = [lt_string | OutTypes]
-    ;
+    else
         NumPrevColumns = 2,
         NumColumns = 2 + NumOutVars,
         ArrayElemTypes = [scalar_elem_string, scalar_elem_int | OutElemTypes],
@@ -291,40 +296,32 @@ generate_string_hash_simple_lookup_switch(VarRval, CaseValues,
 
    (
         OutVars = [],
-        SetBaseRegCode = empty,
-        MaybeBaseReg = no
+        SetBaseRegCode = empty
     ;
         OutVars = [_ | _],
         % Since we release BaseReg only after the call to
         % generate_branch_end, we must make sure that generate_branch_end
         % won't want to overwrite BaseReg.
-        acquire_reg_not_in_storemap(StoreMap, reg_r, BaseReg, !CI),
-        MaybeBaseReg = yes(BaseReg),
+        acquire_reg_not_in_storemap(StoreMap, reg_r, BaseReg, !CLD),
 
         % Generate code to look up each of the variables in OutVars
         % in its slot in the table row RowStartReg. Most of the change is done
         % by generate_offset_assigns associating each var with the relevant
-        % field in !CI.
+        % field in !CLD.
         RowStartReg = HashSwitchInfo ^ shsi_row_start_reg,
         SetBaseRegCode = singleton(
             llds_instr(assign(BaseReg,
                 mem_addr(heap_ref(VectorAddrRval, yes(0), lval(RowStartReg)))),
                 "set up base reg")
         ),
-        generate_offset_assigns(OutVars, NumPrevColumns, BaseReg, !CI)
+        generate_offset_assigns(OutVars, NumPrevColumns, BaseReg, !.CI, !CLD)
     ),
 
     % We keep track of what variables are supposed to be live at the end
     % of cases. We have to do this explicitly because generating a `fail'
     % slot last would yield the wrong liveness.
     set_liveness_and_end_branch(StoreMap, Liveness, !MaybeEnd, BranchEndCode,
-        !CI),
-    (
-        MaybeBaseReg = no
-    ;
-        MaybeBaseReg = yes(FinalBaseReg),
-        release_reg(FinalBaseReg, !CI)
-    ),
+        !.CI, !.CLD),
 
     GotoEndLabelCode = singleton(
         llds_instr(goto(code_label(EndLabel)),
@@ -348,21 +345,21 @@ generate_string_hash_simple_lookup_switch(VarRval, CaseValues,
 
 construct_string_hash_simple_lookup_vector(Slot, TableSize, HashSlotMap,
         NumCollisions, DummyOutRvals, !RevRows) :-
-    ( Slot = TableSize ->
+    ( if Slot = TableSize then
         true
-    ;
-        ( map.search(HashSlotMap, Slot, SlotInfo) ->
+    else
+        ( if map.search(HashSlotMap, Slot, SlotInfo) then
             SlotInfo = string_hash_slot(String, Next, OutVarRvals),
             NextSlotRval = const(llconst_int(Next)),
             StringRval = const(llconst_string(String))
-        ;
+        else
             StringRval = const(llconst_int(0)),
             NextSlotRval = const(llconst_int(-2)),
             OutVarRvals = DummyOutRvals
         ),
-        ( NumCollisions = 0 ->
+        ( if NumCollisions = 0 then
             Row = [StringRval | OutVarRvals]
-        ;
+        else
             Row = [StringRval, NextSlotRval | OutVarRvals]
         ),
         !:RevRows = [Row | !.RevRows],
@@ -377,17 +374,17 @@ construct_string_hash_simple_lookup_vector(Slot, TableSize, HashSlotMap,
     list(prog_var)::in, list(llds_type)::in, set_of_progvar::in,
     can_fail::in, label::in, abs_store_map::in,
     branch_end::in, branch_end::out, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
 generate_string_hash_several_soln_lookup_switch(VarRval, CaseSolns,
         ResumeVars, GoalsMayModifyTrail, OutVars, OutTypes, Liveness,
-        CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI) :-
+        CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI, !.CLD) :-
     % This predicate, generate_string_hash_simple_lookup_switch,
     % and generate_string_hash_lookup_switch do similar tasks using
     % similar code, so if you need to update one, you probably need to
     % update them all.
 
-    init_string_hash_switch_info(CanFail, HashSwitchInfo, !CI),
+    init_string_hash_switch_info(CanFail, HashSwitchInfo, !CI, !.CLD),
     CommentCode = singleton(
         llds_instr(comment("string hash several soln lookup switch"), "")
     ),
@@ -401,13 +398,13 @@ generate_string_hash_several_soln_lookup_switch(VarRval, CaseSolns,
     % For the LLDS backend, array indexing ops don't need the element
     % types, so it is ok to lie for OutElemTypes.
     list.duplicate(NumOutVars, scalar_elem_generic, OutElemTypes),
-    ( NumCollisions = 0 ->
+    ( if NumCollisions = 0 then
         NumColumns = 3 + NumOutVars,
         NumPrevColumns = 1,
         ArrayElemTypes = [scalar_elem_string,
             scalar_elem_int, scalar_elem_int | OutElemTypes],
         MainRowTypes = [lt_string, lt_integer, lt_integer | OutTypes]
-    ;
+    else
         NumColumns = 4 + NumOutVars,
         NumPrevColumns = 2,
         ArrayElemTypes = [scalar_elem_string, scalar_elem_int,
@@ -455,7 +452,7 @@ generate_string_hash_several_soln_lookup_switch(VarRval, CaseSolns,
     % Since we release BaseReg only after the calls to generate_branch_end,
     % we must make sure that generate_branch_end won't want to overwrite
     % BaseReg.
-    acquire_reg_not_in_storemap(StoreMap, reg_r, BaseReg, !CI),
+    acquire_reg_not_in_storemap(StoreMap, reg_r, BaseReg, !CLD),
 
     % Generate code to look up each of the variables in OutVars
     % in its slot in the table row RowStartReg. Most of the change is done
@@ -469,7 +466,8 @@ generate_string_hash_several_soln_lookup_switch(VarRval, CaseSolns,
     ),
     generate_code_for_all_kinds(DescendingSortedKinds, NumPrevColumns,
         OutVars, ResumeVars, EndLabel, StoreMap, Liveness, AddTrailOps,
-        BaseReg, LaterVectorAddrRval, !MaybeEnd, LookupResultsCode, !CI),
+        BaseReg, LaterVectorAddrRval, !MaybeEnd, LookupResultsCode,
+        !CI, !.CLD),
     MatchCode = SetBaseRegCode ++ LookupResultsCode,
 
     generate_string_hash_switch_search(HashSwitchInfo,
@@ -491,10 +489,10 @@ construct_string_hash_several_soln_lookup_vector(Slot, TableSize, HashSlotMap,
         DummyOutRvals, NumOutVars, NumCollisions,
         !RevMainRows, !.LaterNextRow, !LaterSolnArray,
         !OneSolnCaseCount, !SeveralSolnsCaseCount) :-
-    ( Slot = TableSize ->
+    ( if Slot = TableSize then
         true
-    ;
-        ( map.search(HashSlotMap, Slot, SlotInfo) ->
+    else
+        ( if map.search(HashSlotMap, Slot, SlotInfo) then
             SlotInfo = string_hash_slot(String, Next, Soln),
             StringRval = const(llconst_string(String)),
             NextSlotRval = const(llconst_int(Next)),
@@ -506,9 +504,9 @@ construct_string_hash_several_soln_lookup_vector(Slot, TableSize, HashSlotMap,
                 % this case; the second ZeroRval is a dummy that won't be
                 % referenced.
                 MainRowTail = [ZeroRval, ZeroRval | OutVarRvals],
-                ( NumCollisions = 0 ->
+                ( if NumCollisions = 0 then
                     MainRow = [StringRval | MainRowTail]
-                ;
+                else
                     MainRow = [StringRval, NextSlotRval | MainRowTail]
                 )
             ;
@@ -521,23 +519,23 @@ construct_string_hash_several_soln_lookup_vector(Slot, TableSize, HashSlotMap,
                 FirstRowRval = const(llconst_int(FirstRowOffset)),
                 LastRowRval = const(llconst_int(LastRowOffset)),
                 MainRowTail = [FirstRowRval, LastRowRval | FirstSolnRvals],
-                ( NumCollisions = 0 ->
+                ( if NumCollisions = 0 then
                     MainRow = [StringRval | MainRowTail]
-                ;
+                else
                     MainRow = [StringRval, NextSlotRval | MainRowTail]
                 ),
                 !:LaterNextRow = !.LaterNextRow + NumLaterSolns,
                 !:LaterSolnArray = !.LaterSolnArray ++ from_list(LaterSolns)
             )
-        ;
+        else
             % The zero in the StringRval slot means that this bucket is empty.
             StringRval = const(llconst_int(0)),
             NextSlotRval = const(llconst_int(-2)),
             ZeroRval = const(llconst_int(0)),
             MainRowTail = [ZeroRval, ZeroRval | DummyOutRvals],
-            ( NumCollisions = 0 ->
+            ( if NumCollisions = 0 then
                 MainRow = [StringRval | MainRowTail]
-            ;
+            else
                 MainRow = [StringRval, NextSlotRval | MainRowTail]
             )
         ),
@@ -566,9 +564,10 @@ construct_string_hash_several_soln_lookup_vector(Slot, TableSize, HashSlotMap,
             ).
 
 :- pred  init_string_hash_switch_info(can_fail::in,
-    string_hash_switch_info::out, code_info::in, code_info::out) is det.
+    string_hash_switch_info::out,
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
-init_string_hash_switch_info(CanFail, Info, !CI) :-
+init_string_hash_switch_info(CanFail, Info, !CI, !.CLD) :-
     % We get the registers we use as working storage in the hash table lookup
     % code now, before we generate the code of the switch arms, since the set
     % of free registers will in general be different before and after that
@@ -578,12 +577,12 @@ init_string_hash_switch_info(CanFail, Info, !CI) :-
     % that code is generated manually below. Releasing the registers early
     % allows the code of the cases to make use of them.
 
-    acquire_reg(reg_r, SlotReg, !CI),
-    acquire_reg(reg_r, RowStartReg, !CI),
-    acquire_reg(reg_r, StringReg, !CI),
-    release_reg(SlotReg, !CI),
-    release_reg(RowStartReg, !CI),
-    release_reg(StringReg, !CI),
+    acquire_reg(reg_r, SlotReg, !CLD),
+    acquire_reg(reg_r, RowStartReg, !CLD),
+    acquire_reg(reg_r, StringReg, !CLD),
+    release_reg(SlotReg, !CLD),
+    release_reg(RowStartReg, !CLD),
+    release_reg(StringReg, !CLD),
 
     get_next_label(LoopStartLabel, !CI),
     get_next_label(FailLabel, !CI),
@@ -591,9 +590,8 @@ init_string_hash_switch_info(CanFail, Info, !CI) :-
 
     % We must generate the failure code in the context in which
     % none of the switch arms have been executed yet.
-    remember_position(!.CI, BranchStart),
-    generate_string_switch_fail(CanFail, FailCode, !CI),
-    reset_to_position(BranchStart, !CI),
+    remember_position(!.CLD, BranchStart),
+    generate_string_switch_fail(CanFail, FailCode, !CI, !.CLD),
 
     Info = string_hash_switch_info(SlotReg, RowStartReg, StringReg,
         LoopStartLabel, NoMatchLabel, FailLabel, BranchStart, FailCode).
@@ -613,11 +611,11 @@ generate_string_hash_switch_search(Info, VarRval, TableAddrRval,
     FailLabel = Info ^ shsi_fail_label,
     FailCode = Info ^ shsi_fail_code,
 
-    ( NumCollisions = 0 ->
-        ( NumColumns = 1 ->
+    ( if NumCollisions = 0 then
+        ( if NumColumns = 1 then
             BaseReg = SlotReg,
             MultiplyInstrs = []
-        ;
+        else
             BaseReg = RowStartReg,
             MultiplyInstrs = [
                 llds_instr(assign(RowStartReg,
@@ -647,7 +645,7 @@ generate_string_hash_switch_search(Info, VarRval, TableAddrRval,
             llds_instr(label(FailLabel),
                 "handle the failure of the table search")
         ]) ++ FailCode
-    ;
+    else
         Code = from_list([
             llds_instr(assign(SlotReg,
                 binop(bitwise_and, unop(HashOp, VarRval),
@@ -688,8 +686,8 @@ generate_string_hash_switch_search(Info, VarRval, TableAddrRval,
 %-----------------------------------------------------------------------------%
 
 generate_string_binary_switch(Cases, VarRval, VarName, CodeModel, CanFail,
-        SwitchGoalInfo, EndLabel, MaybeEnd, Code, !CI) :-
-    init_string_binary_switch_info(CanFail, BinarySwitchInfo, !CI),
+        SwitchGoalInfo, EndLabel, MaybeEnd, Code, !CI, CLD) :-
+    init_string_binary_switch_info(CanFail, BinarySwitchInfo, !CI, CLD),
     BranchStart = BinarySwitchInfo ^ sbsi_branch_start,
     Params = represent_params(VarName, SwitchGoalInfo, CodeModel, BranchStart,
         EndLabel),
@@ -761,20 +759,22 @@ gen_string_binary_jump_slots([Str - Label | StrLabels],
 %-----------------------------------------------------------------------------%
 
 generate_string_binary_lookup_switch(VarRval, LookupSwitchInfo,
-        CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI) :-
+        CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI, CLD) :-
     LookupSwitchInfo = lookup_switch_info(CaseConsts, OutVars, OutTypes,
         Liveness),
     (
-        CaseConsts = all_one_soln(CaseValues),
+        CaseConsts = all_one_soln(CaseValueMap),
+        map.to_assoc_list(CaseValueMap, CaseValues),
         generate_string_binary_simple_lookup_switch(VarRval, CaseValues,
             OutVars, OutTypes, Liveness, CanFail, EndLabel, StoreMap,
-            !MaybeEnd, Code, !CI)
+            !MaybeEnd, Code, !CI, CLD)
     ;
-        CaseConsts = some_several_solns(CaseSolns,
+        CaseConsts = some_several_solns(CaseSolnMap,
             case_consts_several_llds(ResumeVars, GoalsMayModifyTrail)),
+        map.to_assoc_list(CaseSolnMap, CaseSolns),
         generate_string_binary_several_soln_lookup_switch(VarRval, CaseSolns,
             ResumeVars, GoalsMayModifyTrail, OutVars, OutTypes, Liveness,
-            CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI)
+            CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI, CLD)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -784,17 +784,17 @@ generate_string_binary_lookup_switch(VarRval, LookupSwitchInfo,
     list(llds_type)::in, set_of_progvar::in,
     can_fail::in, label::in, abs_store_map::in,
     branch_end::in, branch_end::out, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
 generate_string_binary_simple_lookup_switch(VarRval, CaseValues,
         OutVars, OutTypes, Liveness, CanFail, EndLabel, StoreMap,
-        !MaybeEnd, Code, !CI) :-
+        !MaybeEnd, Code, !CI, !.CLD) :-
     % This predicate, generate_string_binary_several_soln_lookup_switch,
     % and generate_string_binary_lookup_switch do similar tasks using
     % similar code, so if you need to update one, you probably need to
     % update them all.
 
-    init_string_binary_switch_info(CanFail, BinarySwitchInfo, !CI),
+    init_string_binary_switch_info(CanFail, BinarySwitchInfo, !CI, !.CLD),
     CommentCode = singleton(
         llds_instr(comment("string binary simple lookup switch"), "")
     ),
@@ -818,20 +818,18 @@ generate_string_binary_simple_lookup_switch(VarRval, CaseValues,
 
     (
         OutVars = [],
-        SetBaseRegCode = empty,
-        MaybeBaseReg = no
+        SetBaseRegCode = empty
     ;
         OutVars = [_ | _],
         % Since we release BaseReg only after the call to
         % generate_branch_end, we must make sure that generate_branch_end
         % won't want to overwrite BaseReg.
-        acquire_reg_not_in_storemap(StoreMap, reg_r, BaseReg, !CI),
-        MaybeBaseReg = yes(BaseReg),
+        acquire_reg_not_in_storemap(StoreMap, reg_r, BaseReg, !CLD),
 
         % Generate code to look up each of the variables in OutVars
         % in its slot in the table row MidReg. Most of the change is done
         % by generate_offset_assigns associating each var with the relevant
-        % field in !CI.
+        % field in !CLD.
         MidReg = BinarySwitchInfo ^ sbsi_mid_reg,
         SetBaseRegCode = singleton(
             llds_instr(
@@ -843,7 +841,7 @@ generate_string_binary_simple_lookup_switch(VarRval, CaseValues,
                                 const(llconst_int(NumColumns)))))),
                 "set up base reg")
         ),
-        generate_offset_assigns(OutVars, 1, BaseReg, !CI)
+        generate_offset_assigns(OutVars, 1, BaseReg, !.CI, !CLD)
     ),
 
     generate_string_binary_switch_search(BinarySwitchInfo,
@@ -854,13 +852,7 @@ generate_string_binary_simple_lookup_switch(VarRval, CaseValues,
     % of cases. We have to do this explicitly because generating a `fail'
     % slot last would yield the wrong liveness.
     set_liveness_and_end_branch(StoreMap, Liveness, no, _MaybeEnd,
-        BranchEndCode, !CI),
-    (
-        MaybeBaseReg = no
-    ;
-        MaybeBaseReg = yes(FinalBaseReg),
-        release_reg(FinalBaseReg, !CI)
-    ),
+        BranchEndCode, !.CI, !.CLD),
 
     EndLabelCode = singleton(
         llds_instr(label(EndLabel), "end of binary string switch")
@@ -887,17 +879,17 @@ construct_string_binary_simple_lookup_vector([Str - OutRvals | Rest],
     list(prog_var)::in, list(llds_type)::in, set_of_progvar::in,
     can_fail::in, label::in, abs_store_map::in,
     branch_end::in, branch_end::out, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
 generate_string_binary_several_soln_lookup_switch(VarRval, CaseSolns,
         ResumeVars, GoalsMayModifyTrail, OutVars, OutTypes, Liveness,
-        CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI) :-
+        CanFail, EndLabel, StoreMap, !MaybeEnd, Code, !CI, !.CLD) :-
     % This predicate, generate_string_binary_simple_lookup_switch,
     % and generate_string_binary_lookup_switch do similar tasks using
     % similar code, so if you need to update one, you probably need to
     % update them all.
 
-    init_string_binary_switch_info(CanFail, BinarySwitchInfo, !CI),
+    init_string_binary_switch_info(CanFail, BinarySwitchInfo, !CI, !.CLD),
     CommentCode = singleton(
         llds_instr(comment("string binary several soln lookup switch"), "")
     ),
@@ -955,7 +947,7 @@ generate_string_binary_several_soln_lookup_switch(VarRval, CaseSolns,
     % Since we release BaseReg only after the calls to generate_branch_end,
     % we must make sure that generate_branch_end won't want to overwrite
     % BaseReg.
-    acquire_reg_not_in_storemap(StoreMap, reg_r, BaseReg, !CI),
+    acquire_reg_not_in_storemap(StoreMap, reg_r, BaseReg, !CLD),
     MidReg = BinarySwitchInfo ^ sbsi_mid_reg,
     SetBaseRegCode = singleton(
         llds_instr(
@@ -972,8 +964,8 @@ generate_string_binary_several_soln_lookup_switch(VarRval, CaseSolns,
         MainTableSize, MainNumColumns, BinarySearchCode),
 
     generate_code_for_all_kinds(DescendingSortedKinds, 1, OutVars, ResumeVars,
-        EndLabel, StoreMap, Liveness, AddTrailOps,
-        BaseReg, LaterVectorAddrRval, !MaybeEnd, LookupResultsCode, !CI),
+        EndLabel, StoreMap, Liveness, AddTrailOps, BaseReg,
+        LaterVectorAddrRval, !MaybeEnd, LookupResultsCode, !CI, !.CLD),
     EndLabelCode = singleton(
         llds_instr(label(EndLabel),
             "end of string binary several solns switch")
@@ -1038,9 +1030,10 @@ construct_string_binary_several_soln_lookup_vector([Str - Soln | StrSolns],
             ).
 
 :- pred init_string_binary_switch_info(can_fail::in,
-    string_binary_switch_info::out, code_info::in, code_info::out) is det.
+    string_binary_switch_info::out,
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
-init_string_binary_switch_info(CanFail, Info, !CI) :-
+init_string_binary_switch_info(CanFail, Info, !CI, !.CLD) :-
     % We get the registers we use as working storage in the hash table lookup
     % code now, before we generate the code of the switch arms, since the set
     % of free registers will in general be different before and after that
@@ -1049,14 +1042,14 @@ init_string_binary_switch_info(CanFail, Info, !CI) :-
     % code will *only* be executed before the code for the cases, and because
     % that code is generated manually below. Releasing the registers early
     % allows the code of the cases to make use of them.
-    acquire_reg(reg_r, LoReg, !CI),
-    acquire_reg(reg_r, HiReg, !CI),
-    acquire_reg(reg_r, MidReg, !CI),
-    acquire_reg(reg_r, ResultReg, !CI),
-    release_reg(LoReg, !CI),
-    release_reg(HiReg, !CI),
-    release_reg(MidReg, !CI),
-    release_reg(ResultReg, !CI),
+    acquire_reg(reg_r, LoReg, !CLD),
+    acquire_reg(reg_r, HiReg, !CLD),
+    acquire_reg(reg_r, MidReg, !CLD),
+    acquire_reg(reg_r, ResultReg, !CLD),
+    release_reg(LoReg, !CLD),
+    release_reg(HiReg, !CLD),
+    release_reg(MidReg, !CLD),
+    release_reg(ResultReg, !CLD),
 
     get_next_label(LoopStartLabel, !CI),
     get_next_label(GtEqLabel, !CI),
@@ -1065,9 +1058,8 @@ init_string_binary_switch_info(CanFail, Info, !CI) :-
 
     % We must generate the failure code in the context in which
     % none of the switch arms have been executed yet.
-    remember_position(!.CI, BranchStart),
-    generate_string_switch_fail(CanFail, FailCode, !CI),
-    reset_to_position(BranchStart, !CI),
+    remember_position(!.CLD, BranchStart),
+    generate_string_switch_fail(CanFail, FailCode, !CI, !.CLD),
 
     Info = string_binary_switch_info(LoReg, HiReg, MidReg, ResultReg,
         LoopStartLabel, GtEqLabel, EqLabel, FailLabel, BranchStart, FailCode).
@@ -1138,12 +1130,12 @@ generate_string_binary_switch_search(Info, VarRval, TableAddrRval,
 %-----------------------------------------------------------------------------%
 
 :- pred generate_string_switch_fail(can_fail::in, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
-generate_string_switch_fail(CanFail, FailCode, !CI) :-
+generate_string_switch_fail(CanFail, FailCode, !CI, !.CLD) :-
     (
         CanFail = can_fail,
-        generate_failure(FailCode, !CI)
+        generate_failure(FailCode, !CI, !.CLD)
     ;
         CanFail = cannot_fail,
         FailCode = singleton(

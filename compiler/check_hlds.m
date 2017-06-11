@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2002-2006, 2009-2010 The University of Melbourne.
+% Copyright (C) 2015 The Mercury team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -13,12 +14,16 @@
 
 %-----------------------------------------------------------------------------%
 
-% Type checking
+% Type checking.
 %:- module type_analysis.
     :- include_module check_typeclass.
+    :- include_module check_for_missing_type_defns.
+    :- include_module check_promise.
     :- include_module post_typecheck.
     :- include_module purity.
+    :- include_module resolve_unify_functor.
     :- include_module type_constraints.
+    :- include_module type_assign.
     :- include_module type_util.
     :- include_module typecheck.
     :- include_module typecheck_errors.
@@ -26,18 +31,22 @@
     :- include_module typeclasses.
 %:- end_module type_analysis.
 
-% Implementation-defined literals
-:- include_module implementation_defined_literals. 
+% Implementation-defined literals.
+:- include_module implementation_defined_literals.
 
 % Polymorphism transformation.
 :- include_module clause_to_proc.
 :- include_module polymorphism.
 
-% Mode analysis
+% Preprocessing user insts in the inst table for mode analysis.
+:- include_module inst_user.
+
+% Mode analysis.
 %:- module mode_analysis.
    :- include_module delay_info.
    :- include_module delay_partial_inst.
    :- include_module inst_match.
+   :- include_module inst_test.
    :- include_module inst_util.
    :- include_module mode_constraint_robdd.
    :- include_module mode_constraints.
@@ -66,7 +75,7 @@
 
 %:- end_module mode_analysis.
 
-% Indexing and determinism analysis
+% Indexing and determinism analysis.
 :- include_module cse_detection.
 :- include_module det_analysis.
 :- include_module det_report.
@@ -79,27 +88,24 @@
 % Order independent state update pragmas.
 :- include_module oisu_check.
 
-% Expand try goals
+% Expand try goals.
 :- include_module try_expand.
 
-% Warnings about simple code
-:- include_module common.
-:- include_module format_call.
+% Warnings about simple code.
 :- include_module simplify.
 
-% Warnings about insts with no matching types
+% Warnings about insts with no matching types.
 :- include_module inst_check.
 
-% Warnings about unused imports
+% Warnings about unused imports.
 :- include_module unused_imports.
 
-% Output XML representation useful for documentation of module
+% Warnings about bad programming style.
+:- include_module style_checks.
+
+% Output XML representation useful for documentation of module.
 :- include_module xml_documentation.
 
 %-----------------------------------------------------------------------------%
-
-:- implementation.
-
 :- end_module check_hlds.
-
 %-----------------------------------------------------------------------------%

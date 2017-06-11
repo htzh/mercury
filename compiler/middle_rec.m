@@ -18,12 +18,12 @@
 
 :- import_module hlds.hlds_goal.
 :- import_module ll_backend.code_info.
+:- import_module ll_backend.code_loc_dep.
 :- import_module ll_backend.llds.
 
 :- pred match_and_generate(hlds_goal::in, llds_code::out,
-    code_info::in, code_info::out) is semidet.
-
-%---------------------------------------------------------------------------%
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out)
+    is semidet.
 
 %---------------------------------------------------------------------------%
 %---------------------------------------------------------------------------%
@@ -32,6 +32,7 @@
 
 :- import_module backend_libs.builtin_ops.
 :- import_module hlds.code_model.
+:- import_module hlds.goal_form.
 :- import_module hlds.hlds_llds.
 :- import_module ll_backend.code_gen.
 :- import_module ll_backend.code_util.
@@ -48,28 +49,27 @@
 :- import_module maybe.
 :- import_module require.
 :- import_module set.
-:- import_module string.
 
 %---------------------------------------------------------------------------%
 
-match_and_generate(Goal, Instrs, !CI) :-
+match_and_generate(Goal, Instrs, !CI, !CLD) :-
     Goal = hlds_goal(GoalExpr, GoalInfo),
     GoalExpr = switch(Var, cannot_fail, [Case1, Case2]),
     Case1 = case(ConsId1, [], Goal1),
     Case2 = case(ConsId2, [], Goal2),
-    (
+    ( if
         contains_only_builtins(Goal1) = yes,
         contains_simple_recursive_call(Goal2, !.CI)
-    ->
+    then
         middle_rec_generate_switch(Var, ConsId1, Goal1, Goal2,
-            GoalInfo, Instrs, !CI)
-    ;
+            GoalInfo, Instrs, !CI, !CLD)
+    else if
         contains_only_builtins(Goal2) = yes,
         contains_simple_recursive_call(Goal1, !.CI)
-    ->
+    then
         middle_rec_generate_switch(Var, ConsId2, Goal2, Goal1,
-            GoalInfo, Instrs, !CI)
-    ;
+            GoalInfo, Instrs, !CI, !CLD)
+    else
         fail
     ).
 
@@ -93,9 +93,12 @@ contains_simple_recursive_call(hlds_goal(GoalExpr, _), CodeInfo) :-
 
 contains_simple_recursive_call_conj([Goal | Goals], CodeInfo) :-
     Goal = hlds_goal(GoalExpr, _),
-    ( contains_only_builtins_expr(GoalExpr) = yes ->
+    OnlyBuiltinsGoalExpr = contains_only_builtins_expr(GoalExpr),
+    (
+        OnlyBuiltinsGoalExpr = yes,
         contains_simple_recursive_call_conj(Goals, CodeInfo)
     ;
+        OnlyBuiltinsGoalExpr = no,
         is_recursive_call(GoalExpr, CodeInfo),
         contains_only_builtins_list(Goals) = yes
     ).
@@ -143,25 +146,25 @@ contains_only_builtins_expr(GoalExpr) = OnlyBuiltins :-
         OnlyBuiltins = contains_only_builtins(SubGoal)
     ;
         GoalExpr = scope(Reason, SubGoal),
-        (
+        ( if
             Reason = from_ground_term(_, FGT),
             ( FGT = from_ground_term_construct
             ; FGT = from_ground_term_deconstruct
             )
-        ->
+        then
             OnlyBuiltins = yes
-        ;
+        else
             OnlyBuiltins = contains_only_builtins(SubGoal)
         )
     ;
         GoalExpr = if_then_else(_Vars, Cond, Then, Else),
-        (
+        ( if
             contains_only_builtins(Cond) = yes,
             contains_only_builtins(Then) = yes,
             contains_only_builtins(Else) = yes
-        ->
+        then
             OnlyBuiltins = yes
-        ;
+        else
             OnlyBuiltins = no
         )
     ;
@@ -170,9 +173,7 @@ contains_only_builtins_expr(GoalExpr) = OnlyBuiltins :-
             BuiltinState = inline_builtin,
             OnlyBuiltins = yes
         ;
-            ( BuiltinState = out_of_line_builtin
-            ; BuiltinState = not_builtin
-            ),
+            BuiltinState = not_builtin,
             OnlyBuiltins = no
         )
     ;
@@ -220,9 +221,12 @@ contains_only_builtins_expr(GoalExpr) = OnlyBuiltins :-
 
 contains_only_builtins_cases([]) = yes.
 contains_only_builtins_cases([case(_, _, Goal) | Cases]) = OnlyBuiltins :-
-    ( contains_only_builtins(Goal) = yes ->
+    OnlyBuiltinsGoal = contains_only_builtins(Goal),
+    (
+        OnlyBuiltinsGoal = yes,
         OnlyBuiltins = contains_only_builtins_cases(Cases)
     ;
+        OnlyBuiltinsGoal = no,
         OnlyBuiltins = no
     ).
 
@@ -230,9 +234,12 @@ contains_only_builtins_cases([case(_, _, Goal) | Cases]) = OnlyBuiltins :-
 
 contains_only_builtins_list([]) = yes.
 contains_only_builtins_list([Goal | Goals]) = OnlyBuiltins :-
-    ( contains_only_builtins(Goal) = yes ->
+    OnlyBuiltinsGoal = contains_only_builtins(Goal),
+    (
+        OnlyBuiltinsGoal = yes,
         OnlyBuiltins = contains_only_builtins_list(Goals)
     ;
+        OnlyBuiltinsGoal = no,
         OnlyBuiltins = no
     ).
 
@@ -240,10 +247,11 @@ contains_only_builtins_list([Goal | Goals]) = OnlyBuiltins :-
 
 :- pred middle_rec_generate_switch(prog_var::in, cons_id::in,
     hlds_goal::in, hlds_goal::in, hlds_goal_info::in, llds_code::out,
-    code_info::in, code_info::out) is semidet.
+    code_info::in, code_info::out, code_loc_dep::in, code_loc_dep::out)
+    is semidet.
 
 middle_rec_generate_switch(Var, BaseConsId, Base, Recursive, SwitchGoalInfo,
-        Code, !CI) :-
+        Code, !CI, !CLD) :-
     get_stack_slots(!.CI, StackSlots),
     get_varset(!.CI, VarSet),
     SlotsComment = explain_stack_slots(StackSlots, VarSet),
@@ -252,28 +260,30 @@ middle_rec_generate_switch(Var, BaseConsId, Base, Recursive, SwitchGoalInfo,
     get_proc_id(!.CI, ProcId),
     EntryLabel = make_local_entry_label(ModuleInfo, PredId, ProcId, no),
 
-    pre_goal_update(SwitchGoalInfo, has_subgoals, !CI),
+    pre_goal_update(SwitchGoalInfo, has_subgoals, !CLD),
     VarType = variable_type(!.CI, Var),
     CheaperTagTest = lookup_cheaper_tag_test(!.CI, VarType),
     generate_tag_test(Var, BaseConsId, CheaperTagTest, branch_on_success,
-        BaseLabel, EntryTestCode, !CI),
+        BaseLabel, EntryTestCode, !CI, !CLD),
     EntryTestInstrs = cord.list(EntryTestCode),
 
     goal_info_get_store_map(SwitchGoalInfo, StoreMap),
-    remember_position(!.CI, BranchStart),
-    generate_goal(model_det, Base, BaseGoalCode, !CI),
-    generate_branch_end(StoreMap, no, MaybeEnd1, BaseSaveCode, !CI),
-    reset_to_position(BranchStart, !CI),
-    generate_goal(model_det, Recursive, RecGoalCode, !CI),
-    generate_branch_end(StoreMap, MaybeEnd1, MaybeEnd, RecSaveCode, !CI),
+    remember_position(!.CLD, BranchStart),
+    generate_goal(model_det, Base, BaseGoalCode, !CI, !CLD),
+    generate_branch_end(StoreMap, no, MaybeEnd1, BaseSaveCode,
+        !.CI, !.CLD),
+    reset_to_position(BranchStart, !.CI, !:CLD),
+    generate_goal(model_det, Recursive, RecGoalCode, !CI, !CLD),
+    generate_branch_end(StoreMap, MaybeEnd1, MaybeEnd, RecSaveCode,
+        !.CI, !.CLD),
 
-    post_goal_update(SwitchGoalInfo, !CI),
-    after_all_branches(StoreMap, MaybeEnd, !CI),
+    after_all_branches(StoreMap, MaybeEnd, !.CI, !:CLD),
+    post_goal_update(SwitchGoalInfo, !.CI, !CLD),
 
     ArgModes = get_arginfo(!.CI),
     HeadVars = get_headvars(!.CI),
     assoc_list.from_corresponding_lists(HeadVars, ArgModes, Args),
-    setup_return(Args, LiveArgs, EpilogCode, !CI),
+    setup_return(Args, LiveArgs, EpilogCode, !.CI, !CLD),
 
     BaseCode = BaseGoalCode ++ BaseSaveCode ++ EpilogCode,
     RecCode = RecGoalCode ++ RecSaveCode ++ EpilogCode,
@@ -303,7 +313,7 @@ middle_rec_generate_switch(Var, BaseConsId, Base, Recursive, SwitchGoalInfo,
 
     generate_downloop_test(EntryTestInstrs, Loop1Label, Loop1Test),
 
-    ( FrameSize = 0 ->
+    ( if FrameSize = 0 then
         MaybeIncrSp = empty,
         MaybeDecrSp = empty,
         InitAuxReg = singleton(
@@ -328,7 +338,7 @@ middle_rec_generate_switch(Var, BaseConsId, Base, Recursive, SwitchGoalInfo,
                     code_label(Loop2Label)),
                 "test on upward loop")
         )
-    ;
+    else
         PushMsg = proc_gen.push_msg(ModuleInfo, PredId, ProcId),
         MaybeIncrSp = singleton(
             llds_instr(incr_sp(FrameSize, PushMsg, stack_incr_nonleaf), "")
@@ -426,7 +436,7 @@ middle_rec_generate_switch(Var, BaseConsId, Base, Recursive, SwitchGoalInfo,
 generate_downloop_test([], _, _) :-
     unexpected($module, $pred, "empty list").
 generate_downloop_test([Instr0 | Instrs0], Target, Instrs) :-
-    ( Instr0 = llds_instr(if_val(Test, _OldTarget), _Comment) ->
+    ( if Instr0 = llds_instr(if_val(Test, _OldTarget), _Comment) then
         (
             Instrs0 = []
         ;
@@ -438,7 +448,7 @@ generate_downloop_test([Instr0 | Instrs0], Target, Instrs) :-
             llds_instr(if_val(NewTest, code_label(Target)),
                 "test on downward loop")
         ]
-    ;
+    else
         generate_downloop_test(Instrs0, Target, Instrs1),
         Instrs = [Instr0 | Instrs1]
     ).
@@ -451,18 +461,18 @@ generate_downloop_test([Instr0 | Instrs0], Target, Instrs) :-
 split_rec_code([], _, _) :-
     unexpected($module, $pred, "did not find call").
 split_rec_code([Instr0 | Instrs1], Before, After) :-
-    ( Instr0 = llds_instr(llcall(_, _, _, _, _, _), _) ->
-        (
+    ( if Instr0 = llds_instr(llcall(_, _, _, _, _, _), _) then
+        ( if
             opt_util.skip_comments(Instrs1, Instrs2),
             Instrs2 = [Instr2 | Instrs3],
             Instr2 = llds_instr(label(_), _)
-        ->
+        then
             Before = [],
             After = Instrs3
-        ;
+        else
             unexpected($module, $pred, "call not followed by label")
         )
-    ;
+    else
         split_rec_code(Instrs1, Before1, After),
         Before = [Instr0 | Before1]
     ).
@@ -474,10 +484,10 @@ split_rec_code([Instr0 | Instrs1], Before, After) :-
 
 add_counter_to_livevals([], _Lval, []).
 add_counter_to_livevals([Instr0 | Instrs0], Lval, [Instr | Instrs]) :-
-    ( Instr0 = llds_instr(livevals(Lives0), Comment) ->
+    ( if Instr0 = llds_instr(livevals(Lives0), Comment) then
         set.insert(Lval, Lives0, Lives),
         Instr = llds_instr(livevals(Lives), Comment)
-    ;
+    else
         Instr = Instr0
     ),
     add_counter_to_livevals(Instrs0, Lval, Instrs).
@@ -491,17 +501,17 @@ find_unused_register(Instrs, UnusedReg) :-
     set.init(Used0),
     find_used_registers(Instrs, Used0, Used1),
     set.to_sorted_list(Used1, UsedList),
-    find_unused_register_2(UsedList, 1, UnusedReg).
+    find_unused_register_acc(UsedList, 1, UnusedReg).
 
-:- pred find_unused_register_2(list(int)::in, int::in, lval::out) is det.
+:- pred find_unused_register_acc(list(int)::in, int::in, lval::out) is det.
 
-find_unused_register_2([], N, reg(reg_r, N)).
-find_unused_register_2([H | T], N, Reg) :-
-    ( N < H ->
+find_unused_register_acc([], N, reg(reg_r, N)).
+find_unused_register_acc([H | T], N, Reg) :-
+    ( if N < H then
         Reg = reg(reg_r, N)
-    ;
+    else
         N1 = N + 1,
-        find_unused_register_2(T, N1, Reg)
+        find_unused_register_acc(T, N1, Reg)
     ).
 
 :- pred find_used_registers(list(instruction)::in,
@@ -649,15 +659,15 @@ find_used_registers_lvals([Lval | Lvals], !Used) :-
     set(int)::in, set(int)::out) is det.
 
 find_used_registers_lval(Lval, !Used) :-
-    ( Lval = reg(reg_r, N) ->
+    ( if Lval = reg(reg_r, N) then
         copy(N, N1),
         set.insert(N1, !Used)
-    ; Lval = field(_, Rval, FieldNum) ->
+    else if Lval = field(_, Rval, FieldNum) then
         find_used_registers_rval(Rval, !Used),
         find_used_registers_rval(FieldNum, !Used)
-    ; Lval = lvar(_) ->
+    else if Lval = lvar(_) then
         unexpected($module, $pred, "lvar")
-    ;
+    else
         true
     ).
 
@@ -700,19 +710,6 @@ find_used_registers_mem_ref(heap_ref(Rval1, _, Rval2), !Used) :-
     find_used_registers_rval(Rval1, !Used),
     find_used_registers_rval(Rval2, !Used).
 
-:- pred find_used_registers_maybe_rvals(list(maybe(rval))::in,
-    set(int)::in, set(int)::out) is det.
-
-find_used_registers_maybe_rvals([], !Used).
-find_used_registers_maybe_rvals([MaybeRval | MaybeRvals], !Used) :-
-    (
-        MaybeRval = no
-    ;
-        MaybeRval = yes(Rval),
-        find_used_registers_rval(Rval, !Used)
-    ),
-    find_used_registers_maybe_rvals(MaybeRvals, !Used).
-
 :- pred insert_foreign_proc_input_registers(list(foreign_proc_input)::in,
     set(int)::in, set(int)::out) is det.
 
@@ -737,24 +734,25 @@ insert_foreign_proc_output_registers([Output | Outputs], !Used) :-
     %
 :- pred find_labels(list(instruction)::in, list(label)::out) is det.
 
-find_labels(Instrs, Label2) :-
-    find_labels_2(Instrs, [], Label2).
+find_labels(Instrs, Labels) :-
+    find_labels_acc(Instrs, [], Labels).
 
-:- pred find_labels_2(list(instruction)::in,
+:- pred find_labels_acc(list(instruction)::in,
     list(label)::in, list(label)::out) is det.
 
-find_labels_2([], !Labels).
-find_labels_2([Instr | Instrs], !Labels) :-
+find_labels_acc([], !Labels).
+find_labels_acc([Instr | Instrs], !Labels) :-
     Instr = llds_instr(Uinstr, _),
-    ( Uinstr = label(Label) ->
+    ( if Uinstr = label(Label) then
         !:Labels = [Label | !.Labels]
-    ; Uinstr = block(_, _, Block) ->
-        find_labels_2(Block, !Labels)
-    ;
+    else if Uinstr = block(_, _, Block) then
+        find_labels_acc(Block, !Labels)
+    else
         true
     ),
-    find_labels_2(Instrs, !Labels).
+    find_labels_acc(Instrs, !Labels).
 
 %---------------------------------------------------------------------------%
 :- end_module ll_backend.middle_rec.
 %---------------------------------------------------------------------------%
+

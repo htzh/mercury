@@ -1,18 +1,18 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1995-1998, 2004-2006 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: output.m
 % Main author: petdr.
 %
 % Prints out the output of the profiler.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module output.
 :- interface.
@@ -22,13 +22,13 @@
 :- import_module io.
 :- import_module map.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- pred output_profile(output::in, map(string, int)::in,
+:- pred output_profile(profiler_output::in, map(string, int)::in,
     io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -45,7 +45,7 @@
 :- import_module require.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 output_profile(Output, IndexMap, !IO) :-
     globals.io_get_globals(Globals, !IO),
@@ -53,7 +53,7 @@ output_profile(Output, IndexMap, !IO) :-
     what_to_profile(WhatToProfileString, WhatToProfile),
     io.format("*** profiling %s ***\n\n", [s(WhatToProfileString)], !IO),
 
-    Output = output(InfoMap, CallList, FlatList),
+    Output = profiler_output(InfoMap, CallList, FlatList),
     globals.io_lookup_bool_option(call_graph, CallGraphOpt, !IO),
     (
         CallGraphOpt = yes,
@@ -196,7 +196,6 @@ output.call_graph_headers(!IO) :-
     io.write_string("                                  called/total", !IO),
     io.write_string("       children\n\n", !IO).
 
-
 :- pred output_call_graph(list(string)::in, map(string, output_prof)::in,
     map(string, int)::in, io::di, io::uo) is det.
 
@@ -231,18 +230,18 @@ output_formatted_prof_node(ProfNode, Index, IndexMap, !IO) :-
     string.format("%-6s %5.1f %7.2f %11.2f %7d", [s(IndexStr),
         f(Percentage), f(Self), f(Descendant), i(TotalCalls)], InitMiddleStr),
 
-    ( SelfCalls \= 0 ->
-        io.write_string(SelfCallsString, !IO)
-    ;
+    ( if SelfCalls = 0 then
         true
+    else
+        io.write_string(SelfCallsString, !IO)
     ),
 
-    (
+    ( if
         CycleParentList = [],
         ParentList = []
-    ->
+    then
         io.format("%67s", [s("<spontaneous>\n")], !IO)
-    ;
+    else
         list.sort(CycleParentList, SortedCycleParentList),
         output_formatted_cycle_parent_list(SortedCycleParentList, IndexMap,
             !IO),
@@ -251,12 +250,11 @@ output_formatted_prof_node(ProfNode, Index, IndexMap, !IO) :-
             !IO)
     ),
 
-
     % Output the info about the current procedure.
     io.write_string(InitMiddleStr, !IO),
-    ( SelfCalls = 0 ->
+    ( if SelfCalls = 0 then
         io.write_string("         ", !IO)
-    ;
+    else
         io.format("+%-7d", [i(SelfCalls)], !IO)
     ),
     io.write_string(FullName ++ " " ++ IndexStr ++ "\n", !IO),
@@ -266,10 +264,10 @@ output_formatted_prof_node(ProfNode, Index, IndexMap, !IO) :-
     list.sort(CycleChildList, SortedCycleChildList),
     output_formatted_cycle_child_list(SortedCycleChildList, IndexMap, !IO),
 
-    ( SelfCalls \= 0 ->
-        io.write_string(SelfCallsString, !IO)
-    ;
+    ( if SelfCalls = 0 then
         true
+    else
+        io.write_string(SelfCallsString, !IO)
     ).
 
     % output_formatted_cycle_parent_list
@@ -316,7 +314,7 @@ output_formatted_cycle_child_list([Child | Childs], IndexMap, !IO) :-
     Name = output.construct_name(LabelName, CycleNum),
     Index = IndexMap ^ det_elem(LabelName),
     io.format("%40d             %s [%d]\n",
-        [i(Calls),s(Name),i(Index)], !IO),
+        [i(Calls), s(Name), i(Index)], !IO),
     output_formatted_cycle_child_list(Childs, IndexMap, !IO).
 
     % output_formatted_child_list:
@@ -455,13 +453,13 @@ output_alphabet_listing_2([Name - Index | T], !IO) :-
 :- func construct_name(string, int) = string.
 
 construct_name(Name, CycleNum) = FullName :-
-    ( CycleNum = 0 ->
+    ( if CycleNum = 0 then
         FullName = Name
-    ;
+    else
         string.int_to_string(CycleNum, CycleStr),
         string.append_list([Name, "  <cycle ", CycleStr, ">"], FullName)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module output.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

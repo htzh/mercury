@@ -10,7 +10,7 @@
 % Main author: bromage.
 % Stability: high.
 %
-% Higher mathematical operations.  (The basics are in float.m.)
+% Higher mathematical operations. (The basics are in float.m.)
 %
 % By default, domain errors are currently handled by throwing an exception.
 % For better performance, each operation in this module that can throw a domain
@@ -31,7 +31,7 @@
 :- interface.
 
     % A domain error exception, indicates that the inputs to a function
-    % were outside the domain of the function.  The string indicates
+    % were outside the domain of the function. The string indicates
     % where the error occurred.
     %
 :- type domain_error ---> domain_error(string).
@@ -43,164 +43,183 @@
 
     % Pythagoras' number.
     %
-:- func math.pi = float.
+:- func pi = float.
 
     % Base of natural logarithms.
     %
-:- func math.e = float.
+:- func e = float.
 
 %---------------------------------------------------------------------------%
 %
 % "Next integer" operations
 %
 
-    % math.ceiling(X) = Ceil is true if Ceil is the smallest integer
+    % ceiling(X) = Ceil is true if Ceil is the smallest integer
     % not less than X.
     %
-:- func math.ceiling(float) = float.
+:- func ceiling(float) = float.
 
-    % math.floor(X) = Floor is true if Floor is the largest integer
+    % floor(X) = Floor is true if Floor is the largest integer
     % not greater than X.
     %
-:- func math.floor(float) = float.
+:- func floor(float) = float.
 
-    % math.round(X) = Round is true if Round is the integer closest to X.
+    % round(X) = Round is true if Round is the integer closest to X.
     % If X has a fractional value of 0.5, it is rounded up.
     %
-:- func math.round(float) = float.
+:- func round(float) = float.
 
-    % math.truncate(X) = Trunc is true if Trunc is the integer closest to X
+    % truncate(X) = Trunc is true if Trunc is the integer closest to X
     % such that |Trunc| =< |X|.
     %
-:- func math.truncate(float) = float.
+:- func truncate(float) = float.
 
 %---------------------------------------------------------------------------%
 %
 % Polynomial roots
 %
 
-    % math.sqrt(X) = Sqrt is true if Sqrt is the positive square root of X.
+    % sqrt(X) = Sqrt is true if Sqrt is the positive square root of X.
     %
     % Domain restriction: X >= 0
     %
-:- func math.sqrt(float) = float.
-:- func math.unchecked_sqrt(float) = float.
+:- func sqrt(float) = float.
+:- func unchecked_sqrt(float) = float.
 
-:- type math.quadratic_roots
+:- type quadratic_roots
     --->    no_roots
     ;       one_root(float)
     ;       two_roots(float, float).
 
-    % math.solve_quadratic(A, B, C) = Roots is true if Roots are
+    % solve_quadratic(A, B, C) = Roots is true if Roots are
     % the solutions to the equation Ax^2 + Bx + C.
     %
     % Domain restriction: A \= 0
     %
-:- func math.solve_quadratic(float, float, float) = quadratic_roots.
+:- func solve_quadratic(float, float, float) = quadratic_roots.
 
 %---------------------------------------------------------------------------%
 %
 % Power/logarithm operations
 %
 
-    % math.pow(X, Y) = Res is true if Res is X raised to the power of Y.
+    % pow(X, Y) = Res is true if Res is X raised to the power of Y.
     %
     % Domain restriction: X >= 0 and (X = 0 implies Y > 0)
     %
-:- func math.pow(float, float) = float.
-:- func math.unchecked_pow(float, float) = float.
+:- func pow(float, float) = float.
+:- func unchecked_pow(float, float) = float.
 
-    % math.exp(X) = Exp is true if Exp is e raised to the power of X.
+    % exp(X) = Exp is true if Exp is e raised to the power of X.
     %
-:- func math.exp(float) = float.
+:- func exp(float) = float.
 
-    % math.ln(X) = Log is true if Log is the natural logarithm of X.
+    % ln(X) = Log is true if Log is the natural logarithm of X.
     %
     % Domain restriction: X > 0
     %
-:- func math.ln(float) = float.
-:- func math.unchecked_ln(float) = float.
+:- func ln(float) = float.
+:- func unchecked_ln(float) = float.
 
-    % math.log10(X) = Log is true if Log is the logarithm to base 10 of X.
+    % log10(X) = Log is true if Log is the logarithm to base 10 of X.
     %
     % Domain restriction: X > 0
     %
-:- func math.log10(float) = float.
-:- func math.unchecked_log10(float) = float.
+:- func log10(float) = float.
+:- func unchecked_log10(float) = float.
 
-    % math.log2(X) = Log is true if Log is the logarithm to base 2 of X.
+    % log2(X) = Log is true if Log is the logarithm to base 2 of X.
     %
     % Domain restriction: X > 0
     %
-:- func math.log2(float) = float.
-:- func math.unchecked_log2(float) = float.
+:- func log2(float) = float.
+:- func unchecked_log2(float) = float.
 
-    % math.log(B, X) = Log is true if Log is the logarithm to base B of X.
+    % log(B, X) = Log is true if Log is the logarithm to base B of X.
     %
     % Domain restriction: X > 0 and B > 0 and B \= 1
     %
-:- func math.log(float, float) = float.
-:- func math.unchecked_log(float, float) = float.
+:- func log(float, float) = float.
+:- func unchecked_log(float, float) = float.
 
 %---------------------------------------------------------------------------%
 %
 % Trigonometric operations
 %
 
-    % math.sin(X) = Sin is true if Sin is the sine of X.
+    % sin(X) = Sin is true if Sin is the sine of X.
     %
-:- func math.sin(float) = float.
+:- func sin(float) = float.
 
-    % math.cos(X) = Cos is true if Cos is the cosine of X.
+    % cos(X) = Cos is true if Cos is the cosine of X.
     %
-:- func math.cos(float) = float.
+:- func cos(float) = float.
 
-    % math.tan(X) = Tan is true if Tan is the tangent of X.
+    % tan(X) = Tan is true if Tan is the tangent of X.
     %
-:- func math.tan(float) = float.
+:- func tan(float) = float.
 
-    % math.asin(X) = ASin is true if ASin is the inverse sine of X,
+    % asin(X) = ASin is true if ASin is the inverse sine of X,
     % where ASin is in the range [-pi/2,pi/2].
     %
     % Domain restriction: X must be in the range [-1,1]
     %
-:- func math.asin(float) = float.
-:- func math.unchecked_asin(float) = float.
+:- func asin(float) = float.
+:- func unchecked_asin(float) = float.
 
-    % math.acos(X) = ACos is true if ACos is the inverse cosine of X,
+    % acos(X) = ACos is true if ACos is the inverse cosine of X,
     % where ACos is in the range [0, pi].
     %
     % Domain restriction: X must be in the range [-1,1]
     %
-:- func math.acos(float) = float.
-:- func math.unchecked_acos(float) = float.
+:- func acos(float) = float.
+:- func unchecked_acos(float) = float.
 
-    % math.atan(X) = ATan is true if ATan is the inverse tangent of X,
+    % atan(X) = ATan is true if ATan is the inverse tangent of X,
     % where ATan is in the range [-pi/2,pi/2].
     %
-:- func math.atan(float) = float.
+:- func atan(float) = float.
 
-    % math.atan2(Y, X) = ATan is true if ATan is the inverse tangent of Y/X,
+    % atan2(Y, X) = ATan is true if ATan is the inverse tangent of Y/X,
     % where ATan is in the range [-pi,pi].
     %
-:- func math.atan2(float, float) = float.
+:- func atan2(float, float) = float.
 
 %---------------------------------------------------------------------------%
 %
 % Hyperbolic functions
 %
 
-    % math.sinh(X) = Sinh is true if Sinh is the hyperbolic sine of X.
+    % sinh(X) = Sinh is true if Sinh is the hyperbolic sine of X.
     %
-:- func math.sinh(float) = float.
+:- func sinh(float) = float.
 
-    % math.cosh(X) = Cosh is true if Cosh is the hyperbolic cosine of X.
+    % cosh(X) = Cosh is true if Cosh is the hyperbolic cosine of X.
     %
-:- func math.cosh(float) = float.
+:- func cosh(float) = float.
 
-    % math.tanh(X) = Tanh is true if Tanh is the hyperbolic tangent of X.
+    % tanh(X) = Tanh is true if Tanh is the hyperbolic tangent of X.
     %
-:- func math.tanh(float) = float.
+:- func tanh(float) = float.
+
+%---------------------------------------------------------------------------%
+%
+% Fused multiply-add operation.
+%
+
+    % Succeeds if this grade and platform provide the fused multiply-add
+    % operation.
+    %
+:- pred have_fma is semidet.
+
+    % fma(X, Y, Z) = FMA is true if FMA = (X * Y) + Z, rounded as one
+    % floating-point operation.
+    %
+    % This function is (currently) only available on the C backends and only if
+    % the target math library supports it.
+    % Use have_fma/0 to check whether it is supported.
+    %
+:- func fma(float, float, float) = float.
 
 %---------------------------------------------------------------------------%
 %---------------------------------------------------------------------------%
@@ -221,7 +240,7 @@
     **
     ** The maximum number of significant decimal digits which
     ** can be packed into an IEEE-754 extended precision
-    ** floating point number is 18.  Therefore 20 significant
+    ** floating point number is 18. Therefore 20 significant
     ** decimal digits for these constants should be plenty.
     */
 
@@ -319,11 +338,11 @@
     Pi = math:pi()
 ").
     % This version is only used for back-ends for which there is no
-    % matching foreign_proc version.  We define this with sufficient
+    % matching foreign_proc version. We define this with sufficient
     % digits that if the underlying implementation's
     % floating point parsing routines are good, it should
     % to be accurate enough for 128-bit IEEE float.
-math.pi = 3.1415926535897932384626433832795029.
+pi = 3.1415926535897932384626433832795029.
 
     % Base of natural logarithms
 :- pragma foreign_proc("C",
@@ -346,11 +365,11 @@ math.pi = 3.1415926535897932384626433832795029.
     E = java.lang.Math.E;
 ").
     % This version is only used for back-ends for which there is no
-    % matching foreign_proc version.  We define this with sufficient
+    % matching foreign_proc version. We define this with sufficient
     % digits that if the underlying implementation's
     % floating point parsing routines are good, it should
     % to be accurate enough for 128-bit IEEE float.
-math.e = 2.7182818284590452353602874713526625.
+e = 2.7182818284590452353602874713526625.
 
 :- pragma foreign_proc("C",
     math.ceiling(Num::in) = (Ceil::out),
@@ -443,14 +462,14 @@ math.e = 2.7182818284590452353602874713526625.
 "
     Rounded = float(round(Num))
 ").
-math.round(Num) = math.floor(Num + 0.5).
+round(Num) = math.floor(Num + 0.5).
 
-math.truncate(X) = (X < 0.0 -> math.ceiling(X) ; math.floor(X)).
+truncate(X) = ( if X < 0.0 then math.ceiling(X) else math.floor(X)).
 
-math.sqrt(X) = SquareRoot :-
-    ( math_domain_checks, X < 0.0 ->
+sqrt(X) = SquareRoot :-
+    ( if math_domain_checks, X < 0.0 then
         throw(domain_error("math.sqrt"))
-    ;
+    else
         SquareRoot = math.unchecked_sqrt(X)
     ).
 
@@ -481,9 +500,9 @@ math.sqrt(X) = SquareRoot :-
 ").
     % This version is only used for back-ends for which there is no
     % matching foreign_proc version.
-math.unchecked_sqrt(X) = math.exp(math.ln(X) / 2.0).
+unchecked_sqrt(X) = math.exp(math.ln(X) / 2.0).
 
-math.solve_quadratic(A, B, C) = Roots :-
+solve_quadratic(A, B, C) = Roots :-
     % This implementation is designed to minimise numerical errors;
     % it is adapted from "Numerical recipes in C".
     DSquared = B * B - 4.0 * A * C,
@@ -517,16 +536,16 @@ math.solve_quadratic(A, B, C) = Roots :-
         Roots = two_roots(Root1, Root2)
     ).
 
-math.pow(X, Y) = Res :-
-    ( math_domain_checks, X < 0.0 ->
+pow(X, Y) = Res :-
+    ( if math_domain_checks, X < 0.0 then
         throw(domain_error("math.pow"))
-    ; X = 0.0 ->
-        ( Y =< 0.0 ->
+    else if X = 0.0 then
+        ( if Y =< 0.0 then
             throw(domain_error("math.pow"))
-        ;
+        else
             Res = 0.0
         )
-    ;
+    else
         Res = math.unchecked_pow(X, Y)
     ).
 
@@ -585,10 +604,10 @@ math.pow(X, Y) = Res :-
     Exp = math:exp(X)
 ").
 
-math.ln(X) = Log :-
-    ( math_domain_checks, X =< 0.0 ->
+ln(X) = Log :-
+    ( if math_domain_checks, X =< 0.0 then
         throw(domain_error("math.ln"))
-    ;
+    else
         Log = math.unchecked_ln(X)
     ).
 
@@ -618,10 +637,10 @@ math.ln(X) = Log :-
     Log = math:log(X)
 ").
 
-math.log10(X) = Log :-
-    ( math_domain_checks, X =< 0.0 ->
+log10(X) = Log :-
+    ( if math_domain_checks, X =< 0.0 then
         throw(domain_error("math.log10"))
-    ;
+    else
         Log = math.unchecked_log10(X)
     ).
 
@@ -645,12 +664,12 @@ math.log10(X) = Log :-
     Log10 = math:log10(X)
 ").
 % Java doesn't have a built-in log10, so default to mercury here.
-math.unchecked_log10(X) = math.unchecked_ln(X) / math.unchecked_ln(10.0).
+unchecked_log10(X) = math.unchecked_ln(X) / math.unchecked_ln(10.0).
 
-math.log2(X) = Log :-
-    ( math_domain_checks, X =< 0.0 ->
+log2(X) = Log :-
+    ( if math_domain_checks, X =< 0.0 then
         throw(domain_error("math.log2"))
-    ;
+    else
         Log = math.unchecked_log2(X)
     ).
 
@@ -673,18 +692,18 @@ math.log2(X) = Log :-
 "
     Log2 = java.lang.Math.log(X) / ML_FLOAT_LN2;
 ").
-math.unchecked_log2(X) = math.unchecked_ln(X) / math.unchecked_ln(2.0).
+unchecked_log2(X) = math.unchecked_ln(X) / math.unchecked_ln(2.0).
 
-math.log(B, X) = Log :-
-    (
+log(B, X) = Log :-
+    ( if
         math_domain_checks,
         ( X =< 0.0
         ; B =< 0.0
         ; B = 1.0
         )
-    ->
+    then
         throw(domain_error("math.log"))
-    ;
+    else
         Log = math.unchecked_log(B, X)
     ).
 
@@ -703,7 +722,7 @@ math.log(B, X) = Log :-
 ").
 % Java implementation will default to mercury here.
 % Erlang implementation will default to mercury here.
-math.unchecked_log(B, X) = math.unchecked_ln(X) / math.unchecked_ln(B).
+unchecked_log(B, X) = math.unchecked_ln(X) / math.unchecked_ln(B).
 
 :- pragma foreign_proc("C",
     math.sin(X::in) = (Sin::out),
@@ -783,15 +802,15 @@ math.unchecked_log(B, X) = math.unchecked_ln(X) / math.unchecked_ln(B).
     Tan = math:tan(X)
 ").
 
-math.asin(X) = ASin :-
-    (
+asin(X) = ASin :-
+    ( if
         math_domain_checks,
         ( X < -1.0
         ; X > 1.0
         )
-    ->
+    then
         throw(domain_error("math.asin"))
-    ;
+    else
         ASin = math.unchecked_asin(X)
     ).
 
@@ -821,15 +840,15 @@ math.asin(X) = ASin :-
     ASin = math:asin(X)
 ").
 
-math.acos(X) = ACos :-
-    (
+acos(X) = ACos :-
+    ( if
         math_domain_checks,
         ( X < -1.0
         ; X > 1.0
         )
-    ->
+    then
         throw(domain_error("math.acos"))
-    ;
+    else
         ACos = math.unchecked_acos(X)
     ).
 
@@ -918,6 +937,12 @@ math.acos(X) = ACos :-
 "
     Sinh = sinh(X);
 ").
+:- pragma foreign_proc("Java",
+    math.sinh(X::in) = (Sinh::out),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    Sinh = java.lang.Math.sinh(X);
+").
 :- pragma foreign_proc("C#",
     math.sinh(X::in) = (Sinh::out),
     [will_not_call_mercury, promise_pure, thread_safe],
@@ -930,8 +955,8 @@ math.acos(X) = ACos :-
 "
     Sinh = math:sinh(X)
 ").
-% Java doesn't have any hyperbolic functions built in.
-math.sinh(X) = Sinh :-
+% Version for back-ends that do not have a foreign_proc version.
+sinh(X) = Sinh :-
     Sinh = (exp(X)-exp(-X)) / 2.0.
 
 :- pragma foreign_proc("C",
@@ -940,6 +965,12 @@ math.sinh(X) = Sinh :-
         does_not_affect_liveness],
 "
     Cosh = cosh(X);
+").
+:- pragma foreign_proc("Java",
+    math.cosh(X::in) = (Cosh::out),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    Cosh = java.lang.Math.cosh(X);
 ").
 :- pragma foreign_proc("C#",
     math.cosh(X::in) = (Cosh::out),
@@ -953,8 +984,8 @@ math.sinh(X) = Sinh :-
 "
     Cosh = math:cosh(X)
 ").
-% Java doesn't have any hyperbolic functions built in.
-math.cosh(X) = Cosh :-
+% Version for back-ends that do not have a foreign_proc version.
+cosh(X) = Cosh :-
     Cosh = (exp(X)+exp(-X)) / 2.0.
 
 :- pragma foreign_proc("C",
@@ -963,6 +994,12 @@ math.cosh(X) = Cosh :-
         does_not_affect_liveness],
 "
     Tanh = tanh(X);
+").
+:- pragma foreign_proc("Java",
+    math.tanh(X::in) = (Tanh::out),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    Tanh = java.lang.Math.tanh(X);
 ").
 :- pragma foreign_proc("C#",
     math.tanh(X::in) = (Tanh::out),
@@ -976,9 +1013,42 @@ math.cosh(X) = Cosh :-
 "
     Tanh = math:tanh(X)
 ").
-% Java doesn't have any hyperbolic functions built in.
-math.tanh(X) = Tanh :-
+% Version for back-ends that do not have a foreign_proc version.
+tanh(X) = Tanh :-
     Tanh = (exp(X)-exp(-X)) / (exp(X)+exp(-X)).
 
 %---------------------------------------------------------------------------%
+
+:- pragma foreign_proc("C",
+    math.have_fma,
+    [will_not_call_mercury, promise_pure, thread_safe, will_not_modify_trail,
+        does_not_affect_liveness],
+"
+#if defined(MR_HAVE_FMA)
+    SUCCESS_INDICATOR = MR_TRUE;
+#else
+    SUCCESS_INDICATOR = MR_FALSE;
+#endif
+").
+
+have_fma :-
+    semidet_false.
+
+:- pragma foreign_proc("C",
+    math.fma(X::in, Y::in, Z::in) = (FMA::out),
+    [will_not_call_mercury, promise_pure, thread_safe, will_not_modify_trail,
+        does_not_affect_liveness],
+"
+#if defined(MR_HAVE_FMA)
+    FMA = fma(X, Y, Z);
+#else
+    MR_fatal_error(""math.fma not supported"");
+#endif
+").
+
+fma(_, _, _) = _ :-
+    private_builtin.sorry("math.fma").
+
+%---------------------------------------------------------------------------%
+:- end_module math.
 %---------------------------------------------------------------------------%

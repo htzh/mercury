@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2001, 2005-2008, 2010 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: top_procs.m.
 % Author: zs.
@@ -14,7 +14,7 @@
 % For comparisons on costs, we sort highest first. For comparisons on names and
 % contexts, we sort lowest first. This is consistently what users want.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module top_procs.
 :- interface.
@@ -26,7 +26,7 @@
 :- import_module list.
 :- import_module maybe.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func find_top_procs(cost_kind, include_descendants, measurement_scope,
     display_limit, deep) = maybe_error(list(int)).
@@ -54,8 +54,8 @@
 :- pred sum_line_group_measurements(list(line_group(FL, LL))::in,
     own_prof_info::out, inherit_prof_info::out) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -64,7 +64,7 @@
 :- import_module float.
 :- import_module int.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 find_top_procs(Sort, InclDesc, Scope, Limit, Deep) = MaybeTopPSIs :-
     find_top_sort_predicate(Sort, InclDesc, Scope, SortCompatible,
@@ -87,10 +87,10 @@ find_top_procs(Sort, InclDesc, Scope, Limit, Deep) = MaybeTopPSIs :-
         list.sort(SortPred, PSIs, DescendingPSIs),
         (
             Limit = rank_range(First, Last),
-            ( list.drop(First - 1, DescendingPSIs, RemainingPSIs) ->
+            ( if list.drop(First - 1, DescendingPSIs, RemainingPSIs) then
                 list.take_upto(Last - First + 1, RemainingPSIs, TopPSIs),
                 MaybeTopPSIs = ok(TopPSIs)
-            ;
+            else
                 MaybeTopPSIs = ok([])
             )
         ;
@@ -105,7 +105,7 @@ find_top_procs(Sort, InclDesc, Scope, Limit, Deep) = MaybeTopPSIs :-
                 ThresholdPred = (pred(PSI::in) is semidet :-
                     RawThresholdPred(Deep, Threshold, PSI)
                 ),
-                list.takewhile(ThresholdPred, DescendingPSIs, TopPSIs, _),
+                list.take_while(ThresholdPred, DescendingPSIs, TopPSIs),
                 MaybeTopPSIs = ok(TopPSIs)
             )
         ;
@@ -120,13 +120,13 @@ find_top_procs(Sort, InclDesc, Scope, Limit, Deep) = MaybeTopPSIs :-
                 ThresholdPred = (pred(PSI::in) is semidet :-
                     RawThresholdPred(Deep, Threshold, PSI)
                 ),
-                list.takewhile(ThresholdPred, DescendingPSIs, TopPSIs, _),
+                list.take_while(ThresholdPred, DescendingPSIs, TopPSIs),
                 MaybeTopPSIs = ok(TopPSIs)
             )
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type compare_proc_statics == (func(deep, int, int) = comparison_result).
 
@@ -154,7 +154,7 @@ compare_procs_fallback(MainFunc, Deep, PSI1, PSI2) = Result :-
         Result = Result0
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred filter_top_procs(deep::in, int::in,
     pred(deep, int)::in(pred(in, in) is semidet), int::in) is semidet.
@@ -290,7 +290,7 @@ find_threshold_value_predicate(cost_words,  self,          yes,
 find_threshold_value_predicate(cost_words,  self_and_desc, yes,
     threshold_value_ps_words_both).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func compare_ps_calls_self_overall(deep, int, int) = comparison_result.
 
@@ -560,7 +560,7 @@ compare_ps_words_both_percall(Deep, PSI1, PSI2) = Result :-
     TotalWordsPerCall2 = float(TotalWords2) / float(Calls2),
     compare(Result, TotalWordsPerCall2, TotalWordsPerCall1).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred filter_ps_calls_self(deep::in, int::in) is semidet.
 
@@ -658,7 +658,7 @@ filter_ps_words_both(Deep, PSI1) :-
     TotalWords1 = OwnWords1 + DescWords1,
     TotalWords1 > 0.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred threshold_value_ps_time_self(deep::in, float::in, int::in) is semidet.
 
@@ -745,7 +745,7 @@ threshold_value_ps_words_both(Deep, Threshold, PSI) :-
     TotalWords = OwnWords + DescWords,
     float(TotalWords) > Threshold.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred threshold_percent_ps_time_self(deep::in, float::in, int::in)
     is semidet.
@@ -875,7 +875,7 @@ threshold_percent_ps_words_both(Deep, Threshold, PSI) :-
     RootTotalWords = RootOwnWords + RootDescWords,
     100.0 * float(TotalWords) > Threshold * float(RootTotalWords).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 sort_line_groups(Criteria, Groups) = SortedGroups :-
     (
@@ -1006,7 +1006,7 @@ compare_groups_fallback(MainFunc, Group1, Group2) = Result :-
         Result = Result0
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func compare_line_groups_by_context(line_group(FL, LL), line_group(FL, LL))
     = comparison_result.
@@ -1062,14 +1062,14 @@ compare_line_groups_by_time_self_percall(Group1, Group2) = Result :-
     Calls2 = calls(Group2 ^ group_own),
     Quanta1 = quanta(Group1 ^ group_own),
     Quanta2 = quanta(Group2 ^ group_own),
-    ( Calls1 = 0 ->
+    ( if Calls1 = 0 then
         QuantaPerCall1 = 0.0
-    ;
+    else
         QuantaPerCall1 = float(Quanta1) / float(Calls1)
     ),
-    ( Calls2 = 0 ->
+    ( if Calls2 = 0 then
         QuantaPerCall2 = 0.0
-    ;
+    else
         QuantaPerCall2 = float(Quanta2) / float(Calls2)
     ),
     compare(Result, QuantaPerCall2, QuantaPerCall1).
@@ -1090,14 +1090,14 @@ compare_line_groups_by_time_total_percall(Group1, Group2) = Result :-
     Calls2 = calls(Group2 ^ group_own),
     Quanta1 = quanta(Group1 ^ group_own) + inherit_quanta(Group1 ^ group_desc),
     Quanta2 = quanta(Group2 ^ group_own) + inherit_quanta(Group2 ^ group_desc),
-    ( Calls1 = 0 ->
+    ( if Calls1 = 0 then
         QuantaPerCall1 = 0.0
-    ;
+    else
         QuantaPerCall1 = float(Quanta1) / float(Calls1)
     ),
-    ( Calls2 = 0 ->
+    ( if Calls2 = 0 then
         QuantaPerCall2 = 0.0
-    ;
+    else
         QuantaPerCall2 = float(Quanta2) / float(Calls2)
     ),
     compare(Result, QuantaPerCall2, QuantaPerCall1).
@@ -1118,14 +1118,14 @@ compare_line_groups_by_callseqs_self_percall(Group1, Group2) = Result :-
     Calls2 = calls(Group2 ^ group_own),
     CallSeqs1 = callseqs(Group1 ^ group_own),
     CallSeqs2 = callseqs(Group2 ^ group_own),
-    ( Calls1 = 0 ->
+    ( if Calls1 = 0 then
         CallSeqsPerCall1 = 0.0
-    ;
+    else
         CallSeqsPerCall1 = float(CallSeqs1) / float(Calls1)
     ),
-    ( Calls2 = 0 ->
+    ( if Calls2 = 0 then
         CallSeqsPerCall2 = 0.0
-    ;
+    else
         CallSeqsPerCall2 = float(CallSeqs2) / float(Calls2)
     ),
     compare(Result, CallSeqsPerCall2, CallSeqsPerCall1).
@@ -1150,14 +1150,14 @@ compare_line_groups_by_callseqs_total_percall(Group1, Group2) = Result :-
         inherit_callseqs(Group1 ^ group_desc),
     CallSeqs2 = callseqs(Group2 ^ group_own) +
         inherit_callseqs(Group2 ^ group_desc),
-    ( Calls1 = 0 ->
+    ( if Calls1 = 0 then
         CallSeqsPerCall1 = 0.0
-    ;
+    else
         CallSeqsPerCall1 = float(CallSeqs1) / float(Calls1)
     ),
-    ( Calls2 = 0 ->
+    ( if Calls2 = 0 then
         CallSeqsPerCall2 = 0.0
-    ;
+    else
         CallSeqsPerCall2 = float(CallSeqs2) / float(Calls2)
     ),
     compare(Result, CallSeqsPerCall2, CallSeqsPerCall1).
@@ -1178,14 +1178,14 @@ compare_line_groups_by_allocs_self_percall(Group1, Group2) = Result :-
     Calls2 = calls(Group2 ^ group_own),
     Alloc1 = allocs(Group1 ^ group_own),
     Alloc2 = allocs(Group2 ^ group_own),
-    ( Calls1 = 0 ->
+    ( if Calls1 = 0 then
         AllocPerCall1 = 0.0
-    ;
+    else
         AllocPerCall1 = float(Alloc1) / float(Calls1)
     ),
-    ( Calls2 = 0 ->
+    ( if Calls2 = 0 then
         AllocPerCall2 = 0.0
-    ;
+    else
         AllocPerCall2 = float(Alloc2) / float(Calls2)
     ),
     compare(Result, AllocPerCall2, AllocPerCall1).
@@ -1206,14 +1206,14 @@ compare_line_groups_by_allocs_total_percall(Group1, Group2) = Result :-
     Calls2 = calls(Group2 ^ group_own),
     Alloc1 = allocs(Group1 ^ group_own) + inherit_allocs(Group1 ^ group_desc),
     Alloc2 = allocs(Group2 ^ group_own) + inherit_allocs(Group2 ^ group_desc),
-    ( Calls1 = 0 ->
+    ( if Calls1 = 0 then
         AllocPerCall1 = 0.0
-    ;
+    else
         AllocPerCall1 = float(Alloc1) / float(Calls1)
     ),
-    ( Calls2 = 0 ->
+    ( if Calls2 = 0 then
         AllocPerCall2 = 0.0
-    ;
+    else
         AllocPerCall2 = float(Alloc2) / float(Calls2)
     ),
     compare(Result, AllocPerCall2, AllocPerCall1).
@@ -1234,14 +1234,14 @@ compare_line_groups_by_words_self_percall(Group1, Group2) = Result :-
     Calls2 = calls(Group2 ^ group_own),
     Words1 = words(Group1 ^ group_own),
     Words2 = words(Group2 ^ group_own),
-    ( Calls1 = 0 ->
+    ( if Calls1 = 0 then
         WordsPerCall1 = 0.0
-    ;
+    else
         WordsPerCall1 = float(Words1) / float(Calls1)
     ),
-    ( Calls2 = 0 ->
+    ( if Calls2 = 0 then
         WordsPerCall2 = 0.0
-    ;
+    else
         WordsPerCall2 = float(Words2) / float(Calls2)
     ),
     compare(Result, WordsPerCall2, WordsPerCall1).
@@ -1262,19 +1262,19 @@ compare_line_groups_by_words_total_percall(Group1, Group2) = Result :-
     Calls2 = calls(Group2 ^ group_own),
     Words1 = words(Group1 ^ group_own) + inherit_words(Group1 ^ group_desc),
     Words2 = words(Group2 ^ group_own) + inherit_words(Group2 ^ group_desc),
-    ( Calls1 = 0 ->
+    ( if Calls1 = 0 then
         WordsPerCall1 = 0.0
-    ;
+    else
         WordsPerCall1 = float(Words1) / float(Calls1)
     ),
-    ( Calls2 = 0 ->
+    ( if Calls2 = 0 then
         WordsPerCall2 = 0.0
-    ;
+    else
         WordsPerCall2 = float(Words2) / float(Calls2)
     ),
     compare(Result, WordsPerCall2, WordsPerCall1).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 sum_line_group_measurements(LineGroups, Own, Desc) :-
     list.foldl2(accumulate_line_group_measurements, LineGroups,
@@ -1288,6 +1288,6 @@ accumulate_line_group_measurements(LineGroup, Own0, Own, Desc0, Desc) :-
     Own = add_own_to_own(Own0, LineGroup ^ group_own),
     Desc = add_inherit_to_inherit(Desc0, LineGroup ^ group_desc).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module top_procs.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

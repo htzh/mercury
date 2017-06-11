@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2002-2012 The University of Melbourne.
+% Copyright (C) 2015 The Mercury team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -11,7 +12,6 @@
 % Various utilities routines for use during HLDS generation.
 %
 %-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
 
 :- module hlds.hlds_code_util.
 :- interface.
@@ -19,6 +19,7 @@
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_module.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module assoc_list.
@@ -46,11 +47,6 @@
 :- func base_typeclass_info_cons_id(instance_table,
     prog_constraint, int, list(mer_type)) = cons_id.
 
-    % Succeeds iff this inst is one that can be used in a valid
-    % mutable declaration.
-    %
-:- pred is_valid_mutable_inst(module_info::in, mer_inst::in) is semidet.
-
 %-----------------------------------------------------------------------------%
 
     % Find the procedure with argmodes which match the ones we want.
@@ -70,11 +66,13 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module check_hlds.type_util.
-:- import_module hlds.hlds_pred.
+:- import_module libs.
 :- import_module libs.globals.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.prog_mode.
 :- import_module parse_tree.prog_type.
 
@@ -91,6 +89,9 @@ cons_id_to_tag(ModuleInfo, ConsId) = Tag:-
     (
         ConsId = int_const(Int),
         Tag = int_tag(Int)
+    ;
+        ConsId = uint_const(UInt),
+        Tag = uint_tag(UInt)
     ;
         ConsId = float_const(Float),
         Tag = float_tag(Float)
@@ -139,9 +140,9 @@ cons_id_to_tag(ModuleInfo, ConsId) = Tag:-
         proc(PredId, ProcId) = unshroud_pred_proc_id(ShroudedPredProcId),
         Tag = deep_profiling_proc_layout_tag(PredId, ProcId)
     ;
-        ConsId = table_io_decl(ShroudedPredProcId),
+        ConsId = table_io_entry_desc(ShroudedPredProcId),
         proc(PredId, ProcId) = unshroud_pred_proc_id(ShroudedPredProcId),
-        Tag = table_io_decl_tag(PredId, ProcId)
+        Tag = table_io_entry_tag(PredId, ProcId)
     ;
         ConsId = tuple_cons(Arity),
         % Tuples do not need a tag. Note that unary tuples are not treated
@@ -151,19 +152,17 @@ cons_id_to_tag(ModuleInfo, ConsId) = Tag:-
         globals.get_target(Globals, TargetLang),
         (
             ( TargetLang = target_c
-            ; TargetLang = target_x86_64
             ; TargetLang = target_erlang
-            ), 
-            ( Arity = 0 ->
+            ),
+            ( if Arity = 0 then
                 Tag = int_tag(0)
-            ;
+            else
                 Tag = single_functor_tag
             )
         ;
             % For these target languages, converting arity-zero tuples into
             % dummy integer tags results in invalid code being generated.
-            ( TargetLang = target_il
-            ; TargetLang = target_csharp
+            ( TargetLang = target_csharp
             ; TargetLang = target_java
             ),
             Tag = single_functor_tag
@@ -216,57 +215,10 @@ base_typeclass_info_cons_id(InstanceTable, Constraint, InstanceNum,
     ClassId = class_id(ClassName, list.length(ConstraintArgTypes)),
     map.lookup(InstanceTable, ClassId, InstanceList),
     list.det_index1(InstanceList, InstanceNum, InstanceDefn),
-    InstanceModuleName = InstanceDefn ^ instance_module,
+    InstanceModuleName = InstanceDefn ^ instdefn_module,
     make_instance_string(InstanceTypes, InstanceString),
     ConsId = base_typeclass_info_const(InstanceModuleName, ClassId,
         InstanceNum, InstanceString).
-
-%----------------------------------------------------------------------------%
-
-is_valid_mutable_inst(ModuleInfo, Inst) :-
-    set.init(Expansions),
-    is_valid_mutable_inst_2(ModuleInfo, Inst, Expansions).
-
-:- pred is_valid_mutable_inst_2(module_info::in, mer_inst::in,
-    set(inst_name)::in) is semidet.
-
-is_valid_mutable_inst_2(ModuleInfo, Inst, Expansions0) :-
-    (
-        ( Inst = any(Uniq, _)
-        ; Inst = ground(Uniq, _)
-        ),
-        Uniq = shared
-    ;
-        Inst = bound(shared, _, BoundInsts),
-        are_valid_mutable_bound_insts(ModuleInfo, BoundInsts, Expansions0)
-    ;
-        Inst = defined_inst(InstName),
-        ( if not set.member(InstName, Expansions0) then
-            set.insert(InstName, Expansions0, Expansions),
-            inst_lookup(ModuleInfo, InstName, SubInst),
-            is_valid_mutable_inst_2(ModuleInfo, SubInst, Expansions)
-        else
-            true
-        )
-    ).
-
-:- pred are_valid_mutable_bound_insts(module_info::in, list(bound_inst)::in,
-    set(inst_name)::in) is semidet.
-
-are_valid_mutable_bound_insts(_ModuleInfo, [], _Expansions0).
-are_valid_mutable_bound_insts(ModuleInfo, [BoundInst | BoundInsts],
-        Expansions0) :-
-    BoundInst = bound_functor(_ConsId, ArgInsts),
-    are_valid_mutable_insts(ModuleInfo, ArgInsts, Expansions0),
-    are_valid_mutable_bound_insts(ModuleInfo, BoundInsts, Expansions0).
-
-:- pred are_valid_mutable_insts(module_info::in, list(mer_inst)::in,
-    set(inst_name)::in) is semidet.
-
-are_valid_mutable_insts(_ModuleInfo, [], _Expansions0).
-are_valid_mutable_insts(ModuleInfo, [Inst | Insts], Expansions0) :-
-    is_valid_mutable_inst_2(ModuleInfo, Inst, Expansions0),
-    are_valid_mutable_insts(ModuleInfo, Insts, Expansions0).
 
 %----------------------------------------------------------------------------%
 
@@ -280,9 +232,9 @@ get_procedure_matching_argmodes(Procs, Modes0, ModuleInfo, ProcId) :-
 get_procedure_matching_argmodes_2([P | Procs], Modes, ModuleInfo, OurProcId) :-
     P = ProcId - ProcInfo,
     proc_info_get_argmodes(ProcInfo, ArgModes),
-    ( mode_list_matches(Modes, ArgModes, ModuleInfo) ->
+    ( if mode_list_matches(Modes, ArgModes, ModuleInfo) then
         OurProcId = ProcId
-    ;
+    else
         get_procedure_matching_argmodes_2(Procs, Modes, ModuleInfo, OurProcId)
     ).
 
@@ -315,9 +267,9 @@ get_procedure_matching_declmodes_with_renaming_2([P | Procs], Modes,
         ModuleInfo, OurProcId) :-
     P = ProcId - ProcInfo,
     proc_info_declared_argmodes(ProcInfo, ArgModes),
-    ( mode_list_matches_with_renaming(Modes, ArgModes, ModuleInfo) ->
+    ( if mode_list_matches_with_renaming(Modes, ArgModes, ModuleInfo) then
         OurProcId = ProcId
-    ;
+    else
         get_procedure_matching_declmodes_with_renaming_2(Procs, Modes,
             ModuleInfo, OurProcId)
     ).
@@ -434,22 +386,22 @@ match_insts_with_renaming(ModuleInfo, InstA, InstB, Renaming) :-
         match_insts_with_renaming(ModuleInfo, SpecInstA, SpecInstB, Renaming0),
         ListVarA = set.to_sorted_list(InstVarSetA),
         ListVarB = set.to_sorted_list(InstVarSetB),
-        (
+        ( if
             ListVarA = [VarA0],
             ListVarB = [VarB0]
-        ->
+        then
             VarA = VarA0,
             VarB = VarB0
-        ;
+        else
             unexpected($module, $pred, "non-singleton sets")
         ),
-        ( map.search(Renaming0, VarA, SpecVarB) ->
+        ( if map.search(Renaming0, VarA, SpecVarB) then
             % If VarA was already in the renaming then check that it is
             % consistent with the renaming from the set of inst vars.
             VarB = SpecVarB,
             Renaming = Renaming0
-        ;
-            map.insert(VarA, VarB, Renaming0, Renaming)
+        else
+            map.det_insert(VarA, VarB, Renaming0, Renaming)
         )
     ;
         InstA = defined_inst(InstNameA),
@@ -469,8 +421,8 @@ match_insts_with_renaming(ModuleInfo, InstA, InstB, Renaming) :-
 match_ho_inst_infos_with_renaming(ModuleInfo, HOInstInfoA, HOInstInfoB,
         Renaming) :-
     (
-        HOInstInfoA = none,
-        HOInstInfoB = none,
+        HOInstInfoA = none_or_default_func,
+        HOInstInfoB = none_or_default_func,
         Renaming = map.init
     ;
         HOInstInfoA = higher_order(PredInstInfoA),
@@ -492,8 +444,8 @@ match_inst_names_with_renaming(ModuleInfo, InstNameA, InstNameB, Renaming) :-
     ;
         % XXX The rest of these are introduced by the compiler, it doesn't
         % look like they need any special treatment.
-        ( InstNameA = merge_inst(_, _)
-        ; InstNameA = unify_inst(_, _, _, _)
+        ( InstNameA = unify_inst(_, _, _, _)
+        ; InstNameA = merge_inst(_, _)
         ; InstNameA = ground_inst(_, _, _, _)
         ; InstNameA = any_inst(_, _, _, _)
         ; InstNameA = shared_inst(_)
@@ -514,7 +466,6 @@ merge_inst_var_renamings(RenamingA, RenamingB, Result) :-
 
 merge_common_inst_vars(A, A, A).
 
-
 %----------------------------------------------------------------------------%
-:- end_module hlds_code_util.
+:- end_module hlds.hlds_code_util.
 %----------------------------------------------------------------------------%

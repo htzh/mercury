@@ -8,8 +8,10 @@
 %
 % File: deps_map.m.
 %
-% This module contains the data structure for recording module dependencies
-% and its access predicates.
+% This module contains a data structure for recording module dependencies
+% and its access predicates. The module_deps_graph module contains another
+% data structure, used for similar purposes, that is built on top of this one.
+% XXX Document the exact relationship between the two.
 %
 %-----------------------------------------------------------------------------%
 
@@ -17,7 +19,7 @@
 :- interface.
 
 :- import_module libs.globals.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.file_names.
 :- import_module parse_tree.module_imports.
 
@@ -81,34 +83,34 @@
 
 :- implementation.
 
-:- import_module libs.globals.
+:- import_module libs.timestamp.
 :- import_module parse_tree.error_util.
-:- import_module parse_tree.modules.        % for split_into_submodules;
-                                            % undesirable dependencies
-:- import_module parse_tree.prog_data.
-:- import_module parse_tree.prog_io.
+:- import_module parse_tree.file_kind.
+:- import_module parse_tree.parse_error.
+:- import_module parse_tree.prog_data_foreign.
+:- import_module parse_tree.prog_item.
 :- import_module parse_tree.read_modules.
+:- import_module parse_tree.split_parse_tree_src. % undesirable dependency
 
-:- import_module assoc_list.
+:- import_module cord.
 :- import_module list.
-:- import_module pair.
 :- import_module set.
 
 %-----------------------------------------------------------------------------%
 
 get_submodule_kind(ModuleName, DepsMap) = Kind :-
     Ancestors = get_ancestors(ModuleName),
-    ( list.last(Ancestors, Parent) ->
+    ( if list.last(Ancestors, Parent) then
         map.lookup(DepsMap, ModuleName, deps(_, ModuleImports)),
         map.lookup(DepsMap, Parent, deps(_, ParentImports)),
         ModuleFileName = ModuleImports ^ mai_source_file_name,
         ParentFileName = ParentImports ^ mai_source_file_name,
-        ( ModuleFileName = ParentFileName ->
+        ( if ModuleFileName = ParentFileName then
             Kind = nested_submodule
-        ;
+        else
             Kind = separate_submodule
         )
-    ;
+    else
         Kind = toplevel
     ).
 
@@ -123,11 +125,11 @@ generate_deps_map(Globals, ModuleName, Search, !DepsMap, !IO) :-
     deps_map::in, deps_map::out, io::di, io::uo) is det.
 
 generate_deps_map_loop(Globals, !.Modules, Search, !DepsMap, !IO) :-
-    ( set.remove_least(Module, !Modules) ->
+    ( if set.remove_least(Module, !Modules) then
         generate_deps_map_step(Globals, Module, !Modules, Search, !DepsMap,
             !IO),
         generate_deps_map_loop(Globals, !.Modules, Search, !DepsMap, !IO)
-    ;
+    else
         % If we can't remove the smallest, then the set of modules to be
         % processed is empty.
         true
@@ -140,8 +142,8 @@ generate_deps_map_loop(Globals, !.Modules, Search, !DepsMap, !IO) :-
 generate_deps_map_step(Globals, Module, !Modules, Search, !DepsMap, !IO) :-
     % Look up the module's dependencies, and determine whether
     % it has been processed yet.
-    lookup_dependencies(Globals, Module, Search, Done, !DepsMap,
-        ModuleImports, !IO),
+    lookup_dependencies(Globals, Module, Search, Done, ModuleImports,
+        !DepsMap, !IO),
 
     % If the module hadn't been processed yet, then add its imports, parents,
     % and public children to the list of dependencies we need to generate,
@@ -149,23 +151,19 @@ generate_deps_map_step(Globals, Module, !Modules, Search, !DepsMap, !IO) :-
     (
         Done = not_yet_processed,
         map.set(Module, deps(already_processed, ModuleImports), !DepsMap),
-        ForeignImportedModules =
-            list.map(
-                (func(foreign_import_module_info(_, ImportedModule, _))
-                    = ImportedModule),
-                ModuleImports ^ mai_foreign_import_modules),
-        list.condense(
+        ForeignImportedModules = ModuleImports ^ mai_foreign_import_modules,
+        ForeignImportedModuleNames =
+            get_all_foreign_import_modules(ForeignImportedModules),
+        ModulesToAdd = set.union_list(
             [ModuleImports ^ mai_parent_deps,
             ModuleImports ^ mai_int_deps,
-            ModuleImports ^ mai_impl_deps,
+            ModuleImports ^ mai_imp_deps,
             ModuleImports ^ mai_public_children, % a.k.a. incl_deps
-            ForeignImportedModules],
-            ModulesToAdd),
+            ForeignImportedModuleNames]),
         % We could keep a list of the modules we have already processed
         % and subtract it from ModulesToAddSet here, but doing that
         % actually leads to a small slowdown.
-        set.list_to_set(ModulesToAdd, ModulesToAddSet),
-        set.union(ModulesToAddSet, !Modules)
+        set.union(ModulesToAdd, !Modules)
     ;
         Done = already_processed
     ).
@@ -175,18 +173,20 @@ generate_deps_map_step(Globals, Module, !Modules, Search, !DepsMap, !IO) :-
     % save the dependencies in the dependency map.
     %
 :- pred lookup_dependencies(globals::in, module_name::in, maybe_search::in,
-    have_processed::out, deps_map::in, deps_map::out, module_and_imports::out,
-    io::di, io::uo) is det.
+    have_processed::out, module_and_imports::out,
+    deps_map::in, deps_map::out, io::di, io::uo) is det.
 
-lookup_dependencies(Globals, Module, Search, Done, !DepsMap, ModuleImports,
+lookup_dependencies(Globals, ModuleName, Search, Done, ModuleImports, !DepsMap,
         !IO) :-
-    ( map.search(!.DepsMap, Module, deps(DonePrime, ModuleImportsPrime)) ->
+    ( if
+        map.search(!.DepsMap, ModuleName, deps(DonePrime, ModuleImportsPrime))
+    then
         Done = DonePrime,
         ModuleImports = ModuleImportsPrime
-    ;
-        read_dependencies(Globals, Module, Search, ModuleImportsList, !IO),
+    else
+        read_dependencies(Globals, ModuleName, Search, ModuleImportsList, !IO),
         list.foldl(insert_into_deps_map, ModuleImportsList, !DepsMap),
-        map.lookup(!.DepsMap, Module, deps(Done, ModuleImports))
+        map.lookup(!.DepsMap, ModuleName, deps(Done, ModuleImports))
     ).
 
 insert_into_deps_map(ModuleImports, !DepsMap) :-
@@ -194,31 +194,54 @@ insert_into_deps_map(ModuleImports, !DepsMap) :-
     map.set(ModuleName, deps(not_yet_processed, ModuleImports), !DepsMap).
 
     % Read a module to determine the (direct) dependencies of that module
-    % and any nested sub-modules it contains.
+    % and any nested sub-modules it contains. Return the module_and_imports
+    % structure for the named module, and each of its nested submodules.
+    % If we cannot do better, return a dummy module_and_imports structure
+    % for the named module.
     %
 :- pred read_dependencies(globals::in, module_name::in, maybe_search::in,
     list(module_and_imports)::out, io::di, io::uo) is det.
 
-read_dependencies(Globals, ModuleName, Search, ModuleImportsList, !IO) :-
-    read_module_ignore_errors(Globals, ModuleName, ".m",
-        "Getting dependencies for module", Search, do_not_return_timestamp,
-        Items0, Error, FileName0, _, !IO),
-    (
-        Items0 = [],
-        Error = fatal_module_errors
-    ->
-        read_module_ignore_errors(Globals, ModuleName, ".int",
-            "Getting dependencies for module interface", Search,
-            do_not_return_timestamp, Items, _Error, FileName, _, !IO),
-        SubModuleList = [ModuleName - Items]
-    ;
+read_dependencies(Globals, ModuleName, Search, ModuleAndImportsList, !IO) :-
+    % XXX If _SrcSpecs contains error messages, the parse tree may not be
+    % complete, and the rest of this predicate may work on incorrect data.
+    read_module_src(Globals, "Getting dependencies for module",
+        ignore_errors, Search, ModuleName, FileName0,
+        always_read_module(dont_return_timestamp), _,
+        ParseTreeSrc, SrcSpecs, Errors, !IO),
+    ParseTreeSrc = parse_tree_src(_ModuleNameSrc0, _ModuleNameContext0,
+        ModuleComponentCord0),
+    ( if
+        cord.is_empty(ModuleComponentCord0),
+        set.intersect(Errors, fatal_read_module_errors, FatalErrors),
+        set.is_non_empty(FatalErrors)
+    then
+        read_module_int(Globals, "Getting dependencies for module interface",
+            ignore_errors, Search, ModuleName, ifk_int, FileName,
+            always_read_module(dont_return_timestamp), _,
+            ParseTreeInt, _IntSpecs, _Errors, !IO),
+        ParseTreeInt = parse_tree_int(_, _, ModuleContext,
+            _MaybeVersionNumbers, IntIncl, ImpIncls, IntAvails, ImpAvails,
+            IntItems, ImpItems),
+        int_imp_items_to_item_blocks(ModuleContext,
+            ms_interface, ms_implementation, IntIncl, ImpIncls,
+            IntAvails, ImpAvails, IntItems, ImpItems, RawItemBlocks),
+        RawCompUnits =
+            [raw_compilation_unit(ModuleName, ModuleContext, RawItemBlocks)]
+    else
         FileName = FileName0,
-        Items = Items0,
-        split_into_submodules(ModuleName, Items, SubModuleList, [], Specs),
+        split_into_compilation_units_perform_checks(ParseTreeSrc,
+            RawCompUnits, SrcSpecs, Specs),
         write_error_specs(Specs, Globals, 0, _NumWarnings, 0, _NumErrors, !IO)
     ),
-    assoc_list.keys(SubModuleList, SubModuleNames),
-    list.map(init_dependencies(FileName, ModuleName, SubModuleNames,
-        [], Error, Globals), SubModuleList, ModuleImportsList).
+    RawCompUnitModuleNames =
+        list.map(raw_compilation_unit_project_name, RawCompUnits),
+    RawCompUnitModuleNamesSet = set.list_to_set(RawCompUnitModuleNames),
+    list.map(
+        init_module_and_imports(Globals, FileName, ModuleName,
+            RawCompUnitModuleNamesSet, [], Errors),
+        RawCompUnits, ModuleAndImportsList).
 
+%-----------------------------------------------------------------------------%
+:- end_module parse_tree.deps_map.
 %-----------------------------------------------------------------------------%

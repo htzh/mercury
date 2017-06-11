@@ -1,51 +1,55 @@
 %---------------------------------------------------------------------------%
-% vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
+% vim: ft=mercury ts=4 sw=4 et
 %---------------------------------------------------------------------------%
 % Copyright (C) 1994-2007, 2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %---------------------------------------------------------------------------%
-% 
+%
 % File: private_builtin.m.
 % Main authors: fjh, zs.
 % Stability: medium.
-% 
+%
 % This file is automatically imported, as if via `use_module', into every
 % module. It is intended for builtins that are just implementation details,
 % such as procedures that the compiler generates implicit calls to when
 % implementing polymorphism, unification, compare/3, etc.
-% Note that the builtins used for tabling, deep profiling and parallelism are
-% in separate modules (table_builtin.m, profiling_builtin.m and
-% par_builtin.m).
-% 
+% Note that the builtins that are needed only for the implementation of
+% some specific constructs and/or in some specific grades, such as
+% tabling, deep profiling and parallelism are in other modules named
+% xxx_builtin.m in this directory.
+%
 % This module is a private part of the Mercury implementation; user modules
 % should never explicitly import this module. The interface for this module
 % does not get included in the Mercury library reference manual.
-% 
+%
 % Many of the predicates defined in this module are builtin - they do not have
 % definitions because the compiler generates code for them inline. Some
 % others are implemented in the runtime. A third group are implemented
 % normally in this module.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module private_builtin.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%
+% This section of the module contains predicates that are used by the
+% compiler to implement polymorphism. Changes here may also require changes
+% in compiler/polymorphism.m, compiler/unify_proc.m, compiler/higher_order.m
+% and runtime/mercury_type_info.{c,h}.
+%
+% These predicates should not be used by user programs directly.
+%
 
 :- interface.
 
-    % This section of the module contains predicates that are used
-    % by the compiler, to implement polymorphism. These predicates
-    % should not be used by user programs directly.
-
-    % Changes here may also require changes in compiler/polymorphism.m,
-    % compiler/unify_proc.m, compiler/higher_order.m and
-    % runtime/mercury_type_info.{c,h}.
-
 :- pred builtin_unify_int(int::in, int::in) is semidet.
 :- pred builtin_compare_int(comparison_result::uo, int::in, int::in) is det.
+
+:- pred builtin_unify_uint(uint::in, uint::in) is semidet.
+:- pred builtin_compare_uint(comparison_result::uo, uint::in, uint::in) is det.
 
 :- pred builtin_unify_character(character::in, character::in) is semidet.
 :- pred builtin_compare_character(comparison_result::uo, character::in,
@@ -63,9 +67,9 @@
 :- pred builtin_compare_pred(comparison_result::uo, (pred)::in, (pred)::in)
     is det.
 
-    % These should never be called -- the compiler never specializes them
-    % because the generic compare is just as good as anything we could put
-    % here.
+    % These should never be called -- the compiler never specializes
+    % comparison on these types because the generic compare is just as good
+    % as anything we could put here.
     %
 :- pred builtin_unify_tuple(T::in, T::in) is semidet.
 :- pred builtin_compare_tuple(comparison_result::uo, T::in, T::in) is det.
@@ -99,42 +103,40 @@
 :- pred builtin_int_gt(int::in, int::in) is semidet.
 
     % These should never be called -- the compiler replaces calls to these
-    % predicates with inline code.  These predicates are declared not to take
+    % predicates with inline code. These predicates are declared not to take
     % type_infos.
     %
 :- pred builtin_compound_eq(T::in, T::in) is semidet.
 :- pred builtin_compound_lt(T::in, T::in) is semidet.
 
     % A "typed" version of unify/2 -- i.e. one that can handle arguments
-    % of different types.  It first unifies their types, and then if
-    % the types are equal it unifies the values.
+    % of different types. It first unifies their types, and then (if the types
+    % are equal) it unifies the values.
     %
 :- pred typed_unify(T1, T2).
 :- mode typed_unify(in, in) is semidet.
 :- mode typed_unify(in, out) is semidet.
 
     % A "typed" version of compare/3 -- i.e. one that can handle arguments
-    % of different types.  It first compares the types, and then if the
-    % types are equal it compares the values.
+    % of different types. It first compares the types, and then (if the
+    % types are equal) it compares the values.
     %
 :- pred typed_compare(comparison_result::uo, T1::in, T2::in) is det.
 
-    % True iff the two terms occupy the same address in memory.  This is
-    % useful as a cheap but incomplete test of equality when implementing
-    % user-defined equality.
+    % True iff the two terms occupy the same address in memory.
+    % This is useful as a cheap but incomplete test of equality
+    % when implementing user-defined equality.
     %
 :- pred pointer_equal(T::in, T::in) is semidet.
 
-    % N.B. interface continued below.
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module char.
 :- import_module float.
 :- import_module int.
-:- import_module list.
+:- import_module uint.
 :- import_module require.
 :- import_module string.
 :- import_module type_desc.
@@ -142,7 +144,7 @@
 :- pragma foreign_code("C#", "
 
 // The dummy_var is used to represent io.states and other Mercury
-// parameters that are not really passed around.  Occasionally a dummy
+// parameters that are not really passed around. Occasionally a dummy
 // variable will be used by the code generator as an lval, so we use
 // private_builtin.dummy_var as that lval.
 
@@ -151,6 +153,7 @@ public static object dummy_var;
 ").
 
 :- pragma inline(builtin_compare_int/3).
+:- pragma inline(builtin_compare_uint/3).
 :- pragma inline(builtin_compare_character/3).
 :- pragma inline(builtin_compare_string/3).
 :- pragma inline(builtin_compare_float/3).
@@ -158,11 +161,22 @@ public static object dummy_var;
 builtin_unify_int(X, X).
 
 builtin_compare_int(R, X, Y) :-
-    ( X < Y ->
+    ( if X < Y then
         R = (<)
-    ; X = Y ->
+    else if X = Y then
         R = (=)
-    ;
+    else
+        R = (>)
+    ).
+
+builtin_unify_uint(X, X).
+
+builtin_compare_uint(R, X, Y) :-
+    ( if X < Y then
+        R = (<)
+    else if X = Y then
+        R = (=)
+    else
         R = (>)
     ).
 
@@ -171,11 +185,11 @@ builtin_unify_character(C, C).
 builtin_compare_character(R, X, Y) :-
     char.to_int(X, XI),
     char.to_int(Y, YI),
-    ( XI < YI ->
+    ( if XI < YI then
         R = (<)
-    ; XI = YI ->
+    else if XI = YI then
         R = (=)
-    ;
+    else
         R = (>)
     ).
 
@@ -183,11 +197,11 @@ builtin_unify_string(S, S).
 
 builtin_compare_string(R, S1, S2) :-
     builtin_strcmp(Res, S1, S2),
-    ( Res < 0 ->
+    ( if Res < 0 then
         R = (<)
-    ; Res = 0 ->
+    else if Res = 0 then
         R = (=)
-    ;
+    else
         R = (>)
     ).
 
@@ -231,60 +245,60 @@ builtin_compare_string(R, S1, S2) :-
 builtin_unify_float(F, F).
 
 builtin_compare_float(R, F1, F2) :-
-    ( F1 < F2 ->
+    ( if F1 < F2 then
         R = (<)
-    ; F1 > F2 ->
+    else if F1 > F2 then
         R = (>)
-    ;
+    else
         R = (=)
-    ).
-
-builtin_unify_tuple(_, _) :-
-    ( semidet_succeed ->
-        % The generic unification function in the runtime
-        % should handle this itself.
-        error("builtin_unify_tuple called")
-    ;
-        % The following is never executed.
-        semidet_succeed
-    ).
-
-builtin_compare_tuple(Res, _, _) :-
-    ( semidet_succeed ->
-        % The generic comparison function in the runtime
-        % should handle this itself.
-        error("builtin_compare_tuple called")
-    ;
-        % The following is never executed.
-        Res = (<)
     ).
 
 :- pragma no_inline(builtin_unify_pred/2).
 builtin_unify_pred(_X, _Y) :-
-    ( semidet_succeed ->
+    ( if semidet_succeed then
         error("attempted higher-order unification")
-    ;
+    else
         % The following is never executed.
         semidet_succeed
     ).
 
 :- pragma no_inline(builtin_compare_pred/3).
 builtin_compare_pred(Result, _X, _Y) :-
-    ( semidet_succeed ->
+    ( if semidet_succeed then
         error("attempted higher-order comparison")
-    ;
+    else
         % The following is never executed.
         Result = (<)
+    ).
+
+builtin_unify_tuple(_, _) :-
+    ( if semidet_succeed then
+        % The generic unification function in the runtime
+        % should handle this itself.
+        error("builtin_unify_tuple called")
+    else
+        % The following is never executed.
+        semidet_succeed
+    ).
+
+builtin_compare_tuple(Res, _, _) :-
+    ( if semidet_succeed then
+        % The generic comparison function in the runtime
+        % should handle this itself.
+        error("builtin_compare_tuple called")
+    else
+        % The following is never executed.
+        Res = (<)
     ).
 
 :- pragma no_inline(builtin_compare_non_canonical_type/3).
 builtin_compare_non_canonical_type(Res, X, _Y) :-
     % Suppress determinism warning.
-    ( semidet_succeed ->
+    ( if semidet_succeed then
         Message = "call to compare/3 for non-canonical type `"
             ++ type_name(type_of(X)) ++ "'",
         error(Message)
-    ;
+    else
         % The following is never executed.
         Res = (<)
     ).
@@ -292,7 +306,7 @@ builtin_compare_non_canonical_type(Res, X, _Y) :-
 :- pragma no_inline(builtin_unify_solver_type/2).
 builtin_unify_solver_type(_X, _Y) :-
     % Suppress determinism warning.
-    ( semidet_succeed ->
+    ( if semidet_succeed then
         % XXX ideally we should use the commented out code but looking up
         % the name of the solver type in RTTI currently gives us the name of
         % the representation type - reporting the name of the latter is likely
@@ -302,84 +316,55 @@ builtin_unify_solver_type(_X, _Y) :-
         %    ++ type_name(type_of(X)) ++ "'",
         Message = "call to generated unify/2 for solver type",
         error(Message)
-    ;
+    else
         % This is never executed.
-        semidet_fail 
+        semidet_fail
     ).
 
 :- pragma no_inline(builtin_compare_solver_type/3).
 builtin_compare_solver_type(Res, _X, _Y) :-
     % Suppress determinism warning.
-    ( semidet_succeed ->
+    ( if semidet_succeed then
         % XXX see the comment above regarding RTTI.
         %Message = "call to compare/3 for solver type `"
         %    ++ type_name(type_of(X)) ++ "'",
         Message = "call to generated compare/3 for solver type",
         error(Message)
-    ;
+    else
         % This is never executed.
-        Res = (<)        
+        Res = (<)
     ).
 
 :- pragma no_inline(compare_error/0).
 compare_error :-
     error("internal error in compare/3").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 typed_unify(X, Y) :-
-    ( type_of(X) = type_of(Y) ->
+    ( if type_of(X) = type_of(Y) then
         unsafe_type_cast(X, Y)
-    ;
+    else
         fail
     ).
 
 typed_compare(R, X, Y) :-
     compare(R0, type_of(X), type_of(Y)),
-    ( R0 = (=) ->
+    ( if R0 = (=) then
         unsafe_type_cast(X, Z),
         compare(R, Z, Y)
-    ;
+    else
         R = R0
     ).
 
-%-----------------------------------------------------------------------------%
-
-:- pragma inline(pointer_equal/2).
-
-:- pragma foreign_proc("C", pointer_equal(A::in, B::in),
-    [promise_pure, thread_safe, will_not_call_mercury,
-        will_not_throw_exception, terminates],
-"
-    SUCCESS_INDICATOR = (A == B);
-").
-
-:- pragma foreign_proc("Java", pointer_equal(A::in, B::in),
-    [promise_pure, thread_safe, will_not_call_mercury,
-        will_not_throw_exception, terminates],
-"
-    SUCCESS_INDICATOR = (A == B);
-").
-
-:- pragma foreign_proc("C#", pointer_equal(A::in, B::in),
-    [promise_pure, thread_safe, will_not_call_mercury,
-        will_not_throw_exception, terminates],
-"
-    SUCCESS_INDICATOR = System.Object.ReferenceEquals(A, B);
-").
-
-% Conservative default if a backend does not have pointer equality, such as
-% Erlang.  (Erlang does have erts_debug:same/1 but I don't know if we can
-% rely on that.)
-pointer_equal(_A, _B) :- semidet_false.
-
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%
+% This section of the module handles the runtime representation of
+% type information.
+%
 
 :- interface.
-
-    % This section of the module handles the runtime representation of
-    % type information.
 
 :- type type_info.
 :- type type_ctor_info.
@@ -398,7 +383,7 @@ pointer_equal(_A, _B) :- semidet_false.
 
     % type_info_from_typeclass_info(TypeClassInfo, Index, TypeInfo):
     %
-    % Extracts TypeInfo from TypeClassInfo, where TypeInfo is the Indexth
+    % Extracts TypeInfo from TypeClassInfo, where TypeInfo is the Index'th
     % type_info in the typeclass_info.
     %
     % Note: Index must be equal to the number of the desired type_info
@@ -407,7 +392,7 @@ pointer_equal(_A, _B) :- semidet_false.
 :- pred type_info_from_typeclass_info(typeclass_info::in, int::in,
     type_info::out) is det.
 
-    % unconstrained_type_info_from_typeclass_info(TypeClassInfo, 
+    % unconstrained_type_info_from_typeclass_info(TypeClassInfo,
     %   Index, TypeInfo):
     %
     % Extracts the TypeInfo for the Indexth unconstrained type variable
@@ -436,9 +421,7 @@ pointer_equal(_A, _B) :- semidet_false.
 :- pred instance_constraint_from_typeclass_info(typeclass_info::in,
     int::in, typeclass_info::out) is det.
 
-    % N.B. interface continued below.
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -459,7 +442,7 @@ MR_typeclass_info_param_type_info(object[] tcinfo, int index)
 
 public static runtime.TypeInfo_Struct
 MR_typeclass_info_instance_tvar_type_info(
-    object[] tcinfo, int index) 
+    object[] tcinfo, int index)
 {
     return (runtime.TypeInfo_Struct) tcinfo[index];
 }
@@ -476,7 +459,7 @@ public static object[] MR_typeclass_info_superclass_info(
 }
 
 public static object[] MR_typeclass_info_arg_typeclass_info(
-    object[] tcinfo, int index) 
+    object[] tcinfo, int index)
 {
     return (object[]) tcinfo[index];
 }
@@ -499,7 +482,7 @@ MR_typeclass_info_param_type_info(/* typeclass_info */ Object[] tcinfo,
 
 public static jmercury.runtime.TypeInfo_Struct
 MR_typeclass_info_instance_tvar_type_info(
-    /* typeclass_info */ Object[] tcinfo, int index) 
+    /* typeclass_info */ Object[] tcinfo, int index)
 {
     return (jmercury.runtime.TypeInfo_Struct) tcinfo[index];
 }
@@ -518,7 +501,7 @@ public static /* typeclass_info */ Object[] MR_typeclass_info_superclass_info(
 
 public static /* typeclass_info */ Object[]
 MR_typeclass_info_arg_typeclass_info(
-    /* typeclass_info */ Object[] tcinfo, int index) 
+    /* typeclass_info */ Object[] tcinfo, int index)
 {
     return (/* typeclass_info */ Object[]) tcinfo[index];
 }
@@ -888,26 +871,27 @@ __Compare____base_typeclass_info_1_0(
     TypeClassInfo = element(Index + 1, TypeClassInfo0)
 ").
 
-%-----------------------------------------------------------------------------%
-
-    % In LLDS grades with float registers, we require a type_ctor_info in
-    % closure layouts to represent hidden float values which are passed via
-    % regular registers. The standard type_ctor_info represents hidden float
-    % arguments passed via float registers.
+%---------------------------------------------------------------------------%
+%
+% In LLDS grades with float registers, we require a type_ctor_info in
+% closure layouts to represent hidden float values which are passed via
+% regular registers. The standard type_ctor_info represents hidden float
+% arguments passed via float registers.
+%
 
 :- interface.
 
 :- type float_box
     --->    float_box(float).
 
-%-----------------------------------------------------------------------------%
-
-    % This section of the module contains predicates that are used
-    % by the MLDS back-end, to implement trailing.
-    % (The LLDS back-end does not use these; instead it inserts
-    % the corresponding LLDS instructions directly during code
-    % generation.)
-    % These predicates should not be used by user programs directly.
+%---------------------------------------------------------------------------%
+%
+% This section of the module contains predicates that are used by the
+% MLDS back-end to implement trailing. (The LLDS back-end does not use these;
+% instead it handles the corresponding tasks directly during code generation.)
+%
+% These predicates should not be used by user programs directly.
+%
 
 :- interface.
 
@@ -915,7 +899,7 @@ __Compare____base_typeclass_info_1_0(
 :- type ticket_counter == c_pointer.
 
     % For documentation, see the corresponding LLDS instructions
-    % in compiler/llds.m.  See also compiler/notes/trailing.html.
+    % in compiler/llds.m. See also compiler/notes/trailing.html.
 
 :- impure pred store_ticket(ticket::out) is det.
 :- impure pred reset_ticket_undo(ticket::in) is det.
@@ -925,14 +909,6 @@ __Compare____base_typeclass_info_1_0(
 :- impure pred prune_ticket is det.
 :- impure pred mark_ticket_stack(ticket_counter::out) is det.
 :- impure pred prune_tickets_to(ticket_counter::in) is det.
-
-    % XXX currently we don't support nondet pragma
-    % foreign_code when trailing is enabled.
-    % Instead we generate code which calls this procedure,
-    % which will call error/1 with an appropriate message.
-:- pred trailed_nondet_pragma_foreign_code is erroneous.
-
-    % N.B. interface continued below.
 
 :- implementation.
 
@@ -1218,20 +1194,13 @@ __Compare____base_typeclass_info_1_0(
     void
 ").
 
-trailed_nondet_pragma_foreign_code :-
-    Msg = string.append_list([
-        "Sorry, not implemented:\n",
-        "for the MLDS back-end (`--high-level-code')\n",
-        "nondet `pragma c_code' or `pragma foreign_code'\n",
-        "is not supported when trailing (`--use-trail') is enabled."
-    ]),
-    error(Msg).
-
-%-----------------------------------------------------------------------------%
-
-    % This section of the module contains predicates and types that are
-    % used internally by the compiler for manipulating the heap.
-    % These predicates should not be used by user programs directly.
+%---------------------------------------------------------------------------%
+%
+% This section of the module contains predicates and types that are used
+% internally by the compiler for manipulating the heap.
+%
+% These predicates should not be used by user programs directly.
+%
 
 :- interface.
 
@@ -1246,10 +1215,12 @@ trailed_nondet_pragma_foreign_code :-
     % on the argument is overly conservative -- only the top-level cell is
     % clobbered. This is handled correctly by recompute_instmap_delta in
     % mode_util.
+    %
 :- impure pred free_heap(T::di) is det.
 
-:- type mutvar(T) ---> mutvar(c_pointer).
-    % a no_tag type, i.e. the representation is just a c_pointer.
+:- type mutvar(T)
+    --->    mutvar(c_pointer).
+            % A no_tag type, i.e. the representation is just a c_pointer.
 
     % gc_trace/1 is used for accurate garbage collection in the MLDS->C
     % backend. It takes as parameters a pointer to a variable (normally on
@@ -1272,25 +1243,17 @@ trailed_nondet_pragma_foreign_code :-
 :- impure pred mark_hp(heap_pointer::out) is det.
 :- impure pred restore_hp(heap_pointer::in) is det.
 
-    % XXX currently we don't support nondet foreign_procs when trailing
-    % is enabled. Instead we generate code which calls this procedure,
-    % which will call error/1 with an appropriate message.
-    %
-:- pred reclaim_heap_nondet_pragma_foreign_code is erroneous.
-
     % The following is a built-in reference type. It is used to define the
     % types store.generic_ref/2, store.generic_mutvar/2, solutions.mutvar/1,
     % benchmarking.int_ref/0, etc.
 :- type ref(T).
-
-    % N.B. interface continued below.
 
 :- implementation.
 
 % These routines are defined in C in ways which may make it not obvious
 % to the Mercury compiler that they are worth inlining.
 %
-% (Note: it's probably not worth inlining gc_trace/1...)
+% (Note: it is probably not worth inlining gc_trace/1...)
 
 :- pragma inline(free_heap/1).
 :- pragma inline(mark_hp/1).
@@ -1376,7 +1339,7 @@ trailed_nondet_pragma_foreign_code :-
 "
     /*
     ** For the Java back-end, as for the .NET back-end, we don't define
-    ** our own heaps.  So take no action here.
+    ** our own heaps. So take no action here.
     */
 ").
 
@@ -1409,7 +1372,7 @@ trailed_nondet_pragma_foreign_code :-
     [will_not_call_mercury, thread_safe],
 "
     % For the Erlang back-end, as for the .NET back-end, we don't define
-    % our own heaps.  So take no action here.
+    % our own heaps. So take no action here.
     void
 ").
 
@@ -1429,22 +1392,13 @@ trailed_nondet_pragma_foreign_code :-
     void
 ").
 
-reclaim_heap_nondet_pragma_foreign_code :-
-    Msg = string.append_list([
-        "Sorry, not implemented:\n",
-        "for the MLDS back-end (`--high-level-code')\n",
-        "nondet `pragma c_code' or `pragma foreign_code'\n",
-        "is not supported when `--reclaim-heap-on-failure' is enabled."
-    ]),
-    error(Msg).
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 % Code to define the `heap_pointer' and `ref' types for the .NET back-end.
 % (For the C back-ends, they're defined in runtime/mercury_builtin_types.[ch].)
 
 :- pragma foreign_code("C#", "
-    
+
 public static bool
 __Unify__private_builtin__heap_pointer_0_0(object[] x, object[] y)
 {
@@ -1478,7 +1432,214 @@ __Compare__private_builtin__ref_1_0(
 
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%
+% This section of the module is for miscellaneous predicates
+% that sometimes have calls to them emitted by the compiler.
+%
+
+:- interface.
+
+    % unsafe_type_cast/2 is used internally by the compiler.
+    % Bad things will happen if this is used in programs.
+    % With the LLDS back-end, it has no definition,
+    % since for efficiency the code generator treats it as a builtin.
+    % With the MLDS back-end, it is defined in runtime/mercury.h.
+    %
+:- pred unsafe_type_cast(T1::in, T2::out) is det.
+
+    % store_at_ref_impure/2 is used internally by the compiler.
+    % Bad things will happen if this is used in programs.
+    %
+:- impure pred store_at_ref_impure(store_at_ref_type(T)::in, T::in) is det.
+
+    % This is deprecated. The compiler should now generate calls to
+    % store_at_ref_impure.
+    %
+:- pred store_at_ref(store_at_ref_type(T)::in, T::in) is det.
+
+    % This type should be used only by the program transformation that
+    % introduces calls to store_at_ref. Any other use is will cause bad things
+    % to happen.
+:- type store_at_ref_type(T)
+    --->    store_at_ref_type(int).
+
+    % unused/0 should never be called.
+    % The compiler sometimes generates references to this procedure,
+    % but they should never get executed.
+:- pred unused is det.
+
+:- pred nyi_foreign_type_unify(T::in, T::in) is semidet.
+:- pred nyi_foreign_type_compare(comparison_result::uo, T::in, T::in) is det.
+
+:- semipure pred trace_evaluate_runtime_condition is semidet.
+
+:- implementation.
+
+unused :-
+    ( if semidet_succeed then
+        error("attempted use of dead predicate")
+    else
+        % the following is never executed
+        true
+    ).
+
+nyi_foreign_type_unify(_, _) :-
+    ( if semidet_succeed then
+        sorry("unify for foreign types")
+    else
+        semidet_succeed
+    ).
+
+nyi_foreign_type_compare(Result, _, _) :-
+    ( if semidet_succeed then
+        sorry("compare for foreign types")
+    else
+        Result = (=)
+    ).
+
+:- pragma foreign_proc("C",
+    trace_evaluate_runtime_condition,
+    [will_not_call_mercury, thread_safe, promise_semipure,
+        does_not_affect_liveness],
+"
+    /* All uses of this predicate should override the body. */
+    MR_fatal_error(""trace_evaluate_runtime_condition called"");
+").
+:- pragma foreign_proc("Erlang",
+    trace_evaluate_runtime_condition,
+    [will_not_call_mercury, thread_safe, promise_semipure,
+        does_not_affect_liveness],
+"
+    % All uses of this predicate should override the body.
+    throw(""trace_evaluate_runtime_condition called""),
+    SUCCESS_INDICATOR = false
+").
+:- pragma foreign_proc("C#",
+    trace_evaluate_runtime_condition,
+    [will_not_call_mercury, thread_safe, promise_semipure,
+        does_not_affect_liveness],
+"
+    // All uses of this predicate should override the body.
+    throw new System.Exception(
+        ""trace_evaluate_runtime_condition called"");
+").
+:- pragma foreign_proc("Java",
+    trace_evaluate_runtime_condition,
+    [will_not_call_mercury, thread_safe, promise_semipure,
+        does_not_affect_liveness, may_not_duplicate],
+"
+    if (true) {
+        /* All uses of this predicate should override the body. */
+        throw new java.lang.RuntimeException(
+            ""trace_evaluate_runtime_condition called"");
+    }
+").
+
+%---------------------------------------------------------------------------%
+%
+% This section of the module is for miscellaneous predicates
+% that are useful in other modules of the Mercury standard library.
+%
+
+:- interface.
+
+    % var/1 is intended to make it possible to write code that effectively has
+    % different implementations for different modes. It has to be impure
+    % to ensure that reordering doesn't cause the wrong mode to be selected.
+    %
+:- impure pred var(T).
+:-    mode var(ui) is failure.
+:-    mode var(in) is failure.
+:-    mode var(unused) is det.
+
+:- impure pred nonvar(T).
+:-    mode nonvar(ui) is det.
+:-    mode nonvar(in) is det.
+:-    mode nonvar(unused) is failure.
+
+    % no_clauses/1 is used to report a run-time error when there is a call
+    % to a procedure for which there are no clauses, and the procedure was
+    % compiled with `--allow-stubs' and is not part of the Mercury standard
+    % library. (If the procedure is part of the Mercury standard library,
+    % the compiler will generate a call to sorry/1 instead of no_clauses/1.)
+    %
+:- pred no_clauses(string::in) is erroneous.
+
+    % sorry/1 is used to apologize about the fact that we have not implemented
+    % some predicate or function in the Mercury standard library for a given
+    % back end. The argument should give the name of the predicate or function.
+    %
+:- pred sorry(string::in) is erroneous.
+
+    % imp/0 is used to make pure predicates impure.
+    %
+:- impure pred imp is det.
+
+    % semip/0 is used to make pure predicates semipure.
+    %
+:- semipure pred semip is det.
+
+%---------------------------------------------------------------------------%
+
+:- implementation.
+
+var(_::ui) :- fail.
+var(_::in) :- fail.
+var(_::unused) :- true.
+
+nonvar(_::ui) :- true.
+nonvar(_::in) :- true.
+nonvar(_::unused) :- fail.
+
+no_clauses(PredName) :-
+    error("no clauses for " ++ PredName).
+
+sorry(PredName) :-
+    error("sorry, " ++ PredName ++ " not implemented\n" ++
+        "for this target language (or compiler back-end).").
+
+:- pragma foreign_proc("C",
+    imp,
+    [will_not_call_mercury, thread_safe, will_not_modify_trail],
+"").
+:- pragma foreign_proc("C#",
+    imp,
+    [will_not_call_mercury, thread_safe],
+"").
+:- pragma foreign_proc("Java",
+    imp,
+    [will_not_call_mercury, thread_safe],
+"").
+:- pragma foreign_proc("Erlang",
+    imp,
+    [will_not_call_mercury, thread_safe],
+"void").
+
+:- pragma foreign_proc("C",
+    semip,
+    [will_not_call_mercury, thread_safe, promise_semipure,
+        will_not_modify_trail],
+"").
+:- pragma foreign_proc("C#",
+    semip,
+    [will_not_call_mercury, thread_safe, promise_semipure],
+"").
+:- pragma foreign_proc("Java",
+    semip,
+    [will_not_call_mercury, thread_safe, promise_semipure],
+"").
+:- pragma foreign_proc("Erlang",
+    semip,
+    [will_not_call_mercury, thread_safe, promise_semipure],
+"void").
+
+%---------------------------------------------------------------------------%
+%
+% Foreign language code defining miscellaneous stuff related to types.
+% XXX The foreign_code pragmas below define different things for the
+% different languages. All these should probably be somewhere else.
+%
 
 :- pragma foreign_decl("C", "
 
@@ -1541,175 +1702,6 @@ const MR_FA_TypeInfo_Struct1 ML_type_info_for_list_of_pseudo_type_info = {
 
 ").
 
-%-----------------------------------------------------------------------------%
-
-:- interface.
-
-    % This section of the module is for miscellaneous predicates
-    % that sometimes have calls to them emitted by the compiler.
-
-    % unsafe_type_cast/2 is used internally by the compiler. Bad things
-    % will happen if this is used in programs.
-    % With the LLDS back-end, it has no definition,
-    % since for efficiency the code generator treats it as a builtin.
-    % With the MLDS back-end, it is defined in runtime/mercury.h.
-
-:- pred unsafe_type_cast(T1::in, T2::out) is det.
-
-    % store_at_ref_impure/2 is used internally by the compiler. Bad things
-    % will happen if this is used in programs.
-    %
-:- impure pred store_at_ref_impure(store_at_ref_type(T)::in, T::in) is det.
-
-    % This is deprecated. The compiler should now generate calls to
-    % store_at_ref_impure.
-    %
-:- pred store_at_ref(store_at_ref_type(T)::in, T::in) is det.
-
-    % This type should be used only by the program transformation that
-    % introduces calls to store_at_ref. Any other use is will cause bad things
-    % to happen.
-:- type store_at_ref_type(T)
-    --->    store_at_ref_type(int).
-
-    % unused/0 should never be called.
-    % The compiler sometimes generates references to this procedure,
-    % but they should never get executed.
-:- pred unused is det.
-
-:- pred nyi_foreign_type_unify(T::in, T::in) is semidet.
-:- pred nyi_foreign_type_compare(comparison_result::uo, T::in, T::in) is det.
-
-    % N.B. interface continued below.
-
-:- implementation.
-
-unused :-
-    ( semidet_succeed ->
-        error("attempted use of dead predicate")
-    ;
-        % the following is never executed
-        true
-    ).
-
-nyi_foreign_type_unify(_, _) :-
-    ( semidet_succeed ->
-        sorry("unify for foreign types")
-    ;
-        semidet_succeed
-    ).
-
-nyi_foreign_type_compare(Result, _, _) :-
-    ( semidet_succeed ->
-        sorry("compare for foreign types")
-    ;
-        Result = (=)
-    ).
-
-%-----------------------------------------------------------------------------%
-
-:- interface.
-
-    % var/1 is intended to make it possible to write code that effectively has
-    % different implementations for different modes.  It has to be impure to
-    % ensure that reordering doesn't cause the wrong mode to be selected.
-    %
-:- impure pred var(T).
-:-    mode var(ui) is failure.
-:-    mode var(in) is failure.
-:-    mode var(unused) is det.
-
-:- impure pred nonvar(T).
-:-    mode nonvar(ui) is det.
-:-    mode nonvar(in) is det.
-:-    mode nonvar(unused) is failure.
-
-    % no_clauses/1 is used to report a run-time error when there is a call
-    % to a procedure for which there are no clauses, and the procedure was
-    % compiled with `--allow-stubs' and is not part of the Mercury standard
-    % library.  (If the procedure is part of the Mercury standard library,
-    % the compiler will generate a call to sorry/1 instead of no_clauses/1.)
-    %
-:- pred no_clauses(string::in) is erroneous.
-
-    % sorry/1 is used to apologize about the fact that we have not implemented
-    % some predicate or function in the Mercury standard library for a given
-    % back end. The argument should give the name of the predicate or function.
-    %
-:- pred sorry(string::in) is erroneous.
-
-    % imp/0 is used to make pure predicates impure.
-    %
-:- impure pred imp is det.
-
-    % semip/0 is used to make pure predicates semipure.
-    %
-:- semipure pred semip is det.
-
-%-----------------------------------------------------------------------------%
-
-:- implementation.
-
-var(_::ui) :- fail.
-var(_::in) :- fail.
-var(_::unused) :- true.
-
-nonvar(_::ui) :- true.
-nonvar(_::in) :- true.
-nonvar(_::unused) :- fail.
-
-sorry(PredName) :-
-    error("sorry, " ++ PredName ++ " not implemented\n" ++
-        "for this target language (or compiler back-end).").
-
-no_clauses(PredName) :-
-    error("no clauses for " ++ PredName).
-
-:- pragma foreign_proc("C",
-    imp,
-    [will_not_call_mercury, thread_safe, will_not_modify_trail],
-"").
-:- pragma foreign_proc("IL",
-    imp,
-    [will_not_call_mercury, thread_safe, max_stack_size(0)],
-"").
-:- pragma foreign_proc("C#",
-    imp,
-    [will_not_call_mercury, thread_safe, max_stack_size(0)],
-"").
-:- pragma foreign_proc("Java",
-    imp,
-    [will_not_call_mercury, thread_safe],
-"").
-:- pragma foreign_proc("Erlang",
-    imp,
-    [will_not_call_mercury, thread_safe],
-"void").
-
-:- pragma foreign_proc("C",
-    semip,
-    [will_not_call_mercury, thread_safe, promise_semipure,
-        will_not_modify_trail],
-"").
-:- pragma foreign_proc("IL",
-    semip,
-    [will_not_call_mercury, thread_safe, promise_semipure, max_stack_size(0)],
-"").
-:- pragma foreign_proc("C#",
-    semip,
-    [will_not_call_mercury, thread_safe, promise_semipure],
-"").
-:- pragma foreign_proc("Java",
-    semip,
-    [will_not_call_mercury, thread_safe, promise_semipure],
-"").
-:- pragma foreign_proc("Erlang",
-    semip,
-    [will_not_call_mercury, thread_safe, promise_semipure],
-"void").
-
-%-----------------------------------------------------------------------------%
-
 :- pragma foreign_code("Java", "
     public static class Ref_1
     {
@@ -1722,54 +1714,55 @@ no_clauses(PredName) :-
     }
 
     // TypeCtorRep constants
-    public static final int MR_TYPECTOR_REP_ENUM = 0;
-    public static final int MR_TYPECTOR_REP_ENUM_USEREQ = 1;
-    public static final int MR_TYPECTOR_REP_DU = 2;
+    public static final int MR_TYPECTOR_REP_ENUM                    = 0;
+    public static final int MR_TYPECTOR_REP_ENUM_USEREQ             = 1;
+    public static final int MR_TYPECTOR_REP_DU                      = 2;
     public static final int MR_TYPECTOR_REP_DU_USEREQ               = 3;
     public static final int MR_TYPECTOR_REP_NOTAG                   = 4;
     public static final int MR_TYPECTOR_REP_NOTAG_USEREQ            = 5;
     public static final int MR_TYPECTOR_REP_EQUIV                   = 6;
     public static final int MR_TYPECTOR_REP_FUNC                    = 7;
     public static final int MR_TYPECTOR_REP_INT                     = 8;
-    public static final int MR_TYPECTOR_REP_CHAR                    = 9;
-    public static final int MR_TYPECTOR_REP_FLOAT                   = 10;
-    public static final int MR_TYPECTOR_REP_STRING                  = 11;
-    public static final int MR_TYPECTOR_REP_PRED                    = 12;
-    public static final int MR_TYPECTOR_REP_SUBGOAL                 = 13;
-    public static final int MR_TYPECTOR_REP_VOID                    = 14;
-    public static final int MR_TYPECTOR_REP_C_POINTER               = 15;
-    public static final int MR_TYPECTOR_REP_TYPEINFO                = 16;
-    public static final int MR_TYPECTOR_REP_TYPECLASSINFO           = 17;
-    public static final int MR_TYPECTOR_REP_ARRAY                   = 18;
-    public static final int MR_TYPECTOR_REP_SUCCIP                  = 19;
-    public static final int MR_TYPECTOR_REP_HP                      = 20;
-    public static final int MR_TYPECTOR_REP_CURFR                   = 21;
-    public static final int MR_TYPECTOR_REP_MAXFR                   = 22;
-    public static final int MR_TYPECTOR_REP_REDOFR                  = 23;
-    public static final int MR_TYPECTOR_REP_REDOIP                  = 24;
-    public static final int MR_TYPECTOR_REP_TRAIL_PTR               = 25;
-    public static final int MR_TYPECTOR_REP_TICKET                  = 26;
-    public static final int MR_TYPECTOR_REP_NOTAG_GROUND            = 27;
-    public static final int MR_TYPECTOR_REP_NOTAG_GROUND_USEREQ     = 28;
-    public static final int MR_TYPECTOR_REP_EQUIV_GROUND            = 29;
-    public static final int MR_TYPECTOR_REP_TUPLE                   = 30;
-    public static final int MR_TYPECTOR_REP_RESERVED_ADDR           = 31;
-    public static final int MR_TYPECTOR_REP_RESERVED_ADDR_USEREQ    = 32;
-    public static final int MR_TYPECTOR_REP_TYPECTORINFO            = 33;
-    public static final int MR_TYPECTOR_REP_BASETYPECLASSINFO       = 34;
-    public static final int MR_TYPECTOR_REP_TYPEDESC                = 35;
-    public static final int MR_TYPECTOR_REP_TYPECTORDESC            = 36;
-    public static final int MR_TYPECTOR_REP_FOREIGN                 = 37;
-    public static final int MR_TYPECTOR_REP_REFERENCE               = 38;
-    public static final int MR_TYPECTOR_REP_STABLE_C_POINTER        = 39;
-    public static final int MR_TYPECTOR_REP_STABLE_FOREIGN          = 40;
-    public static final int MR_TYPECTOR_REP_PSEUDOTYPEDESC          = 41;
-    public static final int MR_TYPECTOR_REP_DUMMY                   = 42;
-    public static final int MR_TYPECTOR_REP_BITMAP                  = 43;
-    public static final int MR_TYPECTOR_REP_FOREIGN_ENUM            = 44;
-    public static final int MR_TYPECTOR_REP_FOREIGN_ENUM_USEREQ     = 45;
-    public static final int MR_TYPECTOR_REP_UNKNOWN                 = 46;
-    public static final int MR_TYPECTOR_REP_MAX                     = 47;
+    public static final int MR_TYPECTOR_REP_UINT                    = 9;
+    public static final int MR_TYPECTOR_REP_CHAR                    = 10;
+    public static final int MR_TYPECTOR_REP_FLOAT                   = 11;
+    public static final int MR_TYPECTOR_REP_STRING                  = 12;
+    public static final int MR_TYPECTOR_REP_PRED                    = 13;
+    public static final int MR_TYPECTOR_REP_SUBGOAL                 = 14;
+    public static final int MR_TYPECTOR_REP_VOID                    = 15;
+    public static final int MR_TYPECTOR_REP_C_POINTER               = 16;
+    public static final int MR_TYPECTOR_REP_TYPEINFO                = 17;
+    public static final int MR_TYPECTOR_REP_TYPECLASSINFO           = 18;
+    public static final int MR_TYPECTOR_REP_ARRAY                   = 19;
+    public static final int MR_TYPECTOR_REP_SUCCIP                  = 20;
+    public static final int MR_TYPECTOR_REP_HP                      = 21;
+    public static final int MR_TYPECTOR_REP_CURFR                   = 22;
+    public static final int MR_TYPECTOR_REP_MAXFR                   = 23;
+    public static final int MR_TYPECTOR_REP_REDOFR                  = 24;
+    public static final int MR_TYPECTOR_REP_REDOIP                  = 25;
+    public static final int MR_TYPECTOR_REP_TRAIL_PTR               = 26;
+    public static final int MR_TYPECTOR_REP_TICKET                  = 27;
+    public static final int MR_TYPECTOR_REP_NOTAG_GROUND            = 28;
+    public static final int MR_TYPECTOR_REP_NOTAG_GROUND_USEREQ     = 29;
+    public static final int MR_TYPECTOR_REP_EQUIV_GROUND            = 30;
+    public static final int MR_TYPECTOR_REP_TUPLE                   = 31;
+    public static final int MR_TYPECTOR_REP_RESERVED_ADDR           = 32;
+    public static final int MR_TYPECTOR_REP_RESERVED_ADDR_USEREQ    = 33;
+    public static final int MR_TYPECTOR_REP_TYPECTORINFO            = 34;
+    public static final int MR_TYPECTOR_REP_BASETYPECLASSINFO       = 35;
+    public static final int MR_TYPECTOR_REP_TYPEDESC                = 36;
+    public static final int MR_TYPECTOR_REP_TYPECTORDESC            = 37;
+    public static final int MR_TYPECTOR_REP_FOREIGN                 = 38;
+    public static final int MR_TYPECTOR_REP_REFERENCE               = 39;
+    public static final int MR_TYPECTOR_REP_STABLE_C_POINTER        = 40;
+    public static final int MR_TYPECTOR_REP_STABLE_FOREIGN          = 41;
+    public static final int MR_TYPECTOR_REP_PSEUDOTYPEDESC          = 42;
+    public static final int MR_TYPECTOR_REP_DUMMY                   = 43;
+    public static final int MR_TYPECTOR_REP_BITMAP                  = 44;
+    public static final int MR_TYPECTOR_REP_FOREIGN_ENUM            = 45;
+    public static final int MR_TYPECTOR_REP_FOREIGN_ENUM_USEREQ     = 46;
+    public static final int MR_TYPECTOR_REP_UNKNOWN                 = 47;
+    public static final int MR_TYPECTOR_REP_MAX                     = 48;
 
     public static final int MR_SECTAG_NONE              = 0;
     public static final int MR_SECTAG_NONE_DIRECT_ARG   = 1;
@@ -1777,11 +1770,14 @@ no_clauses(PredName) :-
     public static final int MR_SECTAG_REMOTE            = 3;
     public static final int MR_SECTAG_VARIABLE          = 4;
 
+    public static final int MR_FUNCTOR_SUBTYPE_NONE     = 0;
+    public static final int MR_FUNCTOR_SUBTYPE_EXISTS   = 1;
+
     public static final int MR_PREDICATE    = 0;
     public static final int MR_FUNCTION     = 1;
 
     // The dummy_var is used to represent io.states and other Mercury
-    // parameters that are not really passed around.  Occasionally a dummy
+    // parameters that are not really passed around. Occasionally a dummy
     // variable will be used by the code generator as an lval, so we use
     // private_builtin:dummy_var as that lval.
     public static java.lang.Object dummy_var;
@@ -1922,7 +1918,7 @@ no_clauses(PredName) :-
 
     public static builtin.Comparison_result_0
     __Compare____type_info_0_0(
-        jmercury.runtime.TypeInfo_Struct x, 
+        jmercury.runtime.TypeInfo_Struct x,
         jmercury.runtime.TypeInfo_Struct y)
     {
         // stub only
@@ -1978,7 +1974,7 @@ no_clauses(PredName) :-
 :- pragma foreign_code("Erlang", "
     '__Compare____heap_pointer_0_0'(_, _) ->
         throw(""called compare/2 for type `private_builtin.heap_pointer'"").
-        
+
     '__Unify____heap_pointer_0_0'(_, _) ->
         throw(""called unify/2 for type `private_builtin.heap_pointer'"").
 
@@ -1992,60 +1988,5 @@ no_clauses(PredName) :-
         end.
 ").
 
-%-----------------------------------------------------------------------------%
-
-:- interface.
-
-:- import_module io.
-
-:- semipure pred trace_evaluate_runtime_condition is semidet.
-
-:- semipure pred trace_get_io_state(io::uo) is det.
-
-:- impure pred trace_set_io_state(io::di) is det.
-
-:- implementation.
-
-:- pragma foreign_proc("C",
-    trace_evaluate_runtime_condition,
-    [will_not_call_mercury, thread_safe, promise_semipure,
-        does_not_affect_liveness],
-"
-    /* All uses of this predicate should override the body. */
-    MR_fatal_error(""trace_evaluate_runtime_condition called"");
-").
-
-:- pragma foreign_proc("Erlang",
-    trace_evaluate_runtime_condition,
-    [will_not_call_mercury, thread_safe, promise_semipure,
-        does_not_affect_liveness],
-"
-    % All uses of this predicate should override the body.
-    throw(""trace_evaluate_runtime_condition called""),
-    SUCCESS_INDICATOR = false
-").
-
-:- pragma foreign_proc("C#",
-    trace_evaluate_runtime_condition,
-    [will_not_call_mercury, thread_safe, promise_semipure,
-        does_not_affect_liveness],
-"
-    // All uses of this predicate should override the body.
-    throw new System.Exception(
-        ""trace_evaluate_runtime_condition called"");
-").
-
-:- pragma foreign_proc("Java",
-    trace_evaluate_runtime_condition,
-    [will_not_call_mercury, thread_safe, promise_semipure,
-        does_not_affect_liveness, may_not_duplicate],
-"
-    if (true) {
-        /* All uses of this predicate should override the body. */
-        throw new java.lang.RuntimeException(
-            ""trace_evaluate_runtime_condition called"");
-    }
-").
-
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

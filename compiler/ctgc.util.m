@@ -16,11 +16,14 @@
 :- module transform_hlds.ctgc.util.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
+:- import_module set.
 
 %-----------------------------------------------------------------------------%
 
@@ -28,8 +31,8 @@
     % "special_pred_map" known from module_info) or not defined in the
     % current module, as these predicates are not analysed by the CTGC system.
     %
-:- pred some_preds_requiring_no_analysis(module_info::in,
-    list(pred_proc_id)::in) is semidet.
+:- pred some_preds_require_no_analysis(module_info::in,
+    set(pred_proc_id)::in) is semidet.
 
 :- pred pred_requires_no_analysis(module_info::in, pred_id::in) is semidet.
 :- pred pred_requires_analysis(module_info::in, pred_id::in) is semidet.
@@ -43,13 +46,13 @@
     prog_var_renaming.
 
     % get_type_substitution(ModuleInfo, PPId, ActualTypes,
-    %   CallerTypeVarSet, CallerHeadTypeParams) = TypeSubst
+    %   CallerTypeVarSet, CallerExternalTypeParams) = TypeSubst
     %
     % Work out a type substitution to map the callee's argument types into the
     % caller's.
     %
 :- func get_type_substitution(module_info, pred_proc_id, list(mer_type),
-    tvarset, head_type_params) = tsubst.
+    tvarset, external_type_params) = tsubst.
 
     % var_needs_sharing_analysis(ModuleInfo, ProcInfo, Var).
     %
@@ -74,12 +77,14 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
+:- import_module hlds.status.
+:- import_module hlds.vartypes.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.prog_type_subst.
 
 :- import_module bool.
-:- import_module list.
 :- import_module map.
 :- import_module require.
 
@@ -87,25 +92,17 @@
 
 pred_requires_no_analysis(ModuleInfo, PredId) :-
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    pred_info_get_import_status(PredInfo, Status),
-    % We handle `:- external' predicates later. In that sense,
-    % they do *not* require that we don't analyse them.
-    Status = status_imported(_).
+    pred_info_get_status(PredInfo, PredStatus),
+    % We handle `:- pragma external_{pred/func}' predicates and functions
+    % later. In that sense, they do *not* require that we don't analyse them.
+    PredStatus = pred_status(status_imported(_)).
 
 pred_requires_analysis(ModuleInfo, PredId) :-
-    \+ pred_requires_no_analysis(ModuleInfo, PredId).
+    not pred_requires_no_analysis(ModuleInfo, PredId).
 
-some_preds_requiring_no_analysis(ModuleInfo, PPIds) :-
-    list.member(proc(PredId, _), PPIds),
+some_preds_require_no_analysis(ModuleInfo, PPIds) :-
+    set.member(proc(PredId, _), PPIds),
     pred_requires_no_analysis(ModuleInfo, PredId).
-
-:- pred not_defined_in_this_module(module_info::in, pred_proc_id::in)
-    is semidet.
-
-not_defined_in_this_module(ModuleInfo, proc(PredId, _)):-
-    module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    pred_info_get_import_status(PredInfo, Status),
-    status_defined_in_this_module(Status) = no.
 
 get_variable_renaming(ModuleInfo, PPId, ActualArgs) = VariableRenaming :-
     module_info_pred_proc_info(ModuleInfo, PPId, _PredInfo, ProcInfo),
@@ -113,7 +110,7 @@ get_variable_renaming(ModuleInfo, PPId, ActualArgs) = VariableRenaming :-
     map.from_corresponding_lists(FormalVars, ActualArgs, VariableRenaming).
 
 get_type_substitution(ModuleInfo, PPId, ActualTypes, CallerTypeVarSet,
-        CallerHeadTypeParams) = TypeSubst :-
+        CallerExternalTypeParams) = TypeSubst :-
     PPId = proc(PredId, _),
     module_info_pred_info(ModuleInfo, PredId, CalleePredInfo),
     pred_info_get_typevarset(CalleePredInfo, CalleeTypeVarSet),
@@ -144,7 +141,7 @@ get_type_substitution(ModuleInfo, PPId, ActualTypes, CallerTypeVarSet,
         (
             map.init(TypeSubstPrime),
             type_unify_list(CalleeArgTypes, ActualTypes,
-                CallerHeadTypeParams, TypeSubstPrime, TypeSubst0)
+                CallerExternalTypeParams, TypeSubstPrime, TypeSubst0)
         ->
             TypeSubst1 = TypeSubst0
         ;

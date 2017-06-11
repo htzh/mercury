@@ -19,6 +19,7 @@
 
 :- import_module ml_backend.mlds.
 :- import_module ml_backend.ml_gen_info.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 %-----------------------------------------------------------------------------%
@@ -66,7 +67,7 @@
     % and just passes the rval for it to this routine.
     %
     % This is used by ml_closure_gen.m to generate GC tracing code
-    % for the the local variables in closure wrapper functions.
+    % for the local variables in closure wrapper functions.
     %
 :- pred ml_gen_gc_statement_with_typeinfo(mlds_var_name::in,
     mer_type::in, mlds_rval::in, prog_context::in,
@@ -77,16 +78,24 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.foreign.
+:- import_module check_hlds.
 :- import_module check_hlds.polymorphism.
+:- import_module hlds.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.instmap.
+:- import_module hlds.vartypes.
+:- import_module libs.
 :- import_module libs.globals.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
 :- import_module mdbcomp.program_representation.
+:- import_module mdbcomp.sym_name.
 :- import_module ml_backend.ml_code_gen.
 :- import_module ml_backend.ml_code_util.
 :- import_module parse_tree.builtin_lib_types.
@@ -94,11 +103,12 @@
 :- import_module parse_tree.set_of_var.
 
 :- import_module bool.
+:- import_module cord.
 :- import_module counter.
 :- import_module int.
 :- import_module list.
-:- import_module map.
 :- import_module maybe.
+:- import_module require.
 :- import_module set.
 
 %-----------------------------------------------------------------------------%
@@ -112,22 +122,22 @@ ml_gen_gc_statement(VarName, Type, Context, GCStatement, !Info) :-
 ml_gen_gc_statement_poly(VarName, DeclType, ActualType, Context,
         GCStatement, !Info) :-
     ml_gen_info_get_gc(!.Info, GC),
-    ( GC = gc_accurate ->
+    ( if GC = gc_accurate then
         HowToGetTypeInfo = construct_from_type(ActualType),
         ml_do_gen_gc_statement(VarName, DeclType, HowToGetTypeInfo, Context,
             GCStatement, !Info)
-    ;
+    else
         GCStatement = gc_no_stmt
     ).
 
 ml_gen_gc_statement_with_typeinfo(VarName, DeclType, TypeInfoRval, Context,
         GCStatement, !Info) :-
     ml_gen_info_get_gc(!.Info, GC),
-    ( GC = gc_accurate ->
+    ( if GC = gc_accurate then
         HowToGetTypeInfo = already_provided(TypeInfoRval),
         ml_do_gen_gc_statement(VarName, DeclType, HowToGetTypeInfo, Context,
             GCStatement, !Info)
-    ;
+    else
         GCStatement = gc_no_stmt
     ).
 
@@ -141,22 +151,22 @@ ml_gen_gc_statement_with_typeinfo(VarName, DeclType, TypeInfoRval, Context,
 
 ml_do_gen_gc_statement(VarName, DeclType, HowToGetTypeInfo, Context,
         GCStatement, !Info) :-
-    (
+    ( if
         ml_gen_info_get_module_info(!.Info, ModuleInfo),
         MLDS_DeclType = mercury_type_to_mlds_type(ModuleInfo, DeclType),
         ml_type_might_contain_pointers_for_gc(MLDS_DeclType) = yes,
         % Don't generate GC tracing code in no_type_info_builtins.
         ml_gen_info_get_pred_id(!.Info, PredId),
         predicate_id(ModuleInfo, PredId, PredModule, PredName, PredArity),
-        \+ no_type_info_builtin(PredModule, PredName, PredArity)
-    ->
+        not no_type_info_builtin(PredModule, PredName, PredArity)
+    then
         (
             HowToGetTypeInfo = construct_from_type(ActualType0),
             % We need to handle type_info/1 and typeclass_info/1
             % types specially, to avoid infinite recursion here...
-            ( trace_type_info_type(ActualType0, ActualType1) ->
+            ( if trace_type_info_type(ActualType0, ActualType1) then
                 ActualType = ActualType1
-            ;
+            else
                 ActualType = ActualType0
             ),
             ml_gen_gc_trace_code(VarName, DeclType, ActualType,
@@ -167,7 +177,7 @@ ml_do_gen_gc_statement(VarName, DeclType, HowToGetTypeInfo, Context,
                 Context, GC_TraceCode)
         ),
         GCStatement = gc_trace_code(GC_TraceCode)
-    ;
+    else
         GCStatement = gc_no_stmt
     ).
 
@@ -201,9 +211,9 @@ ml_type_might_contain_pointers_for_gc(Type) = MightContainPointers :-
             ml_type_category_might_contain_pointers(TypeCategory)
     ;
         Type = mlds_class_type(_, _, Category),
-        ( Category = mlds_enum ->
+        ( if Category = mlds_enum then
             MightContainPointers = no
-        ;
+        else
             MightContainPointers = yes
         )
     ;
@@ -221,6 +231,7 @@ ml_type_might_contain_pointers_for_gc(Type) = MightContainPointers :-
         MightContainPointers = yes
     ;
         ( Type = mlds_native_int_type
+        ; Type = mlds_native_uint_type
         ; Type = mlds_native_float_type
         ; Type = mlds_native_bool_type
         ; Type = mlds_native_char_type
@@ -242,6 +253,7 @@ ml_type_might_contain_pointers_for_gc(Type) = MightContainPointers :-
 ml_type_category_might_contain_pointers(CtorCat) = MayContainPointers :-
     (
         ( CtorCat = ctor_cat_builtin(cat_builtin_int)
+        ; CtorCat = ctor_cat_builtin(cat_builtin_uint)
         ; CtorCat = ctor_cat_builtin(cat_builtin_char)
         ; CtorCat = ctor_cat_builtin(cat_builtin_float)
         ; CtorCat = ctor_cat_builtin_dummy
@@ -348,7 +360,9 @@ ml_gen_gc_trace_code(VarName, DeclType, ActualType, Context, GC_TraceCode,
     MLDS_NonLocalVarDecls = list.map(GenLocalVarDecl, NonLocalVarList),
 
     % Combine the MLDS code fragments together.
-    GC_TraceCode = ml_gen_block(MLDS_NewobjLocals ++ MLDS_NonLocalVarDecls,
+    % XXX MLDS_DEFN
+    GC_TraceCode = ml_gen_block(
+        list.map(wrap_data_defn, MLDS_NewobjLocals ++ MLDS_NonLocalVarDecls),
         [MLDS_TypeInfoStatement, MLDS_TraceStatement], Context).
 
     % ml_gen_trace_var(VarName, DeclType, TypeInfo, Context, Code):
@@ -386,7 +400,7 @@ ml_gen_trace_var(Info, VarName, Type, TypeInfoRval, Context, TraceStatement) :-
     % `private_builtin.gc_trace(TypeInfo, (MR_C_Pointer) &Var);'.
     CastVarAddr = ml_unop(cast(CPointerType), ml_mem_addr(VarLval)),
     TraceStmt = ml_stmt_call(Signature, FuncAddr, no,
-        [TypeInfoRval, CastVarAddr], [], ordinary_call),
+        [TypeInfoRval, CastVarAddr], [], ordinary_call, set.init),
     TraceStatement = statement(TraceStmt, mlds_make_context(Context)).
 
     % Generate HLDS code to construct the type_info for this type.
@@ -406,8 +420,10 @@ ml_gen_make_type_info_var(Type, Context, TypeInfoVar, TypeInfoGoals, !Info) :-
     create_poly_info(ModuleInfo0, PredInfo0, ProcInfo0, PolyInfo0),
     polymorphism_make_type_info_var(Type, Context,
         TypeInfoVar, TypeInfoGoals, PolyInfo0, PolyInfo),
-    poly_info_extract(PolyInfo, PredInfo0, PredInfo,
+    poly_info_extract(PolyInfo, PolySpecs, PredInfo0, PredInfo,
         ProcInfo0, ProcInfo, ModuleInfo1),
+    expect(unify(PolySpecs, []), $module, $pred,
+        "got errors while making type_info_var"),
 
     % Save the new information back in the ml_gen_info.
     module_info_set_pred_proc_info(PredId, ProcId, PredInfo, ProcInfo,
@@ -429,7 +445,7 @@ ml_gen_make_type_info_var(Type, Context, TypeInfoVar, TypeInfoGoals, !Info) :-
                 fnoi_context        :: mlds_context,
 
                 % The local variable declarations accumulated so far.
-                fnoi_locals         :: list(mlds_defn),
+                fnoi_locals         :: cord(mlds_data_defn),
 
                 % A counter used to allocate variable names.
                 fnoi_next_id        :: counter
@@ -441,14 +457,14 @@ ml_gen_make_type_info_var(Type, Context, TypeInfoVar, TypeInfoGoals, !Info) :-
     % allocation.
     %
 :- pred fixup_newobj(statement::in, mlds_module_name::in,
-     statement::out, list(mlds_defn)::out) is det.
+     statement::out, list(mlds_data_defn)::out) is det.
 
 fixup_newobj(Statement0, ModuleName, Statement, Defns) :-
     Statement0 = statement(Stmt0, Context),
-    Info0 = fixup_newobj_info(ModuleName, Context, [], counter.init(0)),
+    Info0 = fixup_newobj_info(ModuleName, Context, cord.init, counter.init(0)),
     fixup_newobj_in_stmt(Stmt0, Stmt, Info0, Info),
     Statement = statement(Stmt, Context),
-    Defns = Info ^ fnoi_locals.
+    Defns = cord.to_list(Info ^ fnoi_locals).
 
 :- pred fixup_newobj_in_statement(statement::in, statement::out,
     fixup_newobj_info::in, fixup_newobj_info::out) is det.
@@ -492,7 +508,8 @@ fixup_newobj_in_stmt(Stmt0, Stmt, !Fixup) :-
         Stmt0 = ml_stmt_computed_goto(Rval, Labels),
         Stmt = ml_stmt_computed_goto(Rval, Labels)
     ;
-        Stmt0 = ml_stmt_call(_Sig, _Func, _Obj, _Args, _RetLvals, _TailCall),
+        Stmt0 = ml_stmt_call(_Sig, _Func, _Obj, _Args, _RetLvals,
+            _TailCall, _Markers),
         Stmt = Stmt0
     ;
         Stmt0 = ml_stmt_return(_Rvals),
@@ -541,11 +558,11 @@ fixup_newobj_in_default(default_case(Statement0), default_case(Statement),
     mlds_stmt::out, fixup_newobj_info::in, fixup_newobj_info::out) is det.
 
 fixup_newobj_in_atomic_statement(AtomicStatement0, Stmt, !Fixup) :-
-    (
+    ( if
         AtomicStatement0 = new_object(Lval, MaybeTag, _ExplicitSecTag,
             PointerType, _MaybeSizeInWordsRval, _MaybeCtorName,
             ArgRvals, _ArgTypes, _MayUseAtomic, _AllocId)
-    ->
+    then
         % Generate the declaration of the new local variable.
         %
         % XXX Using array(generic_type) is wrong for --high-level-data.
@@ -555,7 +572,7 @@ fixup_newobj_in_atomic_statement(AtomicStatement0, Stmt, !Fixup) :-
         % later generate assignment statements to fill in the values properly
         % (see below).
         counter.allocate(Id, !.Fixup ^ fnoi_next_id, NextId),
-        VarName = mlds_var_name("new_obj", yes(Id)),
+        VarName = mlds_comp_var(mcv_new_obj(Id)),
         VarType = mlds_array_type(mlds_generic_type),
         NullPointers = list.duplicate(list.length(ArgRvals),
             init_obj(ml_const(mlconst_null(mlds_generic_type)))),
@@ -567,9 +584,12 @@ fixup_newobj_in_atomic_statement(AtomicStatement0, Stmt, !Fixup) :-
         VarDecl = ml_gen_mlds_var_decl_init(mlds_data_var(VarName), VarType,
             Initializer, GCStatement, Context),
         !Fixup ^ fnoi_next_id := NextId,
+
         % XXX We should keep a more structured representation of the local
         % variables, such as a map from variable names.
-        !Fixup ^ fnoi_locals := !.Fixup ^ fnoi_locals ++ [VarDecl],
+        Locals0 = !.Fixup ^ fnoi_locals,
+        Locals = cord.snoc(Locals0, VarDecl),
+        !Fixup ^ fnoi_locals := Locals,
 
         % Generate code to initialize the variable.
         %
@@ -592,7 +612,7 @@ fixup_newobj_in_atomic_statement(AtomicStatement0, Stmt, !Fixup) :-
         AssignStmt = ml_stmt_atomic(assign(Lval, TaggedPtrRval)),
         AssignStatement = statement(AssignStmt, Context),
         Stmt = ml_stmt_block([], ArgInitStatements ++ [AssignStatement])
-    ;
+    else
         Stmt = ml_stmt_atomic(AtomicStatement0)
     ).
 

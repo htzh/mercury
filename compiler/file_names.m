@@ -15,7 +15,9 @@
 :- module parse_tree.file_names.
 :- interface.
 
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
+:- import_module libs.
 :- import_module libs.file_util.
 :- import_module libs.globals.
 
@@ -31,7 +33,7 @@
     % qualify_mercury_std_library_module_name(ModuleName) = QualModuleName:
     %
     % If ModuleName is a standard library module then return the module with an
-    % extra `mercury' prefix.  Otherwise, return the module name unchanged.
+    % extra `mercury' prefix. Otherwise, return the module name unchanged.
     %
 :- func qualify_mercury_std_library_module_name(module_name) = module_name.
 
@@ -40,6 +42,11 @@
 :- type maybe_create_dirs
     --->    do_create_dirs
     ;       do_not_create_dirs.
+
+    % Return the file name of the Mercury source for the given module.
+    %
+:- pred module_source_filename(globals::in, module_name::in, file_name::out,
+    io::di, io::uo) is det.
 
     % module_name_to_file_name(Globals, Module, Extension, Mkdir, FileName,
     %   !IO):
@@ -54,10 +61,38 @@
     % Note that this predicate is also used to create some "phony" Makefile
     % targets that do not have corresponding files, e.g. `<foo>.clean'.
     %
+    % XXX This interface should be improved in two ways.
+    %
+    % - First, the argument order
+    %
+    %       module_name_to_file_name(Globals, Mkdir, Extension,
+    %           Module, FileName, !IO)
+    %
+    %   would make it possible to use list.map_foldl to convert a list of
+    %   module names to file names with a single call.
+    %
+    % - Second, the implementation of this predicate effectively divides
+    %   the set of possible values of Extension into classes of extensions,
+    %   treating every extension in a given class the same way.
+    %
+    %   We should replace the simple string Extension argument with a more
+    %   structured specification of the extension, one that puts a wrapper
+    %   around the actual suffix indicating what class the extension falls in,
+    %   as in e.g. ec_library(".dylib"). For some classes, maybe the majority,
+    %   the list of member extensions may be fixed; for these, it would
+    %   make sense to specify each member of the class by a value in an
+    %   extension-class-specific enum type, not by string.
+    %
+    %   While the code handling some of classes accesses the filesystem,
+    %   the code handling some other classes does not. If we put the wrappers
+    %   for these two kinds of classes into two separate types, we could
+    %   have a version of this predicate for each type, one with and one
+    %   without an I/O state pair.
+    %
 :- pred module_name_to_file_name(globals::in, module_name::in, string::in,
     maybe_create_dirs::in, file_name::out, io::di, io::uo) is det.
 
-    % module_name_to_search_file_name(Globals, Module, Extension, FileName,
+    % module_name_to_search_file_name(Globals, Module, XExtension, FileName,
     %   !IO):
     %
     % As above, but for a file which might be in an installed library,
@@ -124,19 +159,25 @@
     %
 :- pred module_name_to_make_var_name(module_name::in, string::out) is det.
 
+%-----------------------------------------------------------------------------%
+
     % Return the name of the directory containing Java `.class' files.
     %
 :- pred get_class_dir_name(globals::in, string::out) is det.
+
+%-----------------------------------------------------------------------------%
+
+    % Convert an include_file reference to a filesystem path.
+    %
+:- pred make_include_file_path(string::in, string::in, string::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
-:- import_module libs.globals.
-:- import_module libs.handle_options.
+:- import_module libs.compute_grade.
 :- import_module libs.options.
-:- import_module mdbcomp.prim_data.
 :- import_module parse_tree.java_names.
 :- import_module parse_tree.source_file_map.
 
@@ -160,13 +201,17 @@ mercury_std_library_module_name(qualified(Module, Name)) :-
     mercury_std_library_module(ModuleNameStr).
 
 qualify_mercury_std_library_module_name(ModuleName) = QualModuleName :-
-    ( mercury_std_library_module_name(ModuleName) ->
+    ( if mercury_std_library_module_name(ModuleName) then
         QualModuleName = add_outermost_qualifier("mercury", ModuleName)
-    ;
+    else
         QualModuleName = ModuleName
     ).
 
 %-----------------------------------------------------------------------------%
+
+module_source_filename(Globals, ModuleName, SourceFileName, !IO) :-
+    module_name_to_file_name(Globals, ModuleName, ".m", do_not_create_dirs,
+        SourceFileName, !IO).
 
 module_name_to_file_name(Globals, ModuleName, Ext, MkDir, FileName, !IO) :-
     module_name_to_file_name_general(Globals, ModuleName, Ext,
@@ -182,36 +227,38 @@ module_name_to_search_file_name(Globals, ModuleName, Ext, FileName, !IO) :-
 
 module_name_to_file_name_general(Globals, ModuleName, Ext, Search, MkDir,
         FileName, !IO) :-
-    ( Ext = ".m" ->
+    ( if
+        Ext = ".m"
+    then
         % Look up the module in the module->file mapping.
         source_file_map.lookup_module_source_file(ModuleName, FileName, !IO)
-    ;
+    else if
         % Java files need to be placed into a package subdirectory and may need
         % mangling.
         ( string.suffix(Ext, ".java")
         ; string.suffix(Ext, ".class")
         )
-    ->
+    then
         BaseParentDirs = ["jmercury"],
         mangle_sym_name_for_java(ModuleName, module_qual, "__",
             MangledModuleName),
         BaseName = MangledModuleName ++ Ext,
         choose_file_name(Globals, ModuleName, BaseParentDirs, BaseName, Ext,
             Search, MkDir, FileName, !IO)
-    ;
+    else if
         % Erlang uses `.' as a package separator and expects a module
-        % `a.b.c' to be in a file `a/b/c.erl'.  Rather than that, we use
+        % `a.b.c' to be in a file `a/b/c.erl'. Rather than that, we use
         % a flat namespace with `__' as module separators.
         ( string.suffix(Ext, ".erl")
         ; string.suffix(Ext, ".hrl")
         ; string.suffix(Ext, ".beam")
         )
-    ->
+    then
         ErlangModuleName = qualify_mercury_std_library_module_name(ModuleName),
         BaseName = sym_name_to_string_sep(ErlangModuleName, "__") ++ Ext,
         choose_file_name(Globals, ErlangModuleName, [], BaseName, Ext, Search,
             MkDir, FileName, !IO)
-    ;
+    else
         BaseName = sym_name_to_string_sep(ModuleName, ".") ++ Ext,
         choose_file_name(Globals, ModuleName, [], BaseName, Ext, Search, MkDir,
             FileName, !IO)
@@ -238,7 +285,7 @@ extra_link_obj_file_name(Globals, ModuleName, ExtraLinkObjName, Ext, MkDir,
     % choose_file_name(ModuleName, BaseParentDirs, BaseName, Ext, Search,
     %   MkDir, FileName, !IO)
     %
-    % BaseParentDirs is usually empty.  For Java files, BaseParentDirs are the
+    % BaseParentDirs is usually empty. For Java files, BaseParentDirs are the
     % package directories that the file needs to be placed in.
     %
 :- pred choose_file_name(globals::in, module_name::in, list(string)::in,
@@ -252,13 +299,12 @@ choose_file_name(Globals, _ModuleName, BaseParentDirs, BaseName, Ext,
     globals.lookup_string_option(Globals, library_extension, LibExt),
     globals.lookup_string_option(Globals, shared_library_extension,
         SharedLibExt),
-    (
+    ( if
         % If we're searching for (rather than writing) a `.mih' file,
-        % use the plain file name.  This is so that searches for files
-        % in installed libraries will work.  `--c-include-directory' is
-        % set so that searches for files in the current directory will
-        % work.
-        % Similarly for `.hrl' files.  We set `--erlang-include-directory'
+        % use the plain file name. This is so that searches for files
+        % in installed libraries will work. `--c-include-directory' is
+        % set so that searches for files in the current directory will work.
+        % Similarly for `.hrl' files. We set `--erlang-include-directory'
         % for those.
 
         Search = do_search,
@@ -267,22 +313,22 @@ choose_file_name(Globals, _ModuleName, BaseParentDirs, BaseName, Ext,
         ; Ext = ".hrl"
         ; Ext = ".hrl.tmp"
         )
-    ->
+    then
         FileName = BaseName
-    ;
+    else if
         UseSubdirs = no
-    ->
+    then
         % Even if not putting files in a `Mercury' directory, Java files will
         % have non-empty BaseParentDirs (the package) which may need to be
         % created.
         make_file_name(Globals, BaseParentDirs, Search, MkDir, BaseName, Ext,
             FileName, !IO)
-    ;
+    else if
         % The source files, the final executables, library files (including
         % .init files) output files intended for use by the user, and phony
         % Mmake targets names go in the current directory
 
-        \+ (
+        not (
             UseGradeSubdirs = yes,
             file_is_arch_or_grade_dependent(Globals, Ext)
         ),
@@ -291,12 +337,13 @@ choose_file_name(Globals, _ModuleName, BaseParentDirs, BaseName, Ext,
             ( Ext = ""
             ; Ext = ".bat"
             ; Ext = ".exe"
-            ; Ext = ".dll"
 
             % Library files.
             ; Ext = ".a"
             ; Ext = ".$A"
+            ; Ext = ".lib"
             ; Ext = ".so"
+            ; Ext = ".dll"
             ; Ext = ".dylib"
             ; Ext = ".$(EXT_FOR_SHARED_LIB)"
             ; Ext = ".jar"
@@ -351,18 +398,18 @@ choose_file_name(Globals, _ModuleName, BaseParentDirs, BaseName, Ext,
             ; string.prefix(Ext, ".mih_dump")
             )
         )
-    ->
+    then
         FileName = BaseName
-    ;
+    else
         % We need to handle a few cases specially.
 
-        (
+        ( if
             ( Ext = ".dir/*.o"
             ; Ext = ".dir/*.$O"
             )
-        ->
+        then
             SubDirName = "dirs"
-        ;
+        else if
             % .$O, .pic_o and .lpic_o files need to go in the same directory,
             % so that using .$(EXT_FOR_PIC_OBJECTS) will work.
             ( Ext = ".o"
@@ -376,45 +423,45 @@ choose_file_name(Globals, _ModuleName, BaseParentDirs, BaseName, Ext,
             ; Ext = "_init.pic_o"
             ; Ext = "_init.$(EXT_FOR_PIC_OBJECTS)"
             )
-        ->
+        then
             SubDirName = "os"
-        ;
+        else if
             % _init.c, _init.s, _init.o etc. files go in the cs, ss, os etc
             % subdirectories.
             string.append("_init.", ExtName, Ext)
-        ->
+        then
             string.append(ExtName, "s", SubDirName)
-        ;
+        else if
             % .int.tmp, .opt.tmp, etc. files need to go in the ints, opts, etc
             % subdirectories.
             string.append(".", ExtName0, Ext),
             string.remove_suffix(ExtName0, ".tmp", ExtName)
-        ->
+        then
             string.append(ExtName, "s", SubDirName)
-        ;
+        else if
             % `.dv' files go in the `deps' subdirectory,
             % along with the `.dep' files
             Ext = ".dv"
-        ->
+        then
             SubDirName = "deps"
-        ;
+        else if
             % Static and shared libraries go in the `lib' subdirectory.
             ( Ext = LibExt
             ; Ext = SharedLibExt
             )
-        ->
+        then
             SubDirName = "lib"
-        ;
+        else if
             % The usual case: `*.foo' files go in the `foos' subdirectory.
             string.append(".", ExtName, Ext)
-        ->
+        then
             string.append(ExtName, "s", SubDirName)
-        ;
+        else if
             % Launcher scripts go in the `bin' subdirectory.
             Ext = ""
-        ->
+        then
             SubDirName = "bin"
-        ;
+        else
             unexpected($module, $pred, "unknown extension `" ++ Ext ++ "'")
         ),
 
@@ -439,15 +486,15 @@ make_file_name(Globals, SubDirNames, Search, MkDir, BaseName, Ext, FileName,
         !IO) :-
     globals.lookup_bool_option(Globals, use_grade_subdirs, UseGradeSubdirs),
     globals.lookup_bool_option(Globals, use_subdirs, UseSubdirs),
-    (
+    ( if
         UseGradeSubdirs = yes,
         file_is_arch_or_grade_dependent(Globals, Ext),
 
         % If we're searching for (rather than writing) the file, just search
         % in Mercury/<ext>s. This is so that searches for files in installed
-        % libraries work.  `--intermod-directories' is set so this will work.
+        % libraries work. `--intermod-directories' is set so this will work.
 
-        \+ (
+        not (
             Search = do_search,
             ( Ext = ".opt"
             ; Ext = ".trans_opt"
@@ -456,21 +503,21 @@ make_file_name(Globals, SubDirNames, Search, MkDir, BaseName, Ext, FileName,
             ; Ext = ".request"
             )
         )
-    ->
+    then
         grade_directory_component(Globals, Grade),
-        globals.lookup_string_option(Globals, fullarch, FullArch),
+        globals.lookup_string_option(Globals, target_arch, TargetArch),
 
         % The extra "Mercury" is needed so we can use `--intermod-directory
-        % Mercury/<grade>/<fullarch>' and `--c-include
-        % Mercury/<grade>/<fullarch>' to find the local `.opt' and `.mih'
+        % Mercury/<grade>/<target_arch>' and `--c-include
+        % Mercury/<grade>/<target_arch>' to find the local `.opt' and `.mih'
         % files without messing up the search for the files for installed
         % libraries.
-        DirComponents = ["Mercury", Grade, FullArch, "Mercury" | SubDirNames]
-    ;
+        DirComponents = ["Mercury", Grade, TargetArch, "Mercury" | SubDirNames]
+    else if
         UseSubdirs = yes
-    ->
+    then
         DirComponents = ["Mercury" | SubDirNames]
-    ;
+    else
         DirComponents = SubDirNames
     ),
     (
@@ -489,33 +536,38 @@ make_file_name(Globals, SubDirNames, Search, MkDir, BaseName, Ext, FileName,
         FileName = dir.relative_path_name_from_components(Components)
     ).
 
-get_class_dir_name(Globals, ClassDirName) :-
-    globals.lookup_bool_option(Globals, use_grade_subdirs, UseGradeSubdirs),
-    globals.lookup_bool_option(Globals, use_subdirs, UseSubdirs),
-    (
-        UseGradeSubdirs = yes
-    ->
-        grade_directory_component(Globals, Grade),
-        globals.lookup_string_option(Globals, fullarch, FullArch),
-        ClassDirName = "Mercury" / Grade / FullArch / "Mercury" / "classs"
-    ;
-        UseSubdirs = yes
-    ->
-        ClassDirName = "Mercury" / "classs"
-    ;
-        ClassDirName = "."
-    ).
-
 :- pred file_is_arch_or_grade_dependent(globals::in, string::in) is semidet.
 
-file_is_arch_or_grade_dependent(_, Ext) :-
-    file_is_arch_or_grade_dependent_2(Ext).
 file_is_arch_or_grade_dependent(Globals, Ext0) :-
     % for mercury_update_interface
-    ( string.remove_suffix(Ext0, ".tmp", Ext) ->
-        file_is_arch_or_grade_dependent(Globals, Ext)
+    ( if string.remove_suffix(Ext0, ".tmp", BaseExt) then
+        Ext = BaseExt
+    else
+        Ext = Ext0
+    ),
+    (
+        file_is_arch_or_grade_dependent_2(Ext)
     ;
-        file_is_arch_or_grade_dependent_3(Globals, Ext0)
+        globals.lookup_string_option(Globals, executable_file_extension, Ext)
+    ;
+        globals.lookup_string_option(Globals, library_extension, Ext)
+    ;
+        globals.lookup_string_option(Globals, shared_library_extension, Ext)
+    ;
+        some [ObjExt] (
+            (
+                globals.lookup_string_option(Globals,
+                    object_file_extension, ObjExt)
+            ;
+                globals.lookup_string_option(Globals,
+                    pic_object_file_extension, ObjExt)
+            ),
+            (
+                Ext = ObjExt
+            ;
+                Ext = "_init" ++ ObjExt
+            )
+        )
     ).
 
 :- pred file_is_arch_or_grade_dependent_2(string::in) is semidet.
@@ -523,6 +575,8 @@ file_is_arch_or_grade_dependent(Globals, Ext0) :-
     % The `.used' file isn't grade dependent itself, but it contains
     % information collected while compiling a grade-dependent `.c', `il',
     % etc file.
+file_is_arch_or_grade_dependent_2("").
+file_is_arch_or_grade_dependent_2(".bat").
 file_is_arch_or_grade_dependent_2(".used").
 file_is_arch_or_grade_dependent_2(".opt").
 file_is_arch_or_grade_dependent_2(".optdate").
@@ -548,6 +602,7 @@ file_is_arch_or_grade_dependent_2(".cs").
 file_is_arch_or_grade_dependent_2(".cs_date").
 file_is_arch_or_grade_dependent_2(".java").
 file_is_arch_or_grade_dependent_2(".java_date").
+file_is_arch_or_grade_dependent_2(".jar").
 file_is_arch_or_grade_dependent_2(".class").
 file_is_arch_or_grade_dependent_2(".erl").
 file_is_arch_or_grade_dependent_2(".erl_date").
@@ -563,31 +618,37 @@ file_is_arch_or_grade_dependent_2("_init.$O").
 file_is_arch_or_grade_dependent_2("_init.erl").
 file_is_arch_or_grade_dependent_2("_init.beam").
 
-:- pred file_is_arch_or_grade_dependent_3(globals::in, string::in) is semidet.
+%-----------------------------------------------------------------------------%
 
-file_is_arch_or_grade_dependent_3(Globals, Ext) :-
+get_class_dir_name(Globals, ClassDirName) :-
+    globals.lookup_bool_option(Globals, use_grade_subdirs, UseGradeSubdirs),
+    globals.lookup_bool_option(Globals, use_subdirs, UseSubdirs),
     (
-        globals.lookup_string_option(Globals, executable_file_extension, Ext)
+        UseGradeSubdirs = yes,
+        grade_directory_component(Globals, Grade),
+        globals.lookup_string_option(Globals, target_arch, TargetArch),
+        ClassDirName = "Mercury" / Grade / TargetArch / "Mercury" / "classs"
     ;
-        globals.lookup_string_option(Globals, library_extension, Ext)
-    ;
-        globals.lookup_string_option(Globals, shared_library_extension, Ext)
+        UseGradeSubdirs = no,
+        (
+            UseSubdirs = yes,
+            ClassDirName = "Mercury" / "classs"
+        ;
+            UseSubdirs = no,
+            ClassDirName = "."
+        )
     ).
-file_is_arch_or_grade_dependent_3(Globals, Ext) :-
-    (
-        globals.lookup_string_option(Globals,
-            object_file_extension, ObjExt)
-    ;
-        globals.lookup_string_option(Globals,
-            pic_object_file_extension, ObjExt)
-    ;
-        globals.lookup_string_option(Globals,
-            link_with_pic_object_file_extension, ObjExt)
-    ),
-    (
-        Ext = ObjExt
-    ;
-        Ext = "_init" ++ ObjExt
+
+%-----------------------------------------------------------------------------%
+
+make_include_file_path(ModuleSourceFileName, OrigFileName, Path) :-
+    ( if path_name_is_absolute(OrigFileName) then
+        Path = OrigFileName
+    else
+        % XXX This will throw an exception on Windows if OrigFileName is a path
+        % "X:foo", i.e. relative to the current directory on the X: drive.
+        % That seems a silly thing to write in a source file.
+        Path = dirname(ModuleSourceFileName) / OrigFileName
     ).
 
 %-----------------------------------------------------------------------------%

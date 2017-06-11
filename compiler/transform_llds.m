@@ -23,6 +23,7 @@
 :- module ll_backend.transform_llds.
 :- interface.
 
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module ll_backend.llds.
 
@@ -35,17 +36,20 @@
 
 :- implementation.
 
+:- import_module hlds.
 :- import_module hlds.hlds_pred.
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
 :- import_module hlds.code_model.
 :- import_module libs.options.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 
 :- import_module counter.
 :- import_module int.
 :- import_module list.
 :- import_module maybe.
-:- import_module require.
 :- import_module set.
 :- import_module string.
 
@@ -56,22 +60,22 @@ transform_llds(Globals, !CFile) :-
     Modules0 = !.CFile ^ cfile_code,
     % Split up large computed gotos.
     globals.lookup_int_option(Globals, max_jump_table_size, MaxSize),
-    ( MaxSize = 0 ->
+    ( if MaxSize = 0 then
         Modules1 = Modules0
-    ;
+    else
         transform_c_module_list(Modules0, Modules1, MaxSize)
     ),
     % Append an end label for accurate GC.
     globals.get_gc_method(Globals, GC),
-    (
+    ( if
         GC = gc_accurate,
         Modules1 = [_ | _]
-    ->
+    then
         list.det_last(Modules1, LastModule),
         LastModule = comp_gen_c_module(LastModuleName, _),
         Modules = Modules1 ++
             [gen_end_label_module(ModuleName, LastModuleName)]
-    ;
+    else
         Modules = Modules1
     ),
     !CFile ^ cfile_code := Modules.
@@ -93,9 +97,9 @@ transform_llds(Globals, !CFile) :-
     % Note that it is not sufficient to generate a label at end of the module,
     % because GCC (e.g. GCC 3.2) sometimes reorders code within a single C
     % function, so that a label declared at the end of the module might not
-    % be actually have highest address.  So we generate a new module (which
-    % corresponds to a new C function).  XXX Hopefully GCC won't mess with the
-    % order of the functions...
+    % be actually have highest address. So we generate a new module (which
+    % corresponds to a new C function). XXX Hopefully GCC won't mess with the
+    % order of the functions ...
     %
 :- func gen_end_label_module(module_name, string) = comp_gen_c_module.
 
@@ -108,8 +112,8 @@ gen_end_label_module(ModuleName, LastModule) = EndLabelModule :-
         PredName, Arity, proc_id_to_int(ProcId)),
     Instrs = [llds_instr(label(entry_label(entry_label_local, ProcLabel)),
         "label to indicate end of previous procedure")],
-    DummyProc = c_procedure(PredName, Arity, proc(PredId, ProcId), model_det,
-        Instrs, ProcLabel, counter.init(0), must_not_alter_rtti, set.init),
+    DummyProc = c_procedure(PredName, Arity, proc(PredId, ProcId), ProcLabel,
+        model_det, Instrs, counter.init(0), must_not_alter_rtti, set.init),
     EndLabelModule = comp_gen_c_module(LastModule ++ "_END", [DummyProc]).
 
 %-----------------------------------------------------------------------------%
@@ -161,15 +165,15 @@ transform_c_procedure(!Proc, MaxSize) :-
 transform_instructions([], [], !C, _, _).
 transform_instructions([Instr0 | Instrs0], Instrs, !C, ProcLabel, MaxSize) :-
     transform_instructions(Instrs0, InstrsTail, !C, ProcLabel, MaxSize),
-    (
+    ( if
         Instr0 = llds_instr(computed_goto(Rval, Targets), Comment),
         list.length(Targets, NumTargets),
         NumTargets > MaxSize
-    ->
+    then
         split_computed_goto(Rval, Targets, Comment, InstrsHead, !C,
             MaxSize, NumTargets, ProcLabel),
         list.append(InstrsHead, InstrsTail, Instrs)
-    ;
+    else
         Instrs = [Instr0 | InstrsTail]
     ).
 
@@ -185,9 +189,9 @@ transform_instructions([Instr0 | Instrs0], Instrs, !C, ProcLabel, MaxSize) :-
 
 split_computed_goto(Rval, Targets, Comment, Instrs, !C, MaxSize, NumTargets,
         ProcLabel) :-
-    ( NumTargets =< MaxSize ->
+    ( if NumTargets =< MaxSize then
         Instrs = [llds_instr(computed_goto(Rval, Targets), Comment)]
-    ;
+    else
         counter.allocate(LabelNum, !C),
         Mid = NumTargets // 2,
         list.det_split_list(Mid, Targets, StartTargets, EndTargets),

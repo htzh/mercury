@@ -30,6 +30,7 @@
 
 :- implementation.
 
+:- import_module hlds.goal_form.
 :- import_module hlds.goal_path.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
@@ -39,7 +40,6 @@
 
 :- import_module pair.
 :- import_module require.
-:- import_module string.
 :- import_module list.
 :- import_module map.
 
@@ -49,7 +49,7 @@
 %
 
 execution_path_analysis(ModuleInfo, ExecPathTable) :-
-    module_info_get_valid_predids(PredIds, ModuleInfo, _),
+    module_info_get_valid_pred_ids(ModuleInfo, PredIds),
     map.init(ExecPathTable0),
     list.foldl(execution_path_analysis_pred(ModuleInfo), PredIds,
         ExecPathTable0, ExecPathTable).
@@ -229,6 +229,7 @@ execution_paths_covered_cases(ProcInfo, Switch, [Case | Cases], !ExecPaths) :-
         )
     ;
         ( MainConsId = int_const(_Int)
+        ; MainConsId = uint_const(_UInt)
         ; MainConsId = float_const(_Float)
         ; MainConsId = char_const(_Char)
         ; MainConsId = string_const(_String)
@@ -248,7 +249,7 @@ execution_paths_covered_cases(ProcInfo, Switch, [Case | Cases], !ExecPaths) :-
         ; MainConsId = typeclass_info_const(_)
         ; MainConsId = ground_term_const(_, _)
         ; MainConsId = tabling_info_const(_)
-        ; MainConsId = table_io_decl(_)
+        ; MainConsId = table_io_entry_desc(_)
         ; MainConsId = deep_profiling_proc_layout(_)
         ),
         unexpected($module, $pred, "unexpected cons_id")

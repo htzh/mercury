@@ -12,6 +12,8 @@ MCFLAGS-bug103 =		--optimize-constructor-last-call
 MCFLAGS-bug160 =		-w --optimize-peep-mkword
 MCFLAGS-bug240 =		-O1
 MCFLAGS-bug300 =		--no-const-struct --optimize-constructor-last-call
+MCFLAGS-bug314 =		--trace deep
+MCFLAGS-bug392 =		-O0 --deforestation
 MCFLAGS-checked_nondet_tailcall	= --checked-nondet-tailcalls
 MCFLAGS-checked_nondet_tailcall_noinline = --checked-nondet-tailcalls --no-inlining
 MCFLAGS-cc_and_non_cc_test = 	--no-inlining
@@ -20,19 +22,7 @@ MCFLAGS-constraint_order =	--constraint-propagation --enable-termination
 MCFLAGS-deforest_cc_bug =	--deforestation
 MCFLAGS-delay_partial_test =    --delay-partial-instantiations
 MCFLAGS-delay_partial_test2 =   --delay-partial-instantiations
-MCFLAGS-direct_arg_cyclic1 =	--intermodule-optimization
-MCFLAGS-direct_arg_cyclic2 =	--intermodule-optimization
-MCFLAGS-direct_arg_cyclic3 =	--intermodule-optimization
-MCFLAGS-direct_arg_intermod1 =  --intermodule-optimization
-MCFLAGS-direct_arg_intermod2 =  --intermodule-optimization
-MCFLAGS-direct_arg_intermod3 =  --intermodule-optimization
 MCFLAGS-ground_terms = 		--from-ground-term-threshold=2
-
-# --intermodule-optimization causes impl_def_literal to abort during
-# the STM transformation (bug #136).  Its use here is disabled until
-# that is fixed.
-MCFLAGS-impl_def_literal = --no-intermodule-optimization
-MCFLAGS-impl_def_literal.sub = --no-intermodule-optimization
 
 MCFLAGS-lp		=	--intermodule-optimization -O3
 MCFLAGS-elim_local_var_char =   --eliminate-local-vars
@@ -55,6 +45,8 @@ MCFLAGS-intermod_poly_mode = 	--intermodule-optimization
 MCFLAGS-intermod_poly_mode_2 = 	--intermodule-optimization
 MCFLAGS-intermod_pragma_clause = --intermodule-optimization
 MCFLAGS-intermod_pragma_clause_sub = --intermodule-optimization
+MCFLAGS-intermod_try_goal =	--intermodule-optimization
+MCFLAGS-intermod_try_goal2 =	--intermodule-optimization
 MCFLAGS-intermod_type_qual =	--intermodule-optimization
 MCFLAGS-intermod_type_qual2 =	--intermodule-optimization
 MCFLAGS-intermod_multimode =	--intermodule-optimization
@@ -66,17 +58,26 @@ MCFLAGS-lco_no_inline	    =	--optimize-constructor-last-call --no-inline-builtin
 MCFLAGS-lco_pack_args	    =	--optimize-constructor-last-call
 MCFLAGS-lco_reorder	    =	--optimize-constructor-last-call
 MCFLAGS-lookup_switch_simple_non = --no-warn-det-decls-too-lax
+MCFLAGS-mode_check_clauses  =	--no-warn-det-decls-too-lax
+MCFLAGS-mode_choice	    =	--no-warn-det-decls-too-lax
+MCFLAGS-no_fully_strict	    =	--no-warn-det-decls-too-lax
+MCFLAGS-nullary_ho_func     =	--no-warn-unresolved-polymorphism
 MCFLAGS-opt_format          =	--optimize-format-calls
 MCFLAGS-pack_args_reuse     =	--structure-reuse
 MCFLAGS-reuse_double        =	--ctgc
 MCFLAGS-reuse_ho            =	--ctgc --no-optimise-higher-order
 MCFLAGS-sharing_comb	    =	--ctgc --structure-sharing-widening 2
 MCFLAGS-simplify_multi_arm_switch = -O3
+MCFLAGS-spawn_native	    =	--no-ansi-c
 MCFLAGS-string_substring    =	--no-warn-obsolete
+MCFLAGS-tail-rec-scc        =	--inine-linear-tail-rec-sccs
+MCFLAGS-term_io_test        =	--no-warn-unresolved-polymorphism
+MCFLAGS-test_imported_no_tag = --no-warn-interface-imports
 MCFLAGS-type_info_const_inst	= --const-struct --optimise-constant-propagation
 MCFLAGS-uncond_reuse	    =	--ctgc
 MCFLAGS-uncond_reuse_bad    =	--ctgc
 MCFLAGS-uo_regression1      =	--from-ground-term-threshold=4
+MCFLAGS-write               =	--no-warn-unresolved-polymorphism
 
 # We disable intermodule-optimization here because it isn't compatible with
 # intermodule-analysis.
@@ -119,20 +120,14 @@ MCFLAGS-opt_dup_bug	=	-O2 --optimize-dups --optimize-frames
 MCFLAGS-redoip_clobber	=	--no-inlining
 MCFLAGS-rnd		=	-O6
 
-# These tests check that calls to initialisation predicates are correctly
-# added to various constructs.  They only work of automatic initialisation
-# of solver types is enabled.
-MCFLAGS-solver_construction_init_test = --solver-type-auto-init
-MCFLAGS-solver_disj_inits = --solver-type-auto-init
-MCFLAGS-solver_ite_inits  = --solver-type-auto-init
-
 MCFLAGS-switch_detect	=	--halt-at-warn
 # The trace_goal_1 and trace_goal_2 test cases differ only in that
 # we compile the latter without any --trace-flag arguments.
 MCFLAGS-trace_goal_1	=	--trace-flag=abc --trace-flag def
+MCFLAGS-trace_goal_3 =		--trace-flag=abc
 MCFLAGS-trace_goal_env_1 =	--trace-flag=abc
 MCFLAGS-trace_goal_env_2 =	--trace-flag=abc
-MCFLAGS-trace_goal_3 = --trace-flag=abc
+MCFLAGS-trace_goal_opt =	--intermod-opt
 MCFLAGS-trans_intermod_user_equality = --intermodule-optimization \
 				--transitive-intermodule-optimization
 MCFLAGS-trans_intermod_user_equality2 = --intermodule-optimization \
@@ -161,18 +156,10 @@ MLOBJS-target_mlobjs	=	target_mlobjs_c.o
 # tracking it down.
 MLFLAGS-mode_choice = --no-strip
 
-# parse.m gets compiled with --trace rep and linked with --trace because
-# it is a regression test for a bug that only showed up with tracing enabled.
-# It needs to be compiled with --no-pic-reg, since it is linked
-# statically.  I have no idea why it gets linked statically.
-# However, currently it is the only test case we have which gets linked
-# statically, and we do want to have at least one test case to test
-# static linking.
-MGNUCFLAGS-parse	=	--no-pic-reg
-MGNUCFLAGS-parse_init	=	--no-pic-reg
+# We want to have at least one test case to test static linking; this is it.
 MLFLAGS-parse		=	--trace --static
 
-CFLAGS-no_refs_to_deleted_labels = -DMR_LOWLEVEL_DEBUG
+CFLAGS-no_refs_to_deleted_labels = -DMR_DEBUG_LABEL_NAMES
 
 MLFLAGS-split-c-files	=	--trace
 
@@ -193,3 +180,4 @@ MCFLAGS-constant_prop_1 = --optimize-constant-propagation \
 		--trace-optimized
 MCFLAGS-constant_prop_2 = --optimize-constant-propagation \
 		--optimize-dead-procs --trace-optimized
+MCFLAGS-constant_prop_int = --optimize-constant-propagation

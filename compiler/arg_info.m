@@ -5,22 +5,22 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % File: arg_info.m.
 % Main author: fjh.
-% 
+%
 % This module is one of the pre-passes of the code generator.
 % It initializes the arg_info field of the proc_info structure in the HLDS,
 % which records for each argument of each procedure, whether the
 % argument is input/output/unused, and which register it is supposed to
 % go into.
-% 
-% The code in this module assumes that none of the modes are undefined.  The
-% predicates for partitioning arguments into input, unused and output should
-% not be used before undefined modes have been detected.  For an example of
-% how this kind of partitioning can be done in the presence of undefined modes,
-% see superhomogeneous.partition_args_and_lambda_vars/8.
-% 
+%
+% The code in this module assumes that none of the modes are undefined.
+% The predicates for partitioning arguments into input, unused and output
+% should not be used before undefined modes have been detected. For an example
+% of how this kind of partitioning can be done in the presence of undefined
+% modes, see superhomogeneous.partition_args_and_lambda_vars/8.
+%
 %-----------------------------------------------------------------------------%
 
 :- module hlds.arg_info.
@@ -31,6 +31,8 @@
 :- import_module hlds.hlds_llds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module hlds.vartypes.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module assoc_list.
@@ -39,8 +41,8 @@
 
 %-----------------------------------------------------------------------------%
 
-    % Annotate every procedure in the module with information about its
-    % argument passing interface.
+    % Annotate every procedure in the module with information
+    % about its argument passing interface.
     %
 :- pred generate_arg_info(module_info::in, module_info::out) is det.
 
@@ -51,9 +53,9 @@
     module_info::in, proc_info::in, proc_info::out) is det.
 
     % Given the list of types and modes of the arguments of a procedure
-    % and its code model, return the standard argument passing interface,
-    % i.e. pass float arguments via float registers if present, and all
-    % other arguments via regular registers.
+    % and its code model, return the standard argument passing interface
+    % for procedure. This will pass float arguments via float registers
+    % if present, while passing all other arguments via regular registers.
     %
 :- pred make_standard_arg_infos(list(mer_type)::in, list(mer_mode)::in,
     code_model::in, module_info::in, list(arg_info)::out) is det.
@@ -136,8 +138,9 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
-:- import_module hlds.hlds_pred.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
 :- import_module parse_tree.builtin_lib_types.
@@ -177,7 +180,7 @@ generate_proc_list_arg_info(_PredId, [], !ModuleInfo).
 generate_proc_list_arg_info(PredId, [ProcId | ProcIds], !ModuleInfo) :-
     module_info_get_preds(!.ModuleInfo, PredTable0),
     map.lookup(PredTable0, PredId, PredInfo0),
-    pred_info_get_procedures(PredInfo0, ProcTable0),
+    pred_info_get_proc_table(PredInfo0, ProcTable0),
     pred_info_get_markers(PredInfo0, Markers),
     pred_info_get_arg_types(PredInfo0, ArgTypes),
     map.lookup(ProcTable0, ProcId, ProcInfo0),
@@ -186,7 +189,7 @@ generate_proc_list_arg_info(PredId, [ProcId | ProcIds], !ModuleInfo) :-
         ProcInfo0, ProcInfo),
 
     map.det_update(ProcId, ProcInfo, ProcTable0, ProcTable),
-    pred_info_set_procedures(ProcTable, PredInfo0, PredInfo),
+    pred_info_set_proc_table(ProcTable, PredInfo0, PredInfo),
     map.det_update(PredId, PredInfo, PredTable0, PredTable),
     module_info_set_preds(PredTable, !ModuleInfo),
     generate_proc_list_arg_info(PredId, ProcIds, !ModuleInfo).
@@ -195,15 +198,15 @@ generate_proc_arg_info(Markers, ArgTypes, ModuleInfo, !ProcInfo) :-
     module_info_get_globals(ModuleInfo, Globals),
     globals.lookup_bool_option(Globals, use_float_registers, UseFloatRegs),
     proc_info_get_headvars(!.ProcInfo, HeadVars),
-    (
+    ( if
         UseFloatRegs = yes,
         % XXX we don't yet use float registers for class method calls
         not check_marker(Markers, marker_class_instance_method)
-    ->
+    then
         proc_info_get_reg_r_headvars(!.ProcInfo, RegR_HeadVars),
         list.map_corresponding(reg_type_for_headvar(RegR_HeadVars),
             HeadVars, ArgTypes, ArgRegTypes)
-    ;
+    else
         list.duplicate(list.length(HeadVars), reg_r, ArgRegTypes)
     ),
     proc_info_get_argmodes(!.ProcInfo, ArgModes),
@@ -216,22 +219,23 @@ generate_proc_arg_info(Markers, ArgTypes, ModuleInfo, !ProcInfo) :-
     reg_type::out) is det.
 
 reg_type_for_headvar(RegR_HeadVars, HeadVar, Type, RegType) :-
-    ( set_of_var.contains(RegR_HeadVars, HeadVar) ->
+    ( if set_of_var.contains(RegR_HeadVars, HeadVar) then
         RegType = reg_r
-    ;
-        ( Type = float_type ->
+    else
+        ( if Type = float_type then
             RegType = reg_f
-        ;
+        else
             RegType = reg_r
         )
     ).
 
 %---------------------------------------------------------------------------%
 
+make_standard_arg_infos(ArgTypes, ArgModes, CodeModel, ModuleInfo, ArgInfo) :-
     % This is the useful part of the code ;-).
     %
     % This code is one of the places where we make assumptions about the
-    % calling convention.  This is the only place in the compiler that makes
+    % calling convention. This is the only place in the compiler that makes
     % such assumptions, but there are other places scattered around the
     % runtime and the library that also rely on it.
     %
@@ -248,7 +252,6 @@ reg_type_for_headvar(RegR_HeadVars, HeadVar, Type, RegType) :-
     % module implement this decision consistently. (No code outside this module
     % should know about the outcome of this decision.)
     %
-make_standard_arg_infos(ArgTypes, ArgModes, CodeModel, ModuleInfo, ArgInfo) :-
     module_info_get_globals(ModuleInfo, Globals),
     globals.lookup_bool_option(Globals, use_float_registers, FloatRegs),
     (
@@ -266,9 +269,9 @@ make_standard_arg_infos(ArgTypes, ArgModes, CodeModel, ModuleInfo, ArgInfo) :-
     is det.
 
 standard_reg_type_for_type(FloatRegType, Type, RegType) :-
-    ( Type = float_type ->
+    ( if Type = float_type then
         RegType = FloatRegType
-    ;
+    else
         RegType = reg_r
     ).
 
@@ -304,17 +307,19 @@ make_arg_infos([], [], [], _, _, _, _, _, []).
 make_arg_infos([Mode | Modes], [Type | Types], [RegType | RegTypes],
         !.InRegR, !.InRegF, !.OutRegR, !.OutRegF, ModuleInfo,
         [ArgInfo | ArgInfos]) :-
-    mode_to_arg_mode(ModuleInfo, Mode, Type, ArgMode),
-    (
-        ArgMode = top_in,
-        get_arg_loc(RegType, ArgLoc, !InRegR, !InRegF)
-    ;
-        ( ArgMode = top_out
-        ; ArgMode = top_unused
+    require_det (
+        mode_to_top_functor_mode(ModuleInfo, Mode, Type, TopFunctorMode),
+        (
+            TopFunctorMode = top_in,
+            get_arg_loc(RegType, ArgLoc, !InRegR, !InRegF)
+        ;
+            ( TopFunctorMode = top_out
+            ; TopFunctorMode = top_unused
+            ),
+            get_arg_loc(RegType, ArgLoc, !OutRegR, !OutRegF)
         ),
-        get_arg_loc(RegType, ArgLoc, !OutRegR, !OutRegF)
+        ArgInfo = arg_info(ArgLoc, TopFunctorMode)
     ),
-    ArgInfo = arg_info(ArgLoc, ArgMode),
     make_arg_infos(Modes, Types, RegTypes, !.InRegR, !.InRegF,
         !.OutRegR, !.OutRegF, ModuleInfo, ArgInfos).
 
@@ -370,12 +375,12 @@ arg_reg_to_reg_type(ho_arg_reg_f) = reg_f.
 %-----------------------------------------------------------------------------%
 
 compute_in_and_out_vars(ModuleInfo, Vars, Modes, Types, !:InVars, !:OutVars) :-
-    (
+    ( if
         compute_in_and_out_vars_2(ModuleInfo, Vars, Modes, Types,
             [], !:InVars, [], !:OutVars)
-    ->
+    then
         true
-    ;
+    else
         unexpected($module, $pred, "length mismatch")
     ).
 
@@ -389,27 +394,29 @@ compute_in_and_out_vars_2(ModuleInfo, [Var | Vars], [Mode | Modes],
         [Type | Types], !InVars, !OutVars) :-
     compute_in_and_out_vars_2(ModuleInfo, Vars, Modes, Types,
         !InVars, !OutVars),
-    mode_to_arg_mode(ModuleInfo, Mode, Type, ArgMode),
-    (
-        ArgMode = top_in,
-        !:InVars = [Var | !.InVars]
-    ;
-        ( ArgMode = top_out
-        ; ArgMode = top_unused
-        ),
-        !:OutVars = [Var | !.OutVars]
+    require_det (
+        mode_to_top_functor_mode(ModuleInfo, Mode, Type, TopFunctorMode),
+        (
+            TopFunctorMode = top_in,
+            !:InVars = [Var | !.InVars]
+        ;
+            ( TopFunctorMode = top_out
+            ; TopFunctorMode = top_unused
+            ),
+            !:OutVars = [Var | !.OutVars]
+        )
     ).
 
 %-----------------------------------------------------------------------------%
 
 compute_in_and_out_vars_sep_regs(ModuleInfo, Vars, Modes, Types, ArgRegTypes,
         !:InVarsR, !:InVarsF, !:OutVarsR, !:OutVarsF) :-
-    (
+    ( if
         compute_in_and_out_vars_sep_regs_2(ModuleInfo, Vars, Modes, Types,
             ArgRegTypes, !:InVarsR, !:InVarsF, !:OutVarsR, !:OutVarsF)
-    ->
+    then
         true
-    ;
+    else
         unexpected($module, $pred, "length mismatch")
     ).
 
@@ -425,26 +432,28 @@ compute_in_and_out_vars_sep_regs_2(ModuleInfo,
         !:InVarsR, !:InVarsF, !:OutVarsR, !:OutVarsF) :-
     compute_in_and_out_vars_sep_regs_2(ModuleInfo, Vars, Modes, Types,
         RegTypes, !:InVarsR, !:InVarsF, !:OutVarsR, !:OutVarsF),
-    mode_to_arg_mode(ModuleInfo, Mode, Type, ArgMode),
-    (
-        ArgMode = top_in,
+    require_det (
+        mode_to_top_functor_mode(ModuleInfo, Mode, Type, TopFunctorMode),
         (
-            RegType = reg_r,
-            !:InVarsR = [Var | !.InVarsR]
+            TopFunctorMode = top_in,
+            (
+                RegType = reg_r,
+                !:InVarsR = [Var | !.InVarsR]
+            ;
+                RegType = reg_f,
+                !:InVarsF = [Var | !.InVarsF]
+            )
         ;
-            RegType = reg_f,
-            !:InVarsF = [Var | !.InVarsF]
-        )
-    ;
-        ( ArgMode = top_out
-        ; ArgMode = top_unused
-        ),
-        (
-            RegType = reg_r,
-            !:OutVarsR = [Var | !.OutVarsR]
-        ;
-            RegType = reg_f,
-            !:OutVarsF = [Var | !.OutVarsF]
+            ( TopFunctorMode = top_out
+            ; TopFunctorMode = top_unused
+            ),
+            (
+                RegType = reg_r,
+                !:OutVarsR = [Var | !.OutVarsR]
+            ;
+                RegType = reg_f,
+                !:OutVarsF = [Var | !.OutVarsF]
+            )
         )
     ).
 
@@ -497,13 +506,13 @@ partition_generic_call_args(ModuleInfo, Vars, Types, Modes,
 
 do_partition_proc_args(ModuleInfo, Vars, Types, Modes,
         !:Inputs, !:Outputs, !:Unuseds) :-
-    (
+    ( if
         partition_proc_args_2(Vars, Types, Modes, ModuleInfo,
             set.init, !:Inputs, set.init, !:Outputs,
             set.init, !:Unuseds)
-    ->
+    then
         true
-    ;
+    else
         unexpected($module, $pred, "list length mismatch")
     ).
 
@@ -517,16 +526,18 @@ partition_proc_args_2([], [], [], _ModuleInfo,
         !Inputs, !Outputs, !Unuseds).
 partition_proc_args_2([Var | Vars], [Type | Types], [Mode | Modes],
         ModuleInfo, !Inputs, !Outputs, !Unuseds) :-
-    mode_to_arg_mode(ModuleInfo, Mode, Type, ArgMode),
-    (
-        ArgMode = top_in,
-        set.insert(Var, !Inputs)
-    ;
-        ArgMode = top_out,
-        set.insert(Var, !Outputs)
-    ;
-        ArgMode = top_unused,
-        set.insert(Var, !Unuseds)
+    require_det (
+        mode_to_top_functor_mode(ModuleInfo, Mode, Type, TopFunctorMode),
+        (
+            TopFunctorMode = top_in,
+            set.insert(Var, !Inputs)
+        ;
+            TopFunctorMode = top_out,
+            set.insert(Var, !Outputs)
+        ;
+            TopFunctorMode = top_unused,
+            set.insert(Var, !Unuseds)
+        )
     ),
     partition_proc_args_2(Vars, Types, Modes, ModuleInfo,
         !Inputs, !Outputs, !Unuseds).

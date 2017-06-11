@@ -17,6 +17,7 @@
 :- module transform_hlds.ctgc.structure_reuse.direct.detect_garbage.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 
 %-----------------------------------------------------------------------------%
@@ -36,10 +37,13 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
+:- import_module hlds.vartypes.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_pragma.
 :- import_module parse_tree.prog_out.
-:- import_module parse_tree.set_of_var.
 :- import_module transform_hlds.ctgc.datastruct.
 :- import_module transform_hlds.ctgc.livedata.
 
@@ -140,9 +144,9 @@ determine_dead_deconstructions_2(Background, TopGoal, !SharingAs,
         GoalExpr = negation(_Goal)
     ;
         GoalExpr = scope(Reason, SubGoal),
-        ( Reason = from_ground_term(_, from_ground_term_construct) ->
+        ( if Reason = from_ground_term(_, from_ground_term_construct) then
             true
-        ;
+        else
             determine_dead_deconstructions_2(Background, SubGoal, !SharingAs,
                 !DeadCellTable)
         )
@@ -220,12 +224,12 @@ determine_dead_deconstructions_generic_call(ModuleInfo, ProcInfo,
         ),
         proc_info_get_vartypes(ProcInfo, CallerVarTypes),
         lookup_var_types(CallerVarTypes, CallArgs, ActualTypes),
-        (
+        ( if
             bottom_sharing_is_safe_approximation_by_args(ModuleInfo, Modes,
                 ActualTypes)
-        ->
+        then
             SetToTop = no
-        ;
+        else
             SetToTop = yes
         )
     ;
@@ -261,7 +265,7 @@ unification_verify_reuse(ModuleInfo, ProcInfo, GoalInfo, Unification,
         Unification = deconstruct(Var, ConsId, _, _, _, _),
         LFU = goal_info_get_lfu(GoalInfo),
         LBU = goal_info_get_lbu(GoalInfo),
-        (
+        ( if
             % Reuse is only relevant for real constructors, with nonzero
             % arities.
             ConsId = cons(_, Arity, _),
@@ -270,23 +274,23 @@ unification_verify_reuse(ModuleInfo, ProcInfo, GoalInfo, Unification,
             % No-tag values don't have a cell to reuse.
             proc_info_get_vartypes(ProcInfo, VarTypes),
             lookup_var_type(VarTypes, Var, Type),
-            \+ type_is_no_tag_type(ModuleInfo, Type),
+            not type_is_no_tag_type(ModuleInfo, Type),
 
             % Check if the top cell datastructure of Var is not live.
             % If Sharing is top, then everything should automatically
             % be considered live, hence no reuse possible.
-            \+ sharing_as_is_top(Sharing),
+            not sharing_as_is_top(Sharing),
 
             % Check the live set of data structures at this program point.
             var_not_live(ModuleInfo, ProcInfo, GoalInfo, Sharing, Var)
-        ->
+        then
             % If all the above conditions are met, then the top cell
             % data structure based on Var is dead right after this
             % deconstruction, which means it may be reused.
             NewCondition = reuse_condition_init(ModuleInfo, ProcInfo, Var,
                 LFU, LBU, Sharing),
             dead_cell_table_set(PP, NewCondition, !DeadCellTable)
-        ;
+        else
             true
         )
     ;

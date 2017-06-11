@@ -2,28 +2,21 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2002-2008, 2012 The University of Melbourne.
+% Copyright (C) 2017 The Mercury Team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
 %
-% transform_hlds: High-level transformations
-%   that are independent of the choice of back-end
-%   (the "middle" HLDS pass).
+% transform_hlds: High-level transformations that are independent
+% of the choice of back-end (the "middle" HLDS pass).
 %
 
 :- module transform_hlds.
 :- interface.
-:- import_module hlds.
-:- import_module parse_tree.
-:- import_module libs.
-:- import_module mdbcomp.
 
 %-----------------------------------------------------------------------------%
 
 :- include_module intermod.
-:- include_module trans_opt.
-
-:- include_module dependency_graph.
 
 :- include_module equiv_type_hlds.
 
@@ -58,9 +51,10 @@
     :- include_module term_constr_build.
     :- include_module term_constr_fixpoint.
         % Pass 2.
-    :- include_module term_constr_pass2.    
+    :- include_module term_constr_pass2.
         % Other bits.
-    :- include_module term_constr_util. 
+    :- include_module term_constr_main_types.
+    :- include_module term_constr_util.
     :- include_module term_constr_data.
     :- include_module term_constr_errors.
 
@@ -105,11 +99,5 @@
 :- include_module transform.
 
 %-----------------------------------------------------------------------------%
-
-:- implementation.
-
-:- import_module check_hlds.
-
 :- end_module transform_hlds.
-
 %-----------------------------------------------------------------------------%

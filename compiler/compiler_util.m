@@ -5,7 +5,7 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % File: compiler_util.
 % Main author: zs.
 %
@@ -17,8 +17,39 @@
 :- interface.
 
 :- import_module libs.globals.
+:- import_module parse_tree.
+:- import_module parse_tree.error_util.
 
 :- import_module io.
+:- import_module list.
+
+%-----------------------------------------------------------------------------%
+
+    % This type is useful when defining options and behaviours that may
+    % raise either an error or a warning.  See
+    % pragma_require_tail_recursion.
+    %
+:- type warning_or_error
+    --->    we_warning
+    ;       we_error.
+
+    % warning_or_error_string(we_warning, "warn").
+    % warning_or_error_string(we_error, "error").
+    %
+:- pred warning_or_error_string(warning_or_error, string).
+:- mode warning_or_error_string(in, out) is det.
+:- mode warning_or_error_string(out, in) is semidet.
+
+:- pred warning_or_error_severity(warning_or_error::in, error_severity::out)
+    is det.
+
+%-----------------------------------------------------------------------------%
+
+:- pred add_error(error_phase::in, list(format_component)::in,
+    list(error_spec)::in, list(error_spec)::out) is det.
+
+:- pred add_warning(error_phase::in, list(format_component)::in,
+    list(error_spec)::in, list(error_spec)::out) is det.
 
 %-----------------------------------------------------------------------------%
 
@@ -46,6 +77,27 @@
 :- import_module libs.options.
 
 :- import_module bool.
+:- import_module maybe.
+
+%-----------------------------------------------------------------------------%
+
+warning_or_error_string(we_warning, "warn").
+warning_or_error_string(we_error, "error").
+
+warning_or_error_severity(we_warning, severity_warning).
+warning_or_error_severity(we_error, severity_error).
+
+%-----------------------------------------------------------------------------%
+
+add_error(Phase, Pieces, !Specs) :-
+    Msg = error_msg(no, do_not_treat_as_first, 0, [always(Pieces)]),
+    Spec = error_spec(severity_error, Phase, [Msg]),
+    !:Specs = [Spec | !.Specs].
+
+add_warning(Phase, Pieces, !Specs) :-
+    Msg = error_msg(no, do_not_treat_as_first, 0, [always(Pieces)]),
+    Spec = error_spec(severity_warning, Phase, [Msg]),
+    !:Specs = [Spec | !.Specs].
 
 %-----------------------------------------------------------------------------%
 
@@ -67,5 +119,5 @@ report_warning_to_stream(Globals, Stream, Message, !IO) :-
     io.write_string(Stream, Message, !IO).
 
 %-----------------------------------------------------------------------------%
-:- end_module compiler_util.
+:- end_module libs.compiler_util.
 %-----------------------------------------------------------------------------%

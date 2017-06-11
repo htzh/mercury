@@ -14,8 +14,10 @@
 
 % Option handling.
 :- include_module globals.
-:- include_module handle_options.
 :- include_module options.
+:- include_module handle_options.
+:- include_module op_mode.
+:- include_module compute_grade.
 :- include_module trace_params.
 
 % Error handling.
@@ -23,11 +25,14 @@
 
 % Generic algorithms and data structures that are not quite useful enough
 % or otherwise aren't in the standard library.
-:- include_module atsort.
+% :- include_module atsort.       % currently unused
+:- include_module dependency_graph.
 :- include_module file_util.
 :- include_module graph_colour.
+:- include_module int_emu.
 :- include_module md4.
 :- include_module pickle.
+:- include_module uint_emu.
 
 % OS interfaces not provided by the standard library.
 :- include_module process_util.

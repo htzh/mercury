@@ -15,7 +15,7 @@
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
-:- module tcp.
+:- module net.tcp.
 :- interface.
 
 :- import_module io.
@@ -54,7 +54,7 @@
     is det.
 
 :- func socket_fd(tcp) = int.
-    
+
     % Sending data to a broken pipe will cause the SIGPIPE signal to be
     % sent to the process.  If SIGPIPE is ignored or blocked then send()
     % fails with EPIPE.  This predicate causes SIGPIPE signals to be
@@ -158,7 +158,7 @@ tcp.shutdown(tcp(_, Handle), !IO) :-
 /*  setsockopt(sock->socket, SOL_SOCKET, SO_LINGER,
             &sockets_linger, sizeof(sockets_linger));*/
 
-    errno=0;      
+    errno=0;
     if (close(((int)sock->socket)) == SOCKET_ERROR) {
         ML_throw_tcp_exception((MR_String) ""tcp.shutdown failed (close)"");
     }
@@ -171,27 +171,28 @@ tcp.shutdown(tcp(_, Handle), !IO) :-
 
 :- pragma foreign_decl("C", "
 #ifdef MR_WIN32
-  #include <windows.h>
-  #include <winsock.h>
-  #include <sys/types.h>
+    #include ""mercury_windows.h""
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #include <sys/types.h>
 
-  #define  ML_error()       WSAGetLastError()
+    #define  ML_error()       WSAGetLastError()
 
 #else /* !MR_WIN32 */
 
-  #include <errno.h>
-  #include <unistd.h>
-  #include <netdb.h>
+    #include <errno.h>
+    #include <unistd.h>
+    #include <netdb.h>
 
-  #include <netinet/in.h>
+    #include <netinet/in.h>
 
-  #include <sys/types.h>
-  #include <sys/socket.h>
+    #include <sys/types.h>
+    #include <sys/socket.h>
 
-  #define  ML_error()       errno
+    #define  ML_error()       errno
 
-  #define  INVALID_SOCKET   -1
-  #define  SOCKET_ERROR     -1
+    #define  INVALID_SOCKET   -1
+    #define  SOCKET_ERROR     -1
 #endif /* !MR_WIN32 */
 
 #define ADDRLEN 16
@@ -223,10 +224,10 @@ void ML_tcp_init(void)
 
     WORD    wVersionRequested;
     WSADATA wsaData;
-    int     err; 
+    int     err;
 
     if (!initialiased) {
-        wVersionRequested = MAKEWORD( 2, 2 ); 
+        wVersionRequested = MAKEWORD( 2, 2 );
         err = WSAStartup(wVersionRequested, &wsaData);
 
         if ( err != 0 ) {
@@ -249,7 +250,7 @@ void ML_tcp_init(void)
 
 :- pragma foreign_proc("C",
     handle_connect(Host::in, Port::in, TCP::out, Errno::out,
-        _IO0::di, _IO::uo), 
+        _IO0::di, _IO::uo),
     [will_not_call_mercury, thread_safe, promise_pure, tabled_for_io],
 "
     ML_tcp              *sock;
@@ -274,7 +275,7 @@ void ML_tcp_init(void)
         } else {
             addr = MR_GC_NEW(struct sockaddr_in);
             MR_memset(addr, 0, sizeof(struct sockaddr_in));
-            MR_memcpy(&(addr->sin_addr), host->h_addr, host->h_length);
+            MR_memcpy(&(addr->sin_addr), host->h_addr_list[0], host->h_length);
             addr->sin_family = host->h_addrtype;
             addr->sin_port = htons(Port);
             /*
@@ -334,7 +335,7 @@ socket_fd(Tcp) = socket_fd_c(Tcp ^ handle).
         } else {
             addr = MR_GC_NEW(struct sockaddr_in);
             MR_memset(addr, 0, sizeof(struct sockaddr_in));
-            MR_memcpy(&(addr->sin_addr), host->h_addr, host->h_length);
+            MR_memcpy(&(addr->sin_addr), host->h_addr_list[0], host->h_length);
             addr->sin_family = host->h_addrtype;
             addr->sin_port = htons(Port);
 
@@ -357,7 +358,7 @@ socket_fd(Tcp) = socket_fd_c(Tcp ^ handle).
 
 :- pragma foreign_proc("C",
     handle_accept(Socket::in, Addr::in, TCP::out, Errno::out,
-        _IO0::di, _IO::uo), 
+        _IO0::di, _IO::uo),
     [will_not_call_mercury, thread_safe, promise_pure, tabled_for_io],
 "
     ML_tcp              *sock;
@@ -370,7 +371,7 @@ socket_fd(Tcp) = socket_fd_c(Tcp ^ handle).
     #if defined(MR_WIN32)
         int size = sizeof(struct sockaddr_in);
     #else
-        socklen_t size = sizeof(struct sockaddr_in); 
+        socklen_t size = sizeof(struct sockaddr_in);
     #endif
 
     sock = MR_GC_NEW(ML_tcp);
@@ -624,8 +625,11 @@ socket_fd(Tcp) = socket_fd_c(Tcp ^ handle).
     tcp.get_error(Errno::in, Msg::out),
     [will_not_call_mercury, thread_safe, promise_pure],
 "
+    char errbuf[MR_STRERROR_BUF_SIZE];
+
     MR_save_transient_hp();
-    MR_make_aligned_string_copy(Msg, strerror(Errno));
+    MR_make_aligned_string_copy(Msg,
+        MR_strerror(Errno, errbuf, sizeof(errbuf)));
     MR_restore_transient_hp();
 ").
 
@@ -646,7 +650,7 @@ socket_fd(Tcp) = socket_fd_c(Tcp ^ handle).
            sockets__timeout = &sockets__timeout_struct;
            sockets__timeout->tv_sec = ((int)Wait * 60);
            sockets__timeout->tv_usec = 0;
-        } else { 
+        } else {
            sockets__timeout = NULL;
         }
 
@@ -656,11 +660,11 @@ socket_fd(Tcp) = socket_fd_c(Tcp ^ handle).
         FD_SET(sock->socket,&readfds);
         if ( sockets__timeout != NULL ) {
             /* Do a select to see if something is available......... */
-            selres = select(0, &readfds, &writefds, &exceptfds, 
+            selres = select(0, &readfds, &writefds, &exceptfds,
                 sockets__timeout);
             if ( selres == 0 ) {
                 Int = -1;
-            } else { 
+            } else {
                 if ( selres == SOCKET_ERROR ) {
                     Int = -2;
                 } else {
@@ -679,9 +683,12 @@ socket_fd(Tcp) = socket_fd_c(Tcp ^ handle).
 
 :- pragma foreign_proc("C",
     error_message(Errno::in) = (Err::out),
-    [promise_pure, will_not_call_mercury],
+    [promise_pure, will_not_call_mercury, thread_safe],
 "
-    MR_make_aligned_string_copy(Err, strerror(Errno));
+    char errbuf[MR_STRERROR_BUF_SIZE];
+
+    MR_make_aligned_string_copy(Err,
+        MR_strerror(Errno, errbuf, sizeof(errbuf)));
 ").
 
 :- pred throw_tcp_exception(string::in) is erroneous.

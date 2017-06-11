@@ -5,12 +5,12 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
-% File: labelopt.m. 
+%
+% File: labelopt.m.
 % Author: zs.
-% 
+%
 % Module to eliminate useless labels and dead code.
-% 
+%
 %-----------------------------------------------------------------------------%
 
 :- module ll_backend.labelopt.
@@ -25,14 +25,14 @@
 %-----------------------------------------------------------------------------%
 
     % Build up a set showing which labels are branched to, then traverse the
-    % instruction list removing unnecessary labels.  If the instruction before
+    % instruction list removing unnecessary labels. If the instruction before
     % the label branches away, we also remove the instruction block following
     % the label.
     %
 :- pred labelopt_main(bool::in, set_tree234(label)::in,
     list(instruction)::in, list(instruction)::out, bool::out) is det.
 
-    % Build up a set showing which labels are referred to.  The input set is
+    % Build up a set showing which labels are referred to. The input set is
     % the list of labels referred to from outside the given list of
     % instructions.
     %
@@ -53,12 +53,12 @@
 labelopt_main(Final, LayoutLabelSet, Instrs0, Instrs, Mod) :-
     build_useset(Instrs0, LayoutLabelSet, Useset),
     opt_labels_in_instr_list(Instrs0, Instrs1, Useset, Mod),
-    (
+    ( if
         Final = yes,
         Mod = yes
-    ->
+    then
         labelopt_main(Final, LayoutLabelSet, Instrs1, Instrs, _)
-    ;
+    else
         Instrs = Instrs1
     ).
 
@@ -73,10 +73,10 @@ build_useset([Instr | Instructions], !Useset) :-
 
 %-----------------------------------------------------------------------------%
 
-    % Go through the given instruction sequence. When we find a label, we
-    % check whether the label can be branched to either from within the
-    % procedure or from the outside. If yes, we leave it alone.  If not, we
-    % delete it. We delete the following code as well if the label was
+    % Go through the given instruction sequence. When we find a label,
+    % we check whether the label can be branched to either from within
+    % the procedure or from the outside. If yes, we leave it alone. If not,
+    % we delete it. We delete the following code as well if the label was
     % preceded by code that cannot fall through.
     %
     % We build up the generated instruction list in reverse order in
@@ -101,23 +101,30 @@ opt_labels_in_instr_list_2([], !RevInstrs, !Mod, _Fallthrough, _Useset).
 opt_labels_in_instr_list_2([Instr0 | Instrs0], !RevInstrs, !Mod,
         !.Fallthrough, Useset) :-
     Instr0 = llds_instr(Uinstr0, _Comment),
-    ( Uinstr0 = label(Label) ->
-        (
+    ( if Uinstr0 = label(Label) then
+        ( if
             (
                 Label = entry_label(EntryType, _),
-                ( EntryType = entry_label_exported
-                ; EntryType = entry_label_local
-                )
+                (
+                    ( EntryType = entry_label_exported
+                    ; EntryType = entry_label_local
+                    ),
+                    NeedLabel = yes
+                ;
+                    EntryType = entry_label_c_local,
+                    NeedLabel = no
+                ),
+                NeedLabel = yes
             ;
                 set_tree234.member(Label, Useset)
             )
-        ->
+        then
             !:RevInstrs = [Instr0 | !.RevInstrs],
             !:Fallthrough = yes
-        ;
+        else
             eliminate_instr(Instr0, yes(!.Fallthrough), !RevInstrs, !Mod)
         )
-    ;
+    else
         (
             !.Fallthrough = yes,
             !:RevInstrs = [Instr0 | !.RevInstrs]
@@ -153,9 +160,9 @@ eliminate_instr(llds_instr(Uinstr0, Comment0), Label, !RevInstrs, !Mod) :-
         !:Mod = yes
     ;
         Total = no,
-        ( Uinstr0 = comment(_) ->
+        ( if Uinstr0 = comment(_) then
             Uinstr = Uinstr0
-        ;
+        else
             (
                 Label = yes(Follow),
                 (

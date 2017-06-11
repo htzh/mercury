@@ -1,31 +1,39 @@
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
+
 :- module mode_merge_insts.
 
-:- type triple ---> triple(int, int, int).
+:- interface.
 
-:- inst triple1	= bound(triple(ground, free, free)).
-:- inst triple2	= bound(triple(free, ground, free)).
-:- inst triple12 = bound(triple(ground, ground, free)).
+:- type triple
+    --->    triple(int, int, int).
 
-:- pred p1(triple :: free -> triple1) is det.
-:- pred p2(triple :: free -> triple2) is det.
-:- pred q(triple :: triple12 -> triple12) is det.
+:- inst triple1 == bound(triple(ground, free, free)).
+:- inst triple2 == bound(triple(free, ground, free)).
+:- inst triple12 == bound(triple(ground, ground, free)).
 
-:- external(p1/1).
-:- external(p2/1).
-:- external(q/1).
+:- pred p1(triple :: free >> triple1) is det.
+:- pred p2(triple :: free >> triple2) is det.
+:- pred q(triple :: triple12 >> triple12) is det.
+
+:- implementation.
+
+:- pragma external_pred(p1/1).
+:- pragma external_pred(p2/1).
+:- pragma external_pred(q/1).
 
 :- pred p is det.
 
 p :-
-	p1(X),
-	p2(X),
-	q(X).
+    p1(X),
+    p2(X),
+    q(X).
 
 :- pred q is det.
 
 q :-
-	p1(X),
-	p2(Y),
-	X = Y,
-	q(X).
-
+    p1(X),
+    p2(Y),
+    X = Y,
+    q(X).

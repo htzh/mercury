@@ -9,9 +9,7 @@
 #
 # You also need autoconf (version 2.58 or later) (and hence GNU m4) installed.
 #
-# Step 0.  aclocal -I m4
-#
-# Step 1.  autoconf
+# Step 1.  ./prepare.sh
 #
 # Step 2.  ./configure
 #
@@ -42,10 +40,16 @@
 #	   If you don't want to do a parallel make, comment out the
 #	   `parallel=-j3' line below.
 
+if pwd | grep ' '
+then
+    echo "The name of the current directory contains spaces."
+    echo "Mercury cannot be installed from such directories."
+    exit 1
+fi
+
 parallel=-j3
 
-aclocal -I m4 &&
-autoconf &&
+./prepare.sh &&
 ./configure &&
 touch Mmake.params &&
 touch Mercury.options &&

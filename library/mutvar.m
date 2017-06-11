@@ -1,24 +1,24 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1994-2007, 2010 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: mutvar.m.
-% 
+%
 % This module is used in the implementation of all-solutions predicates
 % (solutions.m) and stores (store.m).  This module is a private part of the
 % Mercury implementation; user modules should never explicitly import this
 % module.  The interface for this module does not get included in the Mercury
 % library reference manual.
-% 
+%
 % XXX When we move to use submodules in the standard library, we should
 % make this module a private submodule.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mutvar.
 :- interface.
@@ -40,7 +40,7 @@
 
     % Get the value currently referred to by a reference.
     %
-:- impure pred get_mutvar(mutvar(T), T) is det.
+:- impure pred get_mutvar(mutvar(T), T).
 :-        mode get_mutvar(in, uo) is det.   % XXX this is a work-around
 /*
 XXX `ui' modes don't work yet
@@ -49,8 +49,8 @@ XXX `ui' modes don't work yet
 */
 
     % Destructively modify a reference to refer to a new object.
-    % 
-:- impure pred set_mutvar(mutvar(T), T) is det.
+    %
+:- impure pred set_mutvar(mutvar(T), T).
 :-        mode set_mutvar(in, in) is det.
 /*
 XXX `ui' modes don't work yet
@@ -59,15 +59,15 @@ XXX `ui' modes don't work yet
 
     % Destructively clear a reference to avoid retaining the value.
     %
-:- impure pred clear_mutvar(mutvar(T)) is det.
+:- impure pred clear_mutvar(mutvar(T)).
 :-        mode clear_mutvar(in) is det.
 /*
 XXX `ui' modes don't work yet
 :-        pred clear_mutvar(ui) is det.
 */
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -77,14 +77,14 @@ XXX `ui' modes don't work yet
 :- pragma inline(set_mutvar/2).
 :- pragma inline(clear_mutvar/1).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 new_mutvar(X, Ref) :-
     impure new_mutvar0(Ref0),
     impure set_mutvar(Ref0, X),
     Ref = unsafe_promise_unique(Ref0).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % C implementation
 %
@@ -124,7 +124,7 @@ new_mutvar(X, Ref) :-
     *(MR_Word *) Ref = 0;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % C# implementation
 %
@@ -159,7 +159,7 @@ new_mutvar(X, Ref) :-
     Ref[0] = null;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Java implementation
 %
@@ -208,7 +208,7 @@ new_mutvar(X, Ref) :-
     Ref.object = null;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Erlang implementation
 % XXX ets are not garbage collected
@@ -245,6 +245,6 @@ new_mutvar(X, Ref) :-
     ets:delete(Ref, value)
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module mutvar.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

@@ -151,8 +151,8 @@
     ;       param_lines.
 
 :- type path
-    --->    root_rel(list(dir))
-    ;       dot_rel(list(dir)).
+    --->    root_rel(list(up_down_dir))
+    ;       dot_rel(list(up_down_dir)).
 
 :- type format_option
     --->    flat
@@ -213,9 +213,9 @@
 read_command(Prompt, Command, !IO) :-
     util.trace_get_command(Prompt, Line, !IO),
     string.words_separator(char.is_whitespace, Line) = Words,
-    ( parse(Words, CommandPrime) ->
+    ( if parse(Words, CommandPrime) then
         Command = CommandPrime
-    ;
+    else
         Command = cmd_unknown
     ).
 
@@ -224,9 +224,9 @@ read_command_external(Command, !IO) :-
     (
         Result = ok(external_request(StringToParse)),
         string.words_separator(char.is_whitespace, StringToParse) = Words,
-        ( parse(Words, CommandPrime) ->
+        ( if parse(Words, CommandPrime) then
             Command = CommandPrime
-        ;
+        else
             Command = cmd_unknown
         )
     ;
@@ -255,30 +255,30 @@ lexer_word(Word, Tokens) :-
 
 lexer_word_chars([], []).
 lexer_word_chars([C | Cs], Toks) :-
-    ( C = ('.') ->
+    ( if C = ('.') then
         lexer_dots(Cs, Toks)
-    ; C = ('/') ->
+    else if C = ('/') then
         Toks = [token_slash | Toks2],
         lexer_word_chars(Cs, Toks2)
-    ; C = ('?') ->
+    else if C = ('?') then
         Toks = [token_question | Toks2],
         lexer_word_chars(Cs, Toks2)
-    ; C = ('^') ->
+    else if C = ('^') then
         Toks = [token_up | Toks2],
         lexer_word_chars(Cs, Toks2)
-    ; C = ('<') ->
+    else if C = ('<') then
         Toks = [token_lessthan | Toks2],
         lexer_word_chars(Cs, Toks2)
-    ; C = ('-'), Cs = [H | T] ->
+    else if C = ('-'), Cs = [H | T] then
         lexer_arg([H | T], Toks)
-    ; char.is_digit(C) ->
+    else if char.is_digit(C) then
         dig_to_int(C, N),
         lexer_num(N, Cs, Toks)
-    ; char.is_alpha_or_underscore(C) ->
+    else if char.is_alpha_or_underscore(C) then
         lexer_name(C, Cs, Toks)
-    ; char.is_whitespace(C) ->
+    else if char.is_whitespace(C) then
         lexer_word_chars(Cs, Toks)
-    ;
+    else
         Toks = [token_unknown(C) | Toks2],
         lexer_word_chars(Cs, Toks2)
     ).
@@ -287,10 +287,10 @@ lexer_word_chars([C | Cs], Toks) :-
 
 lexer_dots([], []).
 lexer_dots([C | Cs], Toks) :-
-    ( C = ('.') ->
+    ( if C = ('.') then
         lexer_word_chars(Cs, Toks2),
         Toks = [token_dot_dot | Toks2]
-    ;
+    else
         lexer_word_chars([C | Cs], Toks2),
         Toks = [token_dot | Toks2]
     ).
@@ -305,9 +305,9 @@ dig_to_int(C, N) :-
 :- pred lexer_arg(list(char)::in(non_empty_list), list(token)::out) is det.
 
 lexer_arg([Head | Tail], Toks) :-
-    ( Head = ('-') ->
+    ( if Head = ('-') then
         string.from_char_list(Tail, ArgName)
-    ;
+    else
         string.from_char_list([Head | Tail], ArgName)
     ),
     Toks = [token_arg(ArgName)].
@@ -315,7 +315,7 @@ lexer_arg([Head | Tail], Toks) :-
 :- pred lexer_num(int::in, list(char)::in, list(token)::out) is det.
 
 lexer_num(N, Cs, Toks) :-
-    list.takewhile(char.is_digit, Cs, Digits, Rest),
+    list.take_while(char.is_digit, Cs, Digits, Rest),
     digits_to_int_acc(N, Digits, Num),
     Toks = [token_num(Num) | Toks2],
     lexer_word_chars(Rest, Toks2).
@@ -331,7 +331,7 @@ digits_to_int_acc(Acc, [C | Cs], Num) :-
 :- pred lexer_name(char::in, list(char)::in, list(token)::out) is det.
 
 lexer_name(C, Cs, Toks) :-
-    list.takewhile(char.is_alnum_or_underscore, Cs, Letters, Rest),
+    list.take_while(char.is_alnum_or_underscore, Cs, Letters, Rest),
     string.from_char_list([C | Letters], Name),
     lexer_word_chars(Rest, Toks2),
     Toks = [token_name(Name) | Toks2].
@@ -346,14 +346,13 @@ parse(Words, Command) :-
         Words = [CmdWord | ArgWords],
         lexer_word(CmdWord, CmdTokens),
         lexer_words(ArgWords, ArgTokens),
-        ( CmdTokens = [_] ->
-            % If the initial word is one token, then it can make
-            % sense to parse the command line as words.
+        ( if CmdTokens = [_] then
+            % If the initial word is one token, then it can make sense
+            % to parse the command line as words.
             MaybeArgWords = yes(ArgWords)
-        ;
-            % If the initial word is more than one token, then
-            % it doesn't make sense to parse the command line
-            % as words.
+        else
+            % If the initial word is more than one token, then it doesn't
+            % make sense to parse the command line as words.
             MaybeArgWords = no
         ),
         list.append(CmdTokens, ArgTokens, AllTokens),
@@ -373,14 +372,14 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
     % Please keep the code recognizing commands in the same order
     % as the definition of the command type.
 
-    % If you add more commands, please update the documention printed
+    % If you add more commands, please update the documentation printed
     % by the help predicate in browse.m.
-    (
+    ( if
         ( CmdToken = token_name("print")
         ; CmdToken = token_name("p")
         ; CmdToken = token_name("ls")
         )
-    ->
+    then
         (
             MaybeArgWords = no,
             MaybeMaybeOptionTable = no,
@@ -403,25 +402,25 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
             MaybePath = yes(Path)
         ),
         Command = cmd_print(MaybeMaybeOptionTable, MaybePath)
-    ;
+    else if
         ( CmdToken = token_name("display")
         ; CmdToken = token_name("d")
         )
-    ->
+    then
         ArgTokens = [],
         Command = cmd_display
-    ;
+    else if
         ( CmdToken = token_name("write")
         ; CmdToken = token_name("w")
         )
-    ->
+    then
         ArgTokens = [],
         Command = cmd_write
-    ;
+    else if
         ( CmdToken = token_name("memory_addr")
         ; CmdToken = token_name("addr")         % "m" and "a" are both taken.
         )
-    ->
+    then
         (
             ArgTokens = [],
             MaybePath = no
@@ -431,19 +430,19 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
             MaybePath = yes(Path)
         ),
         Command = cmd_memory_addr(MaybePath)
-    ;
+    else if
         CmdToken = token_name("cdr")
-    ->
+    then
         ArgTokens = [token_num(Repetitions) | TokenPath],
         list.duplicate(Repetitions, TokenPath, DupTokenPath),
         list.condense(DupTokenPath, RepeatedTokenPath),
         parse_path(RepeatedTokenPath, RepeatedPath),
         Command = cmd_cd_path(RepeatedPath)
-    ;
+    else if
         ( CmdToken = token_name("cd")
         ; CmdToken = token_up
         )
-    ->
+    then
         (
             ArgTokens = [_ | _],
             parse_path(ArgTokens, Path),
@@ -452,12 +451,12 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
             ArgTokens = [],
             Command = cmd_cd_no_path
         )
-    ;
+    else if
         CmdToken = token_name("pwd")
-    ->
+    then
         ArgTokens = [],
         Command = cmd_pwd
-    ;
+    else if
         (
             CmdToken = token_name("track"),
             AssertInvalid = no_assert_invalid
@@ -471,18 +470,18 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
             CmdToken = token_name("m"),
             AssertInvalid = assert_invalid
         )
-    ->
+    then
         (
             ArgTokens = [],
             HowTrack = track_fast,
             MaybePath = no
         ;
             ArgTokens = [HeadArgToken | TailArgTokens],
-            (
+            ( if
                 ( HeadArgToken = token_arg("accurate")
                 ; HeadArgToken = token_arg("a")
                 )
-            ->
+            then
                 HowTrack = track_accurate,
                 (
                     TailArgTokens = [],
@@ -492,16 +491,16 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
                     parse_path(TailArgTokens, Path),
                     MaybePath = yes(Path)
                 )
-            ;
+            else
                 HowTrack = track_fast,
                 parse_path(ArgTokens, Path),
                 MaybePath = yes(Path)
             )
         ),
         Command = cmd_track(HowTrack, AssertInvalid, MaybePath)
-    ;
+    else if
         CmdToken = token_name("mode")
-    ->
+    then
         (
             ArgTokens = [_ | _],
             parse_path(ArgTokens, Path),
@@ -510,9 +509,9 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
             ArgTokens = [],
             Command = cmd_mode_query_no_path
         )
-    ;
+    else if
         CmdToken = token_name("format")
-    ->
+    then
         (
             ArgTokens = [],
             FormatCmd = print_params
@@ -528,7 +527,7 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
             FormatCmd = format(MaybeOptionTable, Setting)
         ),
         Command = cmd_param(FormatCmd)
-    ;
+    else if
         (
             CmdToken = token_name("depth"),
             ParamCmd = param_depth
@@ -542,7 +541,7 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
             CmdToken = token_name("lines"),
             ParamCmd = param_lines
         )
-    ->
+    then
         (
             ArgTokens = [],
             FormatCmd = print_params
@@ -560,38 +559,38 @@ parse_cmd(CmdToken, ArgTokens, MaybeArgWords, Command) :-
             FormatCmd = format_param(MaybeOptionTable, Setting)
         ),
         Command = cmd_param(FormatCmd)
-    ;
+    else if
         CmdToken = token_lessthan
-    ->
+    then
         ArgTokens = [token_num(Depth)],
         OptionOps = option_ops_multi(short_format_param_cmd_option,
             long_format_param_cmd_option, format_param_cmd_option_defaults),
         getopt.process_options(OptionOps, [], _, MaybeOptionTable),
         FormatCmd = format_param(MaybeOptionTable, setting_depth(Depth)),
         Command = cmd_param(FormatCmd)
-    ;
+    else if
         CmdToken = token_name("num_io_actions")
-    ->
+    then
         ArgTokens = [token_num(N)],
         Command = cmd_param(num_io_actions(N))
-    ;
+    else if
         CmdToken = token_name("params")
-    ->
+    then
         Command = cmd_param(print_params)
-    ;
+    else if
         ( CmdToken = token_name("help")
         ; CmdToken = token_name("h")
         ; CmdToken = token_question
         )
-    ->
+    then
         ArgTokens = [],
         Command = cmd_help
-    ;
+    else if
         CmdToken = token_name("quit")
-    ->
+    then
         ArgTokens = [],
         Command = cmd_quit
-    ;
+    else
         fail
     ).
 
@@ -603,59 +602,60 @@ param_cmd_to_setting(param_size,  N, setting_size(N)).
 param_cmd_to_setting(param_width, N, setting_width(N)).
 param_cmd_to_setting(param_lines, N, setting_lines(N)).
 
-:- pred parse_path(list(token)::in, path::out) is semidet.
-
     % SICStus is forgiving in the syntax of paths, hence so are we.
     % XXX: Be less forgiving?
+    %
+:- pred parse_path(list(token)::in, path::out) is semidet.
+
 parse_path([Token | Tokens], Path) :-
-    ( Token = token_slash ->
+    ( if Token = token_slash then
         Path = root_rel(Dirs),
-        parse_dirs(Tokens, Dirs)
-    ;
+        parse_up_down_dirs(Tokens, Dirs)
+    else
         Path = dot_rel(Dirs),
-        parse_dirs([Token | Tokens], Dirs)
+        parse_up_down_dirs([Token | Tokens], Dirs)
     ).
 
-:- pred parse_dirs(list(token)::in, list(dir)::out) is semidet.
+:- pred parse_up_down_dirs(list(token)::in, list(up_down_dir)::out) is semidet.
 
-parse_dirs([], []).
-parse_dirs([Token | Tokens], Dirs) :-
+parse_up_down_dirs([], []).
+parse_up_down_dirs([Token | Tokens], Dirs) :-
     (
         Token = token_num(Subdir),
-        Dirs = [child_num(Subdir) | RestDirs],
-        parse_dirs(Tokens, RestDirs)
+        Dirs = [updown_child_num(Subdir) | RestDirs],
+        parse_up_down_dirs(Tokens, RestDirs)
     ;
         Token = token_name(NamedSubdir),
-        Dirs = [child_name(NamedSubdir) | RestDirs],
-        parse_dirs(Tokens, RestDirs)
+        Dirs = [updown_child_name(NamedSubdir) | RestDirs],
+        parse_up_down_dirs(Tokens, RestDirs)
     ;
         Token = token_dot_dot,
-        Dirs = [parent | RestDirs],
-        parse_dirs(Tokens, RestDirs)
+        Dirs = [updown_parent | RestDirs],
+        parse_up_down_dirs(Tokens, RestDirs)
     ;
-        % We can effectively ignore slashes (for Unix-style
-        % pathnames) and carets (for SICStus-style pathnames),
+        % We can effectively ignore slashes (for Unix-style pathnames)
+        % and carets (for SICStus-style pathnames),
         % but anything else is not allowed.
         Token = token_slash,
-        parse_dirs(Tokens, Dirs)
+        parse_up_down_dirs(Tokens, Dirs)
     ;
         Token = token_up,
-        parse_dirs(Tokens, Dirs)
+        parse_up_down_dirs(Tokens, Dirs)
     ).
 
 :- pred parse_format(list(token)::in, setting::out) is semidet.
 
 parse_format([Token], Setting) :-
     Token = token_name(TokenName),
-    ( TokenName = "flat" ->
+    ( if TokenName = "flat" then
         Setting = setting_format(flat)
-    ; TokenName = "raw_pretty" ->
+    else if TokenName = "raw_pretty" then
         Setting = setting_format(raw_pretty)
-    ; TokenName = "verbose" ->
+    else if TokenName = "verbose" then
         Setting = setting_format(verbose)
-    ; TokenName = "pretty" ->
+    else if TokenName = "pretty" then
         Setting = setting_format(pretty)
-    ;
+    else
         fail
     ).
 
@@ -663,19 +663,19 @@ parse_format([Token], Setting) :-
 
 parse_format_param([Token | Tokens], Setting) :-
     Token = token_name(TokenName),
-    ( TokenName = "depth" ->
+    ( if TokenName = "depth" then
         Tokens = [token_num(Depth)],
         Setting = setting_depth(Depth)
-    ; TokenName = "size" ->
+    else if TokenName = "size" then
         Tokens = [token_num(Size)],
         Setting = setting_size(Size)
-    ; TokenName = "width" ->
+    else if TokenName = "width" then
         Tokens = [token_num(X)],
         Setting = setting_width(X)
-    ; TokenName = "lines" ->
+    else if TokenName = "lines" then
         Tokens = [token_num(Y)],
         Setting = setting_lines(Y)
-    ;
+    else
         fail
     ).
 

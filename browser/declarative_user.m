@@ -1,21 +1,21 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1999-2007, 2009, 2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: declarative_user.m.
 % Author: Mark Brown.
 %
 % This module performs all the user interaction of the front end of the
-% declarative debugger.  It is responsible for displaying questions and bugs
+% declarative debugger. It is responsible for displaying questions and bugs
 % in a human-readable format, and for getting responses to debugger queries
 % from the user.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdb.declarative_user.
 :- interface.
@@ -27,7 +27,7 @@
 :- import_module bool.
 :- import_module io.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type user_question(T)
     --->    plain_question(decl_question(T))
@@ -65,7 +65,7 @@
     user_state::out) is det.
 
     % This predicate handles the interactive part of the declarative
-    % debugging process.  The user is presented with a question,
+    % debugging process. The user is presented with a question,
     % possibly with a default answer, and is asked to respond about the
     % truth of it in the intended interpretation.
     %
@@ -99,8 +99,8 @@
 :- pred set_user_testing_flag(bool::in, user_state::in, user_state::out)
     is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -115,6 +115,7 @@
 :- import_module mdbcomp.prim_data.
 :- import_module mdbcomp.program_representation.
 :- import_module mdbcomp.rtti_access.
+:- import_module mdbcomp.sym_name.
 
 :- import_module char.
 :- import_module deconstruct.
@@ -127,7 +128,7 @@
 :- import_module string.
 :- import_module univ.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type user_command
     --->    user_cmd_yes
@@ -143,7 +144,7 @@
             % The user has no answer.
 
     ;       user_cmd_browse_arg(maybe(int))
-            % Browse the nth argument before answering.  Or browse
+            % Browse the nth argument before answering. Or browse
             % the whole predicate/function if the maybe is no.
 
     ;       user_cmd_browse_xml_arg(maybe(int))
@@ -185,9 +186,9 @@
             % Abort this diagnosis session.
 
     ;       user_cmd_help(maybe(string))
-            % Request help before answering.  If the maybe argument
-            % is no then a general help message is displayed,
-            % otherwise help on the given command is displayed.
+            % Request help before answering. If the maybe argument is `no',
+            % then we display a general help message is displayed, otherwise
+            % we display help on the given command.
 
     ;       user_cmd_empty
             % User just pressed return.
@@ -218,7 +219,7 @@
 user_state_init(InStr, OutStr, Browser, HelpSystem,
     user_state(InStr, OutStr, Browser, yes, HelpSystem, no)).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 query_user(UserQuestion, Response, !User, !IO) :-
     Question = get_decl_question(UserQuestion),
@@ -240,9 +241,9 @@ query_user(UserQuestion, Response, !User, !IO) :-
         ),
         get_command(Prompt, Command, !User, !IO),
         handle_command(Command, UserQuestion, Response, !User, !IO),
-        ( Response \= user_response_show_info(_) ->
+        ( if Response \= user_response_show_info(_) then
             !User ^ display_question := yes
-        ;
+        else
             true
         )
     ).
@@ -309,9 +310,7 @@ handle_command(Cmd, UserQuestion, Response, !User, !IO) :-
                     HowTrack, ShouldAssertInvalid),
                 Response = user_response_answer(Question, Answer)
             ;
-                %
                 % Tracking the entire atom doesn't make sense.
-                %
                 MaybeTrack = track(_, _, []),
                 io.write_string(!.User ^ outstr,
                     "Cannot track the entire atom. " ++
@@ -544,15 +543,15 @@ browse_chosen_io_action(MaybeIoActions, ActionNum, MaybeTrack, !User, !IO) :-
 
 find_tabled_io_action(io_action_range(Cur, End), TabledActionNum,
         MaybeIoAction, !IO) :-
-    ( Cur = End ->
+    ( if Cur = End then
         MaybeIoAction = no
-    ;
+    else
         get_maybe_io_action(Cur, MaybeTabledIoAction, !IO),
         (
             MaybeTabledIoAction = tabled(IoAction),
-            ( TabledActionNum = 1 ->
+            ( if TabledActionNum = 1 then
                 MaybeIoAction = yes(IoAction)
-            ;
+            else
                 find_tabled_io_action(io_action_range(Cur + 1, End),
                     TabledActionNum - 1, MaybeIoAction, !IO)
             )
@@ -568,12 +567,12 @@ find_tabled_io_action(io_action_range(Cur, End), TabledActionNum,
 
 print_chosen_io_actions(MaybeIoActions, From, To, User0, !IO) :-
     print_chosen_io_action(MaybeIoActions, From, User0, OK, !IO),
-    (
+    ( if
         OK = yes,
         From + 1 =< To
-    ->
+    then
         print_chosen_io_actions(MaybeIoActions, From + 1, To, User0, !IO)
-    ;
+    else
         true
     ).
 
@@ -649,12 +648,12 @@ browse_xml_decl_bug(Bug, MaybeArgNum, User, !IO) :-
 browse_atom_argument(InitAtom, FinalAtom, ArgNum, MaybeTrack, !User, !IO) :-
     FinalAtom = atom(_, Args0),
     maybe_filter_headvars(chosen_head_vars_presentation, Args0, Args),
-    (
+    ( if
         list.index1(Args, ArgNum, ArgInfo),
         ArgInfo = arg_info(_, _, MaybeArg),
         MaybeArg = yes(ArgRep),
         term_rep.rep_to_univ(ArgRep, Arg)
-    ->
+    then
         browse_browser_term(univ_to_browser_term(Arg),
             !.User ^ instr, !.User ^ outstr,
             yes(get_subterm_mode_from_atoms_for_arg(ArgNum,
@@ -663,7 +662,7 @@ browse_atom_argument(InitAtom, FinalAtom, ArgNum, MaybeTrack, !User, !IO) :-
         convert_maybe_track_dirs_to_term_path_from_arg(ArgRep,
             MaybeTrackDirs, MaybeTrack),
         !User ^ browser := Browser
-    ;
+    else
         io.write_string(!.User ^ outstr, "Invalid argument number\n", !IO),
         MaybeTrack = no_track
     ).
@@ -674,15 +673,15 @@ browse_atom_argument(InitAtom, FinalAtom, ArgNum, MaybeTrack, !User, !IO) :-
 browse_xml_atom_argument(Atom, ArgNum, User, !IO) :-
     Atom = atom(_, Args0),
     maybe_filter_headvars(chosen_head_vars_presentation, Args0, Args),
-    (
+    ( if
         list.index1(Args, ArgNum, ArgInfo),
         ArgInfo = arg_info(_, _, MaybeArg),
         MaybeArg = yes(ArgRep),
         term_rep.rep_to_univ(ArgRep, Arg)
-    ->
+    then
         save_and_browse_browser_term_xml(univ_to_browser_term(Arg),
             User ^ outstr, User ^ outstr, User ^ browser, !IO)
-    ;
+    else
         io.write_string(User ^ outstr, "Invalid argument number\n", !IO)
     ).
 
@@ -722,7 +721,7 @@ browse_xml_atom(Atom, User, !IO) :-
         User ^ outstr, User ^ browser, !IO).
 
 :- func get_subterm_mode_from_atoms(trace_atom::in, trace_atom::in,
-    list(dir)::in(simplified_dirs)) = (browser_term_mode::out) is det.
+    list(down_dir)::in) = (browser_term_mode::out) is det.
 
 get_subterm_mode_from_atoms(InitAtom, FinalAtom, Dirs) = Mode :-
     convert_dirs_to_term_path_from_atom(FinalAtom, Dirs, Path),
@@ -733,7 +732,7 @@ get_subterm_mode_from_atoms(InitAtom, FinalAtom, Dirs) = Mode :-
             FinalAtom, ArgPos, TermPath)
     ;
         Path = [],
-        Mode = not_applicable
+        Mode = btm_not_applicable
     ).
 
 :- func get_subterm_mode_from_atoms_and_term_path(trace_atom, trace_atom,
@@ -741,17 +740,16 @@ get_subterm_mode_from_atoms(InitAtom, FinalAtom, Dirs) = Mode :-
 
 get_subterm_mode_from_atoms_and_term_path(InitAtom, FinalAtom, ArgPos,
         TermPath) = Mode :-
-    ( trace_atom_subterm_is_ground(InitAtom, ArgPos, TermPath) ->
-        Mode = input
-    ; trace_atom_subterm_is_ground(FinalAtom, ArgPos, TermPath) ->
-        Mode = output
-    ;
-        Mode = unbound
+    ( if trace_atom_subterm_is_ground(InitAtom, ArgPos, TermPath) then
+        Mode = btm_input
+    else if trace_atom_subterm_is_ground(FinalAtom, ArgPos, TermPath) then
+        Mode = btm_output
+    else
+        Mode = btm_unbound
     ).
 
 :- func get_subterm_mode_from_atoms_for_arg(int::in, trace_atom::in,
-    trace_atom::in, list(dir)::in(simplified_dirs)) =
-    (browser_term_mode::out) is det.
+    trace_atom::in, list(down_dir)::in) = (browser_term_mode::out) is det.
 
 get_subterm_mode_from_atoms_for_arg(ArgNum, InitAtom, FinalAtom, Dirs)
         = Mode :-
@@ -785,12 +783,12 @@ get_user_arg_values([arg_info(UserVisible, _, MaybeValue) | Args], Values) :-
 
 print_atom_arguments(Atom, From, To, User, !IO) :-
     print_atom_argument(Atom, From, User, OK, !IO),
-    (
+    ( if
         OK = yes,
         From + 1 =< To
-    ->
+    then
         print_atom_arguments(Atom, From + 1, To, User, !IO)
-    ;
+    else
         true
     ).
 
@@ -800,53 +798,41 @@ print_atom_arguments(Atom, From, To, User, !IO) :-
 print_atom_argument(Atom, ArgNum, User, OK, !IO) :-
     Atom = atom(_, Args0),
     maybe_filter_headvars(chosen_head_vars_presentation, Args0, Args),
-    (
+    ( if
         list.index1(Args, ArgNum, ArgInfo),
         ArgInfo = arg_info(_, _, MaybeArg),
         MaybeArg = yes(ArgRep),
         term_rep.rep_to_univ(ArgRep, Arg)
-    ->
+    then
         print_browser_term(univ_to_browser_term(Arg), User ^ outstr,
             decl_caller_type, User ^ browser, !IO),
         OK = yes
-    ;
+    else
         io.write_string(User ^ outstr, "Invalid argument number\n", !IO),
         OK = no
     ).
 
-:- pred convert_maybe_track_dirs_to_term_path_from_atom(
-    trace_atom::in,
-    maybe_track_subterm(list(dir))::in,
+:- pred convert_maybe_track_dirs_to_term_path_from_atom(trace_atom::in,
+    maybe_track_subterm(list(down_dir))::in,
     maybe_track_subterm(term_path)::out) is det.
 
 convert_maybe_track_dirs_to_term_path_from_atom(_, no_track, no_track).
-convert_maybe_track_dirs_to_term_path_from_atom(Atom,
-        track(HowTrack, ShouldAssertInvalid, Dirs),
-        track(HowTrack, ShouldAssertInvalid, TermPath)) :-
-    simplify_dirs(Dirs, SimplifiedDirs),
-    convert_dirs_to_term_path_from_atom(Atom, SimplifiedDirs, TermPath).
+convert_maybe_track_dirs_to_term_path_from_atom(Atom, TrackDirs, TrackPath) :-
+    TrackDirs = track(HowTrack, ShouldAssertInvalid, Dirs),
+    convert_dirs_to_term_path_from_atom(Atom, Dirs, TermPath),
+    TrackPath = track(HowTrack, ShouldAssertInvalid, TermPath).
 
-:- pred convert_maybe_track_dirs_to_term_path_from_arg(
-    term_rep::in,
-    maybe_track_subterm(list(dir))::in,
+:- pred convert_maybe_track_dirs_to_term_path_from_arg(term_rep::in,
+    maybe_track_subterm(list(down_dir))::in,
     maybe_track_subterm(term_path)::out) is det.
 
 convert_maybe_track_dirs_to_term_path_from_arg(_, no_track, no_track).
-convert_maybe_track_dirs_to_term_path_from_arg(Term,
-        track(HowTrack, ShouldAssertInvalid, Dirs),
-        track(HowTrack, ShouldAssertInvalid, TermPath)) :-
-    simplify_dirs(Dirs, SimplifiedDirs),
-    convert_dirs_to_term_path(Term, SimplifiedDirs, TermPath).
+convert_maybe_track_dirs_to_term_path_from_arg(Term, TrackDirs, TrackPath) :-
+    TrackDirs = track(HowTrack, ShouldAssertInvalid, Dirs),
+    convert_dirs_to_term_path(Term, Dirs, TermPath),
+    TrackPath = track(HowTrack, ShouldAssertInvalid, TermPath).
 
-    % Reverse the first argument and append the second to it.
-    %
-:- pred reverse_and_append(list(T)::in, list(T)::in, list(T)::out) is det.
-
-reverse_and_append([], Bs, Bs).
-reverse_and_append([A | As], Bs, Cs) :-
-    reverse_and_append(As, [A | Bs], Cs).
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred user_confirm_bug_help(user_state::in, io::di, io::uo) is det.
 
@@ -871,12 +857,12 @@ get_command(Prompt, Command, User, User, !IO) :-
         Words = string.words_separator(char.is_whitespace, String),
         (
             Words = [CmdWord | CmdArgs],
-            (
+            ( if
                 cmd_handler(CmdWord, CmdHandler),
                 CmdHandler(CmdArgs, CommandPrime)
-            ->
+            then
                 Command = CommandPrime
-            ;
+            else
                 Command = user_cmd_illegal
             )
         ;
@@ -944,9 +930,9 @@ one_word_cmd(Cmd, [], Cmd).
 
 browse_arg_cmd([], user_cmd_browse_arg(no)).
 browse_arg_cmd([Arg], BrowseCmd) :-
-    ( string.to_int(Arg, ArgNum) ->
+    ( if string.to_int(Arg, ArgNum) then
         BrowseCmd = user_cmd_browse_arg(yes(ArgNum))
-    ;
+    else
         ( Arg = "-x" ; Arg = "--xml" ),
         BrowseCmd = user_cmd_browse_xml_arg(no)
     ).
@@ -978,10 +964,10 @@ format_arg_cmd(ArgWords, UserCommand) :-
     user_command::out) is semidet.
 
 format_param_arg_cmd(Cmd, ArgWords0, Command) :-
-    ( ArgWords0 = ["io" | ArgWords1] ->
+    ( if ArgWords0 = ["io" | ArgWords1] then
         ArgWords = ArgWords1,
         HasIOArg = yes : bool
-    ;
+    else
         ArgWords = ArgWords0,
         HasIOArg = no : bool
     ),
@@ -1053,17 +1039,17 @@ help_cmd([Cmd], user_cmd_help(yes(Cmd))).
 :- pred string_to_range(string::in, int::out, int::out) is semidet.
 
 string_to_range(Arg, From, To) :-
-    ( string.to_int(Arg, Num) ->
+    ( if string.to_int(Arg, Num) then
         From = Num,
         To = Num
-    ;
+    else
         [FirstStr, SecondStr] = string.words_separator(is_dash, Arg),
         string.to_int(FirstStr, First),
         string.to_int(SecondStr, Second),
-        ( First =< Second ->
+        ( if First =< Second then
             From = First,
             To = Second
-        ;
+        else
             From = Second,
             To = First
         )
@@ -1073,7 +1059,7 @@ string_to_range(Arg, From, To) :-
 
 is_dash('-').
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 user_confirm_bug(Bug, Response, !User, !IO) :-
     (
@@ -1128,7 +1114,7 @@ user_confirm_bug(Bug, Response, !User, !IO) :-
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Returns the caller type we want to use throughout the
     % declarative debugger.
@@ -1241,10 +1227,10 @@ write_maybe_tabled_io_actions(User, MaybeIoActions, !IO) :-
         MaybeIoActions = yes(IoActions),
         count_tabled_io_actions(IoActions, NumTabled, NumUntabled, !IO),
         write_io_actions(User, NumTabled, IoActions, !IO),
-        ( NumUntabled > 0 ->
+        ( if NumUntabled > 0 then
             io.write_string(User ^ outstr, "Warning: some IO " ++
                 "actions for this atom are not tabled.\n", !IO)
-        ;
+        else
             true
         )
     ;
@@ -1265,10 +1251,10 @@ count_tabled_io_actions(io_action_range(Start, End), NumTabled,
 
 count_tabled_io_actions_2(Cur, End, PrevTabled, Tabled,
         PrevUntabled, Untabled, !IO) :-
-    ( Cur = End ->
+    ( if Cur = End then
         Untabled = PrevUntabled,
         Tabled = PrevTabled
-    ;
+    else
         get_maybe_io_action(Cur, MaybeIoAction, !IO),
         (
             MaybeIoAction = tabled(_),
@@ -1299,20 +1285,20 @@ trace_atom_arg_to_univ(TraceAtomArg, Univ) :-
     io::di, io::uo) is cc_multi.
 
 write_io_actions(User, NumTabled, IoActions, !IO) :-
-    ( NumTabled = 0 ->
+    ( if NumTabled = 0 then
         true
-    ;
-        ( NumTabled = 1 ->
+    else
+        ( if NumTabled = 1 then
             io.write_string(User ^ outstr, "1 tabled IO action:", !IO)
-        ;
+        else
             io.write_int(User ^ outstr, NumTabled, !IO),
             io.write_string(User ^ outstr, " tabled IO actions:", !IO)
         ),
         NumPrinted = get_num_printed_io_actions(User ^ browser),
-        ( NumTabled =< NumPrinted ->
+        ( if NumTabled =< NumPrinted then
             io.nl(User ^ outstr, !IO),
             print_tabled_io_actions(User, IoActions, !IO)
-        ;
+        else
             io.write_string(User ^ outstr, " too many to show", !IO),
             io.nl(User ^ outstr, !IO)
         )
@@ -1329,9 +1315,9 @@ print_tabled_io_actions(User, IoActions, !IO) :-
     io_seq_num::in, io_seq_num::in, io::di, io::uo) is cc_multi.
 
 print_tabled_io_actions_2(User, Cur, End, !IO) :-
-    ( Cur = End ->
+    ( if Cur = End then
         true
-    ;
+    else
         get_maybe_io_action(Cur, MaybeIoAction, !IO),
         print_tabled_io_action(User, MaybeIoAction, !IO),
         print_tabled_io_actions_2(User, Cur + 1, End, !IO)
@@ -1346,7 +1332,7 @@ print_tabled_io_action(User, tabled(IoAction), !IO) :-
     browse.print_browser_term(Term, User ^ outstr, print_all,
         User ^ browser, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 get_browser_state(User) = User ^ browser.
 
@@ -1359,28 +1345,28 @@ get_user_input_stream(User) = User ^ instr.
 
 set_user_testing_flag(Testing, User, User ^ testing := Testing).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred convert_dirs_to_term_path_from_atom(trace_atom::in,
-    list(dir)::in(simplified_dirs), term_path::out) is det.
+    list(down_dir)::in, term_path::out) is det.
 
 convert_dirs_to_term_path_from_atom(_, [], []).
 convert_dirs_to_term_path_from_atom(atom(_, Args), [Dir | Dirs], TermPath) :-
     (
-        Dir = child_num(Pos),
+        Dir = down_child_num(Pos),
         Arg = list.det_index1(Args, Pos),
         Arg = arg_info(_, _, MaybeValue)
     ;
-        Dir = child_name(Name),
-        ( string_is_return_value_alias(Name) ->
-            ( list.last(Args, LastArg) ->
+        Dir = down_child_name(Name),
+        ( if string_is_return_value_alias(Name) then
+            ( if list.last(Args, LastArg) then
                 LastArg = arg_info(_, _, MaybeValue),
                 Pos = list.length(Args)
-            ;
+            else
                 throw(internal_error("convert_dirs_to_term_path_from_atom",
                     "argument list empty"))
             )
-        ;
+        else
             throw(internal_error("convert_dirs_to_term_path_from_atom",
                 "argument of atom cannot be named"))
         )
@@ -1405,4 +1391,4 @@ convert_dirs_to_term_path_from_atom(atom(_, Args), [Dir | Dirs], TermPath) :-
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

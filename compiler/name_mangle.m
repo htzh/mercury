@@ -8,7 +8,7 @@
 %
 % File: name_mangle.m.
 %
-% This module defines routines for generating and/or outputing identifiers
+% This module defines routines for generating and/or outputting identifiers
 % for modules, predicates/functions, and procedures in forms that are
 % syntactically acceptable in all our target languages, meaning C, Java
 % and MSIL.
@@ -29,6 +29,7 @@
 :- import_module backend_libs.rtti.
 :- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 
 :- import_module bool.
 :- import_module io.
@@ -86,7 +87,7 @@
 :- func mercury_var_prefix = string.
 
     % All the C data structures we generate which are either fully static
-    % or static after initialization should have one of these yrefixes,
+    % or static after initialization should have one of these prefixes,
     % to ensure that Mercury global variables don't clash with C symbols.
     %
 :- func mercury_data_prefix = string.
@@ -159,7 +160,7 @@ proc_label_to_c_string(ProcLabel, AddPrefix) = ProcLabelString :-
         string.int_to_string(TypeArity, TypeArityString),
         string.int_to_string(ModeInt, ModeNumString),
 
-        % Mangle all the relevent names.
+        % Mangle all the relevant names.
         MangledModule = sym_name_mangle(Module),
         MangledTypeModule = sym_name_mangle(TypeModule),
         MangledTypeName = name_mangle(TypeName),
@@ -195,16 +196,16 @@ make_pred_or_func_name(DefiningModule, PredOrFunc, DeclaringModule,
 
     DeclaringModuleName = sym_name_mangle(DeclaringModule),
     DefiningModuleName = sym_name_mangle(DefiningModule),
-    ( dont_module_qualify_name(Name0, Arity) ->
+    ( if dont_module_qualify_name(Name0, Arity) then
         LabelName0 = Name0
-    ;
+    else
         LabelName0 = qualify_name(DeclaringModuleName, Name0)
     ),
     % If this is a specialized version of a predicate defined
     % in some other module, then it needs both module prefixes.
-    ( DefiningModule \= DeclaringModule ->
+    ( if DefiningModule \= DeclaringModule then
         LabelName1 = DefiningModuleName ++ "__" ++ LabelName0
-    ;
+    else
         LabelName1 = LabelName0
     ),
     LabelName2 = name_mangle(LabelName1),
@@ -238,7 +239,7 @@ dont_module_qualify_name(Name, Arity) :-
 
 name_doesnt_need_mangling(Name) :-
     string.is_all_alnum_or_underscore(Name),
-    \+ string.append("f_", _Suffix, Name).
+    not string.append("f_", _Suffix, Name).
 
 sym_name_doesnt_need_mangling(unqualified(Name)) :-
     name_doesnt_need_mangling(Name).
@@ -253,9 +254,9 @@ sym_name_doesnt_need_mangling(qualified(ModuleName, PlainName)) :-
 
 maybe_qualify_name(Module0, Name0) = Name :-
     string.append(Module0, "__", UnderscoresModule),
-    ( string.append(UnderscoresModule, _, Name0) ->
+    ( if string.append(UnderscoresModule, _, Name0) then
         Name = Name0
-    ;
+    else
         string.append(UnderscoresModule, Name0, Name)
     ).
 
@@ -294,5 +295,5 @@ mercury_vector_common_array_prefix = "mercury_vector_common_".
 mercury_common_type_prefix = "mercury_type_".
 
 %-----------------------------------------------------------------------------%
-:- end_module name_mangle.
+:- end_module backend_libs.name_mangle.
 %-----------------------------------------------------------------------------%

@@ -25,11 +25,8 @@
     :- include_module indirect.
     :- include_module versions.
 
-% :- include_module util.
 :- include_module domain.
 
-:- import_module hlds.
-:- import_module transform_hlds.ctgc.structure_sharing.
-:- import_module check_hlds.
-
+%-----------------------------------------------------------------------------%
 :- end_module transform_hlds.ctgc.structure_reuse.
+%-----------------------------------------------------------------------------%

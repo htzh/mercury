@@ -28,6 +28,7 @@
 :- import_module ll_backend.llds.
 :- import_module ll_backend.llds_out.
 :- import_module ll_backend.llds_out.llds_out_util.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
 :- import_module mdbcomp.program_representation.
 
@@ -45,7 +46,7 @@
     list(label_layout_short_vars)::in, list(label_layout_long_vars)::in,
     list(call_site_static_data)::in, list(coverage_point_info)::in,
     list(proc_layout_proc_static)::in,
-    list(int)::in, list(int)::in, list(int)::in, list(table_io_decl_data)::in,
+    list(int)::in, list(int)::in, list(int)::in, list(table_io_entry_data)::in,
     list(layout_slot_name)::in, list(proc_layout_exec_trace)::in,
     list(alloc_site_info)::in, io::di, io::uo) is det.
 
@@ -56,7 +57,7 @@
     list(label_layout_short_vars)::in, list(label_layout_long_vars)::in,
     list(call_site_static_data)::in, list(coverage_point_info)::in,
     list(proc_layout_proc_static)::in,
-    list(int)::in, list(int)::in, list(int)::in, list(table_io_decl_data)::in,
+    list(int)::in, list(int)::in, list(int)::in, list(table_io_entry_data)::in,
     list(layout_slot_name)::in, list(proc_layout_exec_trace)::in,
     list(string)::in, list(alloc_site_info)::in,
     decl_set::in, decl_set::out, io::di, io::uo) is det.
@@ -169,17 +170,23 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.c_util.
 :- import_module backend_libs.name_mangle.
 :- import_module backend_libs.proc_label.
 :- import_module hlds.hlds_rtti.
 :- import_module hlds.special_pred.
+:- import_module libs.
 :- import_module libs.trace_params.
 :- import_module ll_backend.llds_out.llds_out_code_addr.
 :- import_module ll_backend.llds_out.llds_out_data.
 :- import_module mdbcomp.goal_path.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.mercury_to_mercury.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_event.
+:- import_module parse_tree.prog_data_pragma.
 :- import_module parse_tree.prog_foreign.
 
 :- import_module assoc_list.
@@ -188,7 +195,6 @@
 :- import_module map.
 :- import_module pair.
 :- import_module require.
-:- import_module std_util.
 :- import_module string.
 :- import_module term.
 :- import_module varset.
@@ -199,7 +205,7 @@ output_layout_array_decls(Info, PseudoTypeInfos, HLDSVarNums,
         ShortLocns, LongLocns, UserEventVarNums, UserEvents,
         NoVarLabelLayouts, SVarLabelLayouts, LVarLabelLayouts,
         CallSiteStatics, CoveragePoints, ProcStatics,
-        ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TableIoDecls,
+        ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TableIoEntries,
         ProcEventLayouts, ExecTraces, AllocSites, !IO) :-
     MangledModuleName = Info ^ lout_mangled_module_name,
     (
@@ -344,12 +350,12 @@ output_layout_array_decls(Info, PseudoTypeInfos, HLDSVarNums,
         io.write_string("[];\n", !IO)
     ),
     (
-        TableIoDecls = []
+        TableIoEntries = []
     ;
-        TableIoDecls = [_ | _],
-        TableIoDeclArrayName = proc_table_io_decl_array,
+        TableIoEntries = [_ | _],
+        TableIoEntrieArrayName = proc_table_io_entry_array,
         output_layout_array_name_storage_type_name(MangledModuleName,
-            TableIoDeclArrayName, not_being_defined, !IO),
+            TableIoEntrieArrayName, not_being_defined, !IO),
         io.write_string("[];\n", !IO)
     ),
     (
@@ -384,73 +390,84 @@ output_layout_array_defns(Info, PseudoTypeInfos, HLDSVarNums,
         ShortLocns, LongLocns, UserEventVarNums, UserEvents,
         NoVarLabelLayouts, SVarLabelLayouts, LVarLabelLayouts,
         CallSiteStatics, CoveragePoints, ProcStatics,
-        ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TableIoDecls,
+        ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TableIoEntries,
         ProcEventLayouts, ExecTraces, TSStringTable, AllocSites,
         !DeclSet, !IO) :-
     (
         PseudoTypeInfos = []
     ;
         PseudoTypeInfos = [_ | _],
+        io.nl(!IO),
         output_pseudo_type_info_array_defn(Info, PseudoTypeInfos, !IO)
     ),
     (
         HLDSVarNums = []
     ;
         HLDSVarNums = [_ | _],
+        io.nl(!IO),
         output_hlds_var_nums_array_defn(Info, HLDSVarNums, !IO)
     ),
     (
         ShortLocns = []
     ;
         ShortLocns = [_ | _],
+        io.nl(!IO),
         output_short_locns_array_defn(Info, ShortLocns, !IO)
     ),
     (
         LongLocns = []
     ;
         LongLocns = [_ | _],
+        io.nl(!IO),
         output_long_locns_array_defn(Info, LongLocns, !IO)
     ),
     (
         UserEventVarNums = []
     ;
         UserEventVarNums = [_ | _],
+        io.nl(!IO),
         output_user_event_var_nums_array_defn(Info, UserEventVarNums, !IO)
     ),
     (
         UserEvents = []
     ;
         UserEvents = [_ | _],
+        io.nl(!IO),
         output_user_events_array_defn(Info, UserEvents, !IO)
     ),
     (
         NoVarLabelLayouts = []
     ;
         NoVarLabelLayouts = [_ | _],
+        io.nl(!IO),
         output_no_var_label_layouts_array_defn(Info, NoVarLabelLayouts, !IO)
     ),
     (
         SVarLabelLayouts = []
     ;
         SVarLabelLayouts = [_ | _],
+        io.nl(!IO),
         output_short_var_label_layouts_array_defn(Info, SVarLabelLayouts, !IO)
     ),
     (
         LVarLabelLayouts = []
     ;
         LVarLabelLayouts = [_ | _],
+        io.nl(!IO),
         output_long_var_label_layouts_array_defn(Info, LVarLabelLayouts, !IO)
     ),
     (
         CallSiteStatics = []
     ;
         CallSiteStatics = [_ | _],
+        io.nl(!IO),
         output_call_site_static_array(Info, CallSiteStatics, !DeclSet, !IO)
     ),
     (
         CoveragePoints = []
     ;
         CoveragePoints = [_ | _],
+        io.nl(!IO),
         list.length(CoveragePoints, NumCoveragePoints),
         output_proc_static_cp_static_array(Info, CoveragePoints,
             NumCoveragePoints, !IO),
@@ -460,54 +477,63 @@ output_layout_array_defns(Info, PseudoTypeInfos, HLDSVarNums,
         ProcStatics = []
     ;
         ProcStatics = [_ | _],
+        io.nl(!IO),
         output_proc_statics_array_defn(Info, ProcStatics, !IO)
     ),
     (
         ProcHeadVarNums = []
     ;
         ProcHeadVarNums = [_ | _],
+        io.nl(!IO),
         output_proc_head_var_nums_array(Info, ProcHeadVarNums, !IO)
     ),
     (
         ProcVarNames = []
     ;
         ProcVarNames = [_ | _],
+        io.nl(!IO),
         output_proc_var_names_array(Info, ProcVarNames, !IO)
     ),
     (
         ProcBodyBytecodes = []
     ;
         ProcBodyBytecodes = [_ | _],
+        io.nl(!IO),
         output_proc_body_bytecodes_array(Info, ProcBodyBytecodes, !IO)
     ),
     (
-        TableIoDecls = []
+        TableIoEntries = []
     ;
-        TableIoDecls = [_ | _],
-        output_table_io_decl_array(Info, TableIoDecls, !IO)
+        TableIoEntries = [_ | _],
+        io.nl(!IO),
+        output_table_io_entry_array(Info, TableIoEntries, !IO)
     ),
     (
         ProcEventLayouts = []
     ;
         ProcEventLayouts = [_ | _],
+        io.nl(!IO),
         output_proc_event_layout_array(Info, ProcEventLayouts, !IO)
     ),
     (
         ExecTraces = []
     ;
         ExecTraces = [_ | _],
+        io.nl(!IO),
         output_exec_traces_array(Info, ExecTraces, !IO)
     ),
     (
         TSStringTable = []
     ;
         TSStringTable = [_ | _],
+        io.nl(!IO),
         output_threadscope_string_table_array(Info, TSStringTable, !IO)
     ),
     (
         AllocSites = []
     ;
         AllocSites = [_ | _],
+        io.nl(!IO),
         output_alloc_sites_array(Info, AllocSites, !IO)
     ).
 
@@ -681,9 +707,9 @@ output_maybe_var_num_slot(MaybeVarNum, !Slot, !IO) :-
     ;
         MaybeVarNum = yes(VarNum)
     ),
-    ( !.Slot mod 10 = 0 ->
+    ( if !.Slot mod 10 = 0 then
         io.format("\n/* slot %d */ ", [i(!.Slot)], !IO)
-    ;
+    else
         io.write_string(" ", !IO)
     ),
     io.format("%d,", [i(VarNum)], !IO),
@@ -764,8 +790,7 @@ output_no_var_label_layout_slot(Info, LabelLayout, !Slot, !IO) :-
     AutoComments = Info ^ lout_auto_comments,
     (
         AutoComments = yes,
-        io.format("/* %d, %d */\n  ",
-            [i(!.Slot), i(LabelNum)], !IO)
+        io.format("/* %d, %d */\n  ", [i(!.Slot), i(LabelNum)], !IO)
     ;
         AutoComments = no
     ),
@@ -817,52 +842,52 @@ output_short_var_label_layout_slot(Info, LabelLayout, !Slot, !IO) :-
         HLDSVarNumsSlot, ShortLocnsSlot),
     io.write_int(EncodedVarCount, !IO),
     io.write_string(",", !IO),
-    (
+    ( if
         PTIsSlot >= 0,
         HLDSVarNumsSlot >= 0,
         ShortLocnsSlot >= 0
-    ->
-        (
+    then
+        ( if
             TypeParams = const(llconst_int(0))
-        ->
+        then
             io.format("MR_LLVS0(%s,%d,%d,%d)",
                 [s(ModuleName),
                 i(PTIsSlot), i(HLDSVarNumsSlot), i(ShortLocnsSlot)], !IO)
-        ;
+        else if
             TypeParams = const(llconst_data_addr(TPDataId, no)),
             TPDataId = scalar_common_data_id(type_num(TPTypeNum), TPCellNum)
-        ->
+        then
             io.format("MR_LLVSC(%s,%d,%d,%d,%d,%d)",
                 [s(ModuleName), i(TPTypeNum), i(TPCellNum),
                 i(PTIsSlot), i(HLDSVarNumsSlot), i(ShortLocnsSlot)], !IO)
-        ;
+        else
             output_rval_as_addr(Info, TypeParams, !IO),
             io.format(",MR_LLVS(%s,%d,%d,%d)",
                 [s(ModuleName),
                 i(PTIsSlot), i(HLDSVarNumsSlot), i(ShortLocnsSlot)], !IO)
         )
-    ;
+    else
         io.write_string("(const MR_TypeParamLocns *) ", !IO),
         output_rval_as_addr(Info, TypeParams, !IO),
         io.write_string(",", !IO),
-        ( PTIsSlot >= 0 ->
+        ( if PTIsSlot >= 0 then
             output_layout_slot_addr(use_layout_macro, ModuleName,
                 layout_slot(pseudo_type_info_array, PTIsSlot), !IO),
             io.write_string(",", !IO)
-        ;
+        else
             io.write_string("0,", !IO)
         ),
-        ( HLDSVarNumsSlot >= 0 ->
+        ( if HLDSVarNumsSlot >= 0 then
             output_layout_slot_addr(use_layout_macro, ModuleName,
                 layout_slot(hlds_var_nums_array, HLDSVarNumsSlot), !IO),
             io.write_string(",", !IO)
-        ;
+        else
             io.write_string("0,", !IO)
         ),
-        ( ShortLocnsSlot >= 0 ->
+        ( if ShortLocnsSlot >= 0 then
             output_layout_slot_addr(use_layout_macro, ModuleName,
                 layout_slot(short_locns_array, ShortLocnsSlot), !IO)
-        ;
+        else
             io.write_string("0", !IO)
         )
     ),
@@ -911,64 +936,62 @@ output_long_var_label_layout_slot(Info, LabelLayout, !Slot, !IO) :-
 
     LabelVarInfo = label_long_var_info(EncodedVarCount, TypeParams, PTIsSlot,
         HLDSVarNumsSlot, ShortLocnsSlot, LongLocnsSlot),
-    ( LongLocnsSlot >= 0 ->
+    ( if LongLocnsSlot >= 0 then
         true
-    ;
+    else
         unexpected($module, $pred, "no long locn")
     ),
 
     io.write_int(EncodedVarCount, !IO),
     io.write_string(",", !IO),
-    (
+    ( if
         PTIsSlot >= 0,
         ShortLocnsSlot >= 0,
         HLDSVarNumsSlot >= 0
-    ->
-        (
+    then
+        ( if
             TypeParams = const(llconst_int(0))
-        ->
+        then
             io.format("MR_LLVL0(%s,%d,%d,%d,%d)",
-                [s(ModuleName),
-                i(PTIsSlot), i(HLDSVarNumsSlot),
+                [s(ModuleName), i(PTIsSlot), i(HLDSVarNumsSlot),
                 i(ShortLocnsSlot), i(LongLocnsSlot)], !IO)
-        ;
+        else if
             TypeParams = const(llconst_data_addr(TPDataId, no)),
             TPDataId = scalar_common_data_id(type_num(TPTypeNum), TPCellNum)
-        ->
+        then
             io.format("MR_LLVLC(%s,%d,%d,%d,%d,%d,%d)",
                 [s(ModuleName), i(TPTypeNum), i(TPCellNum),
                 i(PTIsSlot), i(HLDSVarNumsSlot),
                 i(ShortLocnsSlot), i(LongLocnsSlot)], !IO)
-        ;
+        else
             output_rval_as_addr(Info, TypeParams, !IO),
             io.format(",MR_LLVL(%s,%d,%d,%d,%d)",
-                [s(ModuleName),
-                i(PTIsSlot), i(HLDSVarNumsSlot),
+                [s(ModuleName), i(PTIsSlot), i(HLDSVarNumsSlot),
                 i(ShortLocnsSlot), i(LongLocnsSlot)], !IO)
         )
-    ;
+    else
         io.write_string("(const MR_TypeParamLocns *) ", !IO),
         output_rval_as_addr(Info, TypeParams, !IO),
         io.write_string(",", !IO),
-        ( PTIsSlot >= 0 ->
+        ( if PTIsSlot >= 0 then
             output_layout_slot_addr(use_layout_macro, ModuleName,
                 layout_slot(pseudo_type_info_array, PTIsSlot), !IO),
             io.write_string(",", !IO)
-        ;
+        else
             io.write_string("0,", !IO)
         ),
-        ( HLDSVarNumsSlot >= 0 ->
+        ( if HLDSVarNumsSlot >= 0 then
             output_layout_slot_addr(use_layout_macro, ModuleName,
                 layout_slot(hlds_var_nums_array, HLDSVarNumsSlot), !IO),
             io.write_string(",", !IO)
-        ;
+        else
             io.write_string("0,", !IO)
         ),
-        ( ShortLocnsSlot >= 0 ->
+        ( if ShortLocnsSlot >= 0 then
             output_layout_slot_addr(use_layout_macro, ModuleName,
                 layout_slot(short_locns_array, ShortLocnsSlot), !IO),
             io.write_string(",", !IO)
-        ;
+        else
             io.write_string("0,", !IO)
         ),
         output_layout_slot_addr(use_layout_macro, ModuleName,
@@ -1057,6 +1080,7 @@ output_call_site_static_array(Info, CallSiteStatics, !DeclSet, !IO) :-
     % proc layout structure yet.
     list.foldl2(output_call_site_static_slot_decls(Info), CallSiteStatics,
         !DeclSet, !IO),
+    io.nl(!IO),
 
     ModuleName = Info ^ lout_mangled_module_name,
     Name = proc_static_call_sites_array,
@@ -1110,10 +1134,11 @@ output_call_site_static_slot(Info, CallSiteStatic, !Slot, !IO) :-
         CalleeProcLayoutName =
             proc_layout(Callee, proc_layout_proc_id(CalleeUserOrUci)),
         output_layout_name(CalleeProcLayoutName, !IO),
-        ( TypeSubst = "" ->
-            io.write_string(", NULL, ", !IO)
-        ;
-            io.write_string(",\n""", !IO),
+        io.write_string(",\n", !IO),
+        ( if TypeSubst = "" then
+            io.write_string("NULL, ", !IO)
+        else
+            io.write_string("""", !IO),
             io.write_string(TypeSubst, !IO),
             io.write_string(""", ", !IO)
         )
@@ -1376,25 +1401,24 @@ output_proc_body_bytecodes_array(Info, Bytecodes, !IO) :-
 % Definition of array #17: table_io structures.
 %
 
-:- pred output_table_io_decl_array(llds_out_info::in,
-    list(table_io_decl_data)::in, io::di, io::uo) is det.
+:- pred output_table_io_entry_array(llds_out_info::in,
+    list(table_io_entry_data)::in, io::di, io::uo) is det.
 
-output_table_io_decl_array(Info, TableIoDecls, !IO) :-
+output_table_io_entry_array(Info, TableIoEntries, !IO) :-
     ModuleName = Info ^ lout_mangled_module_name,
-    list.length(TableIoDecls, NumTableIoDecls),
-    Name = proc_table_io_decl_array,
+    list.length(TableIoEntries, NumTableIoEntries),
+    Name = proc_table_io_entry_array,
     output_layout_array_name_storage_type_name(ModuleName, Name,
         being_defined, !IO),
-    io.format("[%d] = {\n", [i(NumTableIoDecls)], !IO),
-    list.foldl2(output_table_io_decl_slot(Info), TableIoDecls, 0, _, !IO),
+    io.format("[%d] = {\n", [i(NumTableIoEntries)], !IO),
+    list.foldl2(output_table_io_entry_slot(Info), TableIoEntries, 0, _, !IO),
     io.write_string("};\n\n", !IO).
 
-:- pred output_table_io_decl_slot(llds_out_info::in, table_io_decl_data::in,
+:- pred output_table_io_entry_slot(llds_out_info::in, table_io_entry_data::in,
     int::in, int::out, io::di, io::uo) is det.
 
-output_table_io_decl_slot(Info, TableIoDecl, !Slot, !IO) :-
-    TableIoDecl = table_io_decl_data(ProcLayoutName, NumPTIs,
-        PTIVectorRval, TypeParamsRval),
+output_table_io_entry_slot(Info, TableIoEntry, !Slot, !IO) :-
+    TableIoEntry = table_io_entry_data(ProcLayoutName, MaybeArgInfos),
     io.write_string("{ ", !IO),
     AutoComments = Info ^ lout_auto_comments,
     (
@@ -1406,11 +1430,19 @@ output_table_io_decl_slot(Info, TableIoDecl, !Slot, !IO) :-
     io.write_string("(const MR_ProcLayout *) &", !IO),
     output_layout_name(ProcLayoutName, !IO),
     io.write_string(",\n  ", !IO),
-    io.write_int(NumPTIs, !IO),
-    io.write_string(",\n  (const MR_PseudoTypeInfo *) ", !IO),
-    output_rval(Info, PTIVectorRval, !IO),
-    io.write_string(", (const MR_TypeParamLocns *) ", !IO),
-    output_rval(Info, TypeParamsRval, !IO),
+    (
+        MaybeArgInfos = no,
+        io.write_string("MR_FALSE, 0, NULL, NULL", !IO)
+    ;
+        MaybeArgInfos = yes(ArgInfos),
+        ArgInfos = table_io_args_data(NumPTIs, PTIVectorRval, TypeParamsRval),
+        io.write_string("MR_TRUE,\n  ", !IO),
+        io.write_int(NumPTIs, !IO),
+        io.write_string(",\n  (const MR_PseudoTypeInfo *) ", !IO),
+        output_rval(Info, PTIVectorRval, !IO),
+        io.write_string(", (const MR_TypeParamLocns *) ", !IO),
+        output_rval(Info, TypeParamsRval, !IO)
+    ),
     io.write_string(" },\n", !IO),
     !:Slot = !.Slot + 1.
 
@@ -1575,21 +1607,25 @@ eval_method_to_c_string(eval_minimal(MinimalMethod)) = Str :-
         MinimalMethod = own_stacks_generator,
         Str = "MR_EVAL_METHOD_MINIMAL_OWN_STACKS_GENERATOR"
     ).
-eval_method_to_c_string(eval_table_io(Decl, Unitize)) = Str :-
+eval_method_to_c_string(eval_table_io(EntryKind, Unitize)) = Str :-
     (
-        Decl = table_io_proc,
+        ( EntryKind = entry_stores_outputs
+        ; EntryKind = entry_stores_procid_outputs
+        ),
         Unitize = table_io_alone,
         Str = "MR_EVAL_METHOD_TABLE_IO"
     ;
-        Decl = table_io_proc,
+        ( EntryKind = entry_stores_outputs
+        ; EntryKind = entry_stores_procid_outputs
+        ),
         Unitize = table_io_unitize,
         Str = "MR_EVAL_METHOD_TABLE_IO_UNITIZE"
     ;
-        Decl = table_io_decl,
+        EntryKind = entry_stores_procid_inputs_outputs,
         Unitize = table_io_alone,
         Str = "MR_EVAL_METHOD_TABLE_IO_DECL"
     ;
-        Decl = table_io_decl,
+        EntryKind = entry_stores_procid_inputs_outputs,
         Unitize = table_io_unitize,
         Str = "MR_EVAL_METHOD_TABLE_IO_UNITIZE_DECL"
     ).
@@ -1672,9 +1708,9 @@ output_layout_name_decl(LayoutName, !IO) :-
     io.write_string(";\n", !IO).
 
 output_maybe_layout_name_decl(LayoutName, !DeclSet, !IO) :-
-    ( decl_set_is_member(decl_layout_id(LayoutName), !.DeclSet) ->
+    ( if decl_set_is_member(decl_layout_id(LayoutName), !.DeclSet) then
         true
-    ;
+    else
         output_layout_name_decl(LayoutName, !IO),
         decl_set_insert(decl_layout_id(LayoutName), !DeclSet)
     ).
@@ -1683,9 +1719,9 @@ output_maybe_layout_name_decl(LayoutName, !DeclSet, !IO) :-
     io::di, io::uo) is det.
 
 output_layout_decl(LayoutName, !DeclSet, !IO) :-
-    ( decl_set_is_member(decl_layout_id(LayoutName), !.DeclSet) ->
+    ( if decl_set_is_member(decl_layout_id(LayoutName), !.DeclSet) then
         true
-    ;
+    else
         output_layout_name_storage_type_name(LayoutName, not_being_defined,
             !IO),
         io.write_string(";\n", !IO),
@@ -1744,8 +1780,8 @@ output_layout_array_name(UseMacro, ModuleName, ArrayName, !IO) :-
             ArrayName = proc_body_bytecodes_array,
             io.write_string("MR_proc_body_bytecodes", !IO)
         ;
-            ArrayName = proc_table_io_decl_array,
-            io.write_string("MR_proc_table_io_decls", !IO)
+            ArrayName = proc_table_io_entry_array,
+            io.write_string("MR_proc_table_io_entries", !IO)
         ;
             ArrayName = proc_event_layouts_array,
             io.write_string("MR_proc_event_layouts", !IO)
@@ -1813,8 +1849,8 @@ output_layout_array_name(UseMacro, ModuleName, ArrayName, !IO) :-
             ArrayName = proc_body_bytecodes_array,
             io.write_string("mercury_data__proc_body_bytecodes_array__", !IO)
         ;
-            ArrayName = proc_table_io_decl_array,
-            io.write_string("mercury_data__proc_table_io_decls_array__", !IO)
+            ArrayName = proc_table_io_entry_array,
+            io.write_string("mercury_data__proc_table_io_entries_array__", !IO)
         ;
             ArrayName = proc_event_layouts_array,
             io.write_string("mercury_data__proc_event_layouts_array__", !IO)
@@ -1991,8 +2027,8 @@ output_layout_array_name_storage_type_name(ModuleName, Name, BeingDefined,
     (
         BeingDefined = being_defined,
         io.write_string("static ", !IO)
-    ;  
-        % Avoid problems with MS Visual C. 
+    ;
+        % Avoid problems with MS Visual C.
         % See the comments in llds_out_file.output_static_linkage_define/2
         % for a further explanation.
         BeingDefined = not_being_defined,
@@ -2079,8 +2115,8 @@ output_layout_array_name_storage_type_name(ModuleName, Name, BeingDefined,
         output_layout_array_name(do_not_use_layout_macro, ModuleName,
             Name, !IO)
     ;
-        Name = proc_table_io_decl_array,
-        io.write_string("const MR_TableIoDecl ", !IO),
+        Name = proc_table_io_entry_array,
+        io.write_string("const MR_TableIoEntry ", !IO),
         output_layout_array_name(do_not_use_layout_macro, ModuleName,
             Name, !IO)
     ;
@@ -2111,12 +2147,12 @@ output_layout_name_storage_type_name(Name, BeingDefined, !IO) :-
         Name = proc_layout(RttiProcLabel, Kind),
         ProcIsImported = RttiProcLabel ^ rpl_proc_is_imported,
         ProcIsExported = RttiProcLabel ^ rpl_proc_is_exported,
-        (
+        ( if
             ProcIsImported = no,
             ProcIsExported = no
-        ->
+        then
             io.write_string("static ", !IO)
-        ;
+        else
             (
                 BeingDefined = being_defined
             ;
@@ -2268,11 +2304,11 @@ proc_layout_kind_to_type(proc_layout_proc_id(uci)) = "MR_ProcLayoutUCI".
     io::di, io::uo) is det.
 
 output_rval_as_addr(Info, Rval, !IO) :-
-    ( Rval = const(llconst_int(0)) ->
+    ( if Rval = const(llconst_int(0)) then
         io.write_string("0", !IO)
-    ; Rval = const(llconst_data_addr(DataId, no)) ->
+    else if Rval = const(llconst_data_addr(DataId, no)) then
         output_data_id_addr(Info, DataId, !IO)
-    ;
+    else
         io.write_string("\n", !IO),
         output_rval(Info, Rval, !IO)
     ).
@@ -2434,17 +2470,17 @@ output_bytecodes(Bytes, BytesLeft, !.Seq, MaxSeq, !IO) :-
         BytesLeft = []
     ;
         Bytes = [Head | Tail],
-        ( !.Seq < MaxSeq ->
+        ( if !.Seq < MaxSeq then
             io.write_int(Head, !IO),
             io.write_char(',', !IO),
             !:Seq = !.Seq + 1,
-            ( unchecked_rem(!.Seq, 16) = 0 ->
+            ( if unchecked_rem(!.Seq, 16) = 0 then
                 io.write_char('\n', !IO)
-            ;
+            else
                 true
             ),
             output_bytecodes(Tail, BytesLeft, !.Seq, MaxSeq, !IO)
-        ;
+        else
             BytesLeft = Bytes
         )
     ).
@@ -2515,22 +2551,22 @@ output_proc_id(ProcLabel, Origin, !IO) :-
 origin_name(Origin, Name0) = Name :-
     (
         Origin = origin_lambda(FileName0, LineNum, SeqNo),
-        ( string.append("IntroducedFrom", _, Name0) ->
+        ( if string.append("IntroducedFrom", _, Name0) then
             string.replace_all(FileName0, ".", "_", FileName),
-            ( SeqNo > 1 ->
+            ( if SeqNo > 1 then
                 string.format("lambda%d_%s_%d",
                     [i(SeqNo), s(FileName), i(LineNum)], Name)
-            ;
+            else
                 string.format("lambda_%s_%d", [s(FileName), i(LineNum)], Name)
             )
-        ;
+        else
             % If the lambda pred has a meaningful name, use it.
             % This happens when the lambda is a partial application
             % that happens to supply zero arguments.
             Name = Name0
         )
     ;
-        Origin = origin_special_pred(_SpecialPredId - _TypeCtor),
+        Origin = origin_special_pred(_SpecialPredId, _TypeCtor),
         Name = Name0
         % We can't use the following code until we have adapted the
         % code in the runtime and trace directories to handle the names
@@ -2555,15 +2591,18 @@ origin_name(Origin, Name0) = Name :-
     ;
         Origin = origin_transformed(Transform, OldOrigin, _),
         OldName = origin_name(OldOrigin, ""),
-        ( OldName = "" ->
+        ( if OldName = "" then
             Name = Name0
-        ;
+        else
             Name = OldName ++ "_" ++ pred_transform_name(Transform)
         )
     ;
         ( Origin = origin_instance_method(_, _)
         ; Origin = origin_created(_)
         ; Origin = origin_assertion(_, _)
+        ; Origin = origin_solver_type(_, _, _)
+        ; Origin = origin_tabling(_, _)
+        ; Origin = origin_mutable(_, _, _)
         ; Origin = origin_user(_)
         ),
         Name = Name0
@@ -2604,9 +2643,9 @@ ints_to_string([N | Ns]) = "_" ++ int_to_string(N) ++ ints_to_string(Ns).
 
 :- func subst_to_name(pair(int, mer_type)) = string.
 
-subst_to_name(TVar - Type) =
-    string.format("%d/%s",
-        [i(TVar), s(mercury_type_to_string(varset.init, no, Type))]).
+subst_to_name(TVar - Type) = Str :-
+    TypeStr = mercury_type_to_string(varset.init, print_name_only, Type),
+    Str = string.format("%d/%s", [i(TVar), s(TypeStr)]).
 
 %-----------------------------------------------------------------------------%
 
@@ -2636,9 +2675,9 @@ output_module_layout_data_defn(Info, Data, !DeclSet, !IO) :-
         MaybeDeepProfData = yes(DeepProfData),
         DeepProfData = module_layout_deep_prof(NumOISUTypesA, OISUBytes,
             NumTypesA, TypeTableBytes),
-        ( NumOISUTypesA = 0 ->
+        ( if NumOISUTypesA = 0 then
             MaybeOISUBytesLayoutNameA = no
-        ;
+        else
             OISUBytesLayoutNameA = module_layout_oisu_bytes(ModuleName),
             io.write_string("\n", !IO),
             output_layout_name_storage_type_name(OISUBytesLayoutNameA,
@@ -3018,12 +3057,12 @@ output_module_layout_proc_vector_defn(ModuleName, ProcLayoutNames,
     is det.
 
 output_proc_layout_name_in_vector(LayoutName, !IO) :-
-    ( LayoutName = proc_layout(RttiProcLabel, _) ->
+    ( if LayoutName = proc_layout(RttiProcLabel, _) then
         ProcLabel = make_proc_label_from_rtti(RttiProcLabel),
         io.write_string("MR_PROC_LAYOUT1(", !IO),
         output_proc_label_no_prefix(ProcLabel, !IO),
         io.write_string(")\n", !IO)
-    ;
+    else
         unexpected($module, $pred, "not proc layout")
     ).
 
@@ -3076,29 +3115,31 @@ output_module_string_table_strings(String, [Next | Rest], !IO) :-
     io::di, io::uo) is det.
 
 output_module_string_table_chars(CurIndex, Count, String, !IO) :-
-    ( string.unsafe_index_next(String, CurIndex, NextIndex, Char) ->
-        (
+    ( if string.unsafe_index_next(String, CurIndex, NextIndex, Char) then
+        ( if
             char.to_int(Char, Int),
             Int =< 0x7f
-        ->
+        then
             io.write_char('''', !IO),
-            c_util.output_quoted_char(Char, !IO),
+            c_util.output_quoted_char_cur_stream(Char, !IO),
             io.write_char('''', !IO),
             io.write_string(", ", !IO)
-        ; char.to_utf8(Char, Codes) ->
+        else if
+            char.to_utf8(Char, Codes)
+        then
             output_multi_byte_char_codes(Codes, !IO)
-        ;
+        else
             unexpected($module, $pred, "invalid code point")
         ),
-        ( Count = 10 ->
+        ( if Count = 10 then
             io.nl(!IO),
             output_module_string_table_chars(NextIndex, 0, String, !IO)
-        ;
+        else
             output_module_string_table_chars(NextIndex, Count + 1, String, !IO)
         )
-    ;
+    else
         io.write_char('''', !IO),
-        c_util.output_quoted_char(char.det_from_int(0), !IO),
+        c_util.output_quoted_char_cur_stream(char.det_from_int(0), !IO),
         io.write_char('''', !IO)
     ).
 
@@ -3274,7 +3315,7 @@ output_layout_slots_in_vector(ModuleName, [SlotName | SlotNames], !IO) :-
         ; ArrayName = proc_var_names_array
         ; ArrayName = proc_head_var_nums_array
         ; ArrayName = proc_body_bytecodes_array
-        ; ArrayName = proc_table_io_decl_array
+        ; ArrayName = proc_table_io_entry_array
         ; ArrayName = proc_event_layouts_array
         ; ArrayName = proc_exec_trace_array
         ; ArrayName = threadscope_string_table_array
@@ -3293,11 +3334,11 @@ find_slots_in_same_array(_ArrayName, [], !RevSlotNums, []).
 find_slots_in_same_array(ArrayName, [SlotName | SlotNames], !RevSlotNums,
         OtherArraySlotNames) :-
     SlotName = layout_slot(SlotArrayName, SlotNum),
-    ( SlotArrayName = ArrayName ->
+    ( if SlotArrayName = ArrayName then
         !:RevSlotNums = [SlotNum | !.RevSlotNums],
         find_slots_in_same_array(ArrayName, SlotNames, !RevSlotNums,
             OtherArraySlotNames)
-    ;
+    else
         OtherArraySlotNames = [SlotName | SlotNames]
     ).
 
@@ -3354,11 +3395,11 @@ output_numbers_in_vector_noac(VarNums @ [_ | _], !.Slot, !IO) :-
 output_upto_n_numbers_in_vector_ac([], _, [], !Slot, !IO).
 output_upto_n_numbers_in_vector_ac([VarNum | VarNums], N, LeftOverVarNums,
         !Slot, !IO) :-
-    ( N > 0 ->
+    ( if N > 0 then
         output_number_in_vector_ac(VarNum, !Slot, !IO),
         output_upto_n_numbers_in_vector_ac(VarNums, N - 1, LeftOverVarNums,
             !Slot, !IO)
-    ;
+    else
         LeftOverVarNums = [VarNum | VarNums]
     ).
 
@@ -3368,11 +3409,11 @@ output_upto_n_numbers_in_vector_ac([VarNum | VarNums], N, LeftOverVarNums,
 output_upto_n_numbers_in_vector_noac([], _, [], !Slot, !IO).
 output_upto_n_numbers_in_vector_noac([VarNum | VarNums], N, LeftOverVarNums,
         !Slot, !IO) :-
-    ( N > 0 ->
+    ( if N > 0 then
         output_number_in_vector_noac(VarNum, !Slot, !IO),
         output_upto_n_numbers_in_vector_noac(VarNums, N - 1, LeftOverVarNums,
             !Slot, !IO)
-    ;
+    else
         LeftOverVarNums = [VarNum | VarNums]
     ).
 
@@ -3380,9 +3421,9 @@ output_upto_n_numbers_in_vector_noac([VarNum | VarNums], N, LeftOverVarNums,
     io::di, io::uo) is det.
 
 output_number_in_vector_ac(VarNum, !Slot, !IO) :-
-    ( !.Slot mod 10 = 0 ->
+    ( if !.Slot mod 10 = 0 then
         io.format("\n/* slots %d+ */ ", [i(!.Slot)], !IO)
-    ;
+    else
         io.write_string(" ", !IO)
     ),
     io.format("%d,", [i(VarNum)], !IO),
@@ -3392,9 +3433,9 @@ output_number_in_vector_ac(VarNum, !Slot, !IO) :-
     io::di, io::uo) is det.
 
 output_number_in_vector_noac(VarNum, !Slot, !IO) :-
-    ( !.Slot mod 10 = 0 ->
+    ( if !.Slot mod 10 = 0 then
         io.nl(!IO)
-    ;
+    else
         io.write_string(" ", !IO)
     ),
     io.format("%d,", [i(VarNum)], !IO),
@@ -3417,7 +3458,7 @@ output_layout_name_in_vector(Prefix, Name, !IO) :-
 
 quote_and_write_string(String, !IO) :-
     io.write_string("""", !IO),
-    c_util.output_quoted_string(String, !IO),
+    c_util.output_quoted_string_cur_stream(String, !IO),
     io.write_string("""", !IO).
 
 output_pred_or_func(PredOrFunc, !IO) :-
@@ -3446,10 +3487,10 @@ long_length_outer_loop(List @ [_ | _], !Length) :-
 
 long_length_inner_loop([], _, [], !Length).
 long_length_inner_loop([H | T], Count, LeftOver, !Length) :-
-    ( Count > 0 ->
+    ( if Count > 0 then
         !:Length = !.Length + 1,
         long_length_inner_loop(T, Count - 1, LeftOver, !Length)
-    ;
+    else
         LeftOver = [H | T]
     ).
 

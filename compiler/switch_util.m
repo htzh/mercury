@@ -91,11 +91,15 @@
     %
 :- func estimate_switch_tag_test_cost(cons_tag) = int.
 
+:- type may_use_smart_indexing
+    --->    may_not_use_smart_indexing
+    ;       may_use_smart_indexing.
+
     % Succeeds if smart indexing for the given switch category has been
     % disabled by the user on the command line.
     %
-:- pred is_smart_indexing_disabled_category(globals::in, switch_category::in)
-    is semidet.
+:- pred find_switch_category(module_info::in, mer_type::in,
+    switch_category::out, may_use_smart_indexing::out) is det.
 
 %-----------------------------------------------------------------------------%
 %
@@ -123,10 +127,10 @@
 
 :- type case_consts(Key, Rval, SeveralInfo)
     --->    all_one_soln(
-                assoc_list(Key, list(Rval))
+                map(Key, list(Rval))
             )
     ;       some_several_solns(
-                assoc_list(Key, soln_consts(Rval)),
+                map(Key, soln_consts(Rval)),
                 SeveralInfo
             ).
 
@@ -163,8 +167,8 @@
     need_bit_vec_check::out, need_range_check::out, int::out, int::out)
     is semidet.
 
-:- pred project_all_to_one_solution(assoc_list(T, soln_consts(Rval))::in,
-    assoc_list(T, list(Rval))::out) is semidet.
+:- pred project_all_to_one_solution(map(Key, soln_consts(Rval))::in,
+    map(Key, list(Rval))::out) is semidet.
 
 :- pred project_solns_to_rval_lists(assoc_list(T, soln_consts(Rval))::in,
     list(list(Rval))::in, list(list(Rval))::out) is det.
@@ -305,10 +309,10 @@
     %
 :- type ptag_count_map  ==  map(tag_bits, pair(sectag_locn, int)).
 
-    % Map case numbers to the set of primary tags used in the cons_ids
+    % Map case ids to the set of primary tags used in the cons_ids
     % of that case.
     %
-:- type case_num_ptags_map == map(int, set(int)).
+:- type case_id_ptags_map == map(case_id, set(int)).
 
     % Group together all the cases that depend on the given variable
     % having the same primary tag value.
@@ -317,7 +321,7 @@
     pred(tagged_case, CaseRep, StateA, StateA, StateB, StateB, StateC, StateC)
         ::in(pred(in, out, in, out, in, out, in, out) is det),
     StateA::in, StateA::out, StateB::in, StateB::out, StateC::in, StateC::out,
-    case_num_ptags_map::out, ptag_case_map(CaseRep)::out) is det.
+    case_id_ptags_map::out, ptag_case_map(CaseRep)::out) is det.
 
     % Group together any primary tags with the same cases.
     % Order the groups based on the number of secondary tags associated
@@ -363,14 +367,12 @@
 
 :- implementation.
 
+:- import_module backend_libs.string_encoding.
 :- import_module check_hlds.
 :- import_module check_hlds.type_util.
-:- import_module hlds.hlds_data.
 :- import_module hlds.hlds_code_util.
 :- import_module libs.options.
-:- import_module parse_tree.prog_type.
 
-:- import_module char.
 :- import_module int.
 :- import_module io.
 :- import_module require.
@@ -394,13 +396,13 @@ tag_cases(ModuleInfo, SwitchVarType, [Case | Cases],
     Case = case(MainConsId, OtherConsIds, Goal),
     MainConsTag = cons_id_to_tag(ModuleInfo, MainConsId),
     TaggedMainConsId = tagged_cons_id(MainConsId, MainConsTag),
-    ( MainConsTag = int_tag(IntTag) ->
+    ( if MainConsTag = int_tag(IntTag) then
         list.map_foldl4(tag_cons_id_in_int_switch(ModuleInfo),
             OtherConsIds, TaggedOtherConsIds,
             IntTag, LowerLimit1, IntTag, UpperLimit1,
             1, NumValues1, is_int_switch, IsIntSwitch1),
         TaggedCase = tagged_case(TaggedMainConsId, TaggedOtherConsIds,
-            0, Goal),
+            case_id(0), Goal),
         tag_cases_in_int_switch(ModuleInfo, SwitchVarType, 1,
             Cases, TaggedCases,
             LowerLimit1, LowerLimit, UpperLimit1, UpperLimit,
@@ -413,10 +415,10 @@ tag_cases(ModuleInfo, SwitchVarType, [Case | Cases],
             IsIntSwitch = is_not_int_switch,
             MaybeIntSwitchLimits = not_int_switch
         )
-    ;
+    else
         list.map(tag_cons_id(ModuleInfo), OtherConsIds, TaggedOtherConsIds),
         TaggedCase = tagged_case(TaggedMainConsId, TaggedOtherConsIds,
-            0, Goal),
+            case_id(0), Goal),
         tag_cases_plain(ModuleInfo, SwitchVarType, 1, Cases, TaggedCases),
         MaybeIntSwitchLimits = not_int_switch
     ).
@@ -431,7 +433,7 @@ tag_cases_plain(ModuleInfo, SwitchVarType, CaseNum, [Case | Cases],
     tag_cons_id(ModuleInfo, MainConsId, TaggedMainConsId),
     list.map(tag_cons_id(ModuleInfo), OtherConsIds, TaggedOtherConsIds),
     TaggedCase = tagged_case(TaggedMainConsId, TaggedOtherConsIds,
-        CaseNum, Goal),
+        case_id(CaseNum), Goal),
     tag_cases_plain(ModuleInfo, SwitchVarType, CaseNum + 1, Cases,
         TaggedCases).
 
@@ -439,11 +441,11 @@ tag_cases_plain(ModuleInfo, SwitchVarType, CaseNum, [Case | Cases],
     list(case)::in, list(tagged_case)::out, int::in, int::out, int::in,
     int::out, int::in, int::out, is_int_switch::in, is_int_switch::out) is det.
 
-tag_cases_in_int_switch(_, _, _, [], [], !LowerLimit, !UpperLimit, !NumValues,
-        !IsIntSwitch).
+tag_cases_in_int_switch(_, _, _, [], [], !LowerLimit, !UpperLimit,
+        !NumValues, !IsIntSwitch).
 tag_cases_in_int_switch(ModuleInfo, SwitchVarType, CaseNum, [Case | Cases],
-        [TaggedCase | TaggedCases], !LowerLimit, !UpperLimit, !NumValues,
-        !IsIntSwitch) :-
+        [TaggedCase | TaggedCases], !LowerLimit, !UpperLimit,
+        !NumValues, !IsIntSwitch) :-
     Case = case(MainConsId, OtherConsIds, Goal),
     tag_cons_id_in_int_switch(ModuleInfo, MainConsId, TaggedMainConsId,
         !LowerLimit, !UpperLimit, !NumValues, !IsIntSwitch),
@@ -451,10 +453,10 @@ tag_cases_in_int_switch(ModuleInfo, SwitchVarType, CaseNum, [Case | Cases],
         OtherConsIds, TaggedOtherConsIds, !LowerLimit, !UpperLimit,
         !NumValues, !IsIntSwitch),
     TaggedCase = tagged_case(TaggedMainConsId, TaggedOtherConsIds,
-        CaseNum, Goal),
+        case_id(CaseNum), Goal),
     tag_cases_in_int_switch(ModuleInfo, SwitchVarType, CaseNum + 1,
-        Cases, TaggedCases, !LowerLimit, !UpperLimit, !NumValues,
-        !IsIntSwitch).
+        Cases, TaggedCases, !LowerLimit, !UpperLimit,
+        !NumValues, !IsIntSwitch).
 
 :- pred tag_cons_id(module_info::in, cons_id::in, tagged_cons_id::out) is det.
 
@@ -471,29 +473,29 @@ tag_cons_id_in_int_switch(ModuleInfo, ConsId, TaggedConsId,
         !LowerLimit, !UpperLimit, !NumValues, !IsIntSwitch) :-
     ConsTag = cons_id_to_tag(ModuleInfo, ConsId),
     TaggedConsId = tagged_cons_id(ConsId, ConsTag),
-    ( ConsTag = int_tag(IntTag) ->
+    ( if ConsTag = int_tag(IntTag) then
         int.min(IntTag, !LowerLimit),
         int.max(IntTag, !UpperLimit),
         !:NumValues = !.NumValues + 1
-    ;
+    else
         !:IsIntSwitch = is_not_int_switch
     ).
 
 %-----------------------------------------------------------------------------%
 
 num_cons_ids_in_tagged_cases(TaggedCases, NumConsIds, NumArms) :-
-    num_cons_ids_in_tagged_cases_2(TaggedCases, 0, NumConsIds, 0, NumArms).
+    num_cons_ids_in_tagged_cases_loop(TaggedCases, 0, NumConsIds, 0, NumArms).
 
-:- pred num_cons_ids_in_tagged_cases_2(list(tagged_case)::in,
+:- pred num_cons_ids_in_tagged_cases_loop(list(tagged_case)::in,
     int::in, int::out, int::in, int::out) is det.
 
-num_cons_ids_in_tagged_cases_2([], !NumConsIds, !NumArms).
-num_cons_ids_in_tagged_cases_2([TaggedCase | TaggedCases],
+num_cons_ids_in_tagged_cases_loop([], !NumConsIds, !NumArms).
+num_cons_ids_in_tagged_cases_loop([TaggedCase | TaggedCases],
         !NumConsIds, !NumArms) :-
     TaggedCase = tagged_case(_MainConsId, OtherCondIds, _, _),
     !:NumConsIds = !.NumConsIds + 1 + list.length(OtherCondIds),
     !:NumArms = !.NumArms + 1,
-    num_cons_ids_in_tagged_cases_2(TaggedCases, !NumConsIds, !NumArms).
+    num_cons_ids_in_tagged_cases_loop(TaggedCases, !NumConsIds, !NumArms).
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -505,6 +507,7 @@ type_ctor_cat_to_switch_cat(CtorCat) = SwitchCat :-
     (
         ( CtorCat = ctor_cat_enum(_)
         ; CtorCat = ctor_cat_builtin(cat_builtin_int)
+        ; CtorCat = ctor_cat_builtin(cat_builtin_uint)
         ; CtorCat = ctor_cat_builtin(cat_builtin_char)
         ),
         SwitchCat = atomic_switch
@@ -535,6 +538,7 @@ type_ctor_cat_to_switch_cat(CtorCat) = SwitchCat :-
 estimate_switch_tag_test_cost(Tag) = Cost :-
     (
         ( Tag = int_tag(_)
+        ; Tag = uint_tag(_)
         ; Tag = foreign_tag(_, _)
         ; Tag = reserved_address_tag(_)
         ; Tag = shared_local_tag(_, _)
@@ -558,6 +562,7 @@ estimate_switch_tag_test_cost(Tag) = Cost :-
         Tag = float_tag(_),
         % You need to follow a pointer and then compare 64 bits
         % (two words on 32 bit machines, which are still the most common).
+        % XXX they're not that common anymore.
         Cost = 3
     ;
         Tag = shared_remote_tag(_, _),
@@ -586,24 +591,69 @@ estimate_switch_tag_test_cost(Tag) = Cost :-
         ; Tag = ground_term_const_tag(_, _)
         ; Tag = tabling_info_tag(_, _)
         ; Tag = deep_profiling_proc_layout_tag(_, _)
-        ; Tag = table_io_decl_tag(_, _)
+        ; Tag = table_io_entry_tag(_, _)
         ),
         unexpected($module, $pred, "non-switch tag")
     ).
 
-is_smart_indexing_disabled_category(Globals, SwitchCategory) :-
+find_switch_category(ModuleInfo, SwitchVarType, SwitchCategory,
+        MayUseSmartIndexing) :-
+    SwitchTypeCtorCat = classify_type(ModuleInfo, SwitchVarType),
+    SwitchCategory = type_ctor_cat_to_switch_cat(SwitchTypeCtorCat),
+
+    module_info_get_globals(ModuleInfo, Globals),
+    ( if
+        (
+            % We cannot use smart indexing if smart indexing is turned off
+            % in general.
+            globals.lookup_bool_option(Globals, smart_indexing, SmartIndexing),
+            SmartIndexing = no
+        ;
+            % We cannot use smart indexing if smart indexing is turned off
+            % for this category of switches.
+            SmartIndexingForCategory = is_smart_indexing_allowed_for_category(
+                Globals, SwitchCategory),
+            SmartIndexingForCategory = no
+        ;
+            % We cannot use smart indexing if some values in the type
+            % of the switched-on variable are represented by reserved
+            % addresses.
+            %
+            % XXX We could generate better code for some such switches
+            % if we first checked for and handled any reserved addresses
+            % in the type of the switched-on variable, and then used the
+            % usual smart indexing schemes for the other function symbols.
+            module_info_get_type_table(ModuleInfo, TypeTable),
+            type_to_ctor_det(SwitchVarType, SwitchVarTypeCtor),
+            % The search will fail for builtin types, but these won't use
+            % reserved addresses anyway.
+            search_type_ctor_defn(TypeTable, SwitchVarTypeCtor,
+                SwitchVarTypeDefn),
+            hlds_data.get_type_defn_body(SwitchVarTypeDefn, SwitchVarTypeBody),
+            SwitchVarTypeBody ^ du_type_reserved_addr = uses_reserved_address
+        )
+    then
+        MayUseSmartIndexing = may_not_use_smart_indexing
+    else
+        MayUseSmartIndexing = may_use_smart_indexing
+    ).
+
+:- func is_smart_indexing_allowed_for_category(globals, switch_category)
+    = bool.
+
+is_smart_indexing_allowed_for_category(Globals, SwitchCategory) = Allowed :-
     (
         SwitchCategory = atomic_switch,
-        globals.lookup_bool_option(Globals, smart_atomic_indexing, no)
+        globals.lookup_bool_option(Globals, smart_atomic_indexing, Allowed)
     ;
         SwitchCategory = string_switch,
-        globals.lookup_bool_option(Globals, smart_string_indexing, no)
+        globals.lookup_bool_option(Globals, smart_string_indexing, Allowed)
     ;
         SwitchCategory = tag_switch,
-        globals.lookup_bool_option(Globals, smart_tag_indexing, no)
+        globals.lookup_bool_option(Globals, smart_tag_indexing, Allowed)
     ;
         SwitchCategory = float_switch,
-        globals.lookup_bool_option(Globals, smart_float_indexing, no)
+        globals.lookup_bool_option(Globals, smart_float_indexing, Allowed)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -615,13 +665,11 @@ is_smart_indexing_disabled_category(Globals, SwitchCategory) :-
 type_range(ModuleInfo, TypeCtorCat, Type, Min, Max, NumValues) :-
     (
         TypeCtorCat = ctor_cat_builtin(cat_builtin_char),
-        % XXX The following code uses the host's character size, not the
-        % target's, so it won't work if cross-compiling to a machine with
-        % a different character size. Note also that some code in both
-        % dense_switch.m and in lookup_switch.m assumes that
-        % char.min_char_value is 0.
-        char.min_char_value(Min),
-        char.max_char_value(Max)
+        % Note also that some code in both dense_switch.m and in
+        % lookup_switch.m assumes that min_char_value is 0.
+        module_info_get_globals(ModuleInfo, Globals),
+        globals.get_target(Globals, Target),
+        target_char_range(Target, Min, Max)
     ;
         TypeCtorCat = ctor_cat_enum(cat_enum_mercury),
         Min = 0,
@@ -667,25 +715,26 @@ filter_out_failing_cases_if_needed(CodeModel, !TaggedCases, !SwitchCanFail) :-
     can_fail::in, can_fail::out) is det.
 
 filter_out_failing_cases(TaggedCases0, TaggedCases, !SwitchCanFail) :-
-    filter_out_failing_cases_2(TaggedCases0, [], RevTaggedCases,
+    filter_out_failing_cases_loop(TaggedCases0, [], RevTaggedCases,
         !SwitchCanFail),
     list.reverse(RevTaggedCases, TaggedCases).
 
-:- pred filter_out_failing_cases_2(list(tagged_case)::in,
+:- pred filter_out_failing_cases_loop(list(tagged_case)::in,
     list(tagged_case)::in, list(tagged_case)::out,
     can_fail::in, can_fail::out) is det.
 
-filter_out_failing_cases_2([], !RevTaggedCases, !SwitchCanFail).
-filter_out_failing_cases_2([TaggedCase | TaggedCases], !RevTaggedCases,
+filter_out_failing_cases_loop([], !RevTaggedCases, !SwitchCanFail).
+filter_out_failing_cases_loop([TaggedCase | TaggedCases], !RevTaggedCases,
         !SwitchCanFail) :-
     TaggedCase = tagged_case(_, _, _, Goal),
     Goal = hlds_goal(GoalExpr, _),
-    ( GoalExpr = disj([]) ->
+    ( if GoalExpr = disj([]) then
         !:SwitchCanFail = can_fail
-    ;
+    else
         !:RevTaggedCases = [TaggedCase | !.RevTaggedCases]
     ),
-    filter_out_failing_cases_2(TaggedCases, !RevTaggedCases, !SwitchCanFail).
+    filter_out_failing_cases_loop(TaggedCases, !RevTaggedCases,
+        !SwitchCanFail).
 
 find_int_lookup_switch_params(ModuleInfo, SwitchVarType, SwitchCanFail,
         LowerLimit, UpperLimit, NumValues, ReqDensity,
@@ -700,9 +749,9 @@ find_int_lookup_switch_params(ModuleInfo, SwitchVarType, SwitchCanFail,
 
     % If there are going to be no gaps in the lookup table then we won't need
     % a bitvector test to see if this switch has a value for this case.
-    ( NumValues = Range ->
+    ( if NumValues = Range then
         NeedBitVecCheck0 = dont_need_bit_vec_check
-    ;
+    else
         NeedBitVecCheck0 = need_bit_vec_check
     ),
     (
@@ -713,17 +762,17 @@ find_int_lookup_switch_params(ModuleInfo, SwitchVarType, SwitchCanFail,
         % large enough to hold all of the values for the type, but then we
         % will need to do the bitvector test.
         classify_type(ModuleInfo, SwitchVarType) = TypeCategory,
-        (
+        ( if
             type_range(ModuleInfo, TypeCategory, SwitchVarType, _, _,
                 TypeRange),
             DetDensity = switch_density(NumValues, TypeRange),
             DetDensity > ReqDensity
-        ->
+        then
             NeedRangeCheck = dont_need_range_check,
             NeedBitVecCheck = need_bit_vec_check,
             FirstVal = 0,
             LastVal = TypeRange - 1
-        ;
+        else
             NeedRangeCheck = need_range_check,
             NeedBitVecCheck = NeedBitVecCheck0,
             FirstVal = LowerLimit,
@@ -738,18 +787,13 @@ find_int_lookup_switch_params(ModuleInfo, SwitchVarType, SwitchCanFail,
     ).
 
 project_all_to_one_solution(CaseSolns, CaseValuePairs) :-
-    do_project_all_to_one_solution(CaseSolns, [], RevCaseValuePairs),
-    list.reverse(RevCaseValuePairs, CaseValuePairs).
+    map.map_values(project_soln_consts_to_one_soln, CaseSolns, CaseValuePairs).
 
-:- pred do_project_all_to_one_solution(assoc_list(T, soln_consts(Rval))::in,
-    assoc_list(T, list(Rval))::in, assoc_list(T, list(Rval))::out) is semidet.
+:- pred project_soln_consts_to_one_soln(Key::in,
+    soln_consts(Rval)::in, list(Rval)::out) is semidet.
 
-do_project_all_to_one_solution([], !RevCaseValuePairs).
-do_project_all_to_one_solution([Case - Solns | CaseSolns],
-        !RevCaseValuePairs) :-
-    Solns = one_soln(Values),
-    !:RevCaseValuePairs = [Case - Values | !.RevCaseValuePairs],
-    do_project_all_to_one_solution(CaseSolns, !RevCaseValuePairs).
+project_soln_consts_to_one_soln(_Key, Solns, Values) :-
+    Solns = one_soln(Values).
 
 project_solns_to_rval_lists([], !RvalsList).
 project_solns_to_rval_lists([Case | Cases], !RvalsList) :-
@@ -799,75 +843,80 @@ construct_string_hash_cases(StrsDatas, Upgrade, TableSize,
     % between 0.25 and 0.5.
     HashMaskA = TableSizeA - 1,
     string_hash_cases(StrsDatas, HashMaskA,
-        map.init, HashValsMap1A, map.init, HashValsMap2A,
-        map.init, HashValsMap3A,
-        0, NumCollisions1A, 0, NumCollisions2A, 0, NumCollisions3A),
+        map.init, HashValsMap4A, map.init, HashValsMap5A,
+        map.init, HashValsMap6A,
+        0, NumCollisions4A, 0, NumCollisions5A, 0, NumCollisions6A),
     trace [compiletime(flag("hashcollisions")), io(!IO)] (
         io.format("string hash collisions A: %d %d %d\n",
-            [i(NumCollisions1A), i(NumCollisions2A), i(NumCollisions3A)], !IO)
+            [i(NumCollisions4A), i(NumCollisions5A), i(NumCollisions6A)], !IO)
     ),
-    ( NumCollisions1A =< NumCollisions2A, NumCollisions1A =< NumCollisions3A ->
-        HashValsMapA = HashValsMap1A,
-        HashOpA = hash_string,
-        NumCollisionsA = NumCollisions1A
-    ; NumCollisions2A =< NumCollisions3A ->
-        HashValsMapA = HashValsMap2A,
-        HashOpA = hash_string2,
-        NumCollisionsA = NumCollisions2A
-    ;
-        HashValsMapA = HashValsMap3A,
-        HashOpA = hash_string3,
-        NumCollisionsA = NumCollisions3A
+    ( if
+        NumCollisions4A =< NumCollisions5A,
+        NumCollisions4A =< NumCollisions6A
+    then
+        HashValsMapA = HashValsMap4A,
+        HashOpA = hash_string4,
+        NumCollisionsA = NumCollisions4A
+    else if
+        NumCollisions5A =< NumCollisions6A
+    then
+        HashValsMapA = HashValsMap5A,
+        HashOpA = hash_string5,
+        NumCollisionsA = NumCollisions5A
+    else
+        HashValsMapA = HashValsMap6A,
+        HashOpA = hash_string6,
+        NumCollisionsA = NumCollisions6A
     ),
 
-    (
+    ( if
         ( NumCollisionsA = 0
         ; Upgrade = keep_first_size
         )
-    ->
+    then
         TableSize = TableSizeA,
         HashValsMap = HashValsMapA,
         HashOp = HashOpA,
         NumCollisions = NumCollisionsA
-    ;
+    else
         TableSizeB = 4 * RoundedUpNumStrs,
         % With this tablesize, the hash table load factor will be
         % between 0.125 and 0.25.
         HashMaskB = TableSizeB - 1,
         string_hash_cases(StrsDatas, HashMaskB,
-            map.init, HashValsMap1B, map.init, HashValsMap2B,
-            map.init, HashValsMap3B,
-            0, NumCollisions1B, 0, NumCollisions2B, 0, NumCollisions3B),
+            map.init, HashValsMap4B, map.init, HashValsMap5B,
+            map.init, HashValsMap6B,
+            0, NumCollisions4B, 0, NumCollisions5B, 0, NumCollisions6B),
         trace [compiletime(flag("hashcollisions")), io(!IO)] (
             io.format("string hash collisions B: %d %d %d\n",
-                [i(NumCollisions1B), i(NumCollisions2B), i(NumCollisions3B)],
+                [i(NumCollisions4B), i(NumCollisions5B), i(NumCollisions6B)],
                 !IO)
         ),
-        ( NumCollisions1B = 0 ->
+        ( if NumCollisions4B = 0 then
             TableSize = TableSizeB,
-            HashValsMap = HashValsMap1B,
-            HashOp = hash_string,
-            NumCollisions = NumCollisions1B
-        ; NumCollisions2B = 0 ->
+            HashValsMap = HashValsMap4B,
+            HashOp = hash_string4,
+            NumCollisions = NumCollisions4B
+        else if NumCollisions5B = 0 then
             TableSize = TableSizeB,
-            HashValsMap = HashValsMap2B,
-            HashOp = hash_string2,
-            NumCollisions = NumCollisions2B
-        ; NumCollisions3B = 0 ->
+            HashValsMap = HashValsMap5B,
+            HashOp = hash_string5,
+            NumCollisions = NumCollisions5B
+        else if NumCollisions6B = 0 then
             TableSize = TableSizeB,
-            HashValsMap = HashValsMap3B,
-            HashOp = hash_string3,
-            NumCollisions = NumCollisions3B
-        ;
+            HashValsMap = HashValsMap6B,
+            HashOp = hash_string6,
+            NumCollisions = NumCollisions6B
+        else
             TableSize = TableSizeA,
             HashValsMap = HashValsMapA,
             HashOp = HashOpA,
             NumCollisions = NumCollisionsA
         ),
         trace [compiletime(flag("hashcollisions")), io(!IO)] (
-            ( NumCollisions = 0, NumCollisionsA > 0 ->
+            ( if NumCollisions = 0, NumCollisionsA > 0 then
                 io.write_string("string hash IMPROVEMENT\n", !IO)
-            ;
+            else
                 io.write_string("string hash NO IMPROVEMENT\n", !IO)
             )
         )
@@ -886,17 +935,17 @@ construct_string_hash_cases(StrsDatas, Upgrade, TableSize,
     map(int, assoc_list(string, CaseRep))::out,
     int::in, int::out, int::in, int::out, int::in, int::out) is det.
 
-string_hash_cases([], _, !HashMap1, !HashMap2, !HashMap3,
-        !NumCollisions1, !NumCollisions2, !NumCollisions3).
+string_hash_cases([], _, !HashMap4, !HashMap5, !HashMap6,
+        !NumCollisions4, !NumCollisions5, !NumCollisions6).
 string_hash_cases([StrData | StrsDatas], HashMask,
-        !HashMap1, !HashMap2, !HashMap3,
-        !NumCollisions1, !NumCollisions2, !NumCollisions3) :-
+        !HashMap4, !HashMap5, !HashMap6,
+        !NumCollisions4, !NumCollisions5, !NumCollisions6) :-
     string_hash_case(StrData, HashMask,
-        !HashMap1, !HashMap2, !HashMap3,
-        !NumCollisions1, !NumCollisions2, !NumCollisions3),
+        !HashMap4, !HashMap5, !HashMap6,
+        !NumCollisions4, !NumCollisions5, !NumCollisions6),
     string_hash_cases(StrsDatas, HashMask,
-        !HashMap1, !HashMap2, !HashMap3,
-        !NumCollisions1, !NumCollisions2, !NumCollisions3).
+        !HashMap4, !HashMap5, !HashMap6,
+        !NumCollisions4, !NumCollisions5, !NumCollisions6).
 
 :- pred string_hash_case(pair(string, CaseRep)::in, int::in,
     map(int, assoc_list(string, CaseRep))::in,
@@ -908,29 +957,29 @@ string_hash_cases([StrData | StrsDatas], HashMask,
     int::in, int::out, int::in, int::out, int::in, int::out) is det.
 
 string_hash_case(StrCaseRep, HashMask,
-        !HashMap1, !HashMap2, !HashMap3,
-        !NumCollisions1, !NumCollisions2, !NumCollisions3) :-
+        !HashMap4, !HashMap5, !HashMap6,
+        !NumCollisions4, !NumCollisions5, !NumCollisions6) :-
     StrCaseRep = String - _CaseRep,
-    HashVal1 = string.hash(String) /\ HashMask,
-    HashVal2 = string.hash2(String) /\ HashMask,
-    HashVal3 = string.hash3(String) /\ HashMask,
-    ( map.search(!.HashMap1, HashVal1, OldEntries1) ->
-        map.det_update(HashVal1, [StrCaseRep | OldEntries1], !HashMap1),
-        !:NumCollisions1 = !.NumCollisions1 + 1
-    ;
-        map.det_insert(HashVal1, [StrCaseRep], !HashMap1)
+    HashVal4 = string.hash4(String) /\ HashMask,
+    HashVal5 = string.hash5(String) /\ HashMask,
+    HashVal6 = string.hash6(String) /\ HashMask,
+    ( if map.search(!.HashMap4, HashVal4, OldEntries4) then
+        map.det_update(HashVal4, [StrCaseRep | OldEntries4], !HashMap4),
+        !:NumCollisions4 = !.NumCollisions4 + 1
+    else
+        map.det_insert(HashVal4, [StrCaseRep], !HashMap4)
     ),
-    ( map.search(!.HashMap2, HashVal2, OldEntries2) ->
-        map.det_update(HashVal2, [StrCaseRep | OldEntries2], !HashMap2),
-        !:NumCollisions2 = !.NumCollisions2 + 1
-    ;
-        map.det_insert(HashVal2, [StrCaseRep], !HashMap2)
+    ( if map.search(!.HashMap5, HashVal5, OldEntries5) then
+        map.det_update(HashVal5, [StrCaseRep | OldEntries5], !HashMap5),
+        !:NumCollisions5 = !.NumCollisions5 + 1
+    else
+        map.det_insert(HashVal5, [StrCaseRep], !HashMap5)
     ),
-    ( map.search(!.HashMap3, HashVal3, OldEntries3) ->
-        map.det_update(HashVal3, [StrCaseRep | OldEntries3], !HashMap3),
-        !:NumCollisions3 = !.NumCollisions3 + 1
-    ;
-        map.det_insert(HashVal3, [StrCaseRep], !HashMap3)
+    ( if map.search(!.HashMap6, HashVal6, OldEntries6) then
+        map.det_update(HashVal6, [StrCaseRep | OldEntries6], !HashMap6),
+        !:NumCollisions6 = !.NumCollisions6 + 1
+    else
+        map.det_insert(HashVal6, [StrCaseRep], !HashMap6)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -989,7 +1038,7 @@ calc_string_hash_slots_loop_over_hash_strings([StringCaseRep | StringCaseReps],
         TableSize, HashVal, HashMap, !SlotMap, !LastUsed),
     StringCaseRep = String - CaseRep,
     NewSlot = string_hash_slot(String, -1, CaseRep),
-    ( map.contains(!.SlotMap, HashVal) ->
+    ( if map.contains(!.SlotMap, HashVal) then
         follow_hash_chain(!.SlotMap, HashVal, ChainEnd),
         next_free_hash_slot(!.SlotMap, HashMap, TableSize, !LastUsed),
         map.lookup(!.SlotMap, ChainEnd, ChainEndSlot0),
@@ -1001,7 +1050,7 @@ calc_string_hash_slots_loop_over_hash_strings([StringCaseRep | StringCaseReps],
             io.format("%s: home %d, remapped slot %d\n",
                 [s(String), i(HashVal), i(!.LastUsed)], !IO)
         )
-    ;
+    else
         map.det_insert(HashVal, NewSlot, !SlotMap),
         trace [compile_time(flag("hash_slots")), io(!IO)] (
             io.format("%s: native slot %d\n", [s(String), i(HashVal)], !IO)
@@ -1013,12 +1062,12 @@ calc_string_hash_slots_loop_over_hash_strings([StringCaseRep | StringCaseReps],
 
 follow_hash_chain(Map, Slot, LastSlot) :-
     map.lookup(Map, Slot, string_hash_slot(_, NextSlot, _)),
-    (
+    ( if
         NextSlot >= 0,
         map.contains(Map, NextSlot)
-    ->
+    then
         follow_hash_chain(Map, NextSlot, LastSlot)
-    ;
+    else
         LastSlot = Slot
     ).
 
@@ -1035,13 +1084,14 @@ follow_hash_chain(Map, Slot, LastSlot) :-
 next_free_hash_slot(Map, HomeMap, TableSize, LastUsed, FreeSlot) :-
     NextSlot = LastUsed + 1,
     expect(NextSlot < TableSize, $module, $pred, "overflow"),
-    (
-        \+ map.contains(Map, NextSlot),
-        \+ map.contains(HomeMap, NextSlot)
-    ->
-        FreeSlot = NextSlot
-    ;
+    ( if
+        ( map.contains(Map, NextSlot)
+        ; map.contains(HomeMap, NextSlot)
+        )
+    then
         next_free_hash_slot(Map, HomeMap, TableSize, NextSlot, FreeSlot)
+    else
+        FreeSlot = NextSlot
     ).
 
 %-----------------------------------------------------------------------------%
@@ -1078,9 +1128,9 @@ string_binary_entries([TaggedCase | TaggedCases], RepresentCase,
 
 add_string_binary_entry(CaseRep, TaggedConsId, !UnsortedTable) :-
     TaggedConsId = tagged_cons_id(_ConsId, Tag),
-    ( Tag = string_tag(StringPrime) ->
+    ( if Tag = string_tag(StringPrime) then
         String = StringPrime
-    ;
+    else
         unexpected($module, $pred, "non-string case?")
     ),
     !:UnsortedTable = [String - CaseRep | !.UnsortedTable].
@@ -1109,13 +1159,13 @@ get_ptag_counts(Type, ModuleInfo, MaxPrimary, PtagCountMap) :-
         unexpected($module, $pred, "non-du type")
     ),
     map.init(PtagCountMap0),
-    get_ptag_counts_2(TagList, -1, MaxPrimary, PtagCountMap0, PtagCountMap).
+    get_ptag_counts_loop(TagList, -1, MaxPrimary, PtagCountMap0, PtagCountMap).
 
-:- pred get_ptag_counts_2(list(cons_tag)::in, int::in, int::out,
+:- pred get_ptag_counts_loop(list(cons_tag)::in, int::in, int::out,
     ptag_count_map::in, ptag_count_map::out) is det.
 
-get_ptag_counts_2([], !MaxPrimary, !PtagCountMap).
-get_ptag_counts_2([Tag | Tags], !MaxPrimary, !PtagCountMap) :-
+get_ptag_counts_loop([], !MaxPrimary, !PtagCountMap).
+get_ptag_counts_loop([Tag | Tags], !MaxPrimary, !PtagCountMap) :-
     (
         (
             Tag = single_functor_tag,
@@ -1129,15 +1179,15 @@ get_ptag_counts_2([Tag | Tags], !MaxPrimary, !PtagCountMap) :-
             SecTag = sectag_none_direct_arg
         ),
         int.max(Primary, !MaxPrimary),
-        ( map.search(!.PtagCountMap, Primary, _) ->
+        ( if map.search(!.PtagCountMap, Primary, _) then
             unexpected($module, $pred, "unshared tag is shared")
-        ;
+        else
             map.det_insert(Primary, SecTag - (-1), !PtagCountMap)
         )
     ;
         Tag = shared_remote_tag(Primary, Secondary),
         int.max(Primary, !MaxPrimary),
-        ( map.search(!.PtagCountMap, Primary, Target) ->
+        ( if map.search(!.PtagCountMap, Primary, Target) then
             Target = TagType - MaxSoFar,
             (
                 TagType = sectag_remote
@@ -1151,13 +1201,13 @@ get_ptag_counts_2([Tag | Tags], !MaxPrimary, !PtagCountMap) :-
             ),
             int.max(Secondary, MaxSoFar, Max),
             map.det_update(Primary, sectag_remote - Max, !PtagCountMap)
-        ;
+        else
             map.det_insert(Primary, sectag_remote - Secondary, !PtagCountMap)
         )
     ;
         Tag = shared_local_tag(Primary, Secondary),
         int.max(Primary, !MaxPrimary),
-        ( map.search(!.PtagCountMap, Primary, Target) ->
+        ( if map.search(!.PtagCountMap, Primary, Target) then
             Target = TagType - MaxSoFar,
             (
                 TagType = sectag_local
@@ -1171,7 +1221,7 @@ get_ptag_counts_2([Tag | Tags], !MaxPrimary, !PtagCountMap) :-
             ),
             int.max(Secondary, MaxSoFar, Max),
             map.det_update(Primary, sectag_local - Max, !PtagCountMap)
-        ;
+        else
             map.det_insert(Primary, sectag_local - Secondary, !PtagCountMap)
         )
     ;
@@ -1179,6 +1229,7 @@ get_ptag_counts_2([Tag | Tags], !MaxPrimary, !PtagCountMap) :-
         ; Tag = string_tag(_)
         ; Tag = float_tag(_)
         ; Tag = int_tag(_)
+        ; Tag = uint_tag(_)
         ; Tag = foreign_tag(_, _)
         ; Tag = closure_tag(_, _, _)
         ; Tag = type_ctor_info_tag(_, _, _)
@@ -1188,48 +1239,48 @@ get_ptag_counts_2([Tag | Tags], !MaxPrimary, !PtagCountMap) :-
         ; Tag = ground_term_const_tag(_, _)
         ; Tag = tabling_info_tag(_, _)
         ; Tag = deep_profiling_proc_layout_tag(_, _)
-        ; Tag = table_io_decl_tag(_, _)
+        ; Tag = table_io_entry_tag(_, _)
         ; Tag = reserved_address_tag(_)
         ; Tag = shared_with_reserved_addresses_tag(_, _)
         ),
         unexpected($module, $pred, "non-du tag")
     ),
-    get_ptag_counts_2(Tags, !MaxPrimary, !PtagCountMap).
+    get_ptag_counts_loop(Tags, !MaxPrimary, !PtagCountMap).
 
 %-----------------------------------------------------------------------------%
 
 group_cases_by_ptag(TaggedCases, RepresentCase, !StateA, !StateB, !StateC,
         CaseNumPtagsMap, PtagCaseMap) :-
-    group_cases_by_ptag_2(TaggedCases, RepresentCase,
+    group_cases_by_ptag_loop(TaggedCases, RepresentCase,
         !StateA, !StateB, !StateC,
         map.init, CaseNumPtagsMap, map.init, PtagCaseMap).
 
-:- pred group_cases_by_ptag_2(list(tagged_case)::in,
+:- pred group_cases_by_ptag_loop(list(tagged_case)::in,
     pred(tagged_case, CaseRep, StateA, StateA, StateB, StateB, StateC, StateC)
         ::in(pred(in, out, in, out, in, out, in, out) is det),
     StateA::in, StateA::out, StateB::in, StateB::out, StateC::in, StateC::out,
-    case_num_ptags_map::in, case_num_ptags_map::out,
+    case_id_ptags_map::in, case_id_ptags_map::out,
     ptag_case_map(CaseRep)::in, ptag_case_map(CaseRep)::out) is det.
 
-group_cases_by_ptag_2([], _,
+group_cases_by_ptag_loop([], _,
         !StateA, !StateB, !StateC, !CaseNumPtagsMap, !PtagCaseMap).
-group_cases_by_ptag_2([TaggedCase | TaggedCases], RepresentCase,
+group_cases_by_ptag_loop([TaggedCase | TaggedCases], RepresentCase,
         !StateA, !StateB, !StateC, !CaseNumPtagsMap, !PtagCaseMap) :-
-    TaggedCase = tagged_case(MainTaggedConsId, OtherConsIds, CaseNum, _Goal),
+    TaggedCase = tagged_case(MainTaggedConsId, OtherConsIds, CaseId, _Goal),
     RepresentCase(TaggedCase, CaseRep, !StateA, !StateB, !StateC),
-    group_case_by_ptag(CaseNum, CaseRep, MainTaggedConsId,
+    group_case_by_ptag(CaseId, CaseRep, MainTaggedConsId,
         !CaseNumPtagsMap, !PtagCaseMap),
-    list.foldl2(group_case_by_ptag(CaseNum, CaseRep), OtherConsIds,
+    list.foldl2(group_case_by_ptag(CaseId, CaseRep), OtherConsIds,
         !CaseNumPtagsMap, !PtagCaseMap),
-    group_cases_by_ptag_2(TaggedCases, RepresentCase,
+    group_cases_by_ptag_loop(TaggedCases, RepresentCase,
         !StateA, !StateB, !StateC, !CaseNumPtagsMap, !PtagCaseMap).
 
-:- pred group_case_by_ptag(int::in, CaseRep::in, tagged_cons_id::in,
-    map(int, set(int))::in, map(int, set(int))::out,
+:- pred group_case_by_ptag(case_id::in, CaseRep::in, tagged_cons_id::in,
+    map(case_id, set(int))::in, map(case_id, set(int))::out,
     ptag_case_map(CaseRep)::in, ptag_case_map(CaseRep)::out) is det.
 
-group_case_by_ptag(CaseNum, CaseRep, TaggedConsId,
-        !CaseNumPtagsMap, !PtagCaseMap) :-
+group_case_by_ptag(CaseId, CaseRep, TaggedConsId,
+        !CaseIdPtagsMap, !PtagCaseMap) :-
     TaggedConsId = tagged_cons_id(_ConsId, Tag),
     (
         (
@@ -1243,37 +1294,37 @@ group_case_by_ptag(CaseNum, CaseRep, TaggedConsId,
             Tag = direct_arg_tag(Primary),
             SecTag = sectag_none_direct_arg
         ),
-        ( map.search(!.PtagCaseMap, Primary, _Group) ->
+        ( if map.search(!.PtagCaseMap, Primary, _Group) then
             unexpected($module, $pred, "unshared tag is shared")
-        ;
+        else
             StagGoalMap = map.singleton(-1, CaseRep),
             map.det_insert(Primary, ptag_case(SecTag, StagGoalMap),
                 !PtagCaseMap)
         )
     ;
         Tag = shared_remote_tag(Primary, Secondary),
-        ( map.search(!.PtagCaseMap, Primary, Group) ->
+        ( if map.search(!.PtagCaseMap, Primary, Group) then
             Group = ptag_case(StagLoc, StagGoalMap0),
             expect(unify(StagLoc, sectag_remote), $module, $pred,
                 "remote tag is shared with non-remote"),
             map.det_insert(Secondary, CaseRep, StagGoalMap0, StagGoalMap),
             map.det_update(Primary, ptag_case(sectag_remote, StagGoalMap),
                 !PtagCaseMap)
-        ;
+        else
             StagGoalMap = map.singleton(Secondary, CaseRep),
             map.det_insert(Primary, ptag_case(sectag_remote, StagGoalMap),
                 !PtagCaseMap)
         )
     ;
         Tag = shared_local_tag(Primary, Secondary),
-        ( map.search(!.PtagCaseMap, Primary, Group) ->
+        ( if map.search(!.PtagCaseMap, Primary, Group) then
             Group = ptag_case(StagLoc, StagGoalMap0),
             expect(unify(StagLoc, sectag_local), $module, $pred,
                 "local tag is shared with non-local"),
             map.det_insert(Secondary, CaseRep, StagGoalMap0, StagGoalMap),
             map.det_update(Primary, ptag_case(sectag_local, StagGoalMap),
                 !PtagCaseMap)
-        ;
+        else
             StagGoalMap = map.singleton(Secondary, CaseRep),
             map.det_insert(Primary, ptag_case(sectag_local, StagGoalMap),
                 !PtagCaseMap)
@@ -1283,6 +1334,7 @@ group_case_by_ptag(CaseNum, CaseRep, TaggedConsId,
         ; Tag = string_tag(_)
         ; Tag = float_tag(_)
         ; Tag = int_tag(_)
+        ; Tag = uint_tag(_)
         ; Tag = foreign_tag(_, _)
         ; Tag = closure_tag(_, _, _)
         ; Tag = type_ctor_info_tag(_, _, _)
@@ -1292,18 +1344,18 @@ group_case_by_ptag(CaseNum, CaseRep, TaggedConsId,
         ; Tag = ground_term_const_tag(_, _)
         ; Tag = tabling_info_tag(_, _)
         ; Tag = deep_profiling_proc_layout_tag(_, _)
-        ; Tag = table_io_decl_tag(_, _)
+        ; Tag = table_io_entry_tag(_, _)
         ; Tag = reserved_address_tag(_)
         ; Tag = shared_with_reserved_addresses_tag(_, _)
         ),
         unexpected($module, $pred, "non-du tag")
     ),
-    ( map.search(!.CaseNumPtagsMap, CaseNum, Ptags0) ->
+    ( if map.search(!.CaseIdPtagsMap, CaseId, Ptags0) then
         set.insert(Primary, Ptags0, Ptags),
-        map.det_update(CaseNum, Ptags, !CaseNumPtagsMap)
-    ;
+        map.det_update(CaseId, Ptags, !CaseIdPtagsMap)
+    else
         Ptags = set.make_singleton_set(Primary),
-        map.det_insert(CaseNum, Ptags, !CaseNumPtagsMap)
+        map.det_insert(CaseId, Ptags, !CaseIdPtagsMap)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -1356,14 +1408,14 @@ build_ptag_case_rev_map([Entry | Entries], PtagCountMap, !RevMap) :-
         ( CountSecTagLocn = sectag_none
         ; CountSecTagLocn = sectag_none_direct_arg
         ),
-        ( map.search(!.RevMap, Case, OldEntry) ->
+        ( if map.search(!.RevMap, Case, OldEntry) then
             OldEntry = ptag_case_rev_map_entry(OldCount,
                 OldFirstPtag, OldLaterPtags0, OldCase),
             expect(unify(Case, OldCase), $module, $pred, "Case != OldCase"),
             NewEntry = ptag_case_rev_map_entry(OldCount + Count,
                 OldFirstPtag, OldLaterPtags0 ++ [Ptag], OldCase),
             map.det_update(Case, NewEntry, !RevMap)
-        ;
+        else
             NewEntry = ptag_case_rev_map_entry(Count, Ptag, [], Case),
             map.det_insert(Case, NewEntry, !RevMap)
         )
@@ -1391,21 +1443,21 @@ build_ptag_case_rev_map([Entry | Entries], PtagCountMap, !RevMap) :-
 %-----------------------------------------------------------------------------%
 
 order_ptags_by_value(Ptag, MaxPtag, PtagCaseMap0, PtagCaseList) :-
-    ( MaxPtag >= Ptag ->
+    ( if MaxPtag >= Ptag then
         NextPtag = Ptag + 1,
-        ( map.search(PtagCaseMap0, Ptag, PtagCase) ->
+        ( if map.search(PtagCaseMap0, Ptag, PtagCase) then
             map.delete(Ptag, PtagCaseMap0, PtagCaseMap1),
             order_ptags_by_value(NextPtag, MaxPtag,
                 PtagCaseMap1, PtagCaseList1),
             PtagCaseEntry = ptag_case_entry(Ptag, PtagCase),
             PtagCaseList = [PtagCaseEntry | PtagCaseList1]
-        ;
+        else
             order_ptags_by_value(NextPtag, MaxPtag, PtagCaseMap0, PtagCaseList)
         )
-    ;
-        ( map.is_empty(PtagCaseMap0) ->
+    else
+        ( if map.is_empty(PtagCaseMap0) then
             PtagCaseList = []
-        ;
+        else
             unexpected($module, $pred, "PtagCaseMap0 is not empty")
         )
     ).
@@ -1414,16 +1466,16 @@ order_ptags_by_value(Ptag, MaxPtag, PtagCaseMap0, PtagCaseList) :-
 %-----------------------------------------------------------------------------%
 
 get_int_tag(ConsTag, Int) :-
-    ( ConsTag = int_tag(IntPrime) ->
+    ( if ConsTag = int_tag(IntPrime) then
         Int = IntPrime
-    ;
+    else
         unexpected($module, $pred, "not int_tag")
     ).
 
 get_string_tag(ConsTag, Str) :-
-    ( ConsTag = string_tag(StrPrime) ->
+    ( if ConsTag = string_tag(StrPrime) then
         Str = StrPrime
-    ;
+    else
         unexpected($module, $pred, "not string_tag")
     ).
 

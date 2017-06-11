@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 1995-2012 The University of Melbourne.
+% Copyright (C) 2015 The Mercury team.
 % This file may only be copied under the terms of the GNU General
 % Public Licence - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -47,10 +48,10 @@
 %               Result0 = succeeded(Y)
 %           ;
 %               Result0 = exception(Excp),
-%               ( Excp = univ(rollback_invalid_transaction) ->
+%               ( if Excp = univ(rollback_invalid_transaction) then
 %                   impure stm_discard_transaction_log(STM),
 %                   'StmExpanded_rollback_0_0_0'(X, Y)
-%               ; Excp = univ(rollback_retry) ->
+%               else if Excp = univ(rollback_retry) then
 %                   impure stm_lock,
 %                   impure stm_validate(STM, IsValid),
 %                   (
@@ -62,7 +63,7 @@
 %                   ),
 %                   impure stm_discard_trasaction_log(STM),
 %                   'StmExpanded_rollback_0_0_0'(X, Y)
-%               ;
+%               else
 %                   impure stm_lock,
 %                   impure stm_validate(STM, IsValid),
 %                   impure stm_unlock,
@@ -155,6 +156,7 @@
 :- module transform_hlds.stm_expand.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 
 %-----------------------------------------------------------------------------%
@@ -166,17 +168,24 @@
 
 :- implementation.
 
-:- import_module check_hlds.inst_match.
+:- import_module check_hlds.
+:- import_module check_hlds.inst_test.
 :- import_module check_hlds.mode_util.
 :- import_module check_hlds.polymorphism.
 :- import_module hlds.goal_util.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
-:- import_module hlds.hlds_pred.
 :- import_module hlds.instmap.
+:- import_module hlds.make_goal.
 :- import_module hlds.pred_table.
 :- import_module hlds.quantification.
+:- import_module hlds.status.
+:- import_module hlds.vartypes.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.builtin_lib_types.
 :- import_module parse_tree.prog_data.
 :- import_module parse_tree.prog_mode.
@@ -192,7 +201,6 @@
 :- import_module maybe.
 :- import_module pair.
 :- import_module require.
-:- import_module set.
 :- import_module string.
 :- import_module term.
 :- import_module varset.
@@ -241,7 +249,7 @@
 %-----------------------------------------------------------------------------%
 
 stm_process_module(!ModuleInfo) :-
-    module_info_get_valid_predids(PredIds, !ModuleInfo),
+    module_info_get_valid_pred_ids(!.ModuleInfo, PredIds),
     list.foldl(stm_process_pred, PredIds, !ModuleInfo),
     module_info_clobber_dependency_info(!ModuleInfo).
 
@@ -259,15 +267,15 @@ stm_process_pred(PredId, !ModuleInfo) :-
 stm_process_proc(PredId, ProcId, !ModuleInfo) :-
     module_info_get_preds(!.ModuleInfo, PredTable0),
     map.lookup(PredTable0, PredId, PredInfo0),
-    pred_info_get_procedures(PredInfo0, ProcTable0),
+    pred_info_get_proc_table(PredInfo0, ProcTable0),
     map.lookup(ProcTable0, ProcId, ProcInfo0),
 
     stm_process_proc_2(ProcInfo0, ProcInfo, PredId, ProcId, PredInfo0,
         PredInfo1, !ModuleInfo),
 
-    pred_info_get_procedures(PredInfo1, ProcTable1),
+    pred_info_get_proc_table(PredInfo1, ProcTable1),
     map.det_update(ProcId, ProcInfo, ProcTable1, ProcTable),
-    pred_info_set_procedures(ProcTable, PredInfo1, PredInfo),
+    pred_info_set_proc_table(ProcTable, PredInfo1, PredInfo),
     module_info_get_preds(!.ModuleInfo, PredTable1),
     map.det_update(PredId, PredInfo, PredTable1, PredTable),
     module_info_set_preds(PredTable, !ModuleInfo).
@@ -344,7 +352,8 @@ stm_process_goal(Instmap, Goal0, Goal, !Info) :-
                 unexpected($module, $pred, "unexpected scope")
             )
         ;
-            ( Reason = exist_quant(_)
+            ( Reason = disable_warnings(_, _)
+            ; Reason = exist_quant(_)
             ; Reason = promise_solutions(_, _)
             ; Reason = promise_purity(_)
             ; Reason = commit(_)
@@ -358,6 +367,7 @@ stm_process_goal(Instmap, Goal0, Goal, !Info) :-
         ;
             ( Reason = require_detism(_)
             ; Reason = require_complete_switch(_)
+            ; Reason = require_switch_arms_detism(_, _)
             ),
             % These scopes should have been deleted by now.
             unexpected($module, $pred, "unexpected scope")
@@ -538,22 +548,22 @@ order_vars_into_groups_2(ModuleInfo, [Var|Vars], InitInstmap, FinalInstmap,
         !LocalVars, !InputVars, !OutputVars) :-
     instmap_lookup_var(InitInstmap, Var, InitVarInst),
     instmap_lookup_var(FinalInstmap, Var, FinalVarInst),
-    (
+    ( if
         inst_is_free(ModuleInfo, InitVarInst),
         inst_is_free(ModuleInfo, FinalVarInst)
-    ->
+    then
         !:LocalVars = [Var | !.LocalVars]
-    ;
+    else if
         inst_is_free(ModuleInfo, InitVarInst),
         inst_is_bound(ModuleInfo, FinalVarInst)
-    ->
+    then
         !:OutputVars = [Var | !.OutputVars]
-    ;
+    else if
         inst_is_bound(ModuleInfo, InitVarInst),
         inst_is_bound(ModuleInfo, FinalVarInst)
-    ->
+    then
         !:InputVars = [Var | !.InputVars]
-    ;
+    else
         unexpected($module, $pred, "unhandled inst case")
     ),
     order_vars_into_groups_2(ModuleInfo, Vars, InitInstmap, FinalInstmap,
@@ -570,8 +580,10 @@ order_vars_into_groups_2(ModuleInfo, [Var|Vars], InitInstmap, FinalInstmap,
     is det.
 
 common_goal_vars_from_list(GoalList, GoalVar) :-
-    ExtractInputSet = (pred(AGV::in, Input::out) is det :-
-        Input = AGV ^ vars_input),
+    ExtractInputSet =
+        ( pred(AGV::in, Input::out) is det :-
+            Input = AGV ^ vars_input
+        ),
     list.map(ExtractInputSet, GoalList, InputVarList),
     InputVars = set_of_var.union_list(InputVarList),
     GoalVar0 = list.det_head(GoalList),
@@ -581,8 +593,10 @@ common_goal_vars_from_list(GoalList, GoalVar) :-
         list(stm_goal_vars)::in, list(stm_goal_vars)::out) is det.
 
 copy_input_vars_in_goallist(GoalVar, !GoalList) :-
-    CopyInputVarLambda = (pred(AGV0::in, AGV::out) is det :-
-        AGV = AGV0 ^ vars_input := (GoalVar ^ vars_input)),
+    CopyInputVarLambda =
+        ( pred(AGV0::in, AGV::out) is det :-
+            AGV = AGV0 ^ vars_input := (GoalVar ^ vars_input)
+        ),
     list.map(CopyInputVarLambda, !GoalList).
 
 :- pred calc_pred_variables_list(instmap::in, instmap::in,
@@ -591,17 +605,17 @@ copy_input_vars_in_goallist(GoalVar, !GoalList) :-
 
 calc_pred_variables_list(InitInstmap, FinalInstmap, Goals, InnerDIs, InnerUOs,
         IgnoreVarList0, StmGoalVarList, !StmInfo) :-
-    (
+    ( if
         Goals = [],
         InnerDIs = [],
         InnerUOs = []
-    ->
+    then
         StmGoalVarList = []
-    ;
+    else if
         Goals = [HeadGoal | TailGoals],
         InnerDIs = [HeadInnerDI | TailInnerDIs],
         InnerUOs = [HeadInnerUO | TailInnerUOs]
-    ->
+    then
         IgnoreVarList = [HeadInnerDI, HeadInnerUO | IgnoreVarList0],
 
         calc_pred_variables(InitInstmap, FinalInstmap, HeadGoal, HeadInnerDI,
@@ -610,7 +624,7 @@ calc_pred_variables_list(InitInstmap, FinalInstmap, Goals, InnerDIs, InnerUOs,
             TailInnerDIs, TailInnerUOs, IgnoreVarList, StmGoalVarList0,
             !StmInfo),
         StmGoalVarList = [StmGoalVar | StmGoalVarList0]
-    ;
+    else
         unexpected($module, $pred, "lengths mismatch")
     ).
 
@@ -660,23 +674,29 @@ calc_pred_variables(InitInstmap, FinalInstmap, Goal,
 	pair(maybe(prog_var), maybe(prog_var))::out) is det.
 
 remove_tail([], [], no - no, no - no).
-remove_tail([G | Gs], Goals, MaybeOutDI - MaybeOutUO, MaybeInDI - MaybeInUO) :-
-    remove_tail(Gs, Goals0, MaybeOutDI0 - MaybeOutUO0,
+remove_tail([HeadGoal0 | TailGoals0], Goals,
+        MaybeOutDI - MaybeOutUO, MaybeInDI - MaybeInUO) :-
+    remove_tail(TailGoals0, TailGoals, MaybeOutDI0 - MaybeOutUO0,
         MaybeInDI0 - MaybeInUO0),
-    ( G = hlds_goal(plain_call(_, _, [_, X, V], _, _, stm_outer_inner), _) ->
+    HeadGoal0 = hlds_goal(HeadGoalExpr0, _),
+    ( if
+        HeadGoalExpr0 = plain_call(_, _, [_, X, V], _, _, stm_outer_inner)
+    then
         MaybeInDI = yes(V),
         MaybeInUO = MaybeInUO0,
 		MaybeOutDI = yes(X),
 		MaybeOutUO = MaybeOutUO0,
-        Goals = Goals0
-    ; G = hlds_goal(plain_call(_, _, [_, V, X], _, _, stm_inner_outer), _) ->
+        Goals = TailGoals
+    else if
+        HeadGoalExpr0 = plain_call(_, _, [_, V, X], _, _, stm_inner_outer)
+    then
         MaybeInDI = MaybeInDI0,
         MaybeInUO = yes(V),
 		MaybeOutDI = MaybeOutDI0,
 		MaybeOutUO = yes(X),
-        Goals = Goals0
-    ;
-        Goals = [G | Goals0],
+        Goals = TailGoals
+    else
+        Goals = [HeadGoal0 | TailGoals],
         MaybeInDI = MaybeInDI0,
         MaybeInUO = MaybeInUO0,
         MaybeOutDI = MaybeOutDI0,
@@ -690,8 +710,7 @@ remove_tail([G | Gs], Goals, MaybeOutDI - MaybeOutUO, MaybeInDI - MaybeInUO) :-
     prog_var::out, prog_var::out, prog_var::out, prog_var::out) is det.
 
 strip_goal_calls(Goal0, Goal, StmOutDI, StmOutUO, StmInDI, StmInUO) :-
-    (
-        Goal0 = hlds_goal(conj(plain_conj, GoalList0), GoalInfo) ->
+    ( if Goal0 = hlds_goal(conj(plain_conj, GoalList0), GoalInfo) then
         (
             GoalList0 = [],
             unexpected($module, $pred, "empty conjunction")
@@ -702,22 +721,22 @@ strip_goal_calls(Goal0, Goal, StmOutDI, StmOutUO, StmInDI, StmInUO) :-
             MaybeInUO = snd(MaybeInVarPair),
             MaybeOutDI = fst(MaybeOutVarPair),
             MaybeOutUO = snd(MaybeOutVarPair),
-            (
+            ( if
                 MaybeInDI = yes(StmInDI0),
                 MaybeInUO = yes(StmInUO0),
                 MaybeOutDI = yes(StmOutDI0),
                 MaybeOutUO = yes(StmOutUO0)
-            ->
+            then
                 StmInDI = StmInDI0,
                 StmInUO = StmInUO0,
                 StmOutDI = StmOutDI0,
                 StmOutUO = StmOutUO0,
                 Goal = hlds_goal(conj(plain_conj, GoalList), GoalInfo)
-            ;
+            else
                 unexpected($module, $pred, "Vars not extracted")
             )
         )
-    ;
+    else
         unexpected($module, $pred, "atomic_goal not a conj")
     ).
 
@@ -747,9 +766,11 @@ create_nested_goal(InitInstmap, FinalInstmap, OuterDI, OuterUO,
 
         % If no or_else goals, simply connect up the outer and inner variables.
         create_var_unify_stm(MainInnerDI, MainOuterDI,
-            uo_mode - di_mode, CopyDIVars, !StmInfo),
+            unify_modes_lhs_rhs(uo_from_to_insts, di_from_to_insts),
+            CopyDIVars, !StmInfo),
         create_var_unify_stm(MainOuterUO, MainInnerUO,
-            uo_mode - di_mode, CopyUOVars, !StmInfo),
+            unify_modes_lhs_rhs(uo_from_to_insts, di_from_to_insts),
+            CopyUOVars, !StmInfo),
         create_plain_conj([CopyDIVars, AtomicGoal, CopyUOVars], Goal)
     ;
         OrElseGoals = [_ | _],
@@ -792,9 +813,11 @@ create_nested_goal(InitInstmap, FinalInstmap, OuterDI, OuterUO,
         create_or_else_pred(AtomicGoalVars, AtomicGoalVarList1, PPIDList,
             MainInnerDI, MainInnerUO, OrElseCall, !StmInfo),
         create_var_unify_stm(MainInnerDI, MainOuterDI,
-            uo_mode - di_mode, CopyDIVars, !StmInfo),
+            unify_modes_lhs_rhs(uo_from_to_insts, di_from_to_insts),
+            CopyDIVars, !StmInfo),
         create_var_unify_stm(MainOuterUO, MainInnerUO,
-            uo_mode - di_mode, CopyUOVars, !StmInfo),
+            unify_modes_lhs_rhs(uo_from_to_insts, di_from_to_insts),
+            CopyUOVars, !StmInfo),
         create_plain_conj([CopyDIVars, OrElseCall, CopyUOVars], Goal)
     ).
 
@@ -844,7 +867,8 @@ create_top_level_pred(AtomicGoalVarList, OuterDI, OuterUO, AtomicGoal,
         InputModes ++ OutputModes ++ [di_mode, uo_mode], "toplevel",
         AtomicGoal, no, NewPredInfo0, Goal, !StmInfo),
 
-    create_var_unify(OuterUO, OuterDI, uo_mode - di_mode,
+    create_var_unify(OuterUO, OuterDI,
+        unify_modes_lhs_rhs(uo_from_to_insts, di_from_to_insts),
         CopyIOAssign, NewPredInfo0, NewPredInfo1),
     create_plain_conj([WrapperCall, CopyIOAssign], TopLevelGoal),
 
@@ -860,12 +884,12 @@ create_top_level_pred(AtomicGoalVarList, OuterDI, OuterUO, AtomicGoal,
 
     % Predicate that creates the following goal:
     %
-    %       (
+    %       ( if
     %           X <- univ.univ(<<ExceptRes>>),
     %           X == << stm_rollback_exception_functor >>
-    %       ->
+    %       then
     %           << true_goal >>
-    %       ;
+    %       else
     %           << false_goal >>
     %       )
     %
@@ -885,14 +909,17 @@ template_if_exceptres_is_cons(RttiVar, ExceptVar, RollbackExceptCons,
     create_simple_call(mercury_univ_module, "type_to_univ", pf_predicate,
         mode_no(2), detism_semi, purity_pure,
         [RttiVar, UnivPayloadVar, ExceptVar], [],
-        instmap_delta_from_assoc_list([RttiVar - ground(shared, none),
-            ExceptVar - ground(shared, none), UnivPayloadVar - free]),
+        instmap_delta_from_assoc_list(
+            [RttiVar - ground(shared, none_or_default_func),
+            ExceptVar - ground(shared, none_or_default_func),
+            UnivPayloadVar - free]),
         UnivCall, !NewPredInfo),
     create_simple_call(mercury_public_builtin_module, "unify", pf_predicate,
         only_mode, detism_semi, purity_pure,
         [RttiVar, RollbackExceptVar, UnivPayloadVar], [],
         instmap_delta_bind_no_var, _UnifyCall, !NewPredInfo),
-    create_var_test(UnivPayloadVar, RollbackExceptVar, in_mode - in_mode,
+    create_var_test(UnivPayloadVar, RollbackExceptVar,
+        unify_modes_lhs_rhs(in_from_to_insts, in_from_to_insts),
         TestGoal, !NewPredInfo),
 %   XXX STM
 %   create_plain_conj([AssignGoal, UnivCall, TestGoal, UnifyCall], CondGoal),
@@ -934,7 +961,8 @@ template_lock_and_validate(StmVar, UnlockAfterwards, ValidGoal, InvalidGoal,
     create_simple_call(mercury_stm_builtin_module, "stm_validate",
         pf_predicate, only_mode, detism_det, purity_impure,
         [StmVar, IsValidVar], [],
-        instmap_delta_from_assoc_list([StmVar - ground(unique, none),
+        instmap_delta_from_assoc_list(
+            [StmVar - ground(unique, none_or_default_func),
             IsValidVar - free]),
         ValidCall, !NewPredInfo),
     create_switch_disjunction(IsValidVar,
@@ -971,23 +999,27 @@ template_lock_and_validate_many(StmVars, UnlockAfterwards, ValidGoal,
 
     % Create N value result variables. Variables are returned as a list
 
-    CreateValidate = (pred(StmVarL::in, ValidGoalL::out, ValidResL::out,
-            NPI0::in, NPI::out) is det :-
-        create_aux_variable(stm_valid_result_type, yes("ValidResult"),
-            ValidResL, NPI0, NPI1),
-        create_simple_call(mercury_stm_builtin_module, "stm_validate",
-            pf_predicate, only_mode, detism_det, purity_impure,
-            [StmVarL, ValidResL], [],
-            instmap_delta_from_assoc_list([StmVarL - ground(unique, none),
-                ValidResL - free]),
-            ValidGoalL, NPI1, NPI)),
+    CreateValidate =
+        ( pred(StmVarL::in, ValidGoalL::out, ValidResL::out,
+                NPI0::in, NPI::out) is det :-
+            create_aux_variable(stm_valid_result_type, yes("ValidResult"),
+                ValidResL, NPI0, NPI1),
+            create_simple_call(mercury_stm_builtin_module, "stm_validate",
+                pf_predicate, only_mode, detism_det, purity_impure,
+                [StmVarL, ValidResL], [],
+                instmap_delta_from_assoc_list(
+                    [StmVarL - ground(unique, none_or_default_func),
+                    ValidResL - free]),
+                ValidGoalL, NPI1, NPI)
+        ),
 
     list.map2_foldl(CreateValidate, StmVars, ValidCalls, IsValidVars,
         !NewPredInfo),
 
     CreateValidTests =
-        (pred(ValidRes::in, ValidTest::out, NPI0::in, NPI::out) is det :-
-            create_var_test(ValidRes, IsValidConstVar, in_mode - in_mode,
+        ( pred(ValidRes::in, ValidTest::out, NPI0::in, NPI::out) is det :-
+            create_var_test(ValidRes, IsValidConstVar,
+                unify_modes_lhs_rhs(in_from_to_insts, in_from_to_insts),
                 ValidTest, NPI0, NPI)
         ),
 
@@ -1052,7 +1084,8 @@ create_validate_exception_goal(StmVar, ExceptionVar, ReturnType, RecursiveCall,
     create_simple_call(mercury_stm_builtin_module,
         "stm_discard_transaction_log",
         pf_predicate, only_mode, detism_det, purity_impure, [StmVar], [],
-        instmap_delta_from_assoc_list([StmVar - ground(clobbered, none)]),
+        instmap_delta_from_assoc_list(
+            [StmVar - ground(clobbered, none_or_default_func)]),
         DropStateCall, !NewPredInfo),
     create_plain_conj([DropStateCall, RecursiveCall], Goal_InvalidBranch),
     template_lock_and_validate(StmVar, yes, Goal_ValidBranch,
@@ -1079,7 +1112,8 @@ create_retry_handler_branch(StmVar, RecCall, Goal, !NewPredInfo) :-
     create_simple_call(mercury_stm_builtin_module,
         "stm_discard_transaction_log",
         pf_predicate, only_mode, detism_det, purity_impure, [StmVar], [],
-        instmap_delta_from_assoc_list([StmVar - ground(clobbered, none)]),
+        instmap_delta_from_assoc_list(
+            [StmVar - ground(clobbered, none_or_default_func)]),
         DropStateCall, !NewPredInfo),
     create_plain_conj(LockAndValidateGoals ++ [DropStateCall, RecCall],
         Goal).
@@ -1104,7 +1138,8 @@ create_test_on_exception(ExceptVar, StmVar, ReturnType, RecCall, Goal,
     create_simple_call(mercury_stm_builtin_module,
         "stm_discard_transaction_log",
         pf_predicate, only_mode, detism_det, purity_impure, [StmVar], [],
-        instmap_delta_from_assoc_list([StmVar - ground(clobbered, none)]),
+        instmap_delta_from_assoc_list(
+            [StmVar - ground(clobbered, none_or_default_func)]),
         DropStateGoal, !NewPredInfo),
 
     create_plain_conj([DropStateGoal, RecCall], TrueGoal),
@@ -1158,7 +1193,8 @@ create_rollback_handler_goal(AtomicGoalVars, ReturnType, StmVarDI, StmVarUO,
     create_simple_call(mercury_stm_builtin_module,
         "stm_create_transaction_log",
         pf_predicate, only_mode, detism_det, purity_impure, [StmVarDI], [],
-        instmap_delta_from_assoc_list([StmVarDI - ground(unique, none)]),
+        instmap_delta_from_assoc_list(
+            [StmVarDI - ground(unique, none_or_default_func)]),
         Goal_StmCreate, !NewPredInfo),
 
     % TODO: Select mode based on determism of actual goal. 0 if determistic,
@@ -1169,11 +1205,11 @@ create_rollback_handler_goal(AtomicGoalVars, ReturnType, StmVarDI, StmVarUO,
         [RttiTypeVar, AtomicClosureVar, ReturnExceptVar, StmVarDI, StmVarUO],
         [],
         instmap_delta_from_assoc_list([
-            RttiTypeVar - ground(shared, none),
-            AtomicClosureVar - ground(shared, none),
-            ReturnExceptVar - ground(shared, none),
-            StmVarDI - ground(clobbered, none),
-            StmVarUO - ground(unique, none)]),
+            RttiTypeVar - ground(shared, none_or_default_func),
+            AtomicClosureVar - ground(shared, none_or_default_func),
+            ReturnExceptVar - ground(shared, none_or_default_func),
+            StmVarDI - ground(clobbered, none_or_default_func),
+            StmVarUO - ground(unique, none_or_default_func)]),
         Goal_TryStm, !NewPredInfo),
 
     % For successfull execution, deconstruct and return true
@@ -1292,9 +1328,9 @@ move_variables_to_new_pred(AtomicGoal0, AtomicGoal, AtomicGoalVars,
         OldPredVarSet0, OldPredVarSet, OldPredVarTypes0, OldPredVarTypes,
         VarMapping0, VarMapping1),
 
-    ( OrigInnerDI = OrigInnerUO ->
+    ( if OrigInnerDI = OrigInnerUO then
         map.det_insert(OrigInnerDI, InnerDI, VarMapping1, VarMapping)
-    ;
+    else
         map.det_insert(OrigInnerDI, InnerDI, VarMapping1, VarMapping2),
         map.det_insert(OrigInnerUO, InnerUO, VarMapping2, VarMapping)
     ),
@@ -1394,11 +1430,11 @@ create_wrapper_pred_2(AtomicGoalVars, ResultType, ResultVar0,
     % (because of the uniqueness requirements of a number of calls added to
     % the end of the original goal)
 
-    ( InnerUO0 = InnerDI ->
+    ( if InnerUO0 = InnerDI then
         CopyStm = yes,
         create_aux_variable(stm_state_type, yes("NewUO"), InnerUO,
             !NewPredInfo)
-    ;
+    else
         CopyStm = no,
         InnerUO = InnerUO0
     ),
@@ -1450,12 +1486,14 @@ create_post_wrapper_goal(AtomicGoalVars, AtomicGoal, ResultType, ResultVar,
         Goal_StmUnLock_Call, !NewPredInfo),
     create_simple_call(StmModuleName, "stm_validate", pf_predicate, only_mode,
         detism_det, purity_impure, [StmUO, IsValidVar], [],
-        instmap_delta_from_assoc_list([StmUO - ground(unique, none),
-            IsValidVar - ground(shared, none)]),
+        instmap_delta_from_assoc_list(
+            [StmUO - ground(unique, none_or_default_func),
+            IsValidVar - ground(shared, none_or_default_func)]),
         Goal_StmValidate_Call, !NewPredInfo),
     create_simple_call(StmModuleName, "stm_commit", pf_predicate, only_mode,
         detism_det, purity_impure, [StmUO], [],
-        instmap_delta_from_assoc_list([StmUO - ground(unique, none)]),
+        instmap_delta_from_assoc_list(
+            [StmUO - ground(unique, none_or_default_func)]),
         Goal_StmCommit_Call, !NewPredInfo),
 
     make_type_info(stm_rollback_exception_type, TypeInfoVar,
@@ -1488,7 +1526,8 @@ create_post_wrapper_goal(AtomicGoalVars, AtomicGoal, ResultType, ResultVar,
     % Creates the unification between StmUO and StmDI is needed.
     (
         CopySTM = yes,
-        create_var_unify(StmUO, StmDI, uo_mode - di_mode,
+        create_var_unify(StmUO, StmDI,
+            unify_modes_lhs_rhs(uo_from_to_insts, di_from_to_insts),
             CopySTMAssign, !NewPredInfo),
         TopLevelGoalList0 = [AtomicGoal] ++ AssignResult ++ [CopySTMAssign,
             PostAtomicGoal]
@@ -1540,11 +1579,11 @@ create_simple_wrapper_pred_2(AtomicGoalVars, ResultType, ResultVar0,
     % (because of the uniqueness requirements of a number of calls added to
     % the end of the original goal)
 
-    ( InnerUO0 = InnerDI ->
+    ( if InnerUO0 = InnerDI then
         CopyStm = yes,
         create_aux_variable(stm_state_type, yes("NewUO"), InnerUO,
             !NewPredInfo)
-    ;
+    else
         CopyStm = no,
         InnerUO = InnerUO0
     ),
@@ -1585,12 +1624,15 @@ create_simple_post_wrapper_goal(AtomicGoalVars, AtomicGoal, ResultType,
     create_probe_call("start_of_wrapper", StmUO, Call2, !NewPredInfo),
 
     % Creates the unification between StmUO and StmDI is needed.
-    ( CopySTM = yes ->
-        create_var_unify(StmUO, StmDI, uo_mode - di_mode,
+    (
+        CopySTM = yes,
+        create_var_unify(StmUO, StmDI,
+            unify_modes_lhs_rhs(uo_from_to_insts, di_from_to_insts),
             CopySTMAssign, !NewPredInfo),
         TopLevelGoalList0 = Call1 ++ [CopySTMAssign, AtomicGoal] ++ Call2 ++
             AssignResult
     ;
+        CopySTM = no,
         TopLevelGoalList0 = Call1 ++ [AtomicGoal] ++ Call2 ++ AssignResult
     ),
 
@@ -1676,24 +1718,24 @@ create_or_else_pred_2(AtomicGoalVars, Closures, StmDI, StmUO, ReturnType,
 create_or_else_branches(AtomicGoalVars, ReturnType, OuterStmDIVar,
         OuterStmUOVar, InnerSTMVars, RttiVar, RollbackExceptionRttiVar,
         WrapperIDs, EndBranch, Goal, StmInfo, !NewPredInfo) :-
-    (
+    ( if
         InnerSTMVars = [],
         WrapperIDs = [],
         AtomicGoalVars = []
-    ->
+    then
         Goal = EndBranch
-    ;
+    else if
         AtomicGoalVars = [AGV | AGVs],
         InnerSTMVars = [InnerVar | InnerSTMVars0],
         WrapperIDs = [WrapID | WrapperIDs0]
-    ->
+    then
         create_or_else_branches(AGVs, ReturnType, OuterStmDIVar,
             OuterStmUOVar, InnerSTMVars0, RttiVar, RollbackExceptionRttiVar,
             WrapperIDs0, EndBranch, Goal0, StmInfo, !NewPredInfo),
         create_or_else_branch(AGV, ReturnType, OuterStmDIVar,
             OuterStmUOVar, InnerVar, RttiVar, RollbackExceptionRttiVar,
             WrapID, Goal0, Goal, StmInfo, !NewPredInfo)
-    ;
+    else
         unexpected($module, $pred, "mismatched lists")
     ).
 
@@ -1701,14 +1743,14 @@ create_or_else_branches(AtomicGoalVars, ReturnType, OuterStmDIVar,
     stm_new_pred_info::in, stm_new_pred_info::out) is det.
 
 create_or_else_inner_stm_vars(Count, Vars, !NewPredInfo) :-
-    ( Count = 0 ->
+    ( if Count = 0 then
         Vars = []
-    ; Count > 0 ->
+    else if Count > 0 then
         create_aux_variable(stm_state_type, yes("InnSTM"), Var, !NewPredInfo),
         Count1 = Count - 1,
         create_or_else_inner_stm_vars(Count1, Vars0, !NewPredInfo),
         Vars = [Var | Vars0]
-    ;
+    else
         unexpected($module, $pred, "negative count")
     ).
 
@@ -1721,9 +1763,9 @@ create_or_else_inner_stm_vars(Count, Vars, !NewPredInfo) :-
     %           impure stm_merge_nested_logs(InnerSTM, OuterSTM0, OuterSTM)
     %       ;
     %           ResultA = exception(Excp)
-    %           ( Excp = univ(rollback_retry) ->
+    %           ( if Excp = univ(rollback_retry) then
     %               << nested or_else branch >>
-    %           ;
+    %           else
     %               impure stm_discard_transaction_log(InnerSTM),
     %               rethrow(Result)
     %           )
@@ -1734,19 +1776,19 @@ create_or_else_inner_stm_vars(Count, Vars, !NewPredInfo) :-
     list(K)::in, list(L)::in, list(N)::out, A::in, A::out) is det.
 
 map2_in_foldl(Pred, Src1, Src2, Dest, !Accum) :-
-    (
+    ( if
         Src1 = [],
         Src2 = []
-    ->
+    then
         Dest = []
-    ;
+    else if
         Src1 = [S | Ss],
         Src2 = [T | Ts]
-    ->
+    then
         Pred(S, T, R, !Accum),
         map2_in_foldl(Pred, Ss, Ts,  Rs, !Accum),
         Dest = [R | Rs]
-    ;
+    else
         unexpected($module, $pred, "source list lengths mismatch")
     ).
 
@@ -1755,21 +1797,21 @@ map2_in_foldl(Pred, Src1, Src2, Dest, !Accum) :-
     list(K)::in, list(L)::in, list(M)::in, list(N)::out, A::in, A::out) is det.
 
 map3_in_foldl(Pred, Src1, Src2, Src3, Dest, !Accum) :-
-    (
+    ( if
         Src1 = [],
         Src2 = [],
         Src3 = []
-    ->
+    then
         Dest = []
-    ;
+    else if
         Src1 = [S | Ss],
         Src2 = [T | Ts],
         Src3 = [U | Us]
-    ->
+    then
         Pred(S, T, U, R, !Accum),
         map3_in_foldl(Pred, Ss, Ts, Us, Rs, !Accum),
         Dest = [R | Rs]
-    ;
+    else
         unexpected($module, $pred, "source list lengths mismatch")
     ).
 
@@ -1780,7 +1822,7 @@ map3_in_foldl(Pred, Src1, Src2, Src3, Dest, !Accum) :-
 create_or_else_end_branch(StmVars, OuterSTMDI, OuterSTMUO, ExceptionRttiVar,
         Goal, !NewPredInfo) :-
     MakeIntermediateStmVars =
-        (pred(_::in, Var::out, NPI0::in, NPI::out) is det:-
+        ( pred(_::in, Var::out, NPI0::in, NPI::out) is det:-
             create_aux_variable(stm_state_type, yes("InterSTM"), Var,
                 NPI0, NPI)
         ),
@@ -1794,14 +1836,16 @@ create_or_else_end_branch(StmVars, OuterSTMDI, OuterSTMUO, ExceptionRttiVar,
     MergeStmVarsOut = IntermediateStmVars ++ [OuterSTMUO],
 
     MakeMergeGoals =
-        (pred(StmVar::in, ThreadSTMDI::in, ThreadSTMUO::in,
+        ( pred(StmVar::in, ThreadSTMDI::in, ThreadSTMUO::in,
                 ThisGoal::out, NPI0::in, NPI::out) is det :-
             create_simple_call(mercury_stm_builtin_module,
                 "stm_merge_nested_logs",
                 pf_predicate, only_mode, detism_det, purity_impure,
                 [StmVar, ThreadSTMDI, ThreadSTMUO], [],
-                instmap_delta_from_assoc_list([StmVar - ground(unique, none),
-                    ThreadSTMDI - free, ThreadSTMUO - ground(unique, none)]),
+                instmap_delta_from_assoc_list(
+                    [StmVar - ground(unique, none_or_default_func),
+                    ThreadSTMDI - free,
+                    ThreadSTMUO - ground(unique, none_or_default_func)]),
                 ThisGoal, NPI0, NPI)
         ),
 
@@ -1888,7 +1932,8 @@ create_or_else_branch(AtomicGoalVars, ReturnType, OuterStmDIVar,
         "stm_create_nested_transaction_log",
         pf_predicate, only_mode, detism_det, purity_impure,
         [OuterStmDIVar, InnerSTM0Var], [],
-        instmap_delta_from_assoc_list([OuterStmDIVar - ground(unique, none),
+        instmap_delta_from_assoc_list(
+            [OuterStmDIVar - ground(unique, none_or_default_func),
             InnerSTM0Var - free]),
         CreateNestedLogCall, !NewPredInfo),
 
@@ -1898,10 +1943,10 @@ create_or_else_branch(AtomicGoalVars, ReturnType, OuterStmDIVar,
             InnerSTM0Var, InnerSTMVar],
         [],
         instmap_delta_from_assoc_list([
-            RttiVar - ground(shared, none),
-            AtomicClosureVar - ground(shared, none),
+            RttiVar - ground(shared, none_or_default_func),
+            AtomicClosureVar - ground(shared, none_or_default_func),
             ReturnExceptVar - free,
-            InnerSTM0Var - ground(unique, none),
+            InnerSTM0Var - ground(unique, none_or_default_func),
             InnerSTMVar - free]),
         TryStmCall, !NewPredInfo),
 
@@ -1911,8 +1956,10 @@ create_or_else_branch(AtomicGoalVars, ReturnType, OuterStmDIVar,
     create_simple_call(mercury_stm_builtin_module, "stm_merge_nested_logs",
         pf_predicate, only_mode, detism_det, purity_impure,
         [InnerSTMVar, OuterStmDIVar, OuterStmUOVar], [],
-        instmap_delta_from_assoc_list([InnerSTMVar - ground(unique, none),
-            OuterStmDIVar - ground(unique, none), OuterStmUOVar - free]),
+        instmap_delta_from_assoc_list(
+            [InnerSTMVar - ground(unique, none_or_default_func),
+            OuterStmDIVar - ground(unique, none_or_default_func),
+            OuterStmUOVar - free]),
         MergeNestedLogsCall, !NewPredInfo),
 
     create_plain_conj([DeconstructGoal, MergeNestedLogsCall], SuccessBranch),
@@ -1921,7 +1968,8 @@ create_or_else_branch(AtomicGoalVars, ReturnType, OuterStmDIVar,
     create_simple_call(mercury_stm_builtin_module,
         "stm_discard_transaction_log",
         pf_predicate, only_mode, detism_det, purity_impure, [InnerSTMVar], [],
-        instmap_delta_from_assoc_list([InnerSTMVar - ground(unique, none)]),
+        instmap_delta_from_assoc_list(
+            [InnerSTMVar - ground(unique, none_or_default_func)]),
         DiscardCall, !NewPredInfo),
     create_simple_call(mercury_exception_module, "rethrow",
         pf_predicate, only_mode, detism_erroneous, purity_pure,
@@ -2039,14 +2087,15 @@ construct_output(AtomicGoalVars, ResultType, ResultVar, StmInfo, Goals,
         % Wrapper returns a single value -- Simply get the value from the
         % exception result and return.
         OutVar = list.det_head(OutputVars),
-        create_var_unify(ResultVar, OutVar, out_mode - in_mode, Goal,
-            !NewPredInfo),
+        create_var_unify(ResultVar, OutVar,
+            unify_modes_lhs_rhs(out_from_to_insts, in_from_to_insts),
+            Goal, !NewPredInfo),
         Goals = [Goal]
     ;
         OutputTypes = [_, _ | _],
         % Wrapper returns a tuple. Creates a tuple from the output values.
         make_type_info(ResultType, _, MakeType, !NewPredInfo),
-        hlds_goal.construct_tuple(ResultVar, OutputVars, Goal),
+        construct_tuple(ResultVar, OutputVars, Goal),
         Goals = [Goal | MakeType]
     ).
 
@@ -2069,13 +2118,14 @@ rename_var_in_wrapper_pred(Name, ResultVar0, ResultType, ResultVar,
     add_var_type(ResultVar, ResultType, NewPredVarTypes1, NewPredVarTypes),
     VarMapping = map.singleton(ResultVar0, ResultVar),
 
-    MapLambda = ((pred(X::in, Y::out) is det) :-
-        ( X = ResultVar0 ->
-            Y = ResultVar
-        ;
-            Y = X
-        )
-    ),
+    MapLambda =
+        ( pred(X::in, Y::out) is det :-
+            ( if X = ResultVar0 then
+                Y = ResultVar
+            else
+                Y = X
+            )
+        ),
     list.map(MapLambda, NewHeadVars0, NewHeadVars),
 
     rename_some_vars_in_goal(VarMapping, !Goal),
@@ -2166,10 +2216,10 @@ create_var_test(VarLHS, VarRHS, UnifyMode, Goal, !NewPredInfo) :-
     UnifyType = simple_test(VarLHS, VarRHS),
     UnifyRHS = rhs_var(VarRHS),
     UnifyContext = unify_context(umc_explicit, []),
-    UnifyMode = ModeLHS - ModeRHS,
+    UnifyMode = unify_modes_lhs_rhs(LHSFromToInsts, RHSFromToInsts),
 
-    instmap_delta_from_mode_list([VarLHS, VarRHS], [ModeLHS, ModeRHS],
-        ModuleInfo, InstmapDelta),
+    instmap_delta_from_from_to_insts_list(ModuleInfo,
+        [VarLHS, VarRHS], [LHSFromToInsts, RHSFromToInsts], InstmapDelta),
     GoalExpr = unify(VarLHS, UnifyRHS, UnifyMode, UnifyType, UnifyContext),
 
     set_of_var.list_to_set([VarLHS, VarRHS], NonLocals),
@@ -2192,10 +2242,10 @@ create_var_unify_stm(VarLHS, VarRHS, UnifyMode, Goal, !StmInfo) :-
     UnifyType = assign(VarLHS, VarRHS),
     UnifyRHS = rhs_var(VarRHS),
     UnifyContext = unify_context(umc_explicit, []),
-    UnifyMode = ModeLHS - ModeRHS,
+    UnifyMode = unify_modes_lhs_rhs(LHSFromToInsts, RHSFromToInsts),
 
-    instmap_delta_from_mode_list([VarLHS, VarRHS], [ModeLHS, ModeRHS],
-        ModuleInfo, InstmapDelta),
+    instmap_delta_from_from_to_insts_list(ModuleInfo,
+        [VarLHS, VarRHS], [LHSFromToInsts, RHSFromToInsts], InstmapDelta),
     GoalExpr = unify(VarLHS, UnifyRHS, UnifyMode, UnifyType, UnifyContext),
 
     set_of_var.list_to_set([VarLHS, VarRHS], NonLocals),
@@ -2217,10 +2267,10 @@ create_var_unify(VarLHS, VarRHS, UnifyMode, Goal, !NewPredInfo) :-
     UnifyType = assign(VarLHS, VarRHS),
     UnifyRHS = rhs_var(VarRHS),
     UnifyContext = unify_context(umc_explicit, []),
-    UnifyMode = ModeLHS - ModeRHS,
+    UnifyMode = unify_modes_lhs_rhs(LHSFromToInsts, RHSFromToInsts),
 
-    instmap_delta_from_mode_list([VarLHS, VarRHS], [ModeLHS, ModeRHS],
-        ModuleInfo, InstmapDelta),
+    instmap_delta_from_from_to_insts_list(ModuleInfo,
+        [VarLHS, VarRHS], [LHSFromToInsts, RHSFromToInsts], InstmapDelta),
     GoalExpr = unify(VarLHS, UnifyRHS, UnifyMode, UnifyType, UnifyContext),
 
     set_of_var.list_to_set([VarLHS, VarRHS], NonLocals),
@@ -2350,8 +2400,10 @@ make_type_info(Type, Var, Goals, NewPredInfo0, NewPredInfo) :-
     create_poly_info(ModuleInfo0, PredInfo0, ProcInfo0, PolyInfo0),
     polymorphism_make_type_info_var(Type, Context, Var, Goals,
         PolyInfo0, PolyInfo),
-    poly_info_extract(PolyInfo, PredInfo0, PredInfo, ProcInfo0, ProcInfo,
-        ModuleInfo),
+    poly_info_extract(PolyInfo, PolySpecs, PredInfo0, PredInfo,
+        ProcInfo0, ProcInfo, ModuleInfo),
+    expect(unify(PolySpecs, []), $module, $pred,
+        "got errors while making type_info_var"),
     NewPredInfo = stm_new_pred_info(ModuleInfo, PredId, ProcId,
         PredInfo, ProcInfo, Context, VarCnt).
 
@@ -2404,11 +2456,14 @@ create_cloned_pred(ProcHeadVars, PredArgTypes, ProcHeadModes,
     ),
     proc_info_get_goal(ProcInfo, ProcGoal),
     proc_info_get_rtti_varmaps(ProcInfo, ProcRttiVarMaps),
+    proc_info_get_has_parallel_conj(ProcInfo, HasParallelConj),
     proc_info_get_var_name_remap(ProcInfo, VarNameRemap),
-    proc_info_create(ProcContext, ProcVarSet, ProcVarTypes, ProcHeadVars,
+    ItemNumber = -1,
+    proc_info_create(ProcContext, ItemNumber,
+        ProcVarSet, ProcVarTypes, ProcHeadVars,
         ProcInstVarSet, ProcHeadModes, detism_decl_none, ProcDetism,
-        ProcGoal, ProcRttiVarMaps, address_is_not_taken, VarNameRemap,
-        NewProcInfo),
+        ProcGoal, ProcRttiVarMaps, address_is_not_taken, HasParallelConj,
+        VarNameRemap, NewProcInfo),
     ModuleName = pred_info_module(PredInfo),
     OrigPredName = pred_info_name(PredInfo),
     PredOrFunc = pred_info_is_pred_or_func(PredInfo),
@@ -2428,7 +2483,7 @@ create_cloned_pred(ProcHeadVars, PredArgTypes, ProcHeadModes,
     pred_info_get_assertions(PredInfo, PredAssertions),
     pred_info_get_markers(PredInfo, Markers),
     pred_info_create(ModuleName, NewPredName, PredOrFunc, PredContext,
-        NewPredOrigin, status_local, Markers, PredArgTypes,
+        NewPredOrigin, pred_status(status_local), Markers, PredArgTypes,
         PredTypeVarSet, PredExistQVars, PredClassContext, PredAssertions,
         VarNameRemap, NewProcInfo, NewProcId, NewPredInfo),
 
@@ -2441,7 +2496,7 @@ create_cloned_pred(ProcHeadVars, PredArgTypes, ProcHeadModes,
         NewPredName),
 
     set_of_var.list_to_set(ProcHeadVars, CallNonLocals),
-    instmap_delta_from_mode_list(ProcHeadVars, ProcHeadModes, ModuleInfo0,
+    instmap_delta_from_mode_list(ModuleInfo0, ProcHeadVars, ProcHeadModes,
         CallInstmapDelta),
 
     CallDeterminism = ProcDetism,

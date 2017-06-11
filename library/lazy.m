@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1999, 2006, 2009-2010 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % lazy.m - provides support for optional explicit lazy evaluation.
 %
@@ -15,28 +15,28 @@
 % `delay', and `force', which can be used to emulate lazy evaluation.
 %
 % A field within a data structure can be made lazy by wrapping it within a lazy
-% type.  Or a lazy data-structure can be implemented, for example:
-% 
+% type.  Or a lazy data structure can be implemented, for example:
+%
 % :- type lazy_list(T)
 %     --->    lazy_list(
 %                 lazy(list_cell(T))
 %             ).
-% 
+%
 % :- type list_cell(T)
 %     --->    cons(T, lazy_list(T))
 %     ;       nil.
 %
 % Note that this makes every list cell lazy, whereas:
 %
-%   lazy(list(T)) 
+%   lazy(list(T))
 %
 % uses only one thunk for the entire list. And:
 %
-%   list(lazy(T)) 
+%   list(lazy(T))
 %
 % uses one thunk for every element, but the list's structure is not lazy.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module lazy.
 :- interface.
@@ -77,7 +77,7 @@
 
 :- pred compare_values(comparison_result::uo, lazy(T)::in, lazy(T)::in) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % The declarative semantics of the above constructs are given by the
 % following equations:
@@ -104,8 +104,8 @@
 %   is O(the time to evaluate (X1 = force(X)) + the time to evaluate
 %   (Y1 = force(Y)) + the time to unify X1 and Y1).
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -123,15 +123,7 @@
     --->    value(T)
     ;       closure((func) = T).
 
-%-----------------------------------------------------------------------------%
-
-equal_values(X, Y) :-
-    force(X) = force(Y).
-
-compare_values(R, X, Y) :-
-    compare(R, force(X), force(Y)).
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 val(X) = lazy(Mutvar) :-
     promise_pure (
@@ -143,7 +135,7 @@ delay(F) = lazy(Mutvar) :-
         impure new_mutvar(closure(F), Mutvar)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 force(Lazy) = Value :-
     % The promise_equivalent_solutions scope is needed to tell the compiler
@@ -163,7 +155,7 @@ force(Lazy) = Value :-
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 read_if_val(Lazy, Value) :-
     promise_equivalent_solutions [Mutvar] (
@@ -172,4 +164,12 @@ read_if_val(Lazy, Value) :-
     impure get_mutvar(Mutvar, State),
     State = value(Value).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+
+equal_values(X, Y) :-
+    force(X) = force(Y).
+
+compare_values(R, X, Y) :-
+    compare(R, force(X), force(Y)).
+
+%---------------------------------------------------------------------------%

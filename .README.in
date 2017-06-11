@@ -2,7 +2,8 @@ This directory contains the source distribution for the University of Melbourne
 Mercury compiler, version @VERSION@.
 
 	The Mercury implementation is free software.
-	It is Copyright (C) 1993-2013 The University of Melbourne.
+	It is Copyright (C) 1993-2012 The University of Melbourne and
+	Copyright (C) 2013-2017 The Mercury team.
 
 	The compiler and tools are distributed under the terms of the GNU
 	General Public License.  See the file COPYING for copying permission.
@@ -16,13 +17,21 @@ Mercury compiler, version @VERSION@.
 	contact us.  We are willing to offer alternative arrangements,
 	if the need should arise.
 	
-The subdirectory `boehm_gc' contains a slightly modified copy of version 7.2 of
-the conservative garbage collector distributed by Hans Boehm:
+The subdirectory `boehm_gc' contains a slightly modified copy of version
+7.4.2 of the conservative garbage collector distributed by Hans Boehm:
 
-	Copyright 1988, 1989 Hans-J. Boehm, Alan J. Demers
-	Copyright (c) 1991-1995 by Xerox Corporation.  All rights reserved.
-	Copyright (c) 1996-1999 by Silicon Graphics.  All rights reserved.
-	Copyright (c) 1999-2001 by Hewlett-Packard. All rights reserved.
+    Copyright (c) 1988, 1989 Hans-J. Boehm, Alan J. Demers
+    Copyright (c) 1991-1996 by Xerox Corporation. All rights reserved.
+    Copyright (c) 1996-1999 by Silicon Graphics. All rights reserved.
+    Copyright (c) 1999-2011 by Hewlett-Packard Development Company.
+
+    The file boehm_gc/linux_threads.c is also
+
+        Copyright (c) 1998 by Fergus Henderson. All rights reserved.
+
+    The files boehm_gc/Makefile.am, and boehm_gc/configure.in are
+
+        Copyright (c) 2001 by Red Hat Inc. All rights reserved.
 
 	THIS MATERIAL IS PROVIDED AS IS, WITH ABSOLUTELY NO WARRANTY EXPRESSED
 	OR IMPLIED.  ANY USE IS AT YOUR OWN RISK.
@@ -38,6 +47,11 @@ the conservative garbage collector distributed by Hans Boehm:
 	that appears not to significantly restrict use of the collector, though
 	use of those files for a purpose other than building the collector may
 	require the resulting code to be covered by the GPL.
+
+    The atomic_ops library (libatomic_ops) contains some code that
+    is covered by the GNU General Public License, but is not needed by, nor
+    linked into the collector library or Mercury. It is included here only
+    because the libatomic_ops distribution is included in its entirety.
 
 A few files (config.guess, config.sub) are derived from code that is
 copyright by the Free Software Foundation, Inc, and are distributed
@@ -67,14 +81,12 @@ platform, if there is one:
 	README.AIX		RS/6000 systems running AIX
 	README.FreeBSD		The FreeBSD version of BSD Unix on Intel x86
 	README.HPUX		HPPA systems running HPUX
-	README.IRIX-5		SGI IRIX version 5.x
 	README.Linux		Linux on Intel x86 and x86_64
 	README.Linux-Alpha	Linux on DEC Alpha
 	README.Linux-PPC	Linux on PowerPC
 	README.Linux-m68k	Linux on Motorola 68000
 	README.MacOS		Apple Mac systems running Mac OS X
 	README.MS-Windows	Microsoft Windows
-	README.OSF1		DEC Alpha systems running OSF/1 version 3.x
 	README.Solaris		Solaris (SunOS) on SPARC or Intel x86.
 
 The documentation sources are in the `doc' subdirectory.  The installation

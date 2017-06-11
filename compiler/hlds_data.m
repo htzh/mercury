@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1996-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: hlds_data.m.
 % Main authors: fjh, conway.
@@ -12,15 +12,19 @@
 % This module defines the part of the HLDS that deals with issues related
 % to data and its representation: function symbols, types, insts, modes.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module hlds.hlds_data.
 :- interface.
 
 :- import_module hlds.hlds_pred.
+:- import_module hlds.status.
+:- import_module libs.
 :- import_module libs.globals.
+:- import_module mdbcomp.
 :- import_module mdbcomp.goal_path.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module assoc_list.
@@ -28,23 +32,23 @@
 :- import_module list.
 :- import_module map.
 :- import_module maybe.
-:- import_module pair.
 :- import_module set.
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.prog_type_subst.
 
 :- import_module int.
 :- import_module multi_map.
+:- import_module pair.
 :- import_module require.
-:- import_module solutions.
 :- import_module varset.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -106,8 +110,8 @@
 :- pred get_all_cons_defns(cons_table::in,
     assoc_list(cons_id, hlds_cons_defn)::out) is det.
 
-:- pred return_other_arities(cons_table::in, sym_name::in, int::in,
-    list(int)::out) is det.
+:- pred return_cons_arities(cons_table::in, sym_name::in, list(int)::out)
+    is det.
 
 :- pred replace_cons_defns_in_cons_table(
     pred(hlds_cons_defn, hlds_cons_defn)::in(pred(in, out) is det),
@@ -119,7 +123,7 @@
 
     % Maps the raw, unqualified name of a functor to information about
     % all the functors with that name.
-:- type cons_table  ==  map(string, inner_cons_table).
+:- type cons_table == map(string, inner_cons_table).
 
     % Every visible constructor will have exactly one entry in the list,
     % and this entry lists all the cons_ids by which that constructor
@@ -141,17 +145,17 @@
 init_cons_table = map.init.
 
 insert_into_cons_table(MainConsId, OtherConsIds, ConsDefn, !ConsTable) :-
-    ( MainConsId = cons(MainSymName, _, _) ->
+    ( if MainConsId = cons(MainSymName, _, _) then
         MainName = unqualify_name(MainSymName),
         Entry = inner_cons_entry(MainConsId, OtherConsIds, ConsDefn),
-        ( map.search(!.ConsTable, MainName, InnerConsEntries0) ->
+        ( if map.search(!.ConsTable, MainName, InnerConsEntries0) then
             InnerConsEntries = [Entry | InnerConsEntries0],
             map.det_update(MainName, InnerConsEntries, !ConsTable)
-        ;
+        else
             InnerConsEntries = [Entry],
             map.det_insert(MainName, InnerConsEntries, !ConsTable)
         )
-    ;
+    else
         unexpected($module, $pred, "MainConsId is not cons")
     ).
 
@@ -168,9 +172,9 @@ search_cons_table(ConsTable, ConsId, ConsDefns) :-
     % I (zs) don't think replacing a list with a different structure would
     % help, since these lists should be very short.
 
-    ( search_inner_main_cons_ids(InnerConsTable, ConsId, MainConsDefn) ->
+    ( if search_inner_main_cons_ids(InnerConsTable, ConsId, MainConsDefn) then
         ConsDefns = [MainConsDefn]
-    ;
+    else
         % Before and during typecheck, we may need to look up constructors
         % using cons_ids that may not be even partially module qualified,
         % and which will contain a dummy type_ctor. That is why we search
@@ -199,9 +203,9 @@ search_cons_table(ConsTable, ConsId, ConsDefns) :-
     hlds_cons_defn::out) is semidet.
 
 search_inner_main_cons_ids([Entry | Entries], ConsId, ConsDefn) :-
-    ( ConsId = Entry ^ ice_fully_qual_cons_id ->
+    ( if ConsId = Entry ^ ice_fully_qual_cons_id then
         ConsDefn = Entry ^ ice_cons_defn
-    ;
+    else
         search_inner_main_cons_ids(Entries, ConsId, ConsDefn)
     ).
 
@@ -211,9 +215,9 @@ search_inner_main_cons_ids([Entry | Entries], ConsId, ConsDefn) :-
 search_inner_other_cons_ids([], _ConsId, []).
 search_inner_other_cons_ids([Entry | Entries], ConsId, !:ConsDefns) :-
     search_inner_other_cons_ids(Entries, ConsId, !:ConsDefns),
-    ( list.member(ConsId, Entry ^ ice_other_cons_ids) ->
+    ( if list.member(ConsId, Entry ^ ice_other_cons_ids) then
         !:ConsDefns = [Entry ^ ice_cons_defn | !.ConsDefns]
-    ;
+    else
         true
     ).
 
@@ -230,7 +234,7 @@ search_cons_table_of_type_ctor(ConsTable, TypeCtor, ConsId, ConsDefn) :-
 search_inner_cons_ids_type_ctor([Entry | Entries], TypeCtor, ConsId,
         ConsDefn) :-
     EntryConsDefn = Entry ^ ice_cons_defn,
-    (
+    ( if
         % If a type has two functors with the same name but different arities,
         % then it is possible for the TypeCtor test to succeed and the ConsId
         % tests to fail (due to the arity mismatch). In such cases, we need
@@ -240,19 +244,19 @@ search_inner_cons_ids_type_ctor([Entry | Entries], TypeCtor, ConsId,
         ( ConsId = Entry ^ ice_fully_qual_cons_id
         ; list.member(ConsId, Entry ^ ice_other_cons_ids)
         )
-    ->
+    then
         ConsDefn = EntryConsDefn
-    ;
+    else
         search_inner_cons_ids_type_ctor(Entries, TypeCtor, ConsId, ConsDefn)
     ).
 
 lookup_cons_table_of_type_ctor(ConsTable, TypeCtor, ConsId, ConsDefn) :-
-    (
+    ( if
         search_cons_table_of_type_ctor(ConsTable, TypeCtor, ConsId,
             ConsDefnPrime)
-    ->
+    then
         ConsDefn = ConsDefnPrime
-    ;
+    else
         unexpected($module, $pred, "lookup failed")
     ).
 
@@ -274,47 +278,41 @@ project_inner_cons_entry(Entry, Pair) :-
     Entry = inner_cons_entry(MainConsId, _OtherConsIds, ConsDefn),
     Pair = MainConsId - ConsDefn.
 
-return_other_arities(ConsTable, SymName, Arity, OtherArities) :-
+return_cons_arities(ConsTable, SymName, Arities) :-
     Name = unqualify_name(SymName),
-    ( map.search(ConsTable, Name, InnerConsTable) ->
-        return_other_arities_inner(InnerConsTable, SymName, Arity,
-            [], OtherArities0),
-        list.sort_and_remove_dups(OtherArities0, OtherArities)
-    ;
-        OtherArities = []
+    ( if map.search(ConsTable, Name, InnerConsTable) then
+        return_cons_arities_inner(InnerConsTable, SymName, [], Arities0),
+        list.sort_and_remove_dups(Arities0, Arities)
+    else
+        Arities = []
     ).
 
-:- pred return_other_arities_inner(list(inner_cons_entry)::in,
-    sym_name::in, int::in, list(int)::in, list(int)::out) is det.
+:- pred return_cons_arities_inner(list(inner_cons_entry)::in,
+    sym_name::in, list(int)::in, list(int)::out) is det.
 
-return_other_arities_inner([], _, _, !OtherArities).
-return_other_arities_inner([Entry | Entries], SymName, Arity, !OtherArities) :-
+return_cons_arities_inner([], _, !Arities).
+return_cons_arities_inner([Entry | Entries], SymName, !Arities) :-
     MainConsId = Entry ^ ice_fully_qual_cons_id,
     OtherConsIds = Entry ^ ice_other_cons_ids,
-    return_other_arities_inner_cons_ids([MainConsId | OtherConsIds],
-        SymName, Arity, !OtherArities),
-    return_other_arities_inner(Entries, SymName, Arity, !OtherArities).
+    return_cons_arities_inner_cons_ids([MainConsId | OtherConsIds], SymName,
+        !Arities),
+    return_cons_arities_inner(Entries, SymName, !Arities).
 
-:- pred return_other_arities_inner_cons_ids(list(cons_id)::in,
-    sym_name::in, int::in, list(int)::in, list(int)::out) is det.
+:- pred return_cons_arities_inner_cons_ids(list(cons_id)::in,
+    sym_name::in, list(int)::in, list(int)::out) is det.
 
-return_other_arities_inner_cons_ids([], _, _, !OtherArities).
-return_other_arities_inner_cons_ids([ConsId | ConsIds], SymName, Arity,
-        !OtherArities) :-
-    ( ConsId = cons(ThisSymName, ThisArity, _) ->
-        (
-            ThisSymName = SymName,
-            ThisArity \= Arity
-        ->
-            !:OtherArities = [ThisArity | !.OtherArities]
-        ;
+return_cons_arities_inner_cons_ids([], _, !Arities).
+return_cons_arities_inner_cons_ids([ConsId | ConsIds], SymName, !Arities) :-
+    ( if ConsId = cons(ThisSymName, ThisArity, _) then
+        ( if ThisSymName = SymName then
+            !:Arities = [ThisArity | !.Arities]
+        else
             true
         )
-    ;
+    else
         unexpected($module, $pred, "ConsId is not cons")
     ),
-    return_other_arities_inner_cons_ids(ConsIds, SymName, Arity,
-        !OtherArities).
+    return_cons_arities_inner_cons_ids(ConsIds, SymName, !Arities).
 
 replace_cons_defns_in_cons_table(Replace, !ConsTable) :-
     map.map_values_only(replace_cons_defns_in_inner_cons_table(Replace),
@@ -340,18 +338,18 @@ replace_cons_defns_in_inner_cons_entry(Replace, !Entry) :-
 cons_table_optimize(!ConsTable) :-
     map.optimize(!ConsTable).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
-:- type ctor_field_table == map(ctor_field_name, list(hlds_ctor_field_defn)).
+:- type ctor_field_table == map(sym_name, list(hlds_ctor_field_defn)).
 
 :- type hlds_ctor_field_defn
     --->    hlds_ctor_field_defn(
-                % Context of the field definition.
+                % The context of the field definition.
                 field_context   :: prog_context,
 
-                field_status    :: import_status,
+                field_status    :: type_status,
 
                 % The type containing the field.
                 field_type_ctor :: type_ctor,
@@ -377,8 +375,8 @@ cons_table_optimize(!ConsTable) :-
     --->    get
     ;       set.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -427,37 +425,47 @@ cons_table_optimize(!ConsTable) :-
         in(pred(in, in, out, in, out) is det),
     type_table::in, type_table::out, T::in, T::out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+
+    % Have we reported an error for this type definition yet?
+:- type type_defn_prev_errors
+    --->    type_defn_no_prev_errors
+    ;       type_defn_prev_errors.
 
     % This is how type, modes and constructors are represented. The parts that
     % are not defined here (i.e. type_param, constructor, type, inst and mode)
-    % are represented in the same way as in prog_io.m, and are defined there.
+    % are represented in the same way as in parse tree, and are defined there.
     %
     % An hlds_type_defn holds the information about a type definition.
 :- type hlds_type_defn.
 
 :- pred set_type_defn(tvarset::in, list(type_param)::in,
-    tvar_kind_map::in, hlds_type_body::in, import_status::in, bool::in,
-    need_qualifier::in, prog_context::in, hlds_type_defn::out) is det.
+    tvar_kind_map::in, hlds_type_body::in, bool::in,
+    type_status::in, need_qualifier::in, type_defn_prev_errors::in,
+    prog_context::in, hlds_type_defn::out) is det.
 
 :- pred get_type_defn_tvarset(hlds_type_defn::in, tvarset::out) is det.
 :- pred get_type_defn_tparams(hlds_type_defn::in, list(type_param)::out)
     is det.
 :- pred get_type_defn_kind_map(hlds_type_defn::in, tvar_kind_map::out) is det.
 :- pred get_type_defn_body(hlds_type_defn::in, hlds_type_body::out) is det.
-:- pred get_type_defn_status(hlds_type_defn::in, import_status::out) is det.
+:- pred get_type_defn_status(hlds_type_defn::in, type_status::out) is det.
 :- pred get_type_defn_in_exported_eqv(hlds_type_defn::in, bool::out) is det.
-:- pred get_type_defn_need_qualifier(hlds_type_defn::in, need_qualifier::out)
-    is det.
+:- pred get_type_defn_ctors_need_qualifier(hlds_type_defn::in,
+    need_qualifier::out) is det.
+:- pred get_type_defn_prev_errors(hlds_type_defn::in,
+    type_defn_prev_errors::out) is det.
 :- pred get_type_defn_context(hlds_type_defn::in, prog_context::out) is det.
 
 :- pred set_type_defn_body(hlds_type_body::in,
     hlds_type_defn::in, hlds_type_defn::out) is det.
 :- pred set_type_defn_tvarset(tvarset::in,
     hlds_type_defn::in, hlds_type_defn::out) is det.
-:- pred set_type_defn_status(import_status::in,
+:- pred set_type_defn_status(type_status::in,
     hlds_type_defn::in, hlds_type_defn::out) is det.
 :- pred set_type_defn_in_exported_eqv(bool::in,
+    hlds_type_defn::in, hlds_type_defn::out) is det.
+:- pred set_type_defn_prev_errors(type_defn_prev_errors::in,
     hlds_type_defn::in, hlds_type_defn::out) is det.
 
     % An `hlds_type_body' holds the body of a type definition:
@@ -524,7 +532,6 @@ cons_table_optimize(!ConsTable) :-
 
 :- type foreign_type_body
     --->    foreign_type_body(
-                il      :: foreign_type_lang_body(il_foreign_type),
                 c       :: foreign_type_lang_body(c_foreign_type),
                 java    :: foreign_type_lang_body(java_foreign_type),
                 csharp  :: foreign_type_lang_body(csharp_foreign_type),
@@ -540,7 +547,7 @@ cons_table_optimize(!ConsTable) :-
     --->    foreign_type_lang_data(
                 T,
                 maybe(unify_compare),
-                list(foreign_type_assertion)
+                foreign_type_assertions
             ).
 
     % The `cons_tag_values' type stores the information on how a discriminated
@@ -590,6 +597,11 @@ cons_table_optimize(!ConsTable) :-
             % the specified integer value. This is used for enumerations and
             % character constants as well as for int constants.
 
+    ;       uint_tag(uint)
+            % This means the constant is represented just as a word containing
+            % the specified unsigned integer value. This is used for uint
+            % constants.
+
     ;       foreign_tag(foreign_language, string)
             % This means the constant is represented by the string which is
             % embedded directly in the target language. This is used for
@@ -630,9 +642,9 @@ cons_table_optimize(!ConsTable) :-
             % This is for constants representing procedure descriptions for
             % deep profiling.
 
-    ;       table_io_decl_tag(pred_id, proc_id)
+    ;       table_io_entry_tag(pred_id, proc_id)
             % This is for constants representing the structure that allows us
-            % to decode the contents of the memory block containing the
+            % to decode the contents of the answer block containing the
             % headvars of I/O primitives.
 
     ;       single_functor_tag
@@ -730,6 +742,13 @@ cons_table_optimize(!ConsTable) :-
                 mer_type              % Argument type.
             ).
 
+    % A type_ctor essentially contains three components. The raw name
+    % of the type constructor, its module qualification, and its arity.
+    % I (zs) tried replacing this table with a two-stage map (from raw name
+    % to a subtable that itself mapped the full type_ctor to no_tag_type,
+    % in an attempt to make the main part of the looked use cheaper
+    % comparisons, on just raw strings. However, this change effectively led
+    % to no change in performance.
 :- type no_tag_type_table == map(type_ctor, no_tag_type).
 
 :- func get_maybe_cheaper_tag_test(hlds_type_body) = maybe_cheaper_tag_test.
@@ -747,6 +766,13 @@ cons_table_optimize(!ConsTable) :-
     --->    may_use_atomic_alloc
     ;       may_not_use_atomic_alloc.
 
+    % Check asserted properties of a foreign type.
+    %
+:- pred asserted_can_pass_as_mercury_type(foreign_type_assertions::in)
+    is semidet.
+:- pred asserted_stable(foreign_type_assertions::in) is semidet.
+:- pred asserted_word_aligned_pointer(foreign_type_assertions::in) is semidet.
+
 :- implementation.
 
 project_tagged_cons_id_tag(TaggedConsId) = Tag :-
@@ -758,6 +784,7 @@ get_primary_tag(Tag) = MaybePrimaryTag :-
         % it would probably be OK to return `yes(0)'.
         % But it's safe to be conservative...
         ( Tag = int_tag(_)
+        ; Tag = uint_tag(_)
         ; Tag = float_tag(_)
         ; Tag = string_tag(_)
         ; Tag = foreign_tag(_, _)
@@ -769,7 +796,7 @@ get_primary_tag(Tag) = MaybePrimaryTag :-
         ; Tag = type_info_const_tag(_)
         ; Tag = typeclass_info_const_tag(_)
         ; Tag = tabling_info_tag(_, _)
-        ; Tag = table_io_decl_tag(_, _)
+        ; Tag = table_io_entry_tag(_, _)
         ; Tag = deep_profiling_proc_layout_tag(_, _)
         ),
         MaybePrimaryTag = no
@@ -794,6 +821,7 @@ get_primary_tag(Tag) = MaybePrimaryTag :-
 get_secondary_tag(Tag) = MaybeSecondaryTag :-
     (
         ( Tag = int_tag(_)
+        ; Tag = uint_tag(_)
         ; Tag = float_tag(_)
         ; Tag = string_tag(_)
         ; Tag = foreign_tag(_, _)
@@ -804,7 +832,7 @@ get_secondary_tag(Tag) = MaybeSecondaryTag :-
         ; Tag = typeclass_info_const_tag(_)
         ; Tag = tabling_info_tag(_, _)
         ; Tag = deep_profiling_proc_layout_tag(_, _)
-        ; Tag = table_io_decl_tag(_, _)
+        ; Tag = table_io_entry_tag(_, _)
         ; Tag = no_tag
         ; Tag = reserved_address_tag(_)
         ; Tag = unshared_tag(_PrimaryTag)
@@ -837,7 +865,22 @@ get_maybe_cheaper_tag_test(TypeBody) = CheaperTagTest :-
         CheaperTagTest = no_cheaper_tag_test
     ).
 
-%-----------------------------------------------------------------------------%
+asserted_can_pass_as_mercury_type(foreign_type_assertions(Set)) :-
+    (
+        set.contains(Set, foreign_type_can_pass_as_mercury_type)
+    ;
+        set.contains(Set, foreign_type_word_aligned_pointer)
+    ).
+
+asserted_stable(Assertions) :-
+    Assertions = foreign_type_assertions(Set),
+    set.contains(Set, foreign_type_stable),
+    asserted_can_pass_as_mercury_type(Assertions).
+
+asserted_word_aligned_pointer(foreign_type_assertions(Set)) :-
+    set.contains(Set, foreign_type_word_aligned_pointer).
+
+%---------------------------------------------------------------------------%
 
 :- type type_table == map(string, type_ctor_table).
 
@@ -848,10 +891,10 @@ init_type_table = map.init.
 add_type_ctor_defn(TypeCtor, TypeDefn, !TypeTable) :-
     TypeCtor = type_ctor(SymName, _Arity),
     Name = unqualify_name(SymName),
-    ( map.search(!.TypeTable, Name, TypeCtorTable0) ->
+    ( if map.search(!.TypeTable, Name, TypeCtorTable0) then
         map.det_insert(TypeCtor, TypeDefn, TypeCtorTable0, TypeCtorTable),
         map.det_update(Name, TypeCtorTable, !TypeTable)
-    ;
+    else
         TypeCtorTable = map.singleton(TypeCtor, TypeDefn),
         map.det_insert(Name, TypeCtorTable, !TypeTable)
     ).
@@ -866,10 +909,10 @@ replace_type_ctor_defn(TypeCtor, TypeDefn, !TypeTable) :-
 add_or_replace_type_ctor_defn(TypeCtor, TypeDefn, !TypeTable) :-
     TypeCtor = type_ctor(SymName, _Arity),
     Name = unqualify_name(SymName),
-    ( map.search(!.TypeTable, Name, TypeCtorTable0) ->
+    ( if map.search(!.TypeTable, Name, TypeCtorTable0) then
         map.set(TypeCtor, TypeDefn, TypeCtorTable0, TypeCtorTable),
         map.det_update(Name, TypeCtorTable, !TypeTable)
-    ;
+    else
         TypeCtorTable = map.singleton(TypeCtor, TypeDefn),
         map.det_insert(Name, TypeCtorTable, !TypeTable)
     ).
@@ -945,7 +988,7 @@ map_foldl_over_type_ctor_defns(Pred, !TypeTable, !Acc) :-
 map_foldl_over_type_ctor_defns_2(Pred, _Name, !TypeCtorTable, !Acc) :-
     map.map_foldl(Pred, !TypeCtorTable, !Acc).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type hlds_type_defn
     --->    hlds_type_defn(
@@ -959,15 +1002,11 @@ map_foldl_over_type_ctor_defns_2(Pred, _Name, !TypeCtorTable, !Acc) :-
                 % Formal type parameters.
                 type_defn_params            :: list(type_param),
 
-                % Kinds of the formal parameters.
+                % The kinds of the formal parameters.
                 type_defn_kinds             :: tvar_kind_map,
 
                 % The definition of the type.
                 type_defn_body              :: hlds_type_body,
-
-                % Is the type defined in this module, and if yes,
-                % is it exported.
-                type_defn_import_status     :: import_status,
 
                 % Does the type constructor appear on the right hand side
                 % of a type equivalence defining a type that is visible from
@@ -980,71 +1019,93 @@ map_foldl_over_type_ctor_defns_2(Pred, _Name, !TypeCtorTable, !Acc) :-
                 % Meaningful only after the equiv_type_hlds pass.
                 type_defn_in_exported_eqv   :: bool,
 
-                % Do uses of the type and its constructors need to be
-                % qualified.
-                type_defn_need_qualifier    :: need_qualifier,
+                % Is the type defined in this module, and if yes,
+                % is it exported.
+                type_defn_status            :: type_status,
+
+                % Do uses of the type's constructors need to be qualified?
+                type_defn_ctors_need_qualifier :: need_qualifier,
+
+                % Have we reported an error for this type definition yet?
+                % If yes, then don't emit any more errors for it, since they
+                % are very likely to be due to the compiler's incomplete
+                % recovery from the previous error.
+                type_defn_prev_errors       :: type_defn_prev_errors,
 
                 % The location of this type definition in the original
                 % source code.
                 type_defn_context           :: prog_context
             ).
 
-set_type_defn(Tvarset, Params, Kinds, Body, Status, InExportedEqv,
-        NeedQual, Context, Defn) :-
-    Defn = hlds_type_defn(Tvarset, Params, Kinds, Body, Status,
-        InExportedEqv, NeedQual, Context).
+set_type_defn(Tvarset, Params, Kinds, TypeBody, InExportedEqv,
+        TypeStatus, NeedQual, PrevErrors, Context, Defn) :-
+    Defn = hlds_type_defn(Tvarset, Params, Kinds, TypeBody, InExportedEqv,
+        TypeStatus, NeedQual, PrevErrors, Context).
 
-get_type_defn_tvarset(Defn, Defn ^ type_defn_tvarset).
-get_type_defn_tparams(Defn, Defn ^ type_defn_params).
-get_type_defn_kind_map(Defn, Defn ^ type_defn_kinds).
-get_type_defn_body(Defn, Defn ^ type_defn_body).
-get_type_defn_status(Defn, Defn ^ type_defn_import_status).
-get_type_defn_in_exported_eqv(Defn, Defn ^ type_defn_in_exported_eqv).
-get_type_defn_need_qualifier(Defn, Defn ^ type_defn_need_qualifier).
-get_type_defn_context(Defn, Defn ^ type_defn_context).
+get_type_defn_tvarset(Defn, X) :-
+    X = Defn ^ type_defn_tvarset.
+get_type_defn_tparams(Defn, X) :-
+    X = Defn ^ type_defn_params.
+get_type_defn_kind_map(Defn, X) :-
+    X = Defn ^ type_defn_kinds.
+get_type_defn_body(Defn, X) :-
+    X = Defn ^ type_defn_body.
+get_type_defn_status(Defn, X) :-
+    X = Defn ^ type_defn_status.
+get_type_defn_in_exported_eqv(Defn, X) :-
+    X = Defn ^ type_defn_in_exported_eqv.
+get_type_defn_ctors_need_qualifier(Defn, X) :-
+    X = Defn ^ type_defn_ctors_need_qualifier.
+get_type_defn_prev_errors(Defn, X) :-
+    X = Defn ^ type_defn_prev_errors.
+get_type_defn_context(Defn, X) :-
+    X = Defn ^ type_defn_context.
 
-set_type_defn_body(Body, !Defn) :-
-    !Defn ^ type_defn_body := Body.
-set_type_defn_tvarset(TVarSet, !Defn) :-
-    !Defn ^ type_defn_tvarset := TVarSet.
-set_type_defn_status(Status, !Defn) :-
-    !Defn ^ type_defn_import_status := Status.
-set_type_defn_in_exported_eqv(InExportedEqv, !Defn) :-
-    !Defn ^ type_defn_in_exported_eqv := InExportedEqv.
+set_type_defn_body(X, !Defn) :-
+    !Defn ^ type_defn_body := X.
+set_type_defn_tvarset(X, !Defn) :-
+    !Defn ^ type_defn_tvarset := X.
+set_type_defn_status(X, !Defn) :-
+    !Defn ^ type_defn_status := X.
+set_type_defn_in_exported_eqv(X, !Defn) :-
+    !Defn ^ type_defn_in_exported_eqv := X.
+set_type_defn_prev_errors(X, !Defn) :-
+    !Defn ^ type_defn_prev_errors := X.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
-    % The symbol table for insts.
-    %
-:- type inst_table.
+    % An inst that is defined to be equivalent to a bound inst may be
+    % declared by the programmer to be for a particular type constructor.
+:- type inst_for_type_ctor
+    --->    iftc_not_applicable
+            % The inst is not defined to be equivalent to a bound inst.
 
-:- type user_inst_table.
-:- type user_inst_defns ==          map(inst_id, hlds_inst_defn).
-:- type unify_inst_table ==         map(inst_name, maybe_inst_det).
-:- type merge_inst_table ==         map(pair(mer_inst), maybe_inst).
-:- type ground_inst_table ==        map(inst_name, maybe_inst_det).
-:- type any_inst_table ==           map(inst_name, maybe_inst_det).
-:- type shared_inst_table ==        map(inst_name, maybe_inst).
-:- type mostly_uniq_inst_table ==   map(inst_name, maybe_inst).
+    ;       iftc_applicable_declared(type_ctor)
+            % The inst is defined to be equivalent to a bound inst,
+            % and it is declared to be for this type constructor.
+            % This requires that all the top level cons_ids in the bound inst
+            % be function symbols of the given type constructor. Later,
+            % it will also require that this inst be applied only to values
+            % of this type.
 
-:- type unify_inst_pair
-    --->    unify_inst_pair(
-                is_live,
-                mer_inst,
-                mer_inst,
-                unify_is_real
-            ).
+    ;       iftc_applicable_not_known
+            % The inst is defined to be equivalent to a bound inst.
+            % It is not declared to be for a specific type constructor,
+            % and the list of type constructors that its cons_ids match
+            % is not (yet) known.
 
-:- type maybe_inst
-    --->    inst_unknown
-    ;       inst_known(mer_inst).
+    ;       iftc_applicable_known(list(type_ctor))
+            % The inst is defined to be equivalent to a bound inst.
+            % It is not declared to be for a specific type constructor,
+            % but the list of type constructors that its cons_ids match
+            % is known to be the given list of type constructors.
 
-:- type maybe_inst_det
-    --->    inst_det_unknown
-    ;       inst_det_known(mer_inst, determinism).
+    ;       iftc_applicable_error.
+            % The inst is defined to be equivalent to a bound inst.
+            % It is not declared to be for a specific type constructor,
 
     % An `hlds_inst_defn' holds the information we need to store
     % about inst definitions such as
@@ -1053,19 +1114,27 @@ set_type_defn_in_exported_eqv(InExportedEqv, !Defn) :-
 :- type hlds_inst_defn
     --->    hlds_inst_defn(
                 % The names of the inst parameters (if any).
-                inst_varset     :: inst_varset,
+                inst_varset             :: inst_varset,
 
                 % The inst parameters (if any). ([I] in the above example.)
-                inst_params     :: list(inst_var),
+                inst_params             :: list(inst_var),
 
                 % The definition of this inst.
-                inst_body       :: hlds_inst_body,
+                inst_body               :: hlds_inst_body,
+
+                % If this inst is equivalent to a bound inst, is it
+                % specified to be applicable only to a specific
+                % type constructor? If not, is it known to be compatible
+                % with a known set of type constructors? (This means
+                % having top level function symbols that all come from
+                % the type constructor.)
+                inst_for_type           :: inst_for_type_ctor,
 
                 % The location in the source code of this inst definition.
-                inst_context    :: prog_context,
+                inst_context            :: prog_context,
 
                 % So intermod.m can tell whether to output this inst.
-                inst_status     :: import_status
+                inst_status             :: inst_status
             ).
 
 :- type hlds_inst_body
@@ -1077,7 +1146,105 @@ set_type_defn_in_exported_eqv(InExportedEqv, !Defn) :-
             % will be filled in later.
             % (XXX Abstract insts are not really supported.)
 
-%-----------------------------------------------------------------------------%
+:- type user_inst_table ==          map(inst_id, hlds_inst_defn).
+
+:- type maybe_inst
+    --->    inst_unknown
+    ;       inst_known(mer_inst).
+
+:- type maybe_inst_det
+    --->    inst_det_unknown
+    ;       inst_det_known(mer_inst, determinism).
+
+:- type unify_inst_table.
+:- type merge_inst_table.
+:- type ground_inst_table.
+:- type any_inst_table.
+:- type shared_inst_table.
+:- type mostly_uniq_inst_table.
+
+:- pred lookup_unify_inst(unify_inst_table::in,
+    unify_inst_info::in, maybe_inst_det::out) is det.
+:- pred lookup_merge_inst(merge_inst_table::in,
+    merge_inst_info::in, maybe_inst::out) is det.
+:- pred lookup_ground_inst(ground_inst_table::in,
+    ground_inst_info::in, maybe_inst_det::out) is det.
+:- pred lookup_any_inst(any_inst_table::in,
+    any_inst_info::in, maybe_inst_det::out) is det.
+:- pred lookup_shared_inst(shared_inst_table::in,
+    inst_name::in, maybe_inst::out) is det.
+:- pred lookup_mostly_uniq_inst(mostly_uniq_inst_table::in,
+    inst_name::in, maybe_inst::out) is det.
+
+:- pred search_insert_unify_inst(
+    unify_inst_info::in, maybe(maybe_inst_det)::out,
+    unify_inst_table::in, unify_inst_table::out) is det.
+:- pred search_insert_merge_inst(
+    merge_inst_info::in, maybe(maybe_inst)::out,
+    merge_inst_table::in, merge_inst_table::out) is det.
+:- pred search_insert_ground_inst(
+    ground_inst_info::in, maybe(maybe_inst_det)::out,
+    ground_inst_table::in, ground_inst_table::out) is det.
+:- pred search_insert_any_inst(
+    any_inst_info::in, maybe(maybe_inst_det)::out,
+    any_inst_table::in, any_inst_table::out) is det.
+:- pred search_insert_shared_inst(
+    inst_name::in, maybe(maybe_inst)::out,
+    shared_inst_table::in, shared_inst_table::out) is det.
+:- pred search_insert_mostly_uniq_inst(
+    inst_name::in, maybe(maybe_inst)::out,
+    mostly_uniq_inst_table::in, mostly_uniq_inst_table::out) is det.
+
+:- pred det_update_unify_inst(unify_inst_info::in, maybe_inst_det::in,
+    unify_inst_table::in, unify_inst_table::out) is det.
+:- pred det_update_merge_inst(merge_inst_info::in, maybe_inst::in,
+    merge_inst_table::in, merge_inst_table::out) is det.
+:- pred det_update_ground_inst(ground_inst_info::in, maybe_inst_det::in,
+    ground_inst_table::in, ground_inst_table::out) is det.
+:- pred det_update_any_inst(any_inst_info::in, maybe_inst_det::in,
+    any_inst_table::in, any_inst_table::out) is det.
+:- pred det_update_shared_inst(inst_name::in, maybe_inst::in,
+    shared_inst_table::in, shared_inst_table::out) is det.
+:- pred det_update_mostly_uniq_inst(inst_name::in, maybe_inst::in,
+    mostly_uniq_inst_table::in, mostly_uniq_inst_table::out) is det.
+
+:- pred unify_insts_to_sorted_pairs(unify_inst_table::in,
+    assoc_list(unify_inst_info, maybe_inst_det)::out) is det.
+:- pred merge_insts_to_sorted_pairs(merge_inst_table::in,
+    assoc_list(merge_inst_info, maybe_inst)::out) is det.
+:- pred ground_insts_to_sorted_pairs(ground_inst_table::in,
+    assoc_list(ground_inst_info, maybe_inst_det)::out) is det.
+:- pred any_insts_to_sorted_pairs(any_inst_table::in,
+    assoc_list(any_inst_info, maybe_inst_det)::out) is det.
+:- pred shared_insts_to_sorted_pairs(shared_inst_table::in,
+    assoc_list(inst_name, maybe_inst)::out) is det.
+:- pred mostly_uniq_insts_to_sorted_pairs(mostly_uniq_inst_table::in,
+    assoc_list(inst_name, maybe_inst)::out) is det.
+
+:- pred unify_insts_from_sorted_pairs(
+    assoc_list(unify_inst_info, maybe_inst_det)::in,
+    unify_inst_table::out) is det.
+:- pred merge_insts_from_sorted_pairs(
+    assoc_list(merge_inst_info, maybe_inst)::in,
+    merge_inst_table::out) is det.
+:- pred ground_insts_from_sorted_pairs(
+    assoc_list(ground_inst_info, maybe_inst_det)::in,
+    ground_inst_table::out) is det.
+:- pred any_insts_from_sorted_pairs(
+    assoc_list(any_inst_info, maybe_inst_det)::in,
+    any_inst_table::out) is det.
+:- pred shared_insts_from_sorted_pairs(
+    assoc_list(inst_name, maybe_inst)::in,
+    shared_inst_table::out) is det.
+:- pred mostly_uniq_insts_from_sorted_pairs(
+    assoc_list(inst_name, maybe_inst)::in,
+    mostly_uniq_inst_table::out) is det.
+
+%---------------------------------------------------------------------------%
+
+    % The symbol table for insts.
+    %
+:- type inst_table.
 
 :- pred inst_table_init(inst_table::out) is det.
 
@@ -1109,19 +1276,292 @@ set_type_defn_in_exported_eqv(InExportedEqv, !Defn) :-
 :- pred inst_table_set_mostly_uniq_insts(mostly_uniq_inst_table::in,
     inst_table::in, inst_table::out) is det.
 
-:- pred user_inst_table_get_inst_defns(user_inst_table::in,
-    user_inst_defns::out) is det.
-
-:- pred user_inst_table_insert(inst_id::in, hlds_inst_defn::in,
-    user_inst_table::in, user_inst_table::out) is semidet.
-
-    % Optimize the user_inst_table for lookups. This just sorts
-    % the cached list of inst_ids.
-    %
-:- pred user_inst_table_optimize(user_inst_table::in, user_inst_table::out)
-    is det.
-
 :- implementation.
+
+%---------------------------------------------------------------------------%
+%
+% I (zs) have tried making the merge_inst_table a two-stage table,
+% i.e. being map(mer_inst, map(mer_inst, maybe_inst)), in the hope
+% of making lookups faster, but it led to a slowdown, not a speedup.
+% The main reason was the extra cost of insertions. While you can always
+% use a search_insert operation on the inner map, you can do it on
+% the outer map only if the first inst does not occur in the outer map.
+% If it does, then you are *modifying* an existing entry, not inserting
+% a new one, and you can't modify it without knowing what it is. Therefore
+% in the common case, a search_insert on the whole merge_inst_table
+% requires first a search_insert on the outer table, and when the search
+% part of that succeeds, a search_insert on the inner table and then
+% a straight *update* on the outer map. The main performance problem is
+% the need for this update.
+%
+% I expect (though I have not tested it) that the same problem would arise
+% if we turned the subtables of the unify_inst_table into two-stage maps.
+
+:- type inst_pair
+    --->    inst_pair(mer_inst, mer_inst).
+
+:- type unify_inst_table
+    --->    unify_inst_table(
+                uit_live_real   ::  map(inst_pair, maybe_inst_det),
+                uit_live_fake   ::  map(inst_pair, maybe_inst_det),
+                uit_dead_real   ::  map(inst_pair, maybe_inst_det),
+                uit_dead_fake   ::  map(inst_pair, maybe_inst_det)
+            ).
+
+:- type merge_inst_table ==         map(merge_inst_info, maybe_inst).
+:- type ground_inst_table ==        map(ground_inst_info, maybe_inst_det).
+:- type any_inst_table ==           map(any_inst_info, maybe_inst_det).
+:- type shared_inst_table ==        map(inst_name, maybe_inst).
+:- type mostly_uniq_inst_table ==   map(inst_name, maybe_inst).
+
+%---------------------------------------------------------------------------%
+
+lookup_unify_inst(UnifyInstTable, UnifyInstInfo, MaybeInstDet) :-
+    UnifyInstInfo = unify_inst_info(IsLive, IsReal, InstA, InstB),
+    InstPair = inst_pair(InstA, InstB),
+    (
+        IsLive = is_live, IsReal = real_unify,
+        LiveRealTable = UnifyInstTable ^ uit_live_real,
+        map.lookup(LiveRealTable, InstPair, MaybeInstDet)
+    ;
+        IsLive = is_live, IsReal = fake_unify,
+        LiveFakeTable = UnifyInstTable ^ uit_live_fake,
+        map.lookup(LiveFakeTable, InstPair, MaybeInstDet)
+    ;
+        IsLive = is_dead, IsReal = real_unify,
+        DeadRealTable = UnifyInstTable ^ uit_dead_real,
+        map.lookup(DeadRealTable, InstPair, MaybeInstDet)
+    ;
+        IsLive = is_dead, IsReal = fake_unify,
+        DeadFakeTable = UnifyInstTable ^ uit_dead_fake,
+        map.lookup(DeadFakeTable, InstPair, MaybeInstDet)
+    ).
+
+lookup_merge_inst(MergeInstTable, MergeInstInfo, MaybeInst) :-
+    map.lookup(MergeInstTable, MergeInstInfo, MaybeInst).
+
+lookup_ground_inst(GroundInstTable, GroundInstInfo, MaybeInstDet) :-
+    map.lookup(GroundInstTable, GroundInstInfo, MaybeInstDet).
+
+lookup_any_inst(AnyInstTable, AnyInstInfo, MaybeInstDet) :-
+    map.lookup(AnyInstTable, AnyInstInfo, MaybeInstDet).
+
+lookup_shared_inst(SharedInstTable, InstName, MaybeInst) :-
+    map.lookup(SharedInstTable, InstName, MaybeInst).
+
+lookup_mostly_uniq_inst(MostlyUniqInstTable, InstName, MaybeInst) :-
+    map.lookup(MostlyUniqInstTable, InstName, MaybeInst).
+
+%---------------------------------------------------------------------------%
+
+search_insert_unify_inst(UnifyInstInfo, MaybeMaybeInstDet, !UnifyInstTable) :-
+    UnifyInstInfo = unify_inst_info(IsLive, IsReal, InstA, InstB),
+    InstPair = inst_pair(InstA, InstB),
+    (
+        IsLive = is_live, IsReal = real_unify,
+        LiveRealTable0 = !.UnifyInstTable ^ uit_live_real,
+        map.search_insert(InstPair, inst_det_unknown, MaybeMaybeInstDet,
+            LiveRealTable0, LiveRealTable),
+        !UnifyInstTable ^ uit_live_real := LiveRealTable
+    ;
+        IsLive = is_live, IsReal = fake_unify,
+        LiveFakeTable0 = !.UnifyInstTable ^ uit_live_fake,
+        map.search_insert(InstPair, inst_det_unknown, MaybeMaybeInstDet,
+            LiveFakeTable0, LiveFakeTable),
+        !UnifyInstTable ^ uit_live_fake := LiveFakeTable
+    ;
+        IsLive = is_dead, IsReal = real_unify,
+        DeadRealTable0 = !.UnifyInstTable ^ uit_dead_real,
+        map.search_insert(InstPair, inst_det_unknown, MaybeMaybeInstDet,
+            DeadRealTable0, DeadRealTable),
+        !UnifyInstTable ^ uit_dead_real := DeadRealTable
+    ;
+        IsLive = is_dead, IsReal = fake_unify,
+        DeadFakeTable0 = !.UnifyInstTable ^ uit_dead_fake,
+        map.search_insert(InstPair, inst_det_unknown, MaybeMaybeInstDet,
+            DeadFakeTable0, DeadFakeTable),
+        !UnifyInstTable ^ uit_dead_fake := DeadFakeTable
+    ).
+
+search_insert_merge_inst(MergeInstInfo, MaybeMaybeInst, !MergeInstTable) :-
+    map.search_insert(MergeInstInfo, inst_unknown, MaybeMaybeInst,
+        !MergeInstTable).
+
+search_insert_ground_inst(GroundInstInfo, MaybeMaybeInstDet,
+        !GroundInstTable) :-
+    map.search_insert(GroundInstInfo, inst_det_unknown, MaybeMaybeInstDet,
+        !GroundInstTable).
+
+search_insert_any_inst(AnyInstInfo, MaybeMaybeInstDet, !AnyInstTable) :-
+    map.search_insert(AnyInstInfo, inst_det_unknown, MaybeMaybeInstDet,
+        !AnyInstTable).
+
+search_insert_shared_inst(InstName, MaybeMaybeInst, !SharedInstTable) :-
+    map.search_insert(InstName, inst_unknown, MaybeMaybeInst,
+        !SharedInstTable).
+
+search_insert_mostly_uniq_inst(InstName, MaybeMaybeInst,
+        !MostlyUniqInstTable) :-
+    map.search_insert(InstName, inst_unknown, MaybeMaybeInst,
+        !MostlyUniqInstTable).
+
+%---------------------------------------------------------------------------%
+
+det_update_unify_inst(UnifyInstInfo, MaybeInstDet, !UnifyInstTable) :-
+    UnifyInstInfo = unify_inst_info(IsLive, IsReal, InstA, InstB),
+    InstPair = inst_pair(InstA, InstB),
+    (
+        IsLive = is_live, IsReal = real_unify,
+        LiveRealTable0 = !.UnifyInstTable ^ uit_live_real,
+        map.det_update(InstPair, MaybeInstDet, LiveRealTable0, LiveRealTable),
+        !UnifyInstTable ^ uit_live_real := LiveRealTable
+    ;
+        IsLive = is_live, IsReal = fake_unify,
+        LiveFakeTable0 = !.UnifyInstTable ^ uit_live_fake,
+        map.det_update(InstPair, MaybeInstDet, LiveFakeTable0, LiveFakeTable),
+        !UnifyInstTable ^ uit_live_fake := LiveFakeTable
+    ;
+        IsLive = is_dead, IsReal = real_unify,
+        DeadRealTable0 = !.UnifyInstTable ^ uit_dead_real,
+        map.det_update(InstPair, MaybeInstDet, DeadRealTable0, DeadRealTable),
+        !UnifyInstTable ^ uit_dead_real := DeadRealTable
+    ;
+        IsLive = is_dead, IsReal = fake_unify,
+        DeadFakeTable0 = !.UnifyInstTable ^ uit_dead_fake,
+        map.det_update(InstPair, MaybeInstDet, DeadFakeTable0, DeadFakeTable),
+        !UnifyInstTable ^ uit_dead_fake := DeadFakeTable
+    ).
+
+det_update_merge_inst(MergeInstInfo, MaybeInst, !MergeInstTable) :-
+    map.det_update(MergeInstInfo, MaybeInst, !MergeInstTable).
+
+det_update_ground_inst(GroundInstInfo, MaybeInstDet, !GroundInstTable) :-
+    map.det_update(GroundInstInfo, MaybeInstDet, !GroundInstTable).
+
+det_update_any_inst(AnyInstInfo, MaybeInstDet, !AnyInstTable) :-
+    map.det_update(AnyInstInfo, MaybeInstDet, !AnyInstTable).
+
+det_update_shared_inst(InstName, MaybeInst, !SharedInstTable) :-
+    map.det_update(InstName, MaybeInst, !SharedInstTable).
+
+det_update_mostly_uniq_inst(InstName, MaybeInst, !MostlyUniqInstTable) :-
+    map.det_update(InstName, MaybeInst, !MostlyUniqInstTable).
+
+%---------------------------------------------------------------------------%
+
+unify_insts_to_sorted_pairs(UnifyInstTable, AssocList) :-
+    UnifyInstTable = unify_inst_table(LiveRealTable, LiveFakeTable,
+        DeadRealTable, DeadFakeTable),
+    map.to_assoc_list(LiveRealTable, LiveRealPairInsts),
+    map.to_assoc_list(LiveFakeTable, LiveFakePairInsts),
+    map.to_assoc_list(DeadRealTable, DeadRealPairInsts),
+    map.to_assoc_list(DeadFakeTable, DeadFakePairInsts),
+    some [!RevAssocList] (
+        % The order in which we generate the four sublists corresponds to
+        % the order in which we take them in unify_insts_from_sorted_pairs.
+        !:RevAssocList = [],
+        accumulate_unify_insts(is_live, real_unify, LiveRealPairInsts,
+            !RevAssocList),
+        accumulate_unify_insts(is_live, fake_unify, LiveFakePairInsts,
+            !RevAssocList),
+        accumulate_unify_insts(is_dead, real_unify, DeadRealPairInsts,
+            !RevAssocList),
+        accumulate_unify_insts(is_dead, fake_unify, DeadFakePairInsts,
+            !RevAssocList),
+        list.reverse(!.RevAssocList, AssocList)
+    ).
+
+:- pred accumulate_unify_insts(is_live::in, unify_is_real::in,
+    assoc_list(inst_pair, maybe_inst_det)::in,
+    assoc_list(unify_inst_info, maybe_inst_det)::in,
+    assoc_list(unify_inst_info, maybe_inst_det)::out) is det.
+
+accumulate_unify_insts(_IsLive, _IsReal, [], !RevAssocList).
+accumulate_unify_insts(IsLive, IsReal, [PairMaybeInst | PairMaybeInsts],
+        !RevAssocList) :-
+    PairMaybeInst = inst_pair(InstA, InstB) - MaybeInst,
+    UnifyInstInfo = unify_inst_info(IsLive, IsReal, InstA, InstB),
+    !:RevAssocList = [UnifyInstInfo - MaybeInst | !.RevAssocList],
+    accumulate_unify_insts(IsLive, IsReal, PairMaybeInsts, !RevAssocList).
+
+%---------------------%
+
+merge_insts_to_sorted_pairs(MergeInstTable, AssocList) :-
+    map.to_sorted_assoc_list(MergeInstTable, AssocList).
+
+ground_insts_to_sorted_pairs(GroundInstTable, AssocList) :-
+    map.to_sorted_assoc_list(GroundInstTable, AssocList).
+
+any_insts_to_sorted_pairs(AnyInstTable, AssocList) :-
+    map.to_sorted_assoc_list(AnyInstTable, AssocList).
+
+shared_insts_to_sorted_pairs(SharedInstTable, AssocList) :-
+    map.to_sorted_assoc_list(SharedInstTable, AssocList).
+
+mostly_uniq_insts_to_sorted_pairs(MostlyUniqInstTable, AssocList) :-
+    map.to_sorted_assoc_list(MostlyUniqInstTable, AssocList).
+
+%---------------------------------------------------------------------------%
+
+unify_insts_from_sorted_pairs(AssocList0, UnifyInstTable) :-
+    % The order in which we take the four sublists corresponds to
+    % the order in which we generate them in unify_insts_to_sorted_pairs.
+    unify_inst_subtable_from_sorted_pairs(is_live, real_unify,
+        AssocList0, AssocList1, [], RevLiveRealAssocList),
+    unify_inst_subtable_from_sorted_pairs(is_live, fake_unify,
+        AssocList1, AssocList2, [], RevLiveFakeAssocList),
+    unify_inst_subtable_from_sorted_pairs(is_dead, real_unify,
+        AssocList2, AssocList3, [], RevDeadRealAssocList),
+    unify_inst_subtable_from_sorted_pairs(is_dead, fake_unify,
+        AssocList3, AssocList4, [], RevDeadFakeAssocList),
+    expect(unify(AssocList4, []), $module, $pred, "AssocList4 != []"),
+    map.from_rev_sorted_assoc_list(RevLiveRealAssocList, LiveRealTable),
+    map.from_rev_sorted_assoc_list(RevLiveFakeAssocList, LiveFakeTable),
+    map.from_rev_sorted_assoc_list(RevDeadRealAssocList, DeadRealTable),
+    map.from_rev_sorted_assoc_list(RevDeadFakeAssocList, DeadFakeTable),
+    UnifyInstTable = unify_inst_table(LiveRealTable, LiveFakeTable,
+        DeadRealTable, DeadFakeTable).
+
+:- pred unify_inst_subtable_from_sorted_pairs(is_live::in, unify_is_real::in,
+    assoc_list(unify_inst_info, maybe_inst_det)::in,
+    assoc_list(unify_inst_info, maybe_inst_det)::out,
+    assoc_list(inst_pair, maybe_inst_det)::in,
+    assoc_list(inst_pair, maybe_inst_det)::out) is det.
+
+unify_inst_subtable_from_sorted_pairs(_ExpLive, _ExpReal,
+        [], [], !RevSubTablePairs).
+unify_inst_subtable_from_sorted_pairs(ExpLive, ExpReal,
+        [Pair | Pairs], LeftOverPairs, !RevSubTablePairs) :-
+    Pair = UnifyInstInfo - MaybeInstDet,
+    UnifyInstInfo = unify_inst_info(Live, Real, InstA, InstB),
+    ( if Live = ExpLive, Real = ExpReal then
+        InstPair = inst_pair(InstA, InstB),
+        !:RevSubTablePairs = [InstPair - MaybeInstDet | !.RevSubTablePairs],
+        unify_inst_subtable_from_sorted_pairs(ExpLive, ExpReal,
+            Pairs, LeftOverPairs, !RevSubTablePairs)
+    else
+        LeftOverPairs = [Pair | Pairs]
+    ).
+
+%---------------------%
+
+merge_insts_from_sorted_pairs(AssocList, MergeInstTable) :-
+    map.from_sorted_assoc_list(AssocList, MergeInstTable).
+
+ground_insts_from_sorted_pairs(AssocList, GroundInstTable) :-
+    map.from_sorted_assoc_list(AssocList, GroundInstTable).
+
+any_insts_from_sorted_pairs(AssocList, AnyInstTable) :-
+    map.from_sorted_assoc_list(AssocList, AnyInstTable).
+
+shared_insts_from_sorted_pairs(AssocList, SharedInstTable) :-
+    map.from_sorted_assoc_list(AssocList, SharedInstTable).
+
+mostly_uniq_insts_from_sorted_pairs(AssocList, MostlyUniqInstTable) :-
+    map.from_sorted_assoc_list(AssocList, MostlyUniqInstTable).
+
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type inst_table
     --->    inst_table(
@@ -1134,11 +1574,9 @@ set_type_defn_in_exported_eqv(InExportedEqv, !Defn) :-
                 inst_table_mostly_uniq  :: mostly_uniq_inst_table
             ).
 
-:- type user_inst_table == user_inst_defns.
-
 inst_table_init(InstTable) :-
     map.init(UserInsts),
-    map.init(UnifyInsts),
+    UnifyInsts = unify_inst_table(map.init, map.init, map.init, map.init),
     map.init(MergeInsts),
     map.init(GroundInsts),
     map.init(SharedInsts),
@@ -1147,40 +1585,38 @@ inst_table_init(InstTable) :-
     InstTable = inst_table(UserInsts, UnifyInsts, MergeInsts, GroundInsts,
         AnyInsts, SharedInsts, NondetLiveInsts).
 
-inst_table_get_user_insts(InstTable, InstTable ^ inst_table_user).
-inst_table_get_unify_insts(InstTable, InstTable ^ inst_table_unify).
-inst_table_get_merge_insts(InstTable, InstTable ^ inst_table_merge).
-inst_table_get_ground_insts(InstTable, InstTable ^ inst_table_ground).
-inst_table_get_any_insts(InstTable, InstTable ^ inst_table_any).
-inst_table_get_shared_insts(InstTable, InstTable ^ inst_table_shared).
-inst_table_get_mostly_uniq_insts(InstTable,
-    InstTable ^ inst_table_mostly_uniq).
+inst_table_get_user_insts(InstTable, X) :-
+    X = InstTable ^ inst_table_user.
+inst_table_get_unify_insts(InstTable, X) :-
+    X = InstTable ^ inst_table_unify.
+inst_table_get_merge_insts(InstTable, X) :-
+    X = InstTable ^ inst_table_merge.
+inst_table_get_ground_insts(InstTable, X) :-
+    X = InstTable ^ inst_table_ground.
+inst_table_get_any_insts(InstTable, X) :-
+    X = InstTable ^ inst_table_any.
+inst_table_get_shared_insts(InstTable, X) :-
+    X = InstTable ^ inst_table_shared.
+inst_table_get_mostly_uniq_insts(InstTable, X) :-
+    X = InstTable ^ inst_table_mostly_uniq.
 
-inst_table_set_user_insts(UserInsts, !InstTable) :-
-    !InstTable ^ inst_table_user := UserInsts.
-inst_table_set_unify_insts(UnifyInsts, !InstTable) :-
-    !InstTable ^ inst_table_unify := UnifyInsts.
-inst_table_set_merge_insts(MergeInsts, !InstTable) :-
-    !InstTable ^ inst_table_merge := MergeInsts.
-inst_table_set_ground_insts(GroundInsts, !InstTable) :-
-    !InstTable ^ inst_table_ground := GroundInsts.
-inst_table_set_any_insts(AnyInsts, !InstTable) :-
-    !InstTable ^ inst_table_any := AnyInsts.
-inst_table_set_shared_insts(SharedInsts, !InstTable) :-
-    !InstTable ^ inst_table_shared := SharedInsts.
-inst_table_set_mostly_uniq_insts(MostlyUniqInsts, !InstTable) :-
-    !InstTable ^ inst_table_mostly_uniq := MostlyUniqInsts.
+inst_table_set_user_insts(X, !InstTable) :-
+    !InstTable ^ inst_table_user := X.
+inst_table_set_unify_insts(X, !InstTable) :-
+    !InstTable ^ inst_table_unify := X.
+inst_table_set_merge_insts(X, !InstTable) :-
+    !InstTable ^ inst_table_merge := X.
+inst_table_set_ground_insts(X, !InstTable) :-
+    !InstTable ^ inst_table_ground := X.
+inst_table_set_any_insts(X, !InstTable) :-
+    !InstTable ^ inst_table_any := X.
+inst_table_set_shared_insts(X, !InstTable) :-
+    !InstTable ^ inst_table_shared := X.
+inst_table_set_mostly_uniq_insts(X, !InstTable) :-
+    !InstTable ^ inst_table_mostly_uniq := X.
 
-user_inst_table_get_inst_defns(UserInstDefns, UserInstDefns).
-
-user_inst_table_insert(InstId, InstDefn, !UserInstDefns) :-
-    map.insert(InstId, InstDefn, !UserInstDefns).
-
-user_inst_table_optimize(!UserInstDefns) :-
-    map.optimize(!UserInstDefns).
-
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -1213,7 +1649,7 @@ user_inst_table_optimize(!UserInstDefns) :-
                 mode_context    :: prog_context,
 
                 % So intermod.m can tell whether to output this mode.
-                mode_status     :: import_status
+                mode_status     :: mode_status
             ).
 
     % The only sort of mode definitions allowed are equivalence modes.
@@ -1251,8 +1687,8 @@ mode_table_init(map.init).
 mode_table_optimize(!ModeDefns) :-
     map.optimize(!ModeDefns).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -1262,36 +1698,36 @@ mode_table_optimize(!ModeDefns) :-
     %
 :- type hlds_class_defn
     --->    hlds_class_defn(
-                class_status            :: import_status,
+                classdefn_status            :: typeclass_status,
 
                 % SuperClasses.
-                class_supers            :: list(prog_constraint),
+                classdefn_supers            :: list(prog_constraint),
 
                 % Functional dependencies.
-                class_fundeps           :: hlds_class_fundeps,
+                classdefn_fundeps           :: hlds_class_fundeps,
 
                 % All ancestors which have fundeps on them.
-                class_fundep_ancestors  :: list(prog_constraint),
+                classdefn_fundep_ancestors  :: list(prog_constraint),
 
                 % ClassVars.
-                class_vars              :: list(tvar),
+                classdefn_vars              :: list(tvar),
 
                 % Kinds of class_vars.
-                class_kinds             :: tvar_kind_map,
+                classdefn_kinds             :: tvar_kind_map,
 
                 % The interface from the original declaration, used by
                 % intermod.m to % write out the interface for a local typeclass
                 % to the `.opt' file.
-                class_interface         :: class_interface,
+                classdefn_interface         :: class_interface,
 
                 % Methods.
-                class_hlds_interface    :: hlds_class_interface,
+                classdefn_hlds_interface    :: hlds_class_interface,
 
                 % VarNames.
-                class_tvarset           :: tvarset,
+                classdefn_tvarset           :: tvarset,
 
                 % Location of declaration.
-                class_context           :: prog_context
+                classdefn_context           :: prog_context
             ).
 
     % In the HLDS, functional dependencies are represented using
@@ -1311,14 +1747,7 @@ mode_table_optimize(!ModeDefns) :-
 
 :- func restrict_list_elements(set(hlds_class_argpos), list(T)) = list(T).
 
-:- type hlds_class_interface    ==  list(hlds_class_proc).
-
-    % XXX Why is this type separate from the usual pred_proc_id?
-:- type hlds_class_proc
-    --->    hlds_class_proc(
-                pred_id,
-                proc_id
-            ).
+:- type hlds_class_interface == list(pred_proc_id).
 
     % For each class, we keep track of a list of its instances, since there
     % can be more than one instance of each class. Each visible instance
@@ -1329,41 +1758,48 @@ mode_table_optimize(!ModeDefns) :-
 
 :- type instance_id == int.
 
-    % Information about a single `instance' declaration
+    % Information about a single `instance' declaration.
+    % The order of fields is intended to put the list of hlds_instance_defns
+    % of a class into a stable order when the hlds_instance_defns are sorted.
+    % ("Stable" meaning that changing *only* the order of the instance
+    % declarations in a source module should leave the contents of the
+    % .opt file unchanged.)
     %
 :- type hlds_instance_defn
     --->    hlds_instance_defn(
                 % Module of the instance declaration.
-                instance_module         :: module_name,
-
-                % Import status of the instance declaration.
-                instance_status         :: import_status,
-
-                % Context of declaration.
-                instance_context        :: prog_context,
-
-                % Constraints on the instance declaration.
-                instance_constraints    :: list(prog_constraint),
+                instdefn_module         :: module_name,
 
                 % The class types. The original types field is used only
                 % for error checking.
-                instance_types          :: list(mer_type),
-                instance_orig_types     :: list(mer_type),
+                instdefn_types          :: list(mer_type),
+                instdefn_orig_types     :: list(mer_type),
+
+                % Import status of the instance declaration.
+                % XXX This can be set to abstract_imported even if
+                % the instance is NOT imported.
+                instdefn_status         :: instance_status,
+
+                % Context of declaration.
+                instdefn_context        :: prog_context,
+
+                % Constraints on the instance declaration.
+                instdefn_constraints    :: list(prog_constraint),
 
                 % Methods
-                instance_body           :: instance_body,
+                instdefn_body           :: instance_body,
 
                 % After check_typeclass, we will know the pred_ids and proc_ids
                 % of all the methods.
-                instance_hlds_interface :: maybe(hlds_class_interface),
+                instdefn_hlds_interface :: maybe(hlds_class_interface),
 
                 % VarNames
-                instance_tvarset        :: tvarset,
+                instdefn_tvarset        :: tvarset,
 
                 % "Proofs" of how to build the typeclass_infos for the
                 % superclasses of this class (that is, the constraints
                 % on the class declaration), for this instance.
-                instance_proofs         :: constraint_proof_map
+                instdefn_proofs         :: constraint_proof_map
             ).
 
     % Return the value of the MR_typeclass_info_num_extra_instance_args field
@@ -1371,7 +1807,7 @@ mode_table_optimize(!ModeDefns) :-
     %
 :- pred num_extra_instance_args(hlds_instance_defn::in, int::out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -1385,26 +1821,26 @@ restrict_list_elements(Elements, List) = RestrictedList :-
 restrict_list_elements_2(_, _, [], []).
 restrict_list_elements_2([], _, [_ | _], []).
 restrict_list_elements_2([Posn | Posns], Index, [X | Xs], RestrictedXs) :-
-    ( Index = Posn ->
+    ( if Index = Posn then
         restrict_list_elements_2(Posns, Index + 1, Xs, TailRestrictedXs),
         RestrictedXs = [X | TailRestrictedXs]
-    ; Index < Posn ->
+    else if Index < Posn then
         restrict_list_elements_2([Posn | Posns], Index + 1, Xs, RestrictedXs)
-    ;
+    else
         restrict_list_elements_2(Posns, Index + 1, [X | Xs], RestrictedXs)
     ).
 
 num_extra_instance_args(InstanceDefn, NumExtra) :-
-    InstanceDefn = hlds_instance_defn(_InstanceModule, _ImportStatus,
-        _TermContext, InstanceConstraints, InstanceTypes, _OrigInstanceTypes,
-        _Body, _PredProcIds, _Varset, _SuperClassProofs),
+    InstanceDefn = hlds_instance_defn(_InstanceModule,
+        InstanceTypes, _OrigInstanceTypes, _ImportStatus, _TermContext,
+        InstanceConstraints, _Body, _PredProcIds, _Varset, _SuperClassProofs),
     type_vars_list(InstanceTypes, TypeVars),
     get_unconstrained_tvars(TypeVars, InstanceConstraints, Unconstrained),
     list.length(InstanceConstraints, NumConstraints),
     list.length(Unconstrained, NumUnconstrained),
     NumExtra = NumConstraints + NumUnconstrained.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -1438,7 +1874,7 @@ num_extra_instance_args(InstanceDefn, NumExtra) :-
 
     % The identifier of a constraint is stored along with the constraint.
     % Each value of this type may have more than one identifier because
-    % if two constraints in a context are equivalent then we merge them
+    % if two constraints in a context are equivalent, then we merge them
     % together in order to not have to prove the same constraint twice.
     %
 :- type hlds_constraint
@@ -1579,7 +2015,7 @@ num_extra_instance_args(InstanceDefn, NumExtra) :-
 :- pred search_hlds_constraint_list(constraint_map::in, constraint_type::in,
     goal_id::in, int::in, list(prog_constraint)::out) is semidet.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -1591,13 +2027,14 @@ init_hlds_constraint_list(ProgConstraints, Constraints) :-
 
 :- pred init_hlds_constraint(prog_constraint::in, hlds_constraint::out) is det.
 
-init_hlds_constraint(constraint(Name, Types),
-    hlds_constraint([], Name, Types)).
+init_hlds_constraint(Constraint, HLDSConstraint) :-
+    Constraint = constraint(ClassName, ArgTypes),
+    HLDSConstraint = hlds_constraint([], ClassName, ArgTypes).
 
 make_head_hlds_constraints(ClassTable, TVarSet, ProgConstraints,
         Constraints) :-
     ProgConstraints = constraints(UnivConstraints, ExistConstraints),
-    GoalId = goal_id(0),
+    GoalId = goal_id_for_head_constraints,
     make_hlds_constraint_list(UnivConstraints, assumed, GoalId,
         AssumedConstraints),
     make_hlds_constraint_list(ExistConstraints, unproven, GoalId,
@@ -1635,30 +2072,30 @@ make_hlds_constraint_list(ProgConstraints, ConstraintType, GoalId,
 
 make_hlds_constraint_list_2([], _, _, _, []).
 make_hlds_constraint_list_2([ProgConstraint | ProgConstraints], ConstraintType,
-        GoalId, N, [HLDSConstraint | HLDSConstraints]) :-
-    ProgConstraint = constraint(Name, Types),
-    Id = constraint_id(ConstraintType, GoalId, N),
-    HLDSConstraint = hlds_constraint([Id], Name, Types),
-    make_hlds_constraint_list_2(ProgConstraints, ConstraintType, GoalId,
-        N + 1, HLDSConstraints).
+        GoalId, CurArgNum, [HLDSConstraint | HLDSConstraints]) :-
+    ProgConstraint = constraint(ClassName, ArgTypes),
+    Id = constraint_id(ConstraintType, GoalId, CurArgNum),
+    HLDSConstraint = hlds_constraint([Id], ClassName, ArgTypes),
+    make_hlds_constraint_list_2(ProgConstraints, ConstraintType,
+        GoalId, CurArgNum + 1, HLDSConstraints).
 
 merge_hlds_constraints(ConstraintsA, ConstraintsB, Constraints) :-
     ConstraintsA = hlds_constraints(UnprovenA, AssumedA,
         RedundantA, AncestorsA),
     ConstraintsB = hlds_constraints(UnprovenB, AssumedB,
         RedundantB, AncestorsB),
-    list.append(UnprovenA, UnprovenB, Unproven),
-    list.append(AssumedA, AssumedB, Assumed),
+    Unproven = UnprovenA ++ UnprovenB,
+    Assumed = AssumedA ++ AssumedB,
     map.union(set.union, RedundantA, RedundantB, Redundant),
-    map.union(shortest_list, AncestorsA, AncestorsB, Ancestors),
+    map.union(pick_shorter_list, AncestorsA, AncestorsB, Ancestors),
     Constraints = hlds_constraints(Unproven, Assumed, Redundant, Ancestors).
 
-:- pred shortest_list(list(T)::in, list(T)::in, list(T)::out) is det.
+:- pred pick_shorter_list(list(T)::in, list(T)::in, list(T)::out) is det.
 
-shortest_list(As, Bs, Cs) :-
-    ( is_shorter(As, Bs) ->
+pick_shorter_list(As, Bs, Cs) :-
+    ( if is_shorter(As, Bs) then
         Cs = As
-    ;
+    else
         Cs = Bs
     ).
 
@@ -1678,30 +2115,30 @@ retrieve_prog_constraint_list(Constraints, ProgConstraints) :-
     list.map(retrieve_prog_constraint, Constraints, ProgConstraints).
 
 retrieve_prog_constraint(Constraint, ProgConstraint) :-
-    Constraint = hlds_constraint(_, Name, Types),
-    ProgConstraint = constraint(Name, Types).
+    Constraint = hlds_constraint(_Ids, ClassName, ArgTypes),
+    ProgConstraint = constraint(ClassName, ArgTypes).
 
 matching_constraints(ConstraintA, ConstraintB) :-
-    ConstraintA = hlds_constraint(_, Name, Types),
-    ConstraintB = hlds_constraint(_, Name, Types).
+    ConstraintA = hlds_constraint(_IdsA, ClassName, ArgTypes),
+    ConstraintB = hlds_constraint(_IdsB, ClassName, ArgTypes).
 
-compare_hlds_constraints(ConstraintA, ConstraintB, R) :-
-    ConstraintA = hlds_constraint(_, NA, TA),
-    ConstraintB = hlds_constraint(_, NB, TB),
-    compare(R0, NA, NB),
+compare_hlds_constraints(ConstraintA, ConstraintB, CmpRes) :-
+    ConstraintA = hlds_constraint(_IdsA, ClassNameA, ArgTypesA),
+    ConstraintB = hlds_constraint(_IdsB, ClassNameB, ArgTypesB),
+    compare(NameCmpRes, ClassNameA, ClassNameB),
     (
-        R0 = (=),
-        compare(R, TA, TB)
+        NameCmpRes = (=),
+        compare(CmpRes, ArgTypesA, ArgTypesB)
     ;
-        ( R0 = (<)
-        ; R0 = (>)
+        ( NameCmpRes = (<)
+        ; NameCmpRes = (>)
         ),
-        R = R0
+        CmpRes = NameCmpRes
     ).
 
-update_constraint_map(Constraint, !ConstraintMap) :-
-    Constraint = hlds_constraint(Ids, Name, Types),
-    ProgConstraint = constraint(Name, Types),
+update_constraint_map(HLDSConstraint, !ConstraintMap) :-
+    HLDSConstraint = hlds_constraint(Ids, ClassName, ArgTypes),
+    ProgConstraint = constraint(ClassName, ArgTypes),
     list.foldl(update_constraint_map_2(ProgConstraint), Ids, !ConstraintMap).
 
 :- pred update_constraint_map_2(prog_constraint::in, constraint_id::in,
@@ -1719,19 +2156,19 @@ update_redundant_constraints(ClassTable, TVarSet, Constraints, !Redundant) :-
     redundant_constraints::out) is det.
 
 update_redundant_constraints_2(ClassTable, TVarSet, Constraint, !Redundant) :-
-    Constraint = hlds_constraint(_, Name, Args),
-    list.length(Args, Arity),
-    ClassId = class_id(Name, Arity),
+    Constraint = hlds_constraint(_Ids, ClassName, ArgTypes),
+    list.length(ArgTypes, Arity),
+    ClassId = class_id(ClassName, Arity),
     map.lookup(ClassTable, ClassId, ClassDefn),
-    ClassAncestors0 = ClassDefn ^ class_fundep_ancestors,
+    ClassAncestors0 = ClassDefn ^ classdefn_fundep_ancestors,
     list.map(init_hlds_constraint, ClassAncestors0, ClassAncestors),
     (
         % Optimize the simple case.
         ClassAncestors = []
     ;
         ClassAncestors = [_ | _],
-        ClassTVarSet = ClassDefn ^ class_tvarset,
-        ClassParams = ClassDefn ^ class_vars,
+        ClassTVarSet = ClassDefn ^ classdefn_tvarset,
+        ClassParams = ClassDefn ^ classdefn_vars,
 
         % We can ignore the resulting tvarset, since any new variables
         % will become bound when the arguments are bound. (This follows
@@ -1743,7 +2180,7 @@ update_redundant_constraints_2(ClassTable, TVarSet, Constraint, !Redundant) :-
             ClassAncestors, RenamedAncestors),
         apply_variable_renaming_to_tvar_list(Renaming, ClassParams,
             RenamedParams),
-        map.from_corresponding_lists(RenamedParams, Args, Subst),
+        map.from_corresponding_lists(RenamedParams, ArgTypes, Subst),
         apply_subst_to_constraint_list(Subst, RenamedAncestors, Ancestors),
         list.foldl(add_redundant_constraint, Ancestors, !Redundant)
     ).
@@ -1752,24 +2189,25 @@ update_redundant_constraints_2(ClassTable, TVarSet, Constraint, !Redundant) :-
     redundant_constraints::in, redundant_constraints::out) is det.
 
 add_redundant_constraint(Constraint, !Redundant) :-
-    Constraint = hlds_constraint(_, Name, Args),
-    list.length(Args, Arity),
-    ClassId = class_id(Name, Arity),
-    ( map.search(!.Redundant, ClassId, Constraints0) ->
-        set.insert(Constraint, Constraints0, Constraints)
-    ;
-        Constraints = set.make_singleton_set(Constraint)
-    ),
-    map.set(ClassId, Constraints, !Redundant).
+    Constraint = hlds_constraint(_Ids, ClassName, ArgTypes),
+    list.length(ArgTypes, Arity),
+    ClassId = class_id(ClassName, Arity),
+    ( if map.search(!.Redundant, ClassId, Constraints0) then
+        set.insert(Constraint, Constraints0, Constraints),
+        map.det_update(ClassId, Constraints, !Redundant)
+    else
+        Constraints = set.make_singleton_set(Constraint),
+        map.det_insert(ClassId, Constraints, !Redundant)
+    ).
 
 lookup_hlds_constraint_list(ConstraintMap, ConstraintType, GoalId, Count,
         Constraints) :-
-    (
+    ( if
         search_hlds_constraint_list_2(ConstraintMap, ConstraintType, GoalId,
-            Count, [], Constraints0)
-    ->
-        Constraints = Constraints0
-    ;
+            Count, [], ConstraintsPrime)
+    then
+        Constraints = ConstraintsPrime
+    else
         unexpected($module, $pred, "not found")
     ).
 
@@ -1784,9 +2222,9 @@ search_hlds_constraint_list(ConstraintMap, ConstraintType, GoalId, Count,
 
 search_hlds_constraint_list_2(ConstraintMap, ConstraintType, GoalId, Count,
         !Constraints) :-
-    ( Count = 0 ->
+    ( if Count = 0 then
         true
-    ;
+    else
         ConstraintId = constraint_id(ConstraintType, GoalId, Count),
         map.search(ConstraintMap, ConstraintId, Constraint),
         !:Constraints = [Constraint | !.Constraints],
@@ -1794,7 +2232,7 @@ search_hlds_constraint_list_2(ConstraintMap, ConstraintType, GoalId, Count,
             GoalId, Count - 1, !Constraints)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Search the superclasses of the given constraint for a potential proof,
     % and add it to the map if no better proof exists already.
@@ -1814,9 +2252,9 @@ update_ancestor_constraints(ClassTable, TVarSet, HLDSConstraint, !Ancestors) :-
 
 update_ancestor_constraints_2(ClassTable, TVarSet, Descendants0, Constraint,
         !Ancestors) :-
-    Constraint = constraint(Class, Args),
-    list.length(Args, Arity),
-    ClassId = class_id(Class, Arity),
+    Constraint = constraint(ClassName, ArgTypes),
+    list.length(ArgTypes, Arity),
+    ClassId = class_id(ClassName, Arity),
     map.lookup(ClassTable, ClassId, ClassDefn),
 
     % We can ignore the resulting tvarset, since any new variables
@@ -1824,12 +2262,13 @@ update_ancestor_constraints_2(ClassTable, TVarSet, Descendants0, Constraint,
     % from the fact that constraints on class declarations can only use
     % variables that appear in the head of the declaration.)
 
-    tvarset_merge_renaming(TVarSet, ClassDefn ^ class_tvarset, _, Renaming),
+    tvarset_merge_renaming(TVarSet, ClassDefn ^ classdefn_tvarset, _,
+        Renaming),
     apply_variable_renaming_to_prog_constraint_list(Renaming,
-        ClassDefn ^ class_supers, RenamedSupers),
-    apply_variable_renaming_to_tvar_list(Renaming, ClassDefn ^ class_vars,
+        ClassDefn ^ classdefn_supers, RenamedSupers),
+    apply_variable_renaming_to_tvar_list(Renaming, ClassDefn ^ classdefn_vars,
         RenamedParams),
-    map.from_corresponding_lists(RenamedParams, Args, Subst),
+    map.from_corresponding_lists(RenamedParams, ArgTypes, Subst),
     apply_subst_to_prog_constraint_list(Subst, RenamedSupers, Supers),
 
     Descendants = [Constraint | Descendants0],
@@ -1842,22 +2281,22 @@ update_ancestor_constraints_2(ClassTable, TVarSet, Descendants0, Constraint,
 
 update_ancestor_constraints_3(ClassTable, TVarSet, Descendants, Constraint,
         !Ancestors) :-
-    (
+    ( if
         map.search(!.Ancestors, Constraint, OldDescendants),
         is_shorter(OldDescendants, Descendants)
-    ->
+    then
         % We don't want to update the ancestors because we already have a
         % better path. The same will apply for all superclasses, so we
         % don't traverse any further.
         true
-    ;
+    else
         map.set(Constraint, Descendants, !Ancestors),
         update_ancestor_constraints_2(ClassTable, TVarSet, Descendants,
             Constraint, !Ancestors)
     ).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -1905,8 +2344,8 @@ assertion_table_lookup(AssertionTable, Id, Assertion) :-
 assertion_table_pred_ids(assertion_table(_, AssertionMap), PredIds) :-
     map.values(AssertionMap, PredIds).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -1960,7 +2399,7 @@ assertion_table_pred_ids(assertion_table(_, AssertionMap), PredIds) :-
 :- pred exclusive_table_add(pred_id::in, exclusive_id::in,
     exclusive_table::in, exclusive_table::out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -1981,6 +2420,6 @@ exclusive_table_optimize(!ExclusiveTable) :-
 exclusive_table_add(ExclusiveId, PredId, !ExclusiveTable) :-
     multi_map.set(PredId, ExclusiveId, !ExclusiveTable).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module hlds.hlds_data.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

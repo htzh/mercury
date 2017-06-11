@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
 % test_pretty_printer.m
 % Ralph Becket <rafe@csse.unimelb.edu.au>
 % Tue Jun  5 16:19:10 EST 2007
-% vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module test_pretty_printer.
 
@@ -12,11 +12,9 @@
 
 :- import_module io.
 
-
-
 :- pred main(io::di, io::uo) is cc_multi.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -34,13 +32,11 @@
 :- import_module type_desc.
 :- import_module univ.
 
-
-
 :- type test_case
     --->    test_case(
                 line_width              :: int,
                 max_lines               :: int,
-                formatting_limit        :: formatting_limit,
+                fs_limit                :: func_symbol_limit,
                 doc                     :: doc
             ).
 
@@ -60,8 +56,6 @@
     --->    non_canonical_bool(int)
     where equality is non_canonical_bool_eq.
 
-
-
 main(!IO) :-
     set_default_formatter("list",    "list",       1, fmt_list,   !IO),
     set_default_formatter("tree234", "tree234",    2, fmt_map,    !IO),
@@ -71,8 +65,6 @@ main(!IO) :-
     set_default_formatter("builtin", "string",     0, fmt_string, !IO),
     unsorted_solutions(test_case, TestCases),
     list.foldl(run_test_case, TestCases, !IO).
-
-
 
 :- pred run_test_case(test_case::in, io::di, io::uo) is det.
 
@@ -86,51 +78,41 @@ run_test_case(TestCase, !IO) :-
     pretty_printer.write_doc(Doc, !IO),
     io.write_string(Ruler, !IO).
 
-
-
 :- func fmt_float : pretty_printer.formatter.
 
 fmt_float(Univ, _) =
     ( if Univ = univ(Float) then
         str(string.float_to_string(Float))
-      else
+    else
         str("?fmt_float?")
     ).
-
-
 
 :- func fmt_int : pretty_printer.formatter.
 
 fmt_int(Univ, _) =
     ( if Univ = univ(Int) then
         str(string.int_to_string(Int))
-      else
+    else
         str("?fmt_int?")
     ).
-
-
 
 :- func fmt_string : pretty_printer.formatter.
 
 fmt_string(Univ, _) =
     ( if Univ = univ(String) then
         docs([str("\""), str(String), str("\"")])
-      else
+    else
         str("?fmt_string?")
     ).
-
-
 
 :- func fmt_char : pretty_printer.formatter.
 
 fmt_char(Univ, _) =
     ( if Univ = univ(Char) then
         str(term_io.quoted_char(Char))
-      else
+    else
         str("?fmt_char?")
     ).
-
-
 
 :- func fmt_list(univ, list(type_desc)) = doc.
 
@@ -142,17 +124,15 @@ fmt_list(Univ, ArgDescs) = Doc :-
         Value = univ_value(Univ),
         dynamic_cast(Value, List),
         UnivList = list.map(make_univ, List)
-      then
-        Doc = indent([ str("["), format_list(UnivList, str(", ")), str("]") ])
-      else
+    then
+        Doc = indent([str("["), format_list(UnivList, str(", ")), str("]")])
+    else
         Doc = str("?fmt_list?")
     ).
-
 
 :- pred same_list_type(list(T)::unused, T::unused) is det.
 
 same_list_type(_, _).
-
 
 :- type key_value(K, V)
     --->    (K -> V).
@@ -167,39 +147,35 @@ fmt_map(Univ, ArgDescs) = Doc :-
         same_map_type(Map, K, V),
         Value = univ_value(Univ),
         dynamic_cast(Value, Map)
-      then
+    then
         UnivList =
             map.foldr(func(KK, VV, KVs) = [univ(KK -> VV) | KVs], Map, []),
         Doc = indent([
             str("map(["), format_list(UnivList, str(", ")), str("])")
         ])
-      else
+    else
         Doc = str("?fmt_map?")
     ).
-
 
 :- func fmt_susp_seq(int) = doc.
 
 fmt_susp_seq(N) =
     ( if N =< 1 then
         str("1")
-      else
+    else
         docs([
             group([nl, format(N), str(".")]),
             format_susp((func) = fmt_susp_seq(N - 1))
         ])
     ).
 
-
 :- func make_univ(T) = univ.
 
 make_univ(X) = univ(X).
 
-
 :- pred same_map_type(map(K, V)::unused, K::unused, V::unused) is det.
 
 same_map_type(_, _, _).
-
 
 :- pred test_case(test_case::out) is multi.
 
@@ -230,33 +206,31 @@ test_case(test_case(LineWidth, MaxLines, Limit, Doc)) :-
         format(non_canonical_bool(42)), nl,
         format(non_canonical_bool(43)), nl
     ]),
-    (   Limit = linear(100)
-    ;   Limit = linear(10)
-    ;   Limit = triangular(100)
-    ;   Limit = triangular(10)
-    ;   Limit = linear(1)
-    ;   Limit = triangular(1)
+    ( Limit = linear(100)
+    ; Limit = linear(10)
+    ; Limit = triangular(100)
+    ; Limit = triangular(10)
+    ; Limit = linear(1)
+    ; Limit = triangular(1)
     ),
-    (   MaxLines = 10
-    ;   MaxLines = 3
+    ( MaxLines = 10
+    ; MaxLines = 3
     ),
-    (   LineWidth = 78
-    ;   LineWidth = 38
+    ( LineWidth = 78
+    ; LineWidth = 38
     ),
-    (   Doc = format(List)
-    ;   Doc = format_list(ListUniv, str(", "))
-    ;   Doc = format(MapFloat)
-    ;   Doc = format(MapStr)
-    ;   Doc = format(OpTree)
-    ;   Doc = format(Church)
-    ;   Doc = fmt_susp_seq(100)
-    ;   Doc = format(Tuple)
-    ;   Doc = format(Square)
-    ;   Doc = NonCanonTest
-    ;   Doc = IndentTest
+    ( Doc = format(List)
+    ; Doc = format_list(ListUniv, str(", "))
+    ; Doc = format(MapFloat)
+    ; Doc = format(MapStr)
+    ; Doc = format(OpTree)
+    ; Doc = format(Church)
+    ; Doc = fmt_susp_seq(100)
+    ; Doc = format(Tuple)
+    ; Doc = format(Square)
+    ; Doc = NonCanonTest
+    ; Doc = IndentTest
     ).
-
-
 
 :- func mk_op_tree(int) = op_tree.
 
@@ -269,8 +243,6 @@ mk_op_tree(N) =
       else                     mk_op_tree(1 + N/2) / mk_op_tree(0 + N/3)
     ).
 
-
-
 :- pred non_canonical_bool_eq(non_canonical_bool::in, non_canonical_bool::in)
         is semidet.
 
@@ -281,5 +253,4 @@ non_canonical_bool_eq(A, B) :-
     ),
     AX /\ 1 = BX /\ 1.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

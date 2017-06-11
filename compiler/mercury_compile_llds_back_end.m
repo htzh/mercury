@@ -1,24 +1,30 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2009-2012 The University of Melbourne.
+% Copyright (C) 2017 The Mercury Team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: mercury_compile_llds_back_end.m.
 %
-%  This module implements the LLDS backend for the top level of the Mercury
+% This module implements the LLDS backend for the top level of the Mercury
 % compiler. It invokes the different passes of this backend as appropriate.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module top_level.mercury_compile_llds_back_end.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.passes_aux.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
+:- import_module libs.
+:- import_module libs.op_mode.
+:- import_module ll_backend.
 :- import_module ll_backend.global_data.
 :- import_module ll_backend.llds.
 
@@ -30,40 +36,43 @@
     global_data::out, list(c_procedure)::out, dump_info::in, dump_info::out,
     io::di, io::uo) is det.
 
-:- pred llds_output_pass(module_info::in, global_data::in,
-    list(c_procedure)::in, module_name::in, bool::out,
-    list(string)::out, io::di, io::uo) is det.
+:- pred llds_output_pass(op_mode_codegen::in, module_info::in, global_data::in,
+    list(c_procedure)::in, module_name::in, bool::out, list(string)::out,
+    io::di, io::uo) is det.
 
 :- pred map_args_to_regs(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.base_typeclass_info.
 :- import_module backend_libs.compile_target_code.
 :- import_module backend_libs.export.
 :- import_module backend_libs.foreign.
 :- import_module backend_libs.proc_label.
-:- import_module backend_libs.rtti.
 :- import_module backend_libs.type_class_info.
 :- import_module backend_libs.type_ctor_info.
+:- import_module check_hlds.
 :- import_module check_hlds.simplify.
+:- import_module check_hlds.simplify.simplify_proc.
+:- import_module check_hlds.simplify.simplify_tasks.
 :- import_module hlds.arg_info.
-:- import_module hlds.hlds_goal.
+:- import_module hlds.hlds_dependency_graph.
 :- import_module hlds.hlds_out.
 :- import_module hlds.hlds_out.hlds_out_util.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.mark_tail_calls.
+:- import_module libs.dependency_graph.
 :- import_module libs.file_util.
 :- import_module libs.globals.
 :- import_module libs.options.
 :- import_module ll_backend.continuation_info.
 :- import_module ll_backend.dupproc.
 :- import_module ll_backend.follow_code.
-:- import_module ll_backend.global_data.
 :- import_module ll_backend.liveness.
 :- import_module ll_backend.llds_out.
 :- import_module ll_backend.llds_out.llds_out_file.
@@ -76,26 +85,27 @@
 :- import_module ll_backend.store_alloc.
 :- import_module ll_backend.transform_llds.
 :- import_module ll_backend.unify_gen.
+:- import_module mdbcomp.prim_data.
 :- import_module mdbcomp.program_representation.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.file_names.
 :- import_module parse_tree.module_cmds.
-:- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.prog_foreign.
 :- import_module top_level.mercury_compile_front_end.
-:- import_module transform_hlds.dependency_graph.
 
 :- import_module assoc_list.
+:- import_module cord.
 :- import_module int.
-:- import_module list.
 :- import_module map.
 :- import_module maybe.
 :- import_module pair.
 :- import_module require.
+:- import_module set.
 :- import_module string.
 :- import_module term.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 llds_backend_pass(!HLDS, !:GlobalData, LLDS, !DumpInfo, !IO) :-
     module_info_get_name(!.HLDS, ModuleName),
@@ -128,19 +138,24 @@ llds_backend_pass(!HLDS, !:GlobalData, LLDS, !DumpInfo, !IO) :-
     add_all_tabling_info_structs(!.HLDS, !GlobalData),
     (
         TradPasses = no,
-        llds_backend_pass_by_phases(!HLDS, !GlobalData, LLDS, !DumpInfo, !IO)
+        llds_backend_pass_by_phases(!HLDS, LLDS, !GlobalData, [], Specs,
+            !DumpInfo, !IO)
     ;
         TradPasses = yes,
-        llds_backend_pass_by_preds(!HLDS, !GlobalData, LLDS, !IO)
-    ).
+        llds_backend_pass_by_preds(!HLDS, LLDS, !GlobalData, [], Specs)
+    ),
+    % XXX _NumErrors
+    write_error_specs(Specs, Globals, 0, _NumWarnings, 0, _NumErrors, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred llds_backend_pass_by_phases(module_info::in, module_info::out,
-    global_data::in, global_data::out, list(c_procedure)::out,
+    list(c_procedure)::out, global_data::in, global_data::out,
+    list(error_spec)::in, list(error_spec)::out,
     dump_info::in, dump_info::out, io::di, io::uo) is det.
 
-llds_backend_pass_by_phases(!HLDS, !GlobalData, !:LLDS, !DumpInfo, !IO) :-
+llds_backend_pass_by_phases(!HLDS, !:LLDS, !GlobalData, !Specs,
+        !DumpInfo, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_bool_option(Globals, statistics, Stats),
@@ -163,10 +178,8 @@ llds_backend_pass_by_phases(!HLDS, !GlobalData, !:LLDS, !DumpInfo, !IO) :-
     compute_liveness(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 330, "liveness", !DumpInfo, !IO),
 
-    maybe_mark_tail_rec_calls(Verbose, Stats, !HLDS, !IO),
+    maybe_mark_tail_rec_calls(Verbose, Stats, !HLDS, !Specs, !IO),
     maybe_dump_hlds(!.HLDS, 332, "mark_debug_tailrec_calls", !DumpInfo, !IO),
-
-    maybe_warn_non_tail_recursion(Verbose, Stats, !.HLDS, !IO),
 
     compute_stack_vars(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 335, "stackvars", !DumpInfo, !IO),
@@ -177,18 +190,18 @@ llds_backend_pass_by_phases(!HLDS, !GlobalData, !:LLDS, !DumpInfo, !IO) :-
     generate_llds_code_for_module(!.HLDS, Verbose, Stats, !GlobalData, !:LLDS,
         !IO),
 
-    maybe_generate_stack_layouts(!.HLDS, !.LLDS, Verbose, Stats, !GlobalData,
-        !IO),
-    % maybe_dump_global_data(!.GlobalData, !IO),
+    maybe_optimize_llds(!.HLDS, !.GlobalData, Verbose, Stats, !LLDS, !IO),
 
-    maybe_optimize_llds(!.HLDS, !.GlobalData, Verbose, Stats, !LLDS, !IO).
+    maybe_generate_stack_layouts(!.HLDS, !.LLDS, Verbose, Stats, !GlobalData,
+        !IO).
+    % maybe_dump_global_data(!.GlobalData, !IO).
 
 :- pred llds_backend_pass_by_preds(module_info::in, module_info::out,
-    global_data::in, global_data::out, list(c_procedure)::out,
-    io::di, io::uo) is det.
+    list(c_procedure)::out, global_data::in, global_data::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
 
-llds_backend_pass_by_preds(!HLDS, !GlobalData, LLDS, !IO) :-
-    module_info_get_valid_predids(PredIds, !HLDS),
+llds_backend_pass_by_preds(!HLDS, LLDS, !GlobalData, !Specs) :-
+    module_info_get_valid_pred_ids(!.HLDS, PredIds),
     module_info_get_globals(!.HLDS, Globals),
     globals.lookup_bool_option(Globals, optimize_proc_dups, ProcDups),
     (
@@ -197,53 +210,81 @@ llds_backend_pass_by_preds(!HLDS, !GlobalData, LLDS, !IO) :-
         MaybeDupProcMap = no
     ;
         ProcDups = yes,
-        dependency_graph.build_pred_dependency_graph(!.HLDS, PredIds,
-            do_not_include_imported, DepInfo),
-        hlds_dependency_info_get_dependency_ordering(DepInfo, PredSCCs),
-        list.condense(PredSCCs, OrderedPredIds),
+        PredDepInfo = build_pred_dependency_graph(!.HLDS, PredIds,
+            do_not_include_imported),
+        OrderedPredIds = dependency_info_get_condensed_bottom_up_sccs(
+            PredDepInfo),
         MaybeDupProcMap = yes(map.init)
     ),
+    % The dependency information used to warn about mutual tail recursion
+    % cannot be shared with the information used to remove duplicate
+    % procedures, they're based on different nodes (predicates versus
+    % procs).
+    module_info_rebuild_dependency_info(!HLDS, ProcDepInfo),
+    SCCMap = dependency_info_make_scc_map(ProcDepInfo),
     generate_const_structs(!.HLDS, ConstStructMap, !GlobalData),
     llds_backend_pass_by_preds_loop_over_preds(!HLDS, ConstStructMap,
-        OrderedPredIds, MaybeDupProcMap, [], RevCodes, !GlobalData, !IO),
-    list.reverse(RevCodes, Codes),
-    list.condense(Codes, LLDS).
+        SCCMap, OrderedPredIds, MaybeDupProcMap, cord.init, CProcsCord,
+        !GlobalData, !Specs),
+    LLDS = cord.list(CProcsCord).
+
+:- type dup_proc_label_map ==
+    map(mdbcomp.prim_data.proc_label, mdbcomp.prim_data.proc_label).
 
 :- pred llds_backend_pass_by_preds_loop_over_preds(
-    module_info::in, module_info::out, const_struct_map::in, list(pred_id)::in,
-    maybe(map(mdbcomp.prim_data.proc_label, mdbcomp.prim_data.proc_label))::in,
-    list(list(c_procedure))::in, list(list(c_procedure))::out,
-    global_data::in, global_data::out, io::di, io::uo) is det.
+    module_info::in, module_info::out, const_struct_map::in,
+    scc_map(pred_proc_id)::in, list(pred_id)::in,
+    maybe(dup_proc_label_map)::in,
+    cord(c_procedure)::in, cord(c_procedure)::out,
+    global_data::in, global_data::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
 
-llds_backend_pass_by_preds_loop_over_preds(!HLDS, _,
-        [], _, !RevCodes, !GlobalData, !IO).
-llds_backend_pass_by_preds_loop_over_preds(!HLDS, ConstStructMap,
-        [PredId | PredIds], !.MaybeDupProcMap, !RevCodes, !GlobalData, !IO) :-
+llds_backend_pass_by_preds_loop_over_preds(!HLDS, _, _,
+        [], _, !CProcsCord, !GlobalData, !Specs).
+llds_backend_pass_by_preds_loop_over_preds(!HLDS, ConstStructMap, SCCMap,
+        [PredId | PredIds], !.MaybeDupProcMap,
+        !CProcsCord, !GlobalData, !Specs) :-
+    llds_backend_pass_by_preds_do_one_pred(!HLDS, ConstStructMap, SCCMap,
+        PredId, !MaybeDupProcMap, !CProcsCord, !GlobalData, !Specs),
+    llds_backend_pass_by_preds_loop_over_preds(!HLDS, ConstStructMap,
+        SCCMap, PredIds, !.MaybeDupProcMap, !CProcsCord, !GlobalData, !Specs).
+
+:- pred llds_backend_pass_by_preds_do_one_pred(
+    module_info::in, module_info::out, const_struct_map::in,
+    scc_map(pred_proc_id)::in, pred_id::in,
+    maybe(dup_proc_label_map)::in, maybe(dup_proc_label_map)::out,
+    cord(c_procedure)::in, cord(c_procedure)::out,
+    global_data::in, global_data::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
+
+llds_backend_pass_by_preds_do_one_pred(!HLDS, ConstStructMap, SCCMap, PredId,
+        !MaybeDupProcMap, !CProcsCord, !GlobalData, !Specs) :-
     module_info_get_preds(!.HLDS, PredTable),
     map.lookup(PredTable, PredId, PredInfo),
     ProcIds = pred_info_non_imported_procids(PredInfo),
     (
-        ProcIds = [],
-        ProcList = []
+        ProcIds = []
     ;
         ProcIds = [_ | _],
         module_info_get_globals(!.HLDS, Globals0),
         globals.lookup_bool_option(Globals0, verbose, Verbose),
         (
             Verbose = yes,
-            io.write_string("% Generating code for ", !IO),
-            write_pred_id(!.HLDS, PredId, !IO),
-            io.write_string("\n", !IO),
-            maybe_flush_output(Verbose, !IO)
+            trace [io(!IO)] (
+                io.write_string("% Generating code for ", !IO),
+                write_pred_id(!.HLDS, PredId, !IO),
+                io.write_string("\n", !IO),
+                maybe_flush_output(Verbose, !IO)
+            )
         ;
             Verbose = no
         ),
-        (
+        ( if
             PredModule = pred_info_module(PredInfo),
             PredName = pred_info_name(PredInfo),
             PredArity = pred_info_orig_arity(PredInfo),
             no_type_info_builtin(PredModule, PredName, PredArity)
-        ->
+        then
             % These predicates should never be traced, since they do not obey
             % typeinfo_liveness. Since they may be opt_imported into other
             % modules, we must switch off the tracing of such preds on a
@@ -251,56 +292,59 @@ llds_backend_pass_by_preds_loop_over_preds(!HLDS, ConstStructMap,
             globals.get_trace_level(Globals0, TraceLevel),
             globals.set_trace_level_none(Globals0, Globals1),
             module_info_set_globals(Globals1, !HLDS),
-            llds_backend_pass_for_pred(!HLDS, ConstStructMap, PredId, PredInfo,
-                ProcIds, IdProcList, !GlobalData, !IO),
+            llds_backend_pass_for_pred(!HLDS, ConstStructMap, SCCMap,
+                PredId, PredInfo, ProcIds, IdCProcs, !GlobalData, !Specs),
             module_info_get_globals(!.HLDS, Globals2),
             globals.set_trace_level(TraceLevel, Globals2, Globals),
             module_info_set_globals(Globals, !HLDS)
-        ;
-            llds_backend_pass_for_pred(!HLDS, ConstStructMap,
-                PredId, PredInfo, ProcIds, IdProcList, !GlobalData, !IO)
+        else
+            llds_backend_pass_for_pred(!HLDS, ConstStructMap, SCCMap,
+                PredId, PredInfo, ProcIds, IdCProcs, !GlobalData, !Specs)
         ),
         (
             !.MaybeDupProcMap = no,
-            assoc_list.values(IdProcList, ProcList)
+            assoc_list.values(IdCProcs, CProcs)
         ;
             !.MaybeDupProcMap = yes(DupProcMap0),
-            eliminate_duplicate_procs(IdProcList, ProcList,
+            eliminate_duplicate_procs(IdCProcs, CProcs,
                 DupProcMap0, DupProcMap),
             !:MaybeDupProcMap = yes(DupProcMap)
         ),
-        maybe_write_string(Verbose, "% done.\n", !IO),
+        !:CProcsCord = !.CProcsCord ++ cord.from_list(CProcs),
         globals.lookup_bool_option(Globals0, statistics, Stats),
-        maybe_report_stats(Stats, !IO)
-    ),
-    !:RevCodes = [ProcList | !.RevCodes],
-    llds_backend_pass_by_preds_loop_over_preds(!HLDS, ConstStructMap, PredIds,
-        !.MaybeDupProcMap, !RevCodes, !GlobalData, !IO).
+        trace [io(!IO)] (
+            maybe_write_string(Verbose, "% done.\n", !IO),
+            maybe_report_stats(Stats, !IO)
+        )
+    ).
 
-:- pred llds_backend_pass_for_pred( module_info::in, module_info::out,
-    const_struct_map::in, pred_id::in, pred_info::in, list(proc_id)::in,
+:- pred llds_backend_pass_for_pred(module_info::in, module_info::out,
+    const_struct_map::in, scc_map(pred_proc_id)::in, pred_id::in,
+    pred_info::in, list(proc_id)::in,
     assoc_list(mdbcomp.prim_data.proc_label, c_procedure)::out,
-    global_data::in, global_data::out, io::di, io::uo) is det.
+    global_data::in, global_data::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
 
-llds_backend_pass_for_pred(!HLDS, _, _, _, [], [], !GlobalData, !IO).
-llds_backend_pass_for_pred(!HLDS, ConstStructMap, PredId, PredInfo,
-        [ProcId | ProcIds], [ProcLabel - ProcCode | ProcCodes],
-        !GlobalData, !IO) :-
+llds_backend_pass_for_pred(!HLDS, _, _, _, _, [], [], !GlobalData, !Specs).
+llds_backend_pass_for_pred(!HLDS, ConstStructMap, SCCMap, PredId, PredInfo,
+        [ProcId | ProcIds], [ProcLabel - CProc | ProcLabelsCProcs],
+        !GlobalData, !Specs) :-
     ProcLabel = make_proc_label(!.HLDS, PredId, ProcId),
-    pred_info_get_procedures(PredInfo, ProcTable),
+    pred_info_get_proc_table(PredInfo, ProcTable),
     map.lookup(ProcTable, ProcId, ProcInfo),
-    llds_backend_pass_for_proc(!HLDS, ConstStructMap, PredId, PredInfo,
-        ProcId, ProcInfo, ProcCode, !GlobalData, !IO),
-    llds_backend_pass_for_pred(!HLDS, ConstStructMap, PredId, PredInfo,
-        ProcIds, ProcCodes, !GlobalData, !IO).
+    llds_backend_pass_for_proc(!HLDS, ConstStructMap, SCCMap, PredId,
+        PredInfo, ProcId, ProcInfo, CProc, !GlobalData, !Specs),
+    llds_backend_pass_for_pred(!HLDS, ConstStructMap, SCCMap, PredId,
+        PredInfo, ProcIds, ProcLabelsCProcs, !GlobalData, !Specs).
 
-:- pred llds_backend_pass_for_proc( module_info::in, module_info::out,
-    const_struct_map::in, pred_id::in, pred_info::in,
-    proc_id::in, proc_info::in, c_procedure::out,
-    global_data::in, global_data::out, io::di, io::uo) is det.
+:- pred llds_backend_pass_for_proc(module_info::in, module_info::out,
+    const_struct_map::in, scc_map(pred_proc_id)::in, pred_id::in,
+    pred_info::in, proc_id::in, proc_info::in, c_procedure::out,
+    global_data::in, global_data::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
 
-llds_backend_pass_for_proc(!HLDS, ConstStructMap, PredId, PredInfo,
-        ProcId, !.ProcInfo, ProcCode, !GlobalData, !IO) :-
+llds_backend_pass_for_proc(!HLDS, ConstStructMap, SCCMap, PredId, PredInfo,
+        ProcId, !.ProcInfo, CProc, !GlobalData, !Specs) :-
     PredProcId = proc(PredId, ProcId),
     module_info_get_globals(!.HLDS, Globals),
     globals.lookup_bool_option(Globals, optimize_saved_vars_const,
@@ -326,8 +370,8 @@ llds_backend_pass_for_proc(!HLDS, ConstStructMap, PredId, PredInfo,
     ;
         FollowCode = no
     ),
-    find_simplifications(no, Globals, Simplifications0),
-    SimpList0 = simplifications_to_list(Simplifications0),
+    find_simplify_tasks(no, Globals, SimplifyTasks0),
+    SimpList0 = simplify_tasks_to_list(SimplifyTasks0),
 
     globals.lookup_bool_option(Globals, constant_propagation, ConstProp),
     globals.lookup_bool_option(Globals, profile_deep, DeepProf),
@@ -341,72 +385,70 @@ llds_backend_pass_for_proc(!HLDS, ConstStructMap, PredId, PredInfo,
     % NOTE: Any changes here may also need to be made to
     % mercury_compile.simplify.
 
-    (
+    ( if
         ConstProp = yes,
         ProfTrans = no
-    ->
-        list.cons(simp_constant_prop, SimpList0, SimpList1)
-    ;
-        SimpList1 = list.delete_all(SimpList0, simp_constant_prop)
+    then
+        list.cons(simptask_constant_prop, SimpList0, SimpList1)
+    else
+        SimpList1 = list.delete_all(SimpList0, simptask_constant_prop)
     ),
 
-    SimpList = [simp_do_once, simp_elim_removable_scopes | SimpList1],
-    Simplifications = list_to_simplifications(SimpList),
-    write_proc_progress_message("% Simplifying ", PredId, ProcId,
-        !.HLDS, !IO),
-    simplify_proc(Simplifications, PredId, ProcId, !HLDS, !ProcInfo),
-    write_proc_progress_message("% Computing liveness in ", PredId, ProcId,
-        !.HLDS, !IO),
+    SimpList = [simptask_mark_code_model_changes,
+        simptask_elim_removable_scopes | SimpList1],
+    SimplifyTasks = list_to_simplify_tasks(SimpList),
+    trace [io(!IO)] (
+        write_proc_progress_message("% Simplifying ", PredId, ProcId,
+            !.HLDS, !IO)
+    ),
+    simplify_proc(SimplifyTasks, PredId, ProcId, !HLDS, !ProcInfo),
+    trace [io(!IO)] (
+        write_proc_progress_message("% Computing liveness in ", PredId, ProcId,
+            !.HLDS, !IO)
+    ),
     detect_liveness_proc(!.HLDS, PredProcId, !ProcInfo),
-    globals.lookup_bool_option(Globals, exec_trace_tail_rec, ExecTraceTailRec),
-    globals.lookup_bool_option(Globals, warn_non_tail_recursion,
-        WarnTailCalls),
-    MarkTailCalls = bool.or(ExecTraceTailRec, WarnTailCalls),
-    (
-        MarkTailCalls = yes,
+    trace [io(!IO)] (
         write_proc_progress_message(
             "% Marking directly tail recursive calls in ", PredId, ProcId,
-            !.HLDS, !IO),
-        mark_tail_calls(feature_debug_tail_rec_call, !.HLDS, PredProcId,
-            PredInfo, !ProcInfo)
-    ;
-        MarkTailCalls = no
+            !.HLDS, !IO)
     ),
-    (
-        WarnTailCalls = yes,
-        warn_non_tail_calls_in_proc(Globals, PredId, ProcId, PredInfo,
-            !.ProcInfo, !IO)
-    ;
-        WarnTailCalls = no
+    mark_tail_rec_calls_in_proc_for_llds_code_gen(!.HLDS, PredId, ProcId,
+        PredInfo, SCCMap, !ProcInfo, !Specs),
+
+    trace [io(!IO)] (
+        write_proc_progress_message("% Allocating stack slots in ", PredId,
+            ProcId, !.HLDS, !IO)
     ),
-    write_proc_progress_message("% Allocating stack slots in ", PredId,
-        ProcId, !.HLDS, !IO),
     allocate_stack_slots_in_proc(!.HLDS, PredProcId, !ProcInfo),
-    write_proc_progress_message(
-        "% Allocating storage locations for live vars in ",
-        PredId, ProcId, !.HLDS, !IO),
+    trace [io(!IO)] (
+        write_proc_progress_message(
+            "% Allocating storage locations for live vars in ",
+            PredId, ProcId, !.HLDS, !IO)
+    ),
     allocate_store_maps(final_allocation, !.HLDS, PredProcId, !ProcInfo),
-    write_proc_progress_message("% Generating low-level (LLDS) code for ",
-        PredId, ProcId, !.HLDS, !IO),
+    trace [io(!IO)] (
+        write_proc_progress_message("% Generating low-level (LLDS) code for ",
+            PredId, ProcId, !.HLDS, !IO)
+    ),
     generate_proc_code(!.HLDS, ConstStructMap, PredId, PredInfo,
-         ProcId, !.ProcInfo, !GlobalData, ProcCode0),
+         ProcId, !.ProcInfo, CProc0, !GlobalData),
     globals.lookup_bool_option(Globals, optimize, Optimize),
     (
         Optimize = yes,
-        optimize_proc(Globals, !.GlobalData, ProcCode0, ProcCode)
+        optimize_proc(Globals, !.GlobalData, CProc0, CProc)
     ;
         Optimize = no,
-        ProcCode = ProcCode0
+        CProc = CProc0
     ),
-    Instructions = ProcCode ^ cproc_code,
-    write_proc_progress_message(
-        "% Generating call continuation information for ",
-        PredId, ProcId, !.HLDS, !IO),
-    continuation_info.maybe_process_proc_llds(Instructions, PredProcId,
-        !.HLDS, !GlobalData).
+    trace [io(!IO)] (
+        write_proc_progress_message(
+            "% Generating call continuation information for ",
+            PredId, ProcId, !.HLDS, !IO)
+    ),
+    maybe_collect_call_continuations_in_cproc(!.HLDS, CProc, !GlobalData).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % The various passes of the LLDS backend.
 %
@@ -481,12 +523,12 @@ compute_liveness(Verbose, Stats, !HLDS, !IO) :-
     globals.lookup_int_option(Globals, debug_liveness, DebugLiveness),
     maybe_write_string(Verbose, "% Computing liveness...\n", !IO),
     maybe_flush_output(Verbose, !IO),
-    (
+    ( if
         ParallelLiveness = yes,
         DebugLiveness = -1
-    ->
+    then
         detect_liveness_preds_parallel(!HLDS)
-    ;
+    else
         process_all_nonimported_procs(update_proc_ids(detect_liveness_proc),
             !HLDS)
     ),
@@ -494,45 +536,20 @@ compute_liveness(Verbose, Stats, !HLDS, !IO) :-
     maybe_report_stats(Stats, !IO).
 
 :- pred maybe_mark_tail_rec_calls(bool::in, bool::in,
-    module_info::in, module_info::out, io::di, io::uo) is det.
+    module_info::in, module_info::out,
+    list(error_spec)::in, list(error_spec)::out, io::di, io::uo) is det.
 
-maybe_mark_tail_rec_calls(Verbose, Stats, !HLDS, !IO) :-
-    module_info_get_globals(!.HLDS, Globals),
-    globals.lookup_bool_option(Globals, exec_trace_tail_rec, ExecTraceTailRec),
-    globals.lookup_bool_option(Globals, warn_non_tail_recursion,
-        WarnTailCalls),
-    MarkTailCalls = bool.or(ExecTraceTailRec, WarnTailCalls),
-    (
-        MarkTailCalls = yes,
-        maybe_write_string(Verbose,
-            "% Marking directly tail recursive calls...", !IO),
-        maybe_flush_output(Verbose, !IO),
-        process_all_nonimported_procs(
-            update_proc_ids_pred(mark_tail_calls(feature_debug_tail_rec_call)),
-            !HLDS),
-        maybe_write_string(Verbose, " done.\n", !IO),
-        maybe_report_stats(Stats, !IO)
-    ;
-        MarkTailCalls = no
-    ).
-
-:- pred maybe_warn_non_tail_recursion(bool::in, bool::in,
-    module_info::in, io::di, io::uo) is det.
-
-maybe_warn_non_tail_recursion(Verbose, Stats, HLDS, !IO) :-
-    module_info_get_globals(HLDS, Globals),
-    globals.lookup_bool_option(Globals, warn_non_tail_recursion,
-        WarnTailCalls),
-    (
-        WarnTailCalls = yes,
-        maybe_write_string(Verbose,
-            "% Warning about non-tail recursive calls...\n", !IO),
-        warn_non_tail_calls(HLDS, !IO),
-        maybe_write_string(Verbose, "% done.\n", !IO),
-        maybe_report_stats(Stats, !IO)
-    ;
-        WarnTailCalls = no
-    ).
+maybe_mark_tail_rec_calls(Verbose, Stats, !HLDS, !Specs, !IO) :-
+    maybe_write_string(Verbose,
+        "% Marking directly tail recursive calls...", !IO),
+    maybe_flush_output(Verbose, !IO),
+    module_info_rebuild_dependency_info(!HLDS, DepInfo),
+    SCCMap = dependency_info_make_scc_map(DepInfo),
+    process_all_nonimported_preds_errors(update_pred_error(
+            mark_tail_rec_calls_in_pred_for_llds_code_gen(SCCMap)),
+        !HLDS, !Specs, !IO),
+    maybe_write_string(Verbose, " done.\n", !IO),
+    maybe_report_stats(Stats, !IO).
 
 :- pred compute_stack_vars(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -563,7 +580,7 @@ allocate_store_map(Verbose, Stats, !HLDS, !IO) :-
 generate_llds_code_for_module(HLDS, Verbose, Stats, !GlobalData, LLDS, !IO) :-
     maybe_write_string(Verbose, "% Generating code...\n", !IO),
     maybe_flush_output(Verbose, !IO),
-    generate_module_code(HLDS, _HLDS, !GlobalData, LLDS, !IO),
+    generate_module_code(HLDS, LLDS, !GlobalData),
     maybe_write_string(Verbose, "% done.\n", !IO),
     maybe_report_stats(Stats, !IO).
 
@@ -593,15 +610,15 @@ maybe_generate_stack_layouts(HLDS, LLDS, Verbose, Stats, !GlobalData, !IO) :-
     maybe_write_string(Verbose,
         "% Generating call continuation information...", !IO),
     maybe_flush_output(Verbose, !IO),
-    continuation_info.maybe_process_llds(LLDS, HLDS, !GlobalData),
+    maybe_collect_call_continuations_in_cprocs(HLDS, LLDS, !GlobalData),
     maybe_write_string(Verbose, " done.\n", !IO),
     maybe_report_stats(Stats, !IO).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-llds_output_pass(HLDS, GlobalData0, Procs, ModuleName, CompileErrors,
-        FactTableObjFiles, !IO) :-
+llds_output_pass(OpModeCodeGen, HLDS, GlobalData0, Procs, ModuleName,
+        Succeeded, FactTableObjFiles, !IO) :-
     module_info_get_globals(HLDS, Globals),
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_bool_option(Globals, statistics, Stats),
@@ -626,7 +643,7 @@ llds_output_pass(HLDS, GlobalData0, Procs, ModuleName, CompileErrors,
         InternalLabelToLayoutMap, ProcLabelToLayoutMap,
         CallSites, CoveragePoints, ProcStatics,
         ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes,
-        TableIoDecls, TableIoDeclMap, ProcEventLayouts,
+        TableIoEntries, TableIoEntryMap, ProcEventLayouts,
         ExecTraces, ProcLayoutDatas, ModuleLayoutDatas),
     maybe_write_string(Verbose, " done.\n", !IO),
     maybe_report_stats(Stats, !IO),
@@ -647,41 +664,40 @@ llds_output_pass(HLDS, GlobalData0, Procs, ModuleName, CompileErrors,
     RttiDatas = TypeCtorRttiData ++ TypeClassInfoRttiData,
     module_info_get_complexity_proc_infos(HLDS, ComplexityProcs),
 
-    C_InterfaceInfo = foreign_interface_info(ModuleSymName, C_HeaderCode0,
-        C_Includes, C_BodyCode0, _C_ExportDecls, C_ExportDefns),
+    C_InterfaceInfo = foreign_interface_info(ModuleSymName,
+        C_HeaderCodes0, C_BodyCodes, C_Includes,
+        _C_ExportDecls, C_ExportDefns),
     MangledModuleName = sym_name_mangle(ModuleSymName),
     CModuleName = MangledModuleName ++ "_module",
-    get_c_body_code(C_BodyCode0, C_BodyCode),
 
     % Split the code up into bite-size chunks for the C compiler.
     %
     globals.lookup_int_option(Globals, procs_per_c_function, ProcsPerFunc),
-    ( ProcsPerFunc = 0 ->
+    ( if ProcsPerFunc = 0 then
         % ProcsPerFunc = 0 really means infinity -
         % we store all the procs in a single function.
         ChunkedModules = [comp_gen_c_module(CModuleName, Procs)]
-    ;
+    else
         list.chunk(Procs, ProcsPerFunc, ChunkedProcs),
         combine_chunks(ChunkedProcs, CModuleName, ChunkedModules)
     ),
     list.map_foldl(make_foreign_import_header_code(Globals), C_Includes,
-        C_IncludeHeaderCode, !IO),
+        C_IncludeHeaderCodes, !IO),
 
-    % The lists are reversed because insertions into them are at the front.
-    % We don't want to put C_LocalHeaderCode between Start and End, because
-    % C_IncludeHeaderCode may include our own header file, which defines
+    % We don't want to put C_LocalHeaderCodes between Start and End, because
+    % C_IncludeHeaderCodes may include our own header file, which defines
     % the module's guard macro, which in turn #ifdefs out the stuff between
     % Start and End.
-    list.filter(foreign_decl_code_is_local, list.reverse(C_HeaderCode0),
-        C_LocalHeaderCode, C_ExportedHeaderCode),
+    list.filter(foreign_decl_code_is_local, C_HeaderCodes0,
+        C_LocalHeaderCodes, C_ExportedHeaderCodes),
     make_decl_guards(ModuleSymName, Start, End),
-    C_HeaderCode = list.reverse(C_IncludeHeaderCode) ++
-        C_LocalHeaderCode ++ [Start | C_ExportedHeaderCode] ++ [End],
+    C_HeaderCodes = C_IncludeHeaderCodes ++ C_LocalHeaderCodes ++
+        [Start | C_ExportedHeaderCodes] ++ [End],
 
     module_info_user_init_pred_c_names(HLDS, UserInitPredCNames),
     module_info_user_final_pred_c_names(HLDS, UserFinalPredCNames),
 
-    CFile = c_file(ModuleSymName, C_HeaderCode, C_BodyCode, C_ExportDefns,
+    CFile = c_file(ModuleSymName, C_HeaderCodes, C_BodyCodes, C_ExportDefns,
         TablingInfoStructs, ScalarCommonCellDatas, VectorCommonCellDatas,
         RttiDatas, PseudoTypeInfos, HLDSVarNums, ShortLocns, LongLocns,
         UserEventVarNums, UserEvents,
@@ -689,33 +705,59 @@ llds_output_pass(HLDS, GlobalData0, Procs, ModuleName, CompileErrors,
         InternalLabelToLayoutMap, ProcLabelToLayoutMap,
         CallSites, CoveragePoints, ProcStatics,
         ProcHeadVarNums, ProcVarNames, ProcBodyBytecodes, TSStringTable,
-        TableIoDecls, TableIoDeclMap, ProcEventLayouts, ExecTraces,
+        TableIoEntries, TableIoEntryMap, ProcEventLayouts, ExecTraces,
         ProcLayoutDatas, ModuleLayoutDatas, ClosureLayoutDatas,
         AllocSites, AllocIdMap, ChunkedModules,
         UserInitPredCNames, UserFinalPredCNames, ComplexityProcs),
 
-    output_llds_file(Globals, ModuleName, CFile, Verbose, Stats, !IO),
-
-    C_InterfaceInfo = foreign_interface_info(_, _, _, _, C_ExportDecls, _),
-    export.produce_header_file(HLDS, C_ExportDecls, ModuleName, !IO),
-
-    % Finally we invoke the C compiler to compile it.
-    globals.lookup_bool_option(Globals, target_code_only, TargetCodeOnly),
+    output_llds_file(Globals, CFile, TargetCodeSucceeded, !IO),
     (
-        TargetCodeOnly = no,
-        io.output_stream(OutputStream, !IO),
-        llds_c_to_obj(Globals, OutputStream, ModuleName, CompileOK, !IO),
-        module_get_fact_table_files(HLDS, FactTableBaseFiles),
-        list.map2_foldl(compile_fact_table_file(Globals, OutputStream),
-            FactTableBaseFiles, FactTableObjFiles, FactTableCompileOKs, !IO),
-        bool.and_list([CompileOK | FactTableCompileOKs], AllOk),
-        maybe_set_exit_status(AllOk, !IO),
-        bool.not(AllOk, CompileErrors)
+        TargetCodeSucceeded = yes,
+
+        C_InterfaceInfo = foreign_interface_info(_, _, _, _, C_ExportDecls, _),
+        export.produce_header_file(HLDS, C_ExportDecls, ModuleName, !IO),
+
+        % Finally we invoke the C compiler on the generated C files,
+        % if we were asked to do so.
+        (
+            ( OpModeCodeGen = opmcg_target_and_object_code_only
+            ; OpModeCodeGen = opmcg_target_object_and_executable
+            ),
+            io.output_stream(OutputStream, !IO),
+            llds_c_to_obj(Globals, OutputStream, ModuleName, CompileOK, !IO),
+            module_get_fact_table_file_names(HLDS, FactTableBaseFiles),
+            list.map2_foldl(compile_fact_table_file(Globals, OutputStream),
+                FactTableBaseFiles, FactTableObjFiles, FactTableCompileOKs,
+                !IO),
+            bool.and_list([CompileOK | FactTableCompileOKs], Succeeded),
+            maybe_set_exit_status(Succeeded, !IO)
+        ;
+            OpModeCodeGen = opmcg_target_code_only,
+            Succeeded = yes,
+            FactTableObjFiles = []
+        )
     ;
-        TargetCodeOnly = yes,
-        CompileErrors = no,
+        TargetCodeSucceeded = no,
+        Succeeded = no,
         FactTableObjFiles = []
     ).
+
+    % Foreign_interface_info holds information used when generating
+    % code that uses the foreign language interface.
+    %
+:- type foreign_interface_info
+    --->    foreign_interface_info(
+                module_name,
+
+                % Info about stuff imported from C:
+                list(foreign_decl_code),
+                list(foreign_body_code),
+                list(foreign_import_module_info),
+
+                % Info about stuff exported to C:
+                foreign_export_decls,
+                foreign_export_defns
+            ).
 
     % Gather together the information from the HLDS, given the foreign
     % language we are going to use, that is used for the foreign language
@@ -728,36 +770,39 @@ llds_output_pass(HLDS, GlobalData0, Procs, ModuleName, CompileErrors,
 :- pred llds_get_c_interface_info(module_info::in, foreign_language::in,
     foreign_interface_info::out) is det.
 
-llds_get_c_interface_info(HLDS, UseForeignLanguage, Foreign_InterfaceInfo) :-
+llds_get_c_interface_info(HLDS, UseForeignLanguage, ForeignInterfaceInfo) :-
     module_info_get_name(HLDS, ModuleName),
-    module_info_get_foreign_decl(HLDS, ForeignDecls),
-    module_info_get_foreign_import_module(HLDS, ForeignImports0),
+    ForeignSelfImport =
+        foreign_import_module_info(UseForeignLanguage, ModuleName),
+    module_info_get_foreign_decl_codes(HLDS, ForeignDeclCodeCord),
+    module_info_get_foreign_body_codes(HLDS, ForeignBodyCodeCord),
+    module_info_get_foreign_import_modules(HLDS, ForeignImportsModules0),
+    ForeignDeclCodes = cord.list(ForeignDeclCodeCord),
+    ForeignBodyCodes = cord.list(ForeignBodyCodeCord),
+    add_foreign_import_module_info(ForeignSelfImport,
+        ForeignImportsModules0, ForeignImportsModules),
 
     % Always include the module we are compiling amongst the foreign import
     % modules so that pragma foreign_exported procedures are visible to
     % foreign code in this module.
     %
-    % XXX The frontend should really handle this but it is quite
-    % inconsistent in its treatement of self-imports.  Both this backend
-    % (the LLDS) and the MLDS backend currently handle self foreign imports
-    % directly.
+    % XXX The frontend should really handle this but it is quite inconsistent
+    % in its treatment of self-imports. Both this backend (the LLDS)
+    % and the MLDS backend currently handle self foreign imports directly.
 
-    ForeignSelfImport = foreign_import_module_info(UseForeignLanguage,
-        ModuleName, term.context_init),
-    ForeignImports = [ ForeignSelfImport | ForeignImports0 ],
-    module_info_get_foreign_body_code(HLDS, ForeignBodyCode),
-    foreign.filter_decls(UseForeignLanguage, ForeignDecls,
-        WantedForeignDecls, _OtherDecls),
-    foreign.filter_imports(UseForeignLanguage, ForeignImports,
-        WantedForeignImports, _OtherImports),
-    foreign.filter_bodys(UseForeignLanguage, ForeignBodyCode,
-        WantedForeignBodys, _OtherBodys),
-    export.get_foreign_export_decls(HLDS, Foreign_ExportDecls),
-    export.get_foreign_export_defns(HLDS, Foreign_ExportDefns),
+    foreign.filter_decls(UseForeignLanguage, ForeignDeclCodes,
+        WantedForeignDeclCodes, _OtherDeclCodes),
+    foreign.filter_bodys(UseForeignLanguage, ForeignBodyCodes,
+        WantedForeignBodyCodes, _OtherBodyCodes),
+    WantedForeignImports = set.to_sorted_list(
+        get_lang_foreign_import_module_infos(ForeignImportsModules,
+            UseForeignLanguage)),
+    export.get_foreign_export_decls(HLDS, ForeignExportDecls),
+    export.get_foreign_export_defns(HLDS, ForeignExportDefns),
 
-    Foreign_InterfaceInfo = foreign_interface_info(ModuleName,
-        WantedForeignDecls, WantedForeignImports,
-        WantedForeignBodys, Foreign_ExportDecls, Foreign_ExportDefns).
+    ForeignInterfaceInfo = foreign_interface_info(ModuleName,
+        WantedForeignDeclCodes, WantedForeignBodyCodes,
+        WantedForeignImports, ForeignExportDecls, ForeignExportDefns).
 
 :- pred foreign_decl_code_is_local(foreign_decl_code::in) is semidet.
 
@@ -771,33 +816,28 @@ make_decl_guards(ModuleName, StartGuard, EndGuard) :-
     Define = decl_guard(ModuleName),
     Start = "#ifndef " ++ Define ++ "\n#define " ++ Define ++ "\n",
     End = "\n#endif",
-    StartGuard = foreign_decl_code(lang_c, foreign_decl_is_exported, Start,
-        term.context_init),
-    EndGuard = foreign_decl_code(lang_c, foreign_decl_is_exported, End,
-        term.context_init).
+    StartGuard = foreign_decl_code(lang_c, foreign_decl_is_exported,
+        floi_literal(Start), term.context_init),
+    EndGuard = foreign_decl_code(lang_c, foreign_decl_is_exported,
+        floi_literal(End), term.context_init).
 
 :- pred make_foreign_import_header_code(globals::in,
     foreign_import_module_info::in, foreign_decl_code::out,
     io::di, io::uo) is det.
 
 make_foreign_import_header_code(Globals, ForeignImportModule, Include, !IO) :-
-    ForeignImportModule = foreign_import_module_info(Lang, ModuleName,
-        Context),
+    ForeignImportModule = foreign_import_module_info(Lang, ModuleName),
     (
         Lang = lang_c,
         module_name_to_search_file_name(Globals, ModuleName, ".mh",
             HeaderFileName, !IO),
         IncludeString = "#include """ ++ HeaderFileName ++ """\n",
         Include = foreign_decl_code(lang_c, foreign_decl_is_exported,
-            IncludeString, Context)
+            floi_literal(IncludeString), term.context_init)
     ;
         Lang = lang_csharp,
         sorry($module, $pred, ":- import_module not yet implemented: " ++
             "`:- pragma foreign_import_module' for C#")
-    ;
-        Lang = lang_il,
-        sorry($module, $pred, ":- import_module not yet implemented: " ++
-            "`:- pragma foreign_import_module' for IL")
     ;
         Lang = lang_java,
         sorry($module, $pred, ":- import_module not yet implemented: " ++
@@ -807,14 +847,6 @@ make_foreign_import_header_code(Globals, ForeignImportModule, Include, !IO) :-
         sorry($module, $pred, ":- import_module not yet implemented: " ++
             "`:- pragma foreign_import_module' for Erlang")
     ).
-
-:- pred get_c_body_code(foreign_body_info::in, list(user_foreign_code)::out)
-    is det.
-
-get_c_body_code([], []).
-get_c_body_code([foreign_body_code(Lang, Code, Context) | CodesAndContexts],
-        [user_foreign_code(Lang, Code, Context) | C_Modules]) :-
-    get_c_body_code(CodesAndContexts, C_Modules).
 
 :- pred combine_chunks(list(list(c_procedure))::in, string::in,
     list(comp_gen_c_module)::out) is det.
@@ -833,21 +865,12 @@ combine_chunks_2([Chunk | Chunks], ModuleName, Num, [Module | Modules]) :-
     Num1 = Num + 1,
     combine_chunks_2(Chunks, ModuleName, Num1, Modules).
 
-:- pred output_llds_file(globals::in, module_name::in, c_file::in,
-    bool::in, bool::in, io::di, io::uo) is det.
+:- pred output_llds_file(globals::in, c_file::in, bool::out, io::di, io::uo)
+    is det.
 
-output_llds_file(Globals, ModuleName, LLDS0, Verbose, Stats, !IO) :-
-    maybe_write_string(Verbose, "% Writing output to `", !IO),
-    module_name_to_file_name(Globals, ModuleName, ".c", do_create_dirs,
-        FileName, !IO),
-    maybe_write_string(Verbose, FileName, !IO),
-    maybe_write_string(Verbose, "'...", !IO),
-    maybe_flush_output(Verbose, !IO),
+output_llds_file(Globals, LLDS0, Succeeded, !IO) :-
     transform_llds(Globals, LLDS0, LLDS),
-    output_llds(Globals, LLDS, !IO),
-    maybe_write_string(Verbose, " done.\n", !IO),
-    maybe_flush_output(Verbose, !IO),
-    maybe_report_stats(Stats, !IO).
+    output_llds(Globals, LLDS, Succeeded, !IO).
 
 :- pred llds_c_to_obj(globals::in, io.output_stream::in, module_name::in,
     bool::out, io::di, io::uo) is det.
@@ -860,8 +883,8 @@ llds_c_to_obj(Globals, ErrorStream, ModuleName, Succeeded, !IO) :-
         C_File, !IO),
     module_name_to_file_name(Globals, ModuleName, Obj, do_create_dirs,
         O_File, !IO),
-    compile_target_code.do_compile_c_file(ErrorStream, PIC, C_File, O_File,
-        Globals, Succeeded, !IO).
+    compile_target_code.do_compile_c_file(Globals, ErrorStream, PIC,
+        C_File, O_File, Succeeded, !IO).
 
 :- pred compile_fact_table_file(globals::in, io.output_stream::in, string::in,
     string::out, bool::out, io::di, io::uo) is det.
@@ -873,9 +896,9 @@ compile_fact_table_file(Globals, ErrorStream, BaseName, O_File, Succeeded,
     maybe_pic_object_file_extension(Globals, PIC, Obj),
     C_File = BaseName ++ ".c",
     O_File = BaseName ++ Obj,
-    compile_target_code.do_compile_c_file(ErrorStream, PIC, C_File, O_File,
-        Globals, Succeeded, !IO).
+    compile_target_code.do_compile_c_file(Globals, ErrorStream, PIC,
+        C_File, O_File, Succeeded, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module top_level.mercury_compile_llds_back_end.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

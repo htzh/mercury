@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2008-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: measurement_units.m.
 % Author: pbone.
@@ -12,13 +12,13 @@
 % This module contains abstract data types for representing memory, time
 % and percentages, and predicates and functions for operating on them.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module measurement_units.
 
 :- interface.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Memory
 %
@@ -55,7 +55,7 @@
 
 :- pred compare_memory(memory::in, memory::in, comparison_result::out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Percent
 %
@@ -76,7 +76,7 @@
 
 :- pred percent_at_or_above_threshold(int::in, percent::in) is semidet.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Time
 %
@@ -106,7 +106,7 @@
     %
 :- func format_time(time) = string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Probability
 %
@@ -135,11 +135,11 @@
 :- func or(probability, probability) = probability.
 :- func and(probability, probability) = probability.
 
-    % The probability of the given probability not occuring.
+    % The probability of the given probability not occurring.
     %
 :- func not_probability(probability) = probability.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Code for formatting numbers.
 %
@@ -157,8 +157,8 @@
 :- func two_decimal_fraction(float) = string.
 :- func four_decimal_fraction(float) = string.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -168,9 +168,9 @@
 :- import_module require.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% Memory
+% Memory.
 %
 
 :- type memory
@@ -183,9 +183,9 @@ memory_words(WordsI, BytesPerWord) = memory(WordsF, BytesPerWord) :-
     WordsF = float(WordsI).
 
 memory(Nom, BPW) / Denom =
-    ( Denom = 0 ->
+    ( if Denom = 0 then
         memory(0.0, BPW)
-    ;
+    else
         memory(Nom / float(Denom), BPW)
     ).
 
@@ -201,7 +201,7 @@ compare_memory(MemoryA, MemoryB, Result) :-
         "compare_memory: word size mismatch"),
     compare(Result, WordsA, WordsB).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Percentages.
 %
@@ -217,7 +217,7 @@ format_percent(percent_float(P)) = String :-
 percent_at_or_above_threshold(Threshold, percent_float(P)) :-
     (P * float(100)) >= float(Threshold).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Time.
 %
@@ -233,9 +233,9 @@ ticks_to_time(Ticks, TicksPerSec) = Time :-
     Time = time_sec(float(Ticks) * SecPerTick).
 
 time_percall(time_sec(Time), Calls) = time_sec(TimePerCall) :-
-    ( Calls = 0 ->
+    ( if Calls = 0 then
         TimePerCall = 0.0
-    ;
+    else
         TimePerCall = Time / float(Calls)
     ).
 
@@ -260,24 +260,24 @@ pico = 0.000000000001.
 % should be used rather than the latin letter u.
 
 format_time(time_sec(F)) = String :-
-    ( F < nano ->
+    ( if F < nano then
         % Print in ps.
         string.format("%.1fps", [f(F / pico)], String)
-    ; F < micro ->
+    else if F < micro then
         % Print in ns.
         string.format("%.1fns", [f(F / nano)], String)
-    ; F < milli ->
+    else if F < milli then
         % Print in us.
         string.format("%.1fus", [f(F / micro)], String)
-    ; F < 1.0 ->
+    else if F < 1.0 then
         % Print in ms.
         string.format("%.1fms", [f(F / milli)], String)
-    ;
+    else
         % Print in seconds.
         string.format("%.1fs", [f(F)], String)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Probabilities.
 %
@@ -289,12 +289,12 @@ certain = 1.0.
 impossible = 0.0.
 
 probable(Prob) = Prob :-
-    (
+    ( if
         Prob =< 1.0,
         Prob >= 0.0
-    ->
+    then
         true
-    ;
+    else
         error(format("Probability %f out of range 0.0 to 1.0 inclusive",
             [f(Prob)]))
     ).
@@ -313,7 +313,7 @@ and(A, B) = A * B.
 
 not_probability(X) = 1.0 - X.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Code for formatting numbers.
 %
@@ -325,19 +325,19 @@ commas(Num) = Str :-
 decimal_fraction(Format, Measure) = Representation :-
     string.format(Format, [f(Measure)], Str0),
     string.split_at_char('.', Str0) = SubStrings,
-    (
+    ( if
         SubStrings = [WholeString0, FractionString]
-    ->
+    then
         add_commas_intstr(WholeString0, WholeString),
         Representation = WholeString ++ "." ++ FractionString
-    ;
+    else if
         % If there are no decimal symbols in the number, try to work with it
         % as an integer.
         SubStrings = [WholeString]
-    ->
+    then
         add_commas_intstr(WholeString, Representation)
-    ;
-        error("decimal_fraction: Didn't split on decimal point properly")
+    else
+        unexpected($module, $pred, "didn't split on decimal point properly")
     ).
 
 one_decimal_fraction(Measure) = decimal_fraction("%.1f", Measure).
@@ -346,7 +346,7 @@ two_decimal_fraction(Measure) = decimal_fraction("%.2f", Measure).
 
 four_decimal_fraction(Measure) = decimal_fraction("%.4f", Measure).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred add_commas_intstr(string::in, string::out) is det.
 
@@ -363,7 +363,7 @@ add_commas([C, D]) = [C, D].
 add_commas([C, D, E]) = [C, D, E].
 add_commas([C, D, E, F | R]) = [C, D, E, (',') | add_commas([F | R])].
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func format_number(int, float) = string.
 
@@ -371,6 +371,6 @@ format_number(Decimals, Num) = String :-
     Format = "%." ++ string(Decimals) ++ "f",
     decimal_fraction(Format, Num) = String.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module measurement_units.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

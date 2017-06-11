@@ -1,18 +1,13 @@
-/*
-** vim: ts=4 sw=4 expandtab
-*/
-/*
-** Copyright (C) 1998-2007, 2011 The University of Melbourne.
-** This file may only be copied under the terms of the GNU Library General
-** Public License - see the file COPYING.LIB in the Mercury distribution.
-*/
+// vim: ts=4 sw=4 expandtab ft=c
 
-/*
-** This file manages a table listing the debuggable modules of the program,
-** and subsidiary tables listing the procedures of each of those modules.
-**
-** Main author: Zoltan Somogyi.
-*/
+// Copyright (C) 1998-2007, 2011 The University of Melbourne.
+// This file may only be copied under the terms of the GNU Library General
+// Public License - see the file COPYING.LIB in the Mercury distribution.
+
+// This file manages a table listing the debuggable modules of the program,
+// and subsidiary tables listing the procedures of each of those modules.
+//
+// Main author: Zoltan Somogyi.
 
 #include "mercury_imp.h"
 #include "mercury_label.h"
@@ -37,19 +32,17 @@ int                 MR_trace_event_set_max = 0;
 MR_bool             MR_trace_event_sets_are_all_consistent = MR_TRUE;
 int                 MR_trace_event_sets_max_num_attr = -1;
 
-/*
-** We record module layout structures in two tables. The MR_module_infos
-** array contains one pointer to every module layout structure, and is ordered
-** by the fully qualified module name. The MR_module_nickname array contains
-** one reference to every module layout structure by every one of the module's
-** (zero or more) less-than-fully-qualified names (which we call `nickname'
-** here), ordered by the nickname.
-*/
+// We record module layout structures in two tables. The MR_module_infos
+// array contains one pointer to every module layout structure, and is ordered
+// by the fully qualified module name. The MR_module_nickname array contains
+// one reference to every module layout structure by every one of the module's
+// (zero or more) less-than-fully-qualified names (which we call `nickname'
+// here), ordered by the nickname.
 
 typedef struct {
     const char          *MR_nick_name;
     MR_Dlist            *MR_nick_layouts;
-                        /* the list entries are MR_ModuleLayouts */
+                        // The list entries are MR_ModuleLayouts.
 } MR_Module_Nick;
 
 static  MR_Module_Nick  *MR_module_nicks;
@@ -75,7 +68,7 @@ static  void            MR_process_matching_procedures_in_module(
 static  void            MR_process_line_layouts(const MR_ModuleFileLayout
                             *file_layout, int line,
                             MR_file_line_callback callback_func,
-                            int callback_arg);
+                            int callback_arg, int *num_line_matches_ptr);
 
 static  MR_bool         MR_module_in_arena(const char *name, char **names,
                             int num_names);
@@ -95,25 +88,22 @@ static  char            *MR_get_module_info_name(int slot);
 typedef struct {
     MR_PredFunc MR_complete_pf;
 
-                /*
-                ** The word to complete, with `__' translated into '.'.
-                */
+                // The word to complete, with `__' translated into '.'.
+
     char        *MR_complete_name;
-    int         MR_complete_name_len;
+    size_t      MR_complete_name_len;
     MR_bool     MR_complete_name_is_qualified;
 
-                /*
-                ** Slot number of a module for which we should return all
-                ** procedures as completions, -1 if there is none.
-                */
+                // Slot number of a module for which we should return all
+                // procedures as completions, -1 if there is none.
+
     int         MR_unambiguous_matching_module;
 
-                /*
-                ** Length of the part of the word to skip when testing for module
-                ** qualified completions in the current module, zero if we
-                ** shouldn't test for module qualified completions in the
-                ** current module.
-                */
+                // Length of the part of the word to skip when testing for
+                // module qualified completions in the current module,
+                // zero if we shouldn't test for module qualified completions
+                // in the current module.
+
     int         MR_complete_word_matches_module;
     int         MR_complete_current_module;
     int         MR_complete_current_proc;
@@ -163,12 +153,10 @@ MR_register_all_modules_and_procs(FILE *fp, MR_bool verbose)
 void
 MR_register_module_layout_real(const MR_ModuleLayout *module)
 {
-    /*
-    ** MR_register_module_layout_real should only be called from
-    ** the initialization function of a module, which should be
-    ** called only once. The check here whether the module layout
-    ** already exists in the table is really only for paranoia.
-    */
+    // MR_register_module_layout_real should only be called from
+    // the initialization function of a module, which should be
+    // called only once. The check here whether the module layout
+    // already exists in the table is really only for paranoia.
 
     if (MR_search_module_info_by_name(module->MR_ml_name) == NULL) {
         MR_insert_module_info(module);
@@ -178,7 +166,7 @@ MR_register_module_layout_real(const MR_ModuleLayout *module)
             MR_bool             found;
             const char          *event_set_name;
             MR_TraceEventSet    *trace_event_set;
-            
+
             event_set_name = module->MR_ml_user_event_set_name;
 
             found = MR_FALSE;
@@ -218,7 +206,7 @@ MR_register_module_layout_real(const MR_ModuleLayout *module)
                     module->MR_ml_num_user_event_specs;
                 trace_event_set->MR_tes_specs =
                     module->MR_ml_user_event_specs;
-                trace_event_set->MR_tes_event_set = 
+                trace_event_set->MR_tes_event_set =
                     MR_read_event_set("no input file",
                         trace_event_set->MR_tes_desc);
 
@@ -315,7 +303,7 @@ MR_insert_module_info(const MR_ModuleLayout *module)
 
     nickname = strchr(module->MR_ml_name, '.');
     while (nickname != NULL) {
-        nickname++; /* step over the '.' */
+        nickname++; // Step over the '.'.
         MR_bsearch(MR_module_nick_next, slot, found,
             strcmp(MR_module_nicks[slot].MR_nick_name, nickname));
         if (found) {
@@ -337,18 +325,20 @@ MR_insert_module_info(const MR_ModuleLayout *module)
 
 void
 MR_process_file_line_layouts(const char *file, int line,
-    MR_file_line_callback callback_func, int callback_arg)
+    MR_file_line_callback callback_func, int callback_arg,
+    int *num_file_matches_ptr, int *num_line_matches_ptr)
 {
     const MR_ModuleFileLayout   *file_layout;
-    int                         i;
+    size_t                      i;
     int                         j;
 
     for (i = 0; i < MR_module_info_next; i++) {
         for (j = 0; j < MR_module_infos[i]->MR_ml_filename_count; j++) {
             file_layout = MR_module_infos[i]->MR_ml_module_file_layout[j];
             if (MR_streq(file_layout->MR_mfl_filename, file)) {
+                *num_file_matches_ptr = *num_file_matches_ptr + 1;
                 MR_process_line_layouts(file_layout, line, callback_func,
-                    callback_arg);
+                    callback_arg, num_line_matches_ptr);
             }
         }
     }
@@ -356,7 +346,8 @@ MR_process_file_line_layouts(const char *file, int line,
 
 static void
 MR_process_line_layouts(const MR_ModuleFileLayout *file_layout, int line,
-    MR_file_line_callback callback_func, int callback_arg)
+    MR_file_line_callback callback_func, int callback_arg,
+    int *num_line_matches_ptr)
 {
     int         k;
     MR_bool     found;
@@ -365,14 +356,14 @@ MR_process_line_layouts(const MR_ModuleFileLayout *file_layout, int line,
         file_layout->MR_mfl_label_lineno[k] - line);
 
     if (found) {
-        /*
-        ** The binary search found *one* label with the given linenumber;
-        ** we now find the *first* such label.
-        */
+        // The binary search found *one* label with the given linenumber.
+        // We now find the *first* such label, ...
 
         while (k > 0 && file_layout->MR_mfl_label_lineno[k - 1] == line) {
             k--;
         }
+
+        // ... and then do a callback for *all* such labels.
 
         while (k < file_layout->MR_mfl_label_count
             && file_layout->MR_mfl_label_lineno[k] == line)
@@ -380,6 +371,7 @@ MR_process_line_layouts(const MR_ModuleFileLayout *file_layout, int line,
             (*callback_func)(file_layout->MR_mfl_label_layout[k],
                 callback_arg);
             k++;
+            *num_line_matches_ptr = *num_line_matches_ptr + 1;
         }
     }
 }
@@ -390,13 +382,13 @@ MR_dump_module_tables(FILE *fp, MR_bool separate, MR_bool uci,
 {
     const MR_ModuleLayout   *module;
     const MR_ProcLayout     *proc;
-    int                     i;
+    size_t                  i;
     int                     j;
 
     if (module_name != NULL) {
         module = MR_search_module_info_by_unique_name(fp, module_name);
         if (module == NULL) {
-            /* The error message has already been printed */
+            // The error message has already been printed.
             return;
         }
     } else {
@@ -424,7 +416,7 @@ MR_dump_module_tables(FILE *fp, MR_bool separate, MR_bool uci,
 void
 MR_dump_module_list(FILE *fp)
 {
-    int     i;
+    size_t     i;
 
     fprintf(fp, "List of debuggable modules\n\n");
     for (i = 0; i < MR_module_info_next; i++) {
@@ -441,16 +433,14 @@ MR_dump_module_procs(FILE *fp, const char *name)
 
     module = MR_search_module_info_by_unique_name(fp, name);
     if (module == NULL) {
-        /* The error message has already been printed */
+        // The error message has already been printed.
         return;
     }
 
     fprintf(fp, "List of procedures in module `%s'\n\n", name);
     for (i = 0; i < module->MR_ml_proc_count; i++) {
         decl_module = MR_get_proc_decl_module(module->MR_ml_procs[i]);
-        /*
-        ** Only show procs which are declared in the module.
-        */
+        // Only show procs which are declared in the module.
         if (MR_streq(decl_module, module->MR_ml_name)) {
             MR_print_proc_id_and_nl(fp, module->MR_ml_procs[i]);
         }
@@ -530,11 +520,9 @@ MR_compare_proc_layout_by_name(const void *ptr1, const void *ptr2)
         return result;
     }
 
-    /*
-    ** Return equal only if the module name, pred_or_func and the arity
-    ** are the same as well, in order to group all procedures of a predicate
-    ** or function together.
-    */
+    // Return equal only if the module name, pred_or_func and the arity
+    // are the same as well, in order to group all procedures of a predicate
+    // or function together.
 
     result = MR_proc_compare_module_name(proc1, proc2);
     if (result != 0) {
@@ -613,7 +601,8 @@ typedef struct {
     ((functor1).MR_functor_arity - (functor2).MR_functor_arity)
 
 #define MR_functor_compare_type_module(functor1, functor2)              \
-    strcmp((functor1).MR_functor_type_module, (functor2).MR_functor_type_module)
+    strcmp((functor1).MR_functor_type_module,                           \
+        (functor2).MR_functor_type_module)
 
 #define MR_functor_compare_type_name(functor1, functor2)                \
     strcmp((functor1).MR_functor_type_name, (functor2).MR_functor_type_name)
@@ -658,18 +647,18 @@ void
 MR_print_ambiguities(FILE *fp, MR_bool print_procs, MR_bool print_types,
     MR_bool print_functors, char **arena_module_names, int arena_num_modules)
 {
-    int                         module_num;
+    unsigned                    module_num;
     int                         proc_num;
     int                         type_num;
     int                         functor_num;
     int                         end_proc_num;
     int                         end_type_num;
     int                         end_functor_num;
-    int                         num_procs;
+    size_t                      num_procs;
     int                         num_all_types;
     int                         num_types;
-    int                         num_functors;
-    int                         next_proc_num;
+    size_t                      num_functors;
+    size_t                      next_proc_num;
     int                         procs_in_module;
     const MR_ModuleLayout       *module;
     const MR_ProcLayout         **procs;
@@ -690,22 +679,18 @@ MR_print_ambiguities(FILE *fp, MR_bool print_procs, MR_bool print_types,
     int                         num_ambiguous_max;
     int                         i;
 
-    /*
-    ** We compute each data structure regardless of the settings of
-    ** print_procs, print_types and print_functors because the implementation
-    ** of one may depend on the other; e.g. we calculate how many function
-    ** symbols to reserve space for while we build the types array.
-    */
+    // We compute each data structure regardless of the settings of
+    // print_procs, print_types and print_functors because the implementation
+    // of one may depend on the other; e.g. we calculate how many function
+    // symbols to reserve space for while we build the types array.
 
     num_procs = 0;
     for (module_num = 0; module_num < MR_module_info_next; module_num++) {
         num_procs += MR_module_infos[module_num]->MR_ml_proc_count;
     }
 
-    /*
-    ** num_procs is a conservative estimate of the number of user defined
-    ** procedures.
-    */
+    // num_procs is a conservative estimate of the number of user defined
+    // procedures.
 
     procs = malloc(sizeof(const MR_ProcLayout *) * num_procs);
     if (procs == NULL) {
@@ -838,7 +823,7 @@ MR_print_ambiguities(FILE *fp, MR_bool print_procs, MR_bool print_types,
                 case MR_TYPECTOR_REP_NOTAG_GROUND_USEREQ:
                     num_functors += type_ctor_info->MR_type_ctor_num_functors;
 #if 0
-                    /* for debugging only */
+                    // for debugging only
                     fprintf(fp,
                         "TYPE %s.%s/%" MR_INTEGER_LENGTH_MODIFIER "d\t%s\t%d\n",
                         type_ctors[type_num]->MR_type_ctor_module_name,
@@ -920,7 +905,7 @@ MR_print_ambiguities(FILE *fp, MR_bool print_procs, MR_bool print_types,
         type_ctor_info = type_ctors[type_num];
 
 #if 0
-        /* for debugging only */
+        // for debugging only
         fprintf(fp, "FUNCTYPE %s.%s/%" MR_INTEGER_LENGTH_MODIFIER "d\n",
             type_ctors[type_num]->MR_type_ctor_module_name,
             type_ctors[type_num]->MR_type_ctor_name,
@@ -1011,10 +996,9 @@ MR_print_ambiguities(FILE *fp, MR_bool print_procs, MR_bool print_types,
                 break;
 
             default:
-                /*
-                ** Other kinds of types do not have user-defined function
-                ** symbols.
-                */
+                // Other kinds of types do not have user-defined function
+                // symbols.
+
                 break;
         }
     }
@@ -1079,11 +1063,9 @@ MR_bool
 MR_parse_proc_spec(char *str, MR_ProcSpec *spec)
 {
     char    *dash;
-    char    *start;
     char    *end;
     int     n;
-    int     len;
-    MR_bool found;
+    size_t  len;
 
     spec->MR_proc_module = NULL;
     spec->MR_proc_name   = NULL;
@@ -1093,33 +1075,31 @@ MR_parse_proc_spec(char *str, MR_ProcSpec *spec)
 
     len = strlen(str);
 
-    /*
-    ** Check for the optional trailing arity and mode number.
-    ** This also checks for filename:linenumber breakpoint specifiers.
-    */
+    // Check for the optional trailing arity and mode number.
+    // This also checks for filename:linenumber breakpoint specifiers.
+
     end = str + len - 1;
     if (MR_parse_trailing_number(str, &end, &n)) {
         if (end == str) {
-            /* the string contains only a number */
+            // The string contains only a number.
             return MR_FALSE;
         }
         end--;
         if (*end == ':') {
-            /* filename:linenumber */
+            // filename:linenumber
             return MR_FALSE;
         } else if (*end == '-') {
             spec->MR_proc_mode = n;
 
-            /*
-            ** Avoid modifying the string until we're sure
-            ** the parse can't fail.
-            */
+            // Avoid modifying the string until we're sure
+            // the parse can't fail.
+
             dash = end;
 
             end--;
             if (MR_parse_trailing_number(str, &end, &n)) {
                 if (end == str) {
-                    /* the string contains only a number */
+                    // The string contains only a number.
                     return MR_FALSE;
                 }
                 end--;
@@ -1157,10 +1137,8 @@ MR_parse_proc_spec(char *str, MR_ProcSpec *spec)
         str += 5;
     }
 
-    /*
-    ** Search backwards for the end of the final module qualifier.
-    ** There must be at least one character before the qualifier.
-    */
+    // Search backwards for the end of the final module qualifier.
+    // There must be at least one character before the qualifier.
 
     while (end > str) {
         if (*end == '.' || (*end == '_' && *(end + 1) == '_')) {
@@ -1174,9 +1152,8 @@ MR_parse_proc_spec(char *str, MR_ProcSpec *spec)
                 spec->MR_proc_name = NULL;
             }
 
-            /*
-            ** Convert all occurences of '__' to '.'.
-            */
+            // Convert all occurences of '__' to '.'.
+
             *end = '\0';
             MR_translate_double_underscores(str);
 
@@ -1188,7 +1165,7 @@ MR_parse_proc_spec(char *str, MR_ProcSpec *spec)
         }
     }
 
-    /* There was no module qualifier. */
+    // There was no module qualifier.
     spec->MR_proc_name = str;
     if (strlen(spec->MR_proc_name) == 0) {
         spec->MR_proc_name = NULL;
@@ -1196,9 +1173,7 @@ MR_parse_proc_spec(char *str, MR_ProcSpec *spec)
     return MR_TRUE;
 }
 
-/*
-** Convert all occurrences of `__' to `.'.
-*/
+// Convert all occurrences of `__' to `.'.
 
 static void
 MR_translate_double_underscores(char *start)
@@ -1220,19 +1195,16 @@ MR_translate_double_underscores(char *start)
     *(str - double_underscores) = '\0';
 }
 
-/*
-** Go backwards over a string starting at `end', stopping at `start',
-** parsing the trailing integer and storing it in `*n'.
-** On return, `*end' points to the start of the trailing number.
-** If no number was found, `*end' is unchanged.
-*/
+// Go backwards over a string starting at `end', stopping at `start',
+// parsing the trailing integer and storing it in `*n'.
+// On return, `*end' points to the start of the trailing number.
+// If no number was found, `*end' is unchanged.
 
 static MR_bool
 MR_parse_trailing_number(char *start, char **end, int *number)
 {
     MR_bool found_digit;
     int     power_of_10;
-    char    c;
     char    *tmp_end;
 
     found_digit = MR_FALSE;
@@ -1278,10 +1250,8 @@ MR_search_for_matching_procedures(MR_ProcSpec *spec)
     return m;
 }
 
-/*
-** This struct is for communication between
-** MR_register_match and MR_search_for_matching_procedure.
-*/
+// This struct is for communication between
+// MR_register_match and MR_search_for_matching_procedure.
 
 typedef struct {
     const MR_ProcLayout     *matching_entry;
@@ -1335,7 +1305,7 @@ MR_process_matching_procedures(MR_ProcSpec *spec,
             }
         }
     } else {
-        int i;
+        unsigned    i;
 
         for (i = 0; i < MR_module_info_next; i++) {
             MR_process_matching_procedures_in_module(MR_module_infos[i], spec,
@@ -1420,7 +1390,7 @@ MR_filter_user_preds(MR_MatchesInfo *matches)
 {
     const MR_ProcLayout     *entry;
     int                     filter_pos;
-    int                     i;
+    size_t                  i;
 
     filter_pos = 0;
     for(i = 0; i < matches->match_proc_next; i++) {
@@ -1466,11 +1436,6 @@ MR_trace_proc_spec_completer(const char *word, size_t word_len)
         data->MR_complete_pf = MR_FUNCTION;
         word += 5;
     } else {
-        /*
-        ** We don't complete on the names of special (unify, index compare,
-        ** or init) predicates.
-        */
-
         data->MR_complete_pf = -1;
     }
 
@@ -1483,19 +1448,20 @@ MR_trace_proc_spec_completer(const char *word, size_t word_len)
     data->MR_complete_current_module = -1;
     data->MR_complete_current_proc= -1;
 
-    /*
-    ** Handle the case where the word matches the first part of a module name.
-    ** If the word unambiguously determines the module name we want to return
-    ** module qualified completions for all the procedures in that module.
-    ** Otherwise, we just complete on the names of all of the matching modules
-    ** and unqualified procedure names.
-    **
-    ** For example, given word to complete `f' and modules `foo' and `bar',
-    ** we want to return all the procedures in module `foo' as completions,
-    ** as well as all procedures whose unqualified names begin with `f'.
-    ** Given word to complete `foo.' and modules `foo' and `foo.bar' we want to
-    ** return `foo.bar.' and all the procedures in module `foo' as completions.
-    */
+    // Handle the case where the word matches the first part of a module name.
+    // If the word unambiguously determines the module name, we want to return
+    // module qualified completions for all the procedures in that module.
+    // Otherwise, we just complete on the names of all of the matching modules
+    // and unqualified procedure names.
+    //
+    // For example, given word to complete `f' and modules `foo' and `bar',
+    // we want to return all the procedures in module `foo' as completions,
+    // as well as all procedures whose unqualified names begin with `f'.
+    // Given word to complete `foo.' and modules `foo' and `foo.bar' we want to
+    // return `foo.bar.' and all the procedures in module `foo' as completions.
+    //
+    // We don't complete on the names of special (unify, index or compare)
+    // predicates.
 
     MR_bsearch(MR_module_info_next, slot, found,
         strncmp(MR_module_infos[slot]->MR_ml_name,
@@ -1530,7 +1496,6 @@ MR_trace_proc_spec_completer_next(const char *dont_use_this_word,
     char                    *name;
     size_t                  name_len;
     const char              *module_name;
-    int                     module_name_len;
     char                    *completion;
 
     data = (MR_ProcCompleterData *) *completer_data;
@@ -1542,11 +1507,10 @@ try_completion:
     if (data->MR_complete_current_module == -1 ||
         data->MR_complete_current_proc == -1 ||
         data->MR_complete_current_proc >=
-            MR_module_infos[data->MR_complete_current_module]->MR_ml_proc_count)
+            MR_module_infos[data->MR_complete_current_module]->
+                MR_ml_proc_count)
     {
-        /*
-        ** Move on to the next module.
-        */
+        // Move on to the next module.
 
         data->MR_complete_current_module++;
         if (data->MR_complete_current_module >= MR_module_info_next) {
@@ -1554,10 +1518,8 @@ try_completion:
         }
         MR_trace_proc_spec_completer_init_module(data);
 
-        /*
-        ** Complete on the module name if we aren't finding
-        ** qualified completions in this module.
-        */
+        // Complete on the module name if we aren't finding
+        // qualified completions in this module.
 
         module_name = MR_module_infos[data->MR_complete_current_module]
             ->MR_ml_name;
@@ -1570,9 +1532,8 @@ try_completion:
             goto try_completion;
         }
     } else {
-        /*
-        ** Complete on the next procedure in the current module.
-        */
+        // Complete on the next procedure in the current module.
+
         completion = MR_trace_complete_proc(data);
 
         if (completion != NULL) {
@@ -1583,9 +1544,7 @@ try_completion:
     }
 }
 
-/*
-** Set up the completer data for processing a module.
-*/
+// Set up the completer data for processing a module.
 
 static void
 MR_trace_proc_spec_completer_init_module(MR_ProcCompleterData *data)
@@ -1593,7 +1552,7 @@ MR_trace_proc_spec_completer_init_module(MR_ProcCompleterData *data)
     char    *name;
     size_t  name_len;
     char    *module_name;
-    int     module_name_len;
+    size_t  module_name_len;
 
     name = data->MR_complete_name;
     name_len = data->MR_complete_name_len;
@@ -1602,42 +1561,35 @@ MR_trace_proc_spec_completer_init_module(MR_ProcCompleterData *data)
         MR_module_infos[data->MR_complete_current_module]->MR_ml_name;
     module_name_len = strlen(module_name);
 
-    /*
-    ** Work out whether we should find qualified completions
-    ** for procedures in this module.
-    */
+    // Work out whether we should find qualified completions
+    // for procedures in this module.
 
     if (MR_strneq(module_name, name, module_name_len)
         && name_len > module_name_len
         && name[module_name_len] == '.'
         && strchr(name + module_name_len + 1, '.') == NULL)
     {
-        /*
-        ** The name to complete matches the module name completely.
-        ** When searching for qualified completions skip past
-        ** the module name and the trailing '.'.
-        */
+        // The name to complete matches the module name completely.
+        // When searching for qualified completions skip past
+        // the module name and the trailing '.'.
 
         data->MR_complete_word_matches_module = module_name_len + 1;
     } else if (data->MR_complete_current_module ==
         data->MR_unambiguous_matching_module)
     {
-        /*
-        ** The name to complete matches the module name partially,
-        ** and does not match any other module name. We will be
-        ** matching all procedures, use the empty string as the
-        ** name to match against.
-        */
+        // The name to complete matches the module name partially,
+        // and does not match any other module name. We will be
+        // matching all procedures, use the empty string as the
+        // name to match against.
 
         data->MR_complete_word_matches_module = name_len;
     } else {
         data->MR_complete_word_matches_module = 0;
     }
 
-    /*
-    ** If the name to complete is qualified, we should only
-    ** complete on procedures if the module name matches.
-    */
+    // If the name to complete is qualified, we should only
+    // complete on procedures if the module name matches.
+
     if (data->MR_complete_name_is_qualified &&
         data->MR_complete_word_matches_module == 0)
     {
@@ -1647,19 +1599,17 @@ MR_trace_proc_spec_completer_init_module(MR_ProcCompleterData *data)
     }
 }
 
-/*
-** Check whether the current procedure matches the word to be completed.
-** To do: complete on arity and mode number.
-*/
+// Check whether the current procedure matches the word to be completed.
+// To do: complete on arity and mode number.
 
 static char *
 MR_trace_complete_proc(MR_ProcCompleterData *data)
 {
     char                    *completion;
     char                    *name;
-    int                     name_len;
+    size_t                  name_len;
     char                    *unqualified_name;
-    int                     unqualified_name_len;
+    size_t                  unqualified_name_len;
     char                    *complete_module;
     const MR_ModuleLayout   *module_layout;
     const MR_ProcLayout     *proc_layout;
@@ -1692,9 +1642,7 @@ MR_trace_complete_proc(MR_ProcCompleterData *data)
         completion = NULL;
     }
 
-    /*
-    ** Move on to the next procedure in the current module.
-    */
+    // Move on to the next procedure in the current module.
 
     data->MR_complete_current_proc++;
 
@@ -1702,11 +1650,10 @@ MR_trace_complete_proc(MR_ProcCompleterData *data)
         && data->MR_complete_current_proc >= module_layout->MR_ml_proc_count
         && ! data->MR_complete_name_is_qualified)
     {
-        /*
-        ** We've finished checking for module qualified completions
-        ** in this module, now check for unqualified completions
-        ** if the word to complete doesn't contain a qualifier.
-        */
+        // We have finished checking for module qualified completions
+        // in this module, now check for unqualified completions
+        // if the word to complete doesn't contain a qualifier.
+
         data->MR_complete_word_matches_module = 0;
         data->MR_complete_current_proc = 0;
     }
@@ -1718,8 +1665,8 @@ static char *
 MR_format_proc_spec_completion(MR_PredFunc pred_or_func,
     const char *module, const char *name)
 {
-    int     size;
-    int     module_len;
+    size_t  size;
+    size_t  module_len;
     int     offset;
     char    *completion;
 
@@ -1728,11 +1675,11 @@ MR_format_proc_spec_completion(MR_PredFunc pred_or_func,
         size += 5;
     }
     if (module != NULL) {
-        /* +1 for the '.' */
+        // +1 for the '.'
         module_len = strlen(module);
         size += module_len + 1;
     } else {
-        module_len = 0;     /* avoid a warning */
+        module_len = 0;     // Avoid a compiler warning.
     }
     completion = MR_malloc(size + 1);
 
@@ -1797,7 +1744,8 @@ MR_proc_layout_stats(FILE *fp)
 {
     const MR_ModuleLayout       *module_layout;
     const MR_ProcLayout         *proc_layout;
-    int                         module_num, proc_num;
+    unsigned                    module_num;
+    int                         proc_num;
     MR_Determinism              detism;
     int                         total;
     int                         histogram[MR_DETISM_MAX + 1];
@@ -1840,7 +1788,7 @@ MR_label_layout_stats(FILE *fp)
     const MR_ModuleLayout       *module_layout;
     const MR_ModuleFileLayout   *file_layout;
     const MR_LabelLayout        *label_layout;
-    int                         module_num;
+    unsigned                    module_num;
     int                         file_num;
     int                         label_num;
     MR_TracePort                port;
@@ -1931,7 +1879,7 @@ MR_var_name_stats(FILE *fp)
     const MR_ModuleLayout       *module_layout;
     const MR_ProcLayout         *proc_layout;
     const MR_uint_least32_t     *var_names;
-    int                         module_num;
+    unsigned                    module_num;
     int                         proc_num;
     int                         var_num;
     int                         num_var_nums;

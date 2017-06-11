@@ -12,20 +12,13 @@
 % - the MLDS data structure, which is an abstract
 %   representation of a generic imperative language;
 % - the MLDS code generator, which converts HLDS to MLDS;
-% - the high-level C back-end, the Java back-end, the .NET back-end,
-%   and a wrapper for the assembler back-end,
+% - the high-level C back-end, the Java back-end and the C# back-end,
 %   each of which convert MLDS to their respective target language.
 %
-% The main part of the assembler back-end, which converts MLDS to GCC's
-% internal abstract syntax trees and then invokes the GCC back-end to convert
-% this to assembler, is in a package of its own, so that this package doesn't
-% depend on the GCC back-end.
-%
+%-----------------------------------------------------------------------------%
+
 :- module ml_backend.
 :- interface.
-
-:- import_module hlds.
-:- import_module parse_tree.
 
 %-----------------------------------------------------------------------------%
 
@@ -70,27 +63,13 @@
 
 % MLDS->Java back-end
 :- include_module mlds_to_java.
-:- include_module java_util.
 
 % MLDS->C# back-end.
 :- include_module mlds_to_cs.
 
-% MLDS->.NET CLR back-end
-:- include_module il_peephole.
-:- include_module ilasm.
-:- include_module ilds.
-:- include_module mlds_to_il.
-:- include_module mlds_to_ilasm.
-:- include_module mlds_to_managed.
+% Utility predicates that are useful for more than one MLDS->? back-end.
+:- include_module mlds_to_target_util.
 
-:- implementation.
-
-:- import_module backend_libs.
-:- import_module libs.
-:- import_module check_hlds.    % needed for type_util, mode_util,
-                                % and polymorphism.
-:- import_module mdbcomp.
-
+%-----------------------------------------------------------------------------%
 :- end_module ml_backend.
-
 %-----------------------------------------------------------------------------%

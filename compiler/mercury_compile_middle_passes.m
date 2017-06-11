@@ -1,28 +1,31 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2009-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: mercury_compile_middle_passes.m.
 %
 % This module invokes the middle passes of the compiler as appropriate.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module top_level.mercury_compile_middle_passes.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.passes_aux.
-:- import_module mdbcomp.prim_data.
+:- import_module parse_tree.
+:- import_module parse_tree.prog_item.
 
 :- import_module bool.
 :- import_module io.
+:- import_module set.
 
-:- pred middle_pass(module_name::in, module_info::in, module_info::out,
+:- pred middle_pass(module_info::in, module_info::out,
     dump_info::in, dump_info::out, io::di, io::uo) is det.
 
 :- pred middle_pass_for_opt_file(module_info::in, module_info::out,
@@ -35,26 +38,33 @@
     dump_info::in, dump_info::out, io::di, io::uo) is det.
 
 :- pred maybe_unused_args(bool::in, bool::in,
-    module_info::in, module_info::out, io::di, io::uo) is det.
+    set(pragma_info_unused_args)::out, module_info::in, module_info::out,
+    io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module analysis.
+:- import_module backend_libs.
 :- import_module backend_libs.type_ctor_info.
+:- import_module bytecode_backend.
 :- import_module bytecode_backend.bytecode.
 :- import_module bytecode_backend.bytecode_gen.
-:- import_module hlds.hlds_module.
+:- import_module hlds.hlds_pred.
+:- import_module libs.
 :- import_module libs.file_util.
 :- import_module libs.globals.
 :- import_module libs.options.
+:- import_module ll_backend.
 :- import_module ll_backend.deep_profiling.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.file_names.
 :- import_module top_level.mercury_compile_front_end.
 :- import_module top_level.mercury_compile_llds_back_end.
 :- import_module top_level.mercury_compile_mlds_back_end.
+:- import_module transform_hlds.
 :- import_module transform_hlds.accumulator.
 :- import_module transform_hlds.closure_analysis.
 :- import_module transform_hlds.complexity.
@@ -76,6 +86,7 @@
 :- import_module transform_hlds.implicit_parallelism.
 :- import_module transform_hlds.implicit_parallelism.introduce_parallelism.
 :- import_module transform_hlds.inlining.
+:- import_module transform_hlds.intermod.
 :- import_module transform_hlds.lambda.
 :- import_module transform_hlds.lco.
 :- import_module transform_hlds.loop_inv.
@@ -91,7 +102,6 @@
 :- import_module transform_hlds.term_constr_main.
 :- import_module transform_hlds.termination.
 :- import_module transform_hlds.trailing_analysis.
-:- import_module transform_hlds.trans_opt.
 :- import_module transform_hlds.tupling.
 :- import_module transform_hlds.unneeded_code.
 :- import_module transform_hlds.untupling.
@@ -102,13 +112,12 @@
 :- import_module maybe.
 :- import_module pair.
 :- import_module require.
-:- import_module set.
 :- import_module string.
 :- import_module univ.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-middle_pass(ModuleName, !HLDS, !DumpInfo, !IO) :-
+middle_pass(!HLDS, !DumpInfo, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_bool_option(Globals, statistics, Stats),
@@ -118,10 +127,10 @@ middle_pass(ModuleName, !HLDS, !DumpInfo, !IO) :-
     tabling(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 105, "tabling", !DumpInfo, !IO),
 
-    process_lambdas(Verbose, Stats, !HLDS, !IO),
+    expand_lambdas(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 110, "lambda", !DumpInfo, !IO),
 
-    process_stms(Verbose, Stats, !HLDS, !IO),
+    expand_stm_goals(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 113, "stm", !DumpInfo, !IO),
 
     expand_equiv_types_hlds(Verbose, Stats, !HLDS, !IO),
@@ -139,9 +148,9 @@ middle_pass(ModuleName, !HLDS, !DumpInfo, !IO) :-
 
     % check_unique_modes(Verbose, Stats, !HLDS,
     %   FoundUniqError, !IO),
-    % ( FoundUniqError = yes ->
+    % ( if FoundUniqError = yes then
     %   error("unique modes failed")
-    % ;
+    % else
     %   true
     % ),
 
@@ -169,7 +178,7 @@ middle_pass(ModuleName, !HLDS, !DumpInfo, !IO) :-
     maybe_warn_dead_procs(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 130, "warn_dead_procs", !DumpInfo, !IO),
 
-    maybe_bytecodes(!.HLDS, ModuleName, Verbose, Stats, !DumpInfo, !IO),
+    maybe_bytecodes(!.HLDS, Verbose, Stats, !DumpInfo, !IO),
 
     maybe_untuple_arguments(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 133, "untupling", !DumpInfo, !IO),
@@ -206,7 +215,7 @@ middle_pass(ModuleName, !HLDS, !DumpInfo, !IO) :-
     maybe_structure_reuse_analysis(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 163, "structure_reuse", !DumpInfo, !IO),
 
-    maybe_unused_args(Verbose, Stats, !HLDS, !IO),
+    maybe_unused_args(Verbose, Stats, _UnusedArgsInfos, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 165, "unused_args", !DumpInfo, !IO),
 
     maybe_analyse_trail_usage(Verbose, Stats, !HLDS, !IO),
@@ -281,7 +290,7 @@ middle_pass(ModuleName, !HLDS, !DumpInfo, !IO) :-
 
     maybe_dump_hlds(!.HLDS, 299, "middle_pass", !DumpInfo, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 middle_pass_for_opt_file(!HLDS, !IO) :-
     % NOTE If you add any passes here, you will probably need to change the
@@ -289,89 +298,38 @@ middle_pass_for_opt_file(!HLDS, !IO) :-
     % this predicate.
 
     module_info_get_globals(!.HLDS, Globals),
-    globals.lookup_bool_option(Globals, intermod_unused_args, IntermodArgs),
-    globals.lookup_bool_option(Globals, termination, Termination),
-    globals.lookup_bool_option(Globals, termination2, Termination2),
-    globals.lookup_bool_option(Globals, structure_sharing_analysis,
-        SharingAnalysis),
-    globals.lookup_bool_option(Globals, structure_reuse_analysis,
-        ReuseAnalysis),
-    globals.lookup_bool_option(Globals, analyse_exceptions,
-        ExceptionAnalysis),
-    globals.lookup_bool_option(Globals, analyse_closures,
-        ClosureAnalysis),
-    globals.lookup_bool_option(Globals, analyse_trail_usage,
-        TrailingAnalysis),
-    globals.lookup_bool_option(Globals, analyse_mm_tabling,
-        TablingAnalysis),
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_bool_option(Globals, statistics, Stats),
-    (
-        % Closure analysis assumes that lambda expressions have
-        % been converted into separate predicates.
+    globals.lookup_bool_option(Globals, analyse_closures, ClosureAnalysis),
+    globals.lookup_bool_option(Globals, structure_sharing_analysis,
+        SharingAnalysis),
+    ( if
+        % Closure analysis assumes that lambda expressions have been converted
+        % into separate predicates.
         % Structure sharing/reuse analysis results can be affected
-        % by process_lambdas.
+        % by expand_lambdas.
         ( ClosureAnalysis = yes
         ; SharingAnalysis = yes
         )
-    ->
-        process_lambdas(Verbose, Stats, !HLDS, !IO),
-        process_stms(Verbose, Stats, !HLDS, !IO),
-        maybe_closure_analysis(Verbose, Stats, !HLDS, !IO)
-    ;
+    then
+        expand_lambdas(Verbose, Stats, !HLDS, !IO),
+        expand_stm_goals(Verbose, Stats, !HLDS, !IO)
+    else
         true
     ),
-    (
-        ExceptionAnalysis = yes,
-        maybe_exception_analysis(Verbose, Stats, !HLDS, !IO)
-    ;
-        ExceptionAnalysis = no
-    ),
-    (
-        IntermodArgs = yes,
-        maybe_unused_args(Verbose, Stats, !HLDS, !IO)
-    ;
-        IntermodArgs = no
-    ),
-    (
-        Termination = yes,
-        maybe_termination(Verbose, Stats, !HLDS, !IO)
-    ;
-        Termination = no
-    ),
-    (
-        Termination2 = yes,
-        maybe_termination2(Verbose, Stats, !HLDS, !IO)
-    ;
-        Termination2 = no
-    ),
-    (
-        SharingAnalysis = yes,
-        maybe_structure_sharing_analysis(Verbose, Stats,
-            !HLDS, !IO)
-    ;
-        SharingAnalysis = no
-    ),
-    (
-        ReuseAnalysis = yes,
-        maybe_structure_reuse_analysis(Verbose, Stats, !HLDS, !IO)
-    ;
-        ReuseAnalysis = no
-    ),
-    (
-        TrailingAnalysis = yes,
-        maybe_analyse_trail_usage(Verbose, Stats, !HLDS, !IO)
-    ;
-        TrailingAnalysis = no
-    ),
-    (
-        TablingAnalysis = yes,
-        maybe_analyse_mm_tabling(Verbose, Stats, !HLDS, !IO)
-    ;
-        TablingAnalysis = no
-    ).
+    maybe_closure_analysis(Verbose, Stats, !HLDS, !IO),
+    maybe_exception_analysis(Verbose, Stats, !HLDS, !IO),
+    maybe_unused_args(Verbose, Stats, UnusedArgsInfos, !HLDS, !IO),
+    maybe_termination(Verbose, Stats, !HLDS, !IO),
+    maybe_termination2(Verbose, Stats, !HLDS, !IO),
+    maybe_structure_sharing_analysis(Verbose, Stats, !HLDS, !IO),
+    maybe_structure_reuse_analysis(Verbose, Stats, !HLDS, !IO),
+    maybe_analyse_trail_usage(Verbose, Stats, !HLDS, !IO),
+    maybe_analyse_mm_tabling(Verbose, Stats, !HLDS, !IO),
 
-%-----------------------------------------------------------------------------%
+    append_analysis_pragmas_to_opt_file(!.HLDS, UnusedArgsInfos, !IO).
+
+%---------------------------------------------------------------------------%
 
 output_trans_opt_file(!.HLDS, !DumpInfo, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
@@ -383,13 +341,13 @@ output_trans_opt_file(!.HLDS, !DumpInfo, !IO) :-
 
     % Closure analysis assumes that lambda expressions have
     % been converted into separate predicates.
-    (
+    ( if
         ( ClosureAnalysis = yes
         ; SharingAnalysis = yes
         )
-    ->
-        process_lambdas(Verbose, Stats, !HLDS, !IO)
-    ;
+    then
+        expand_lambdas(Verbose, Stats, !HLDS, !IO)
+    else
         true
     ),
     maybe_dump_hlds(!.HLDS, 110, "lambda", !DumpInfo, !IO),
@@ -426,7 +384,7 @@ output_trans_opt_file(!.HLDS, !DumpInfo, !IO) :-
     maybe_dump_hlds(!.HLDS, 185, "mm_tabling_analysis", !DumpInfo, !IO),
     write_trans_opt_file(!.HLDS, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 output_analysis_file(!.HLDS, !DumpInfo, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
@@ -438,13 +396,13 @@ output_analysis_file(!.HLDS, !DumpInfo, !IO) :-
 
     % Closure analysis assumes that lambda expressions have
     % been converted into separate predicates.
-    (
+    ( if
         ( ClosureAnalysis = yes
         ; SharingAnalysis = yes
         )
-    ->
-        process_lambdas(Verbose, Stats, !HLDS, !IO)
-    ;
+    then
+        expand_lambdas(Verbose, Stats, !HLDS, !IO)
+    else
         true
     ),
     maybe_dump_hlds(!.HLDS, 110, "lambda", !DumpInfo, !IO),
@@ -475,7 +433,7 @@ output_analysis_file(!.HLDS, !DumpInfo, !IO) :-
     maybe_dump_hlds(!.HLDS, 162, "structure_sharing", !DumpInfo, !IO),
     maybe_structure_reuse_analysis(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 163, "structure_reuse", !DumpInfo, !IO),
-    maybe_unused_args(Verbose, Stats, !HLDS, !IO),
+    maybe_unused_args(Verbose, Stats, _UnusedArgsInfos, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 165, "unused_args", !DumpInfo, !IO),
     maybe_analyse_trail_usage(Verbose, Stats, !HLDS, !IO),
     maybe_dump_hlds(!.HLDS, 167, "trail_usage", !DumpInfo, !IO),
@@ -487,14 +445,14 @@ output_analysis_file(!.HLDS, !DumpInfo, !IO) :-
     analysis.write_analysis_files(mmc, !.HLDS, ImportedModules,
         AnalysisInfo, _AnalysisInfo, !IO).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % The various component passes of the middle pass.
 % Please keep these predicates in the order of their (first) invocation.
 %
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_read_experimental_complexity_file(
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -507,7 +465,7 @@ maybe_read_experimental_complexity_file(!HLDS, !IO) :-
     globals.lookup_bool_option(Globals, record_term_sizes_as_cells,
         RecordTermSizesAsCells),
     bool.or(RecordTermSizesAsWords, RecordTermSizesAsCells, RecordTermSizes),
-    ( FileName = "" ->
+    ( if FileName = "" then
 %       While we could include the following sanity check, it is overly
 %       strong. For example, a bootcheck in a term size profiling grade
 %       would have to supply an --experimental-complexity option for
@@ -524,7 +482,7 @@ maybe_read_experimental_complexity_file(!HLDS, !IO) :-
 %           RecordTermSizes = no
 %       )
             true
-    ;
+    else
         (
             RecordTermSizes = yes
         ;
@@ -543,7 +501,7 @@ maybe_read_experimental_complexity_file(!HLDS, !IO) :-
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred tabling(bool::in, bool::in, module_info::in, module_info::out,
     io::di, io::uo) is det.
@@ -558,31 +516,31 @@ tabling(Verbose, Stats, !HLDS, !IO) :-
     write_error_specs(Specs, Globals, 0, _NumWarnings, 0, NumErrors, !IO),
     module_info_incr_num_errors(NumErrors, !HLDS).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- pred process_lambdas(bool::in, bool::in,
+:- pred expand_lambdas(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
 
-process_lambdas(Verbose, Stats, !HLDS, !IO) :-
+expand_lambdas(Verbose, Stats, !HLDS, !IO) :-
     maybe_write_string(Verbose, "% Transforming lambda expressions...", !IO),
     maybe_flush_output(Verbose, !IO),
     expand_lambdas_in_module(!HLDS),
     maybe_write_string(Verbose, " done.\n", !IO),
     maybe_report_stats(Stats, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- pred process_stms(bool::in, bool::in,
+:- pred expand_stm_goals(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
 
-process_stms(Verbose, Stats, !HLDS, !IO) :-
+expand_stm_goals(Verbose, Stats, !HLDS, !IO) :-
     maybe_write_string(Verbose, "% Transforming stm expressions...", !IO),
     maybe_flush_output(Verbose, !IO),
     stm_process_module(!HLDS),
     maybe_write_string(Verbose, " done.\n", !IO),
     maybe_report_stats(Stats, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred expand_equiv_types_hlds(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -594,7 +552,7 @@ expand_equiv_types_hlds(Verbose, Stats, !HLDS, !IO) :-
     maybe_write_string(Verbose, " done.\n", !IO),
     maybe_report_stats(Stats, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_closure_analysis(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -605,14 +563,14 @@ maybe_closure_analysis(Verbose, Stats, !HLDS, !IO) :-
     (
         ClosureAnalysis = yes,
         maybe_write_string(Verbose, "% Analysing closures...\n", !IO),
-        closure_analysis.process_module(!HLDS, !IO),
+        closure_analyse_module(!HLDS, !IO),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO)
     ;
         ClosureAnalysis = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_exception_analysis(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -623,62 +581,54 @@ maybe_exception_analysis(Verbose, Stats, !HLDS, !IO) :-
     (
         ExceptionAnalysis = yes,
         maybe_write_string(Verbose, "% Analysing exceptions...\n", !IO),
-        analyse_exceptions_in_module(!HLDS, !IO),
+        analyse_exceptions_in_module(!HLDS),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO)
     ;
         ExceptionAnalysis = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_termination(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
 
 maybe_termination(Verbose, Stats, !HLDS, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
-    globals.lookup_bool_option(Globals, polymorphism, Polymorphism),
     globals.lookup_bool_option(Globals, termination, Termination),
-    % Termination analysis requires polymorphism to be run,
-    % since it does not handle complex unification
     (
-        Polymorphism = yes,
-        Termination = yes
-    ->
+        Termination = yes,
         maybe_write_string(Verbose, "% Detecting termination...\n", !IO),
-        analyse_termination_in_module(!HLDS, Specs, !IO),
+        analyse_termination_in_module(!HLDS, Specs),
         maybe_write_string(Verbose, "% Termination checking done.\n", !IO),
         write_error_specs(Specs, Globals, 0, _NumWarnings, 0, NumErrors, !IO),
         module_info_incr_num_errors(NumErrors, !HLDS),
         maybe_report_stats(Stats, !IO)
     ;
-        true
+        Termination = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_termination2(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
 
 maybe_termination2(Verbose, Stats, !HLDS, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
-    globals.lookup_bool_option(Globals, polymorphism, Polymorphism),
     globals.lookup_bool_option(Globals, termination2, Termination2),
-    % Termination analysis requires polymorphism to be run,
-    % as termination analysis does not handle complex unification.
     (
-        Polymorphism = yes,
-        Termination2 = yes
-    ->
+        Termination2 = yes,
         maybe_write_string(Verbose, "% Detecting termination 2...\n", !IO),
-        term_constr_main.pass(!HLDS, !IO),
+        term2_analyse_module(!HLDS, Specs),
+        write_error_specs(Specs, Globals, 0, _NumWarnings, 0, NumErrors, !IO),
+        module_info_incr_num_errors(NumErrors, !HLDS),
         maybe_write_string(Verbose, "% Termination 2 checking done.\n", !IO),
         maybe_report_stats(Stats, !IO)
     ;
-        true
+        Termination2 = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_type_ctor_infos(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -698,51 +648,45 @@ maybe_type_ctor_infos(Verbose, Stats, !HLDS, !IO) :-
         TypeCtorInfo = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_warn_dead_procs(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
 
 maybe_warn_dead_procs(Verbose, Stats, !HLDS, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
-    globals.lookup_bool_option(Globals, warn_dead_procs, WarnDead),
-    (
-        WarnDead = yes,
-        maybe_write_string(Verbose, "% Warning about dead procedures...\n",
-            !IO),
+    globals.lookup_bool_option(Globals, warn_dead_procs, WarnDeadProcs),
+    globals.lookup_bool_option(Globals, warn_dead_preds, WarnDeadPreds),
+    ( if
+        ( WarnDeadProcs = yes
+        ; WarnDeadPreds = yes
+        )
+    then
+        (
+            WarnDeadProcs = yes,
+            maybe_write_string(Verbose, "% Warning about dead procedures...\n",
+                !IO)
+        ;
+            WarnDeadProcs = no,
+            maybe_write_string(Verbose, "% Warning about dead predicates...\n",
+                !IO)
+        ),
         maybe_flush_output(Verbose, !IO),
-        dead_proc_elim(do_not_elim_opt_imported, !.HLDS, _HLDS1, Specs),
+        dead_proc_warn(!.HLDS, Specs),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO),
         write_error_specs(Specs, Globals, 0, _NumWarnings, 0, NumErrors, !IO),
         module_info_incr_num_errors(NumErrors, !HLDS)
-
-%       XXX The warning pass also does all the work of optimizing
-%       away the dead procedures.  If we're optimizing, then
-%       it would be nice if we could keep the HLDS that results.
-%       However, because this pass gets run before type
-%       specialization, dead code elimination at this point
-%       incorrectly optimizes away procedures created for
-%       `pragma type_spec' declarations.  So we can't use the
-%       code below.  Instead we need to keep original HLDS.
-%
-%       %%% globals.lookup_bool_option(Globals, optimize_dead_procs,
-%       %%%     OptimizeDead),
-%       %%% ( OptimizeDead = yes ->
-%       %%%     !:HLDS = HLDS1
-%       %%% ;
-%       %%%     true
-%       %%% )
-    ;
-        WarnDead = no
+    else
+        true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- pred maybe_bytecodes(module_info::in, module_name::in,
-    bool::in, bool::in, dump_info::in, dump_info::out, io::di, io::uo) is det.
+:- pred maybe_bytecodes(module_info::in, bool::in, bool::in,
+    dump_info::in, dump_info::out, io::di, io::uo) is det.
 
-maybe_bytecodes(HLDS0, ModuleName, Verbose, Stats, !DumpInfo, !IO) :-
+maybe_bytecodes(HLDS0, Verbose, Stats, !DumpInfo, !IO) :-
     module_info_get_globals(HLDS0, Globals),
     globals.lookup_bool_option(Globals, generate_bytecode, GenBytecode),
     (
@@ -751,9 +695,10 @@ maybe_bytecodes(HLDS0, ModuleName, Verbose, Stats, !DumpInfo, !IO) :-
         maybe_dump_hlds(HLDS1, 505, "bytecode_args_to_regs", !DumpInfo, !IO),
         maybe_write_string(Verbose, "% Generating bytecodes...\n", !IO),
         maybe_flush_output(Verbose, !IO),
-        bytecode_gen.gen_module(HLDS1, _HLDS2, Bytecode, !IO),
+        bytecode_gen.gen_module(HLDS1, Bytecode, !IO),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO),
+        module_info_get_name(HLDS1, ModuleName),
         module_name_to_file_name(Globals, ModuleName, ".bytedebug",
             do_create_dirs, BytedebugFile, !IO),
         maybe_write_string(Verbose, "% Writing bytecodes to `", !IO),
@@ -775,7 +720,7 @@ maybe_bytecodes(HLDS0, ModuleName, Verbose, Stats, !DumpInfo, !IO) :-
         GenBytecode = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_untuple_arguments(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -798,7 +743,7 @@ maybe_untuple_arguments(Verbose, Stats, !HLDS, !IO) :-
         Untuple = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_tuple_arguments(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -817,7 +762,7 @@ maybe_tuple_arguments(Verbose, Stats, !HLDS, !IO) :-
         Tuple = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_higher_order(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -834,12 +779,12 @@ maybe_higher_order(Verbose, Stats, !HLDS, !IO) :-
     % importing modules might call them.
     module_info_get_type_spec_info(!.HLDS, TypeSpecInfo),
     TypeSpecInfo = type_spec_info(TypeSpecPreds, _, _, _),
-    (
+    ( if
         ( HigherOrder = yes
         ; Types = yes
-        ; \+ set.empty(TypeSpecPreds)
+        ; set.is_non_empty(TypeSpecPreds)
         )
-    ->
+    then
         maybe_write_string(Verbose,
             "% Specializing higher-order and polymorphic predicates...\n",
             !IO),
@@ -848,11 +793,11 @@ maybe_higher_order(Verbose, Stats, !HLDS, !IO) :-
         specialize_higher_order(!HLDS, !IO),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO)
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_ssdb(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -862,19 +807,26 @@ maybe_ssdb(Verbose, Stats, !HLDS, !IO) :-
     globals.lookup_bool_option(Globals, force_disable_ssdebug,
         ForceDisableSSDB),
     (
-        ForceDisableSSDB = no
-    ->
-        maybe_write_string(Verbose,
-            "% Maybe apply source to source debugging transformation ...\n",
-            !IO),
-        ssdebug_transform_module(!HLDS, !IO),
-        maybe_write_string(Verbose, "% done.\n", !IO),
-        maybe_report_stats(Stats, !IO)
+        ForceDisableSSDB = no,
+        globals.get_ssdb_trace_level(Globals, SSTraceLevel),
+        (
+            SSTraceLevel = none
+        ;
+            ( SSTraceLevel = shallow
+            ; SSTraceLevel = deep
+            ),
+            maybe_write_string(Verbose,
+                "% Apply source to source debugging transformation ...\n",
+                !IO),
+            ssdebug_transform_module(SSTraceLevel, !HLDS, !IO),
+            maybe_write_string(Verbose, "% done.\n", !IO),
+            maybe_report_stats(Stats, !IO)
+        )
     ;
-        true
+        ForceDisableSSDB = yes
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_implicit_parallelism(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -896,7 +848,7 @@ maybe_implicit_parallelism(Verbose, Stats, !HLDS, !IO) :-
         ImplicitParallelism = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_introduce_accumulators(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -912,12 +864,12 @@ maybe_introduce_accumulators(Verbose, Stats, !HLDS, !IO) :-
         type_to_univ([] : list(error_spec), Cookie0),
         Task0 = update_module_pred_cookie(accu_transform_proc, Cookie0),
         process_all_nonimported_procs_update(Task0, Task, !HLDS),
-        (
+        ( if
             Task = update_module_pred_cookie(_, Cookie),
             univ_to_type(Cookie, SpecsPrime)
-        ->
+        then
             Specs = SpecsPrime
-        ;
+        else
             unexpected($module, $pred, "bad task")
         ),
         write_error_specs(Specs, Globals, 0, _NumWarnings, 0, NumErrors, !IO),
@@ -928,7 +880,7 @@ maybe_introduce_accumulators(Verbose, Stats, !HLDS, !IO) :-
         Optimize = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_do_inlining(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -939,23 +891,26 @@ maybe_do_inlining(Verbose, Stats, !HLDS, !IO) :-
     globals.lookup_bool_option(Globals, inline_simple, Simple),
     globals.lookup_bool_option(Globals, inline_single_use, SingleUse),
     globals.lookup_int_option(Globals, inline_compound_threshold, Threshold),
-    (
+    globals.lookup_bool_option(Globals, inline_linear_tail_rec_sccs,
+        LinearRec),
+    ( if
         Allow = yes,
         ( Simple = yes
         ; SingleUse = yes
         ; Threshold > 0
+        ; LinearRec = yes
         )
-    ->
+    then
         maybe_write_string(Verbose, "% Inlining...\n", !IO),
         maybe_flush_output(Verbose, !IO),
-        inlining(!HLDS),
+        inline_in_module(!HLDS),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO)
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_loop_inv(bool::in, bool::in,
     module_info::in, module_info::out, dump_info::in, dump_info::out,
@@ -981,7 +936,7 @@ maybe_loop_inv(Verbose, Stats, !HLDS, !DumpInfo, !IO) :-
         LoopInv = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_deforestation(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -993,11 +948,11 @@ maybe_deforestation(Verbose, Stats, !HLDS, !IO) :-
     % --constraint-propagation implies --local-constraint-propagation.
     globals.lookup_bool_option(Globals, local_constraint_propagation,
         Constraints),
-    (
+    ( if
         ( Deforest = yes
         ; Constraints = yes
         )
-    ->
+    then
         (
             Deforest = no,
             Constraints = no,
@@ -1017,14 +972,14 @@ maybe_deforestation(Verbose, Stats, !HLDS, !IO) :-
         ),
         maybe_write_string(Verbose, Msg, !IO),
         maybe_flush_output(Verbose, !IO),
-        deforestation(!HLDS, !IO),
+        deforestation(!HLDS),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO)
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_delay_construct(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1045,7 +1000,7 @@ maybe_delay_construct(Verbose, Stats, !HLDS, !IO) :-
         DelayConstruct = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_structure_sharing_analysis(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1064,7 +1019,7 @@ maybe_structure_sharing_analysis(Verbose, Stats, !HLDS, !IO) :-
         Sharing = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_structure_reuse_analysis(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1084,31 +1039,31 @@ maybe_structure_reuse_analysis(Verbose, Stats, !HLDS, !IO) :-
         ReuseAnalysis = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-maybe_unused_args(Verbose, Stats, !HLDS, !IO) :-
+maybe_unused_args(Verbose, Stats, UnusedArgsInfos, !HLDS, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
     globals.lookup_bool_option(Globals, intermod_unused_args, Intermod),
     globals.lookup_bool_option(Globals, optimize_unused_args, Optimize),
     globals.lookup_bool_option(Globals, warn_unused_args, Warn),
-    (
+    ( if
         ( Optimize = yes
         ; Warn = yes
         ; Intermod = yes
         )
-    ->
+    then
         maybe_write_string(Verbose, "% Finding unused arguments ...\n", !IO),
         maybe_flush_output(Verbose, !IO),
-        unused_args_process_module(!HLDS, [], Specs, !IO),
+        unused_args_process_module(!HLDS, Specs, UnusedArgsInfos),
         write_error_specs(Specs, Globals, 0, _NumWarnings, 0, NumErrors, !IO),
         module_info_incr_num_errors(NumErrors, !HLDS),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO)
-    ;
-        true
+    else
+        set.init(UnusedArgsInfos)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_analyse_trail_usage(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1119,14 +1074,14 @@ maybe_analyse_trail_usage(Verbose, Stats, !HLDS, !IO) :-
     (
         AnalyseTrail = yes,
         maybe_write_string(Verbose, "% Analysing trail usage...\n", !IO),
-        analyse_trail_usage(!HLDS, !IO),
+        analyse_trail_usage(!HLDS),
         maybe_write_string(Verbose, "% Trail usage analysis done.\n", !IO),
         maybe_report_stats(Stats, !IO)
     ;
         AnalyseTrail = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_unneeded_code(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1147,7 +1102,7 @@ maybe_unneeded_code(Verbose, Stats, !HLDS, !IO) :-
         UnneededCode = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_lco(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1167,7 +1122,7 @@ maybe_lco(Verbose, Stats, !HLDS, !IO) :-
         LCO = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_analyse_mm_tabling(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1179,14 +1134,14 @@ maybe_analyse_mm_tabling(Verbose, Stats, !HLDS, !IO) :-
         TablingAnalysis = yes,
         maybe_write_string(Verbose, "% Analysing minimal model tabling...\n",
             !IO),
-        analyse_mm_tabling_in_module(!HLDS, !IO),
+        analyse_mm_tabling_in_module(!HLDS),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO)
     ;
         TablingAnalysis = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_control_granularity(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1196,11 +1151,11 @@ maybe_control_granularity(Verbose, Stats, !HLDS, !IO) :-
     globals.lookup_bool_option(Globals, parallel, Parallel),
     globals.lookup_bool_option(Globals, highlevel_code, HighLevelCode),
     globals.lookup_bool_option(Globals, control_granularity, Control),
-    module_info_get_contains_par_conj(!.HLDS, ContainsParConj),
-    (
+    module_info_get_has_parallel_conj(!.HLDS, HasParallelConj),
+    ( if
         % If either of these is false, there is no parallelism to control.
         Parallel = yes,
-        ContainsParConj = yes,
+        HasParallelConj = has_parallel_conj,
 
         % Our mechanism for granularity control only works for the low level
         % backend.
@@ -1208,7 +1163,7 @@ maybe_control_granularity(Verbose, Stats, !HLDS, !IO) :-
 
         % If this is false, then the user hasn't asked for granularity control.
         Control = yes
-    ->
+    then
         globals.get_target(Globals, Target),
         (
             Target = target_c,
@@ -1219,20 +1174,18 @@ maybe_control_granularity(Verbose, Stats, !HLDS, !IO) :-
             maybe_write_string(Verbose, "% done.\n", !IO),
             maybe_report_stats(Stats, !IO)
         ;
-            ( Target = target_il
-            ; Target = target_csharp
+            ( Target = target_csharp
             ; Target = target_java
-            ; Target = target_x86_64
             ; Target = target_erlang
             )
             % Leave the HLDS alone. We cannot implement parallelism,
             % so there is not point in controlling its granularity.
         )
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_control_distance_granularity(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1242,11 +1195,11 @@ maybe_control_distance_granularity(Verbose, Stats, !HLDS, !IO) :-
     globals.lookup_bool_option(Globals, parallel, Parallel),
     globals.lookup_bool_option(Globals, highlevel_code, HighLevelCode),
     globals.lookup_int_option(Globals, distance_granularity, Distance),
-    module_info_get_contains_par_conj(!.HLDS, ContainsParConj),
-    (
+    module_info_get_has_parallel_conj(!.HLDS, HasParallelConj),
+    ( if
         % If either of these is false, there is no parallelism to control.
         Parallel = yes,
-        ContainsParConj = yes,
+        HasParallelConj = has_parallel_conj,
 
         % Our mechanism for granularity control only works for the low level
         % backend.
@@ -1255,7 +1208,7 @@ maybe_control_distance_granularity(Verbose, Stats, !HLDS, !IO) :-
         % Distance must be greater than 0 to apply the distance granularity
         % transformation.
         Distance > 0
-    ->
+    then
         globals.get_target(Globals, Target),
         (
             Target = target_c,
@@ -1266,49 +1219,47 @@ maybe_control_distance_granularity(Verbose, Stats, !HLDS, !IO) :-
             maybe_write_string(Verbose, "% done.\n", !IO),
             maybe_report_stats(Stats, !IO)
         ;
-            ( Target = target_il
-            ; Target = target_csharp
+            ( Target = target_csharp
             ; Target = target_java
-            ; Target = target_x86_64
             ; Target = target_erlang
             )
             % Leave the HLDS alone. We cannot implement parallelism,
             % so there is not point in controlling its granularity.
         )
-    ;
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_impl_dependent_par_conjs(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
 
 maybe_impl_dependent_par_conjs(Verbose, Stats, !HLDS, !IO) :-
-    module_info_get_contains_par_conj(!.HLDS, ContainsParConj),
+    module_info_get_has_parallel_conj(!.HLDS, HasParallelConj),
     (
-        ContainsParConj = yes,
+        HasParallelConj = has_parallel_conj,
         module_info_get_globals(!.HLDS, Globals),
         current_grade_supports_par_conj(Globals, SupportsParConj),
         (
             SupportsParConj = no,
-            process_all_nonimported_procs(update_proc(parallel_to_plain_conjs),
-                !HLDS)
+            process_all_nonimported_procs(
+                update_proc_ids(parallel_to_plain_conjs), !HLDS)
         ;
             SupportsParConj = yes,
             maybe_write_string(Verbose,
                 "% Dependent parallel conjunction transformation...\n", !IO),
             maybe_flush_output(Verbose, !IO),
             impl_dep_par_conjs_in_module(!HLDS),
-            dead_proc_elim(do_not_elim_opt_imported, !HLDS, _ElimSpecs),
+            dead_proc_elim(do_not_elim_opt_imported, !HLDS),
             maybe_write_string(Verbose, "% done.\n", !IO),
             maybe_report_stats(Stats, !IO)
         )
     ;
-        ContainsParConj = no
+        HasParallelConj = has_no_parallel_conj
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_par_loop_control(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1328,7 +1279,7 @@ maybe_par_loop_control(Verbose, Stats, !HLDS, !IO) :-
         LoopControl = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_float_reg_wrapper(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1350,7 +1301,7 @@ maybe_float_reg_wrapper(Verbose, Stats, !HLDS, !IO) :-
         UseFloatRegs = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_term_size_prof(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1389,7 +1340,7 @@ maybe_term_size_prof(Verbose, Stats, !HLDS, !IO) :-
         MaybeTransform = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_deep_profiling(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1409,7 +1360,7 @@ maybe_deep_profiling(Verbose, Stats, !HLDS, !IO) :-
         ProfileDeep = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_experimental_complexity(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1430,7 +1381,7 @@ maybe_experimental_complexity(Verbose, Stats, !HLDS, !IO) :-
         maybe_report_stats(Stats, !IO)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_region_analysis(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1449,7 +1400,7 @@ maybe_region_analysis(Verbose, Stats, !HLDS, !IO) :-
         Analysis = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_eliminate_dead_procs(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
@@ -1461,14 +1412,13 @@ maybe_eliminate_dead_procs(Verbose, Stats, !HLDS, !IO) :-
         Dead = yes,
         maybe_write_string(Verbose, "% Eliminating dead procedures...\n", !IO),
         maybe_flush_output(Verbose, !IO),
-        % Ignore any warning messages generated.
-        dead_proc_elim(elim_opt_imported, !HLDS, _ElimSpecs),
+        dead_proc_elim(elim_opt_imported, !HLDS),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO)
     ;
         Dead = no
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module top_level.mercury_compile_middle_passes.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

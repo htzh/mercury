@@ -1,3 +1,7 @@
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
+%
 % This module tests the error message for malformed external declarations.
 
 :- module external.
@@ -9,4 +13,4 @@
 
 :- implementation.
 
-:- external(p).
+:- pragma external_pred(p).

@@ -1,4 +1,6 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab ft=make
+#-----------------------------------------------------------------------------#
 # Copyright (C) 2002-2003, 2005, 2007, 2011 The University of Melbourne.
 # This file may only be copied under the terms of the GNU Library General
 # Public License - see the file COPYING.LIB in the Mercury distribution.
@@ -8,7 +10,7 @@
 # of the libraries and tools in this `extras' distribution.
 #
 # Note that not all subdirectories of `extras' are set up for
-# automatic installation.  This Mmakefile will only build those which are.
+# automatic installation. This Mmakefile will only build those which are.
 # In addition, libraries which are not reasonably portable won't get built.
 # The following subdirectories are not included in the list that gets
 # built by this Mmakefile, because they are often won't install
@@ -29,6 +31,7 @@
 #   odbc 		requires an ODBC driver be installed
 
 SUBDIRS = \
+	align_right	\
 	base64		\
 	cgi 		\
 	complex_numbers	\
@@ -39,18 +42,19 @@ SUBDIRS = \
 	moose		\
 	posix		\
 	references	\
+	show_ops	\
 	windows_installer_generator \
 	xml
 
 MMAKEFLAGS =
 
-main_target: all
+main_target: 	all
 
-depend: $(SUBDIRS:%=%_depend)
-all: $(SUBDIRS)
-install: all $(SUBDIRS:%=%_install)
-clean: $(SUBDIRS:%=%_clean)
-realclean: $(SUBDIRS:%=%_realclean)
+depend:		$(SUBDIRS:%=%_depend)
+all:		$(SUBDIRS)
+install: 	all $(SUBDIRS:%=%_install)
+clean: 		$(SUBDIRS:%=%_clean)
+realclean: 	$(SUBDIRS:%=%_realclean)
 
 $(SUBDIRS:%=%_depend): %_depend:
 	cd $* && $(MMAKE) $(MMAKEFLAGS) depend

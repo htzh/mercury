@@ -34,10 +34,11 @@
 :- import_module hlds.hlds_out.
 :- import_module hlds.hlds_out.hlds_out_util.
 :- import_module hlds.hlds_pred.
+:- import_module hlds.make_goal.
 :- import_module libs.
-:- import_module libs.handle_options.
+:- import_module libs.compute_grade.
 :- import_module mdbcomp.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
@@ -66,7 +67,7 @@ subst_impl_defined_literals(!ModuleInfo) :-
 subst_literals_in_pred(ModuleInfo, PredId, PredInfo0, PredInfo) :-
     pred_info_get_clauses_info(PredInfo0, ClausesInfo0),
     clauses_info_get_clauses_rep(ClausesInfo0, ClausesRep0, ItemNumbers),
-    get_clause_list(ClausesRep0, Clauses0),
+    get_clause_list_for_replacement(ClausesRep0, Clauses0),
     Info = subst_literals_info(ModuleInfo, PredInfo0, PredId),
     list.map(subst_literals_in_clause(Info), Clauses0, Clauses),
     set_clause_list(Clauses, ClausesRep),
@@ -102,6 +103,7 @@ subst_literals_in_goal(Info, Goal0, Goal) :-
                 ; ConsId = tuple_cons(_)
                 ; ConsId = closure_cons(_, _)
                 ; ConsId = int_const(_)
+                ; ConsId = uint_const(_)
                 ; ConsId = float_const(_)
                 ; ConsId = char_const(_)
                 ; ConsId = string_const(_)
@@ -114,7 +116,7 @@ subst_literals_in_goal(Info, Goal0, Goal) :-
                 ; ConsId = ground_term_const(_, _)
                 ; ConsId = tabling_info_const(_)
                 ; ConsId = deep_profiling_proc_layout(_)
-                ; ConsId = table_io_decl(_)
+                ; ConsId = table_io_entry_desc(_)
                 ),
                 Goal = Goal0
             )
@@ -209,22 +211,22 @@ subst_literals_in_case(Info, Case0, Case) :-
 make_impl_defined_literal(Var, Name, Context, Info, Goal) :-
     Context = term.context(File, Line),
     Info = subst_literals_info(ModuleInfo, PredInfo, PredId),
-    ( Name = "file" ->
+    ( if Name = "file" then
         make_string_const_construction(Var, File, Goal)
-    ; Name = "line" ->
+    else if Name = "line" then
         make_int_const_construction(Var, Line, Goal)
-    ; Name = "module" ->
+    else if Name = "module" then
         ModuleName = pred_info_module(PredInfo),
         Str = sym_name_to_string(ModuleName),
         make_string_const_construction(Var, Str, Goal)
-    ; Name = "pred" ->
+    else if Name = "pred" then
         Str = pred_id_to_string(ModuleInfo, PredId),
         make_string_const_construction(Var, Str, Goal)
-    ; Name = "grade" ->
+    else if Name = "grade" then
         module_info_get_globals(ModuleInfo, Globals),
         grade_directory_component(Globals, Grade),
         make_string_const_construction(Var, Grade, Goal)
-    ;
+    else
         % These should have been caught during type checking.
         unexpected($module, $pred, "unknown literal")
     ).

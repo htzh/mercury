@@ -18,10 +18,14 @@
 :- interface.
 
 :- import_module analysis.
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_pragma.
 :- import_module transform_hlds.ctgc.livedata.
+:- import_module transform_hlds.ctgc.structure_sharing.
 :- import_module transform_hlds.ctgc.structure_sharing.domain.
 
 :- import_module bimap.
@@ -113,7 +117,7 @@
 :- func reuse_as_count_conditions(reuse_as) = int.
 
     % reuse_as_rename_using_module_info(ModuleInfo, PPId,
-    %   ActualVars, ActualTypes, CallerTypeVarSet, CallerHeadTypeParams,
+    %   ActualVars, ActualTypes, CallerTypeVarSet, CallerExternalTypeParams,
     %   FormalReuse, ActualReuse):
     %
     % Renaming of the formal description of structure reuse conditions to the
@@ -124,7 +128,7 @@
     %
 :- pred reuse_as_rename_using_module_info(module_info::in,
     pred_proc_id::in, prog_vars::in, list(mer_type)::in, tvarset::in,
-    head_type_params::in, reuse_as::in, reuse_as::out) is det.
+    external_type_params::in, reuse_as::in, reuse_as::out) is det.
 
     % Given a variable and type variable mapping, rename the reuses
     % conditions accordingly.
@@ -342,9 +346,9 @@ reuse_condition_init(ModuleInfo, ProcInfo, DeadVar, LFU, LBU, Sharing)
     %   obtained datastructures are kept as the nodes for our condition.
 
     TopCell = ctgc.datastruct.datastruct_init(DeadVar),
-    ( list.member(DeadVar, HeadVars) ->
+    ( if list.member(DeadVar, HeadVars) then
         Nodes = [TopCell]
-    ;
+    else
         SharedDatastructs = extend_datastruct(ModuleInfo, ProcInfo,
             Sharing, TopCell),
         Nodes = datastructs_project(HeadVars, SharedDatastructs)
@@ -442,9 +446,9 @@ reuse_condition_rename(MapVar, TypeSubst, Condition, RenamedCondition):-
 
 reuse_as_init = no_reuse.
 reuse_as_init_with_one_condition(ReuseCondition) = ReuseAs :-
-    ( reuse_condition_is_conditional(ReuseCondition) ->
+    ( if reuse_condition_is_conditional(ReuseCondition) then
         ReuseAs = conditional([ReuseCondition])
-    ;
+    else
         ReuseAs = unconditional
     ).
 
@@ -468,8 +472,8 @@ reuse_as_subsumed_by(ModuleInfo, ProcInfo, FirstReuseAs, SecondReuseAs) :-
     ;
         FirstReuseAs = conditional(ReuseConditionsFirst),
         SecondReuseAs = conditional(ReuseConditionsSecond),
-        list.takewhile(reuse_conditions_subsume_reuse_condition(ModuleInfo,
-            ProcInfo, ReuseConditionsSecond), ReuseConditionsFirst, _,
+        list.drop_while(reuse_conditions_subsume_reuse_condition(ModuleInfo,
+            ProcInfo, ReuseConditionsSecond), ReuseConditionsFirst,
             NotSubsumed),
         NotSubsumed = []
     ).
@@ -490,10 +494,10 @@ reuse_as_count_conditions(unconditional) = 0.
 reuse_as_count_conditions(conditional(Conds)) = list.length(Conds).
 
 reuse_as_rename_using_module_info(ModuleInfo, PPId, ActualArgs, ActualTypes,
-        CallerTypeVarSet, CallerHeadTypeParams, FormalReuse, ActualReuse) :-
+        CallerTypeVarSet, CallerExternalTypeParams, FormalReuse, ActualReuse) :-
     VarRenaming = get_variable_renaming(ModuleInfo, PPId, ActualArgs),
     TypeSubst = get_type_substitution(ModuleInfo, PPId, ActualTypes,
-        CallerTypeVarSet, CallerHeadTypeParams),
+        CallerTypeVarSet, CallerExternalTypeParams),
     reuse_as_rename(VarRenaming, TypeSubst, FormalReuse, ActualReuse).
 
 reuse_as_rename(MapVar, TypeSubst, ReuseAs, RenamedReuseAs) :-
@@ -513,9 +517,9 @@ reuse_as_rename(MapVar, TypeSubst, ReuseAs, RenamedReuseAs) :-
 reuse_as_add_condition(ModuleInfo, ProcInfo, Condition, !ReuseAs) :-
     (
         Condition = always,
-        ( !.ReuseAs = no_reuse ->
+        ( if !.ReuseAs = no_reuse then
             !:ReuseAs = unconditional
-        ;
+        else
             true
         )
     ;
@@ -548,12 +552,12 @@ reuse_as_add_unconditional(!ReuseAs) :-
     reuse_condition::in, reuse_conditions::in, reuse_conditions::out) is det.
 
 reuse_conditions_add_condition(ModuleInfo, ProcInfo, Condition, !Conds):-
-    (
+    ( if
         reuse_condition_subsumed_by_list(ModuleInfo, ProcInfo,
             Condition, !.Conds)
-    ->
+    then
         true
-    ;
+    else
         !:Conds = [Condition | !.Conds]
     ).
 
@@ -575,9 +579,9 @@ reuse_as_least_upper_bound(ModuleInfo, ProcInfo, NewReuseAs, !ReuseAs) :-
         NewReuseAs = no_reuse
     ;
         NewReuseAs = unconditional,
-        ( !.ReuseAs = no_reuse ->
+        ( if !.ReuseAs = no_reuse then
             !:ReuseAs = unconditional
-        ;
+        else
             true
         )
     ;
@@ -933,11 +937,8 @@ reuse_as_table_search_reuse_version_proc(Table, PPId, NoClobbers, NewPPId) :-
 
 reuse_as_table_reverse_search_reuse_version_proc(Table, NewPPId,
         OrigPPId, NoClobbers) :-
-    ( bimap.reverse_search(Table ^ reuse_version_map, Key, NewPPId) ->
-        Key = ppid_no_clobbers(OrigPPId, NoClobbers)
-    ;
-        unexpected($module, $pred, "reverse search failed")
-    ).
+    bimap.reverse_lookup(Table ^ reuse_version_map, Key, NewPPId),
+    Key = ppid_no_clobbers(OrigPPId, NoClobbers).
 
 reuse_as_table_set(PPId, ReuseAs_Status, !Table) :-
     T0 = !.Table ^ reuse_info_map,
@@ -962,9 +963,9 @@ reuse_as_table_maybe_dump(DoDump, ModuleInfo, Table, !IO) :-
 
 reuse_as_table_dump(ModuleInfo, Table, !IO) :-
     ReuseInfoMap = Table ^ reuse_info_map,
-    ( map.is_empty(ReuseInfoMap) ->
+    ( if map.is_empty(ReuseInfoMap) then
         io.write_string("% ReuseTable: Empty\n", !IO)
-    ;
+    else
         io.write_string("% ReuseTable: PPId --> Reuse\n", !IO),
         map.foldl(dump_entries(ModuleInfo), ReuseInfoMap, !IO)
     ).
@@ -980,7 +981,7 @@ dump_entries(ModuleInfo, PPId, reuse_as_and_status(ReuseAs, _Status), !IO) :-
     io.nl(!IO).
 
 load_structure_reuse_table(ModuleInfo) = ReuseTable :-
-    module_info_get_valid_predids(PredIds, ModuleInfo, _ModuleInfo),
+    module_info_get_valid_pred_ids(ModuleInfo, PredIds),
     list.foldl(load_structure_reuse_table_2(ModuleInfo), PredIds,
         reuse_as_table_init, ReuseTable).
 

@@ -12,7 +12,7 @@
 % This module runs various optimizations on the MLDS.
 %
 % Currently the optimizations we do here are
-%   - turning tailcalls into loops;
+%   - turning self-tailcalls into loops;
 %   - converting assignments to local variables into variable initializers.
 %   - eliminating initialized local variables entirely,
 %     by replacing occurrences of such variables with their initializer
@@ -26,14 +26,13 @@
 % the MLDS, and should call various optimization modules along the way.
 %
 % It would probably be a good idea to make each transformation optional.
-% Previously the tailcall transformation depended on emit_c_loops, but
-% this is a bit misleading given the documentation of emit_c_loops.
 %
 %-----------------------------------------------------------------------------%
 
 :- module ml_backend.ml_optimize.
 :- interface.
 
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module ml_backend.mlds.
 
@@ -45,6 +44,8 @@
 :- implementation.
 
 :- import_module libs.options.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
 :- import_module ml_backend.ml_code_util.
 :- import_module ml_backend.ml_target_util.
@@ -57,7 +58,6 @@
 :- import_module require.
 :- import_module set.
 :- import_module std_util.
-:- import_module string.
 
 %-----------------------------------------------------------------------------%
 
@@ -65,16 +65,16 @@
     --->    opt_info(
                 oi_globals          :: globals,
                 oi_module_name      :: mlds_module_name,
-                oi_entity_name      :: mlds_entity_name,
+                oi_func_name        :: mlds_function_name,
                 oi_func_params      :: mlds_func_params,
                 oi_context          :: mlds_context
             ).
 
 mlds_optimize(Globals, !MLDS) :-
-    Defns0 = !.MLDS ^ mlds_defns,
+    Defns0 = !.MLDS ^ mlds_proc_defns,
     ModuleName = mercury_module_name_to_mlds(!.MLDS ^ mlds_name),
     optimize_in_defns(Globals, ModuleName, Defns0, Defns),
-    !MLDS ^ mlds_defns := Defns.
+    !MLDS ^ mlds_proc_defns := Defns.
 
 :- pred optimize_in_defns(globals::in, mlds_module_name::in,
     list(mlds_defn)::in, list(mlds_defn)::out) is det.
@@ -86,31 +86,34 @@ optimize_in_defns(Globals, ModuleName, !Defns) :-
     mlds_defn::in, mlds_defn::out) is det.
 
 optimize_in_defn(ModuleName, Globals, Defn0, Defn) :-
-    Defn0 = mlds_defn(Name, Context, Flags, DefnBody0),
     (
-        DefnBody0 = mlds_function(PredProcId, Params, FuncBody0, Attributes,
-            EnvVarNames),
+        Defn0 = mlds_data(_),
+        Defn = Defn0
+    ;
+        Defn0 = mlds_function(FunctionDefn0),
+        FunctionDefn0 = mlds_function_defn(Name, Context, Flags,
+            PredProcId, Params, FuncBody0, Attributes, EnvVarNames,
+            MaybeRequireTailrecInfo),
         OptInfo = opt_info(Globals, ModuleName, Name, Params, Context),
 
         optimize_func(OptInfo, FuncBody0, FuncBody1),
         optimize_in_function_body(OptInfo, FuncBody1, FuncBody),
 
-        DefnBody = mlds_function(PredProcId, Params, FuncBody, Attributes,
-            EnvVarNames),
-        Defn = mlds_defn(Name, Context, Flags, DefnBody)
+        FunctionDefn = mlds_function_defn(Name, Context, Flags,
+            PredProcId, Params, FuncBody, Attributes, EnvVarNames,
+            MaybeRequireTailrecInfo),
+        Defn = mlds_function(FunctionDefn)
     ;
-        DefnBody0 = mlds_data(_, _, _),
-        Defn = Defn0
-    ;
-        DefnBody0 = mlds_class(ClassDefn0),
-        ClassDefn0 = mlds_class_defn(Kind, Imports, BaseClasses, Implements,
+        Defn0 = mlds_class(ClassDefn0),
+        ClassDefn0 = mlds_class_defn(Name, Context, Flags, Kind,
+            Imports, BaseClasses, Implements,
             TypeParams, CtorDefns0, MemberDefns0),
         optimize_in_defns(Globals, ModuleName, MemberDefns0, MemberDefns),
         optimize_in_defns(Globals, ModuleName, CtorDefns0, CtorDefns),
-        ClassDefn = mlds_class_defn(Kind, Imports, BaseClasses, Implements,
+        ClassDefn = mlds_class_defn(Name, Context, Flags, Kind,
+            Imports, BaseClasses, Implements,
             TypeParams, CtorDefns, MemberDefns),
-        DefnBody = mlds_class(ClassDefn),
-        Defn = mlds_defn(Name, Context, Flags, DefnBody)
+        Defn = mlds_class(ClassDefn)
     ).
 
 :- pred optimize_in_function_body(opt_info::in,
@@ -165,7 +168,7 @@ optimize_in_statement(!.OptInfo, !Statement) :-
 
 optimize_in_stmt(OptInfo, Stmt0, Stmt) :-
     (
-        Stmt0 = ml_stmt_call(_, _, _, _, _, _),
+        Stmt0 = ml_stmt_call(_, _, _, _, _, _, _),
         optimize_in_call_stmt(OptInfo, Stmt0, Stmt)
     ;
         Stmt0 = ml_stmt_block(Defns0, Statements0),
@@ -232,25 +235,23 @@ optimize_in_default(OptInfo, Default0, Default) :-
 
 %-----------------------------------------------------------------------------%
 
-:- inst mlcall
-    --->    ml_stmt_call(ground, ground, ground, ground, ground, ground).
-
 :- pred optimize_in_call_stmt(opt_info::in,
-    mlds_stmt::in(mlcall), mlds_stmt::out) is det.
+    mlds_stmt::in(ml_stmt_is_call), mlds_stmt::out) is det.
 
 optimize_in_call_stmt(OptInfo, Stmt0, Stmt) :-
     Stmt0 = ml_stmt_call(_Signature, FuncRval, _MaybeObject, CallArgs,
-        _Results, _IsTailCall),
+        _Results, _IsTailCall, _Markers),
     % If we have a self-tailcall, assign to the arguments and
     % then goto the top of the tailcall loop.
     Globals = OptInfo ^ oi_globals,
     globals.lookup_bool_option(Globals, optimize_tailcalls, OptTailCalls),
-    (
+    ( if
         OptTailCalls = yes,
         ModuleName = OptInfo ^ oi_module_name,
-        EntityName = OptInfo ^ oi_entity_name,
-        can_optimize_tailcall(qual(ModuleName, module_qual, EntityName), Stmt0)
-    ->
+        FunctionName = OptInfo ^ oi_func_name,
+        stmt_is_self_recursive_call_replaceable_with_jump_to_top(ModuleName,
+            FunctionName, Stmt0)
+    then
         Context = OptInfo ^ oi_context,
         CommentStatement = statement(
             ml_stmt_atomic(comment("direct tailcall eliminated")),
@@ -260,21 +261,21 @@ optimize_in_call_stmt(OptInfo, Stmt0, Stmt) :-
         OptInfo ^ oi_func_params = mlds_func_params(FuncArgs, _RetTypes),
         generate_assign_args(OptInfo, FuncArgs, CallArgs,
             AssignStatements, AssignDefns),
-        AssignVarsStatement = statement(ml_stmt_block(AssignDefns,
-            AssignStatements), Context),
+        % XXX MLDS_DEFN
+        AssignVarsStatement = statement(ml_stmt_block(
+            list.map(wrap_data_defn, AssignDefns), AssignStatements),
+            Context),
 
         CallReplaceStatements = [CommentStatement, AssignVarsStatement,
             GotoStatement],
         Stmt = ml_stmt_block([], CallReplaceStatements)
-    ;
+    else if
         % Convert calls to `mark_hp' and `restore_hp' to the corresponding
         % MLDS instructions. This ensures that they get generated as
         % inline code. (Without this they won't, since HLDS inlining doesn't
         % get run again after the add_heap_ops pass that adds these calls.)
         % This approach is better than running HLDS inlining again,
-        % both because it cheaper in compilation time and because inlining
-        % the C code doesn't help with the --target asm back-end, whereas
-        % generating the appropriate MLDS instructions does.
+        % because it cheaper in compilation time.
 
         FuncRval = ml_const(mlconst_code_addr(
             code_addr_proc(qual(ModName, module_qual, ProcLabel),
@@ -293,14 +294,14 @@ optimize_in_call_stmt(OptInfo, Stmt0, Stmt) :-
         ),
         PrivateBuiltin = mercury_private_builtin_module,
         ModName = mercury_module_name_to_mlds(PrivateBuiltin)
-    ->
+    then
         Stmt = ml_stmt_atomic(AtomicStmt)
-    ;
+    else
         Stmt = Stmt0
     ).
 
     % This specifies how we should branch to the top of the loop
-    % introduced by tailcall opptimization.
+    % introduced by tailcall optimization.
     %
 :- func tailcall_loop_top(globals) = mlds_goto_target.
 
@@ -322,7 +323,7 @@ tailcall_loop_top(Globals) = Target :-
     ).
 
     % The label name we use for the top of the loop introduced by
-    % tailcall optimization, when we're doing it with labels & gotos.
+    % tailcall optimization, when we are doing it with labels & gotos.
     %
 :- func tailcall_loop_label_name = string.
 
@@ -333,8 +334,9 @@ tailcall_loop_label_name = "loop_top".
     % Assign the specified list of rvals to the arguments.
     % This is used as part of tail recursion optimization (see above).
     %
-:- pred generate_assign_args(opt_info::in, mlds_arguments::in,
-    list(mlds_rval)::in, list(statement)::out, list(mlds_defn)::out) is det.
+:- pred generate_assign_args(opt_info::in, list(mlds_argument)::in,
+    list(mlds_rval)::in, list(statement)::out, list(mlds_data_defn)::out)
+    is det.
 
 generate_assign_args(_, [], [], [], []).
 generate_assign_args(_, [_|_], [], [], []) :-
@@ -343,65 +345,66 @@ generate_assign_args(_, [], [_|_], [], []) :-
     unexpected($module, $pred, "length mismatch").
 generate_assign_args(OptInfo, [Arg | Args], [ArgRval | ArgRvals],
         Statements, TempDefns) :-
-    Arg = mlds_argument(Name, Type, _ArgGCStatement),
-    (
-        % Extract the variable name.
-        Name = entity_data(mlds_data_var(VarName))
-    ->
-        ModuleName = OptInfo ^ oi_module_name,
-        QualVarName = qual(ModuleName, module_qual, VarName),
-        (
-            % Don't bother assigning a variable to itself.
-            ArgRval = ml_lval(ml_var(QualVarName, _VarType))
-        ->
-            generate_assign_args(OptInfo, Args, ArgRvals,
-                Statements, TempDefns)
-        ;
-            % Declare a temporary variable, initialized it to the arg,
-            % recursively process the remaining args, and then assign the
-            % temporary to the parameter:
-            %
-            %   SomeType argN__tmp_copy;
-            %   argN__tmp_copy = new_argN_value;
-            %   ...
-            %   argN = argN_tmp_copy;
-            %
-            % The temporaries are needed for the case where we are e.g.
-            % assigning v1, v2 to v2, v1; they ensure that we don't try
-            % to reference the old value of a parameter after it has already
-            % been clobbered by the new value.
-            %
-            % Note that we have to use an assignment rather than an initializer
-            % to initialize the temp, because this pass comes before
-            % ml_elem_nested.m, and ml_elim_nested.m doesn't handle code
-            % containing initializers.
+    Arg = mlds_argument(VarName, Type, _ArgGCStatement),
+    ModuleName = OptInfo ^ oi_module_name,
+    QualVarName = qual(ModuleName, module_qual, VarName),
+    ( if
+        % Don't bother assigning a variable to itself.
+        ArgRval = ml_lval(ml_var(QualVarName, _VarType))
+    then
+        generate_assign_args(OptInfo, Args, ArgRvals, Statements, TempDefns)
+    else
+        % Declare a temporary variable to hold the new value of the argument,
+        % assign it the new value, recursively process the remaining args,
+        % and then assign the new value to the parameter's actual variable:
+        %
+        %   SomeType new_value_of_argN;
+        %   new_value_of_argN = <actual new value of argN>
+        %   ...
+        %   argN = new_value_of_argN;
+        %
+        % The temporaries are needed for the case where we are e.g.
+        % assigning v1, v2 to v2, v1; they ensure that we don't try
+        % to reference the old value of a parameter after it has already
+        % been clobbered by the new value.
+        %
+        % Note that we have to use an assignment rather than an initializer
+        % to initialize the temp, because this pass comes before
+        % ml_elem_nested.m, and ml_elim_nested.m doesn't handle code
+        % containing initializers.
+        % XXX We should teach it to handle them.
 
-            VarName = mlds_var_name(VarNameStr, MaybeNum),
-            TempName = mlds_var_name(VarNameStr ++ "__tmp_copy", MaybeNum),
-            QualTempName = qual(ModuleName, module_qual, TempName),
-            Initializer = no_initializer,
-            % We don't need to trace the temporary variables for GC, since they
-            % are not live across a call or a heap allocation.
-            GCStatement = gc_no_stmt,
-            Context = OptInfo ^ oi_context,
-            TempDefn = ml_gen_mlds_var_decl_init(mlds_data_var(TempName), Type,
-                Initializer, GCStatement, Context),
-            TempInitStatement = statement(
-                ml_stmt_atomic(assign(ml_var(QualTempName, Type), ArgRval)),
-                Context),
-            AssignStatement = statement(
-                ml_stmt_atomic(assign(
-                    ml_var(QualVarName, Type),
-                    ml_lval(ml_var(QualTempName, Type)))),
-                Context),
-            generate_assign_args(OptInfo, Args, ArgRvals,
-                Statements0, TempDefns0),
-            Statements = [TempInitStatement | Statements0] ++
-                [AssignStatement],
-            TempDefns = [TempDefn | TempDefns0]
-        )
-    ;
-        unexpected($module, $pred, "function param is not a var")
+        ( if VarName = mlds_prog_var(VarNameStr, VarNum) then
+            NextValueName = mlds_prog_var_next_value(VarNameStr, VarNum)
+        else
+            % This should not happen; the head variables of a procedure
+            % should all be mlds_prog_vars, even the ones representing
+            % the typeinfos and typeclassinfos added by the compiler.
+            % However, better safe than sorry.
+            VarNameStr = ml_var_name_to_string(VarName),
+            NextValueName =
+                mlds_comp_var(mcv_non_prog_var_next_value(VarNameStr))
+        ),
+        QualNextValueName = qual(ModuleName, module_qual, NextValueName),
+        Initializer = no_initializer,
+        % We don't need to trace the temporary variables for GC, since they
+        % are not live across a call or a heap allocation.
+        GCStatement = gc_no_stmt,
+        Context = OptInfo ^ oi_context,
+        TempDefn = ml_gen_mlds_var_decl_init(mlds_data_var(NextValueName),
+            Type, Initializer, GCStatement, Context),
+        NextValueInitStatement = statement(
+            ml_stmt_atomic(assign(ml_var(QualNextValueName, Type), ArgRval)),
+            Context),
+        AssignStatement = statement(
+            ml_stmt_atomic(assign(
+                ml_var(QualVarName, Type),
+                ml_lval(ml_var(QualNextValueName, Type)))),
+            Context),
+        generate_assign_args(OptInfo, Args, ArgRvals, Statements0, TempDefns0),
+        Statements =
+            [NextValueInitStatement | Statements0] ++ [AssignStatement],
+        TempDefns = [TempDefn | TempDefns0]
     ).
 
 %----------------------------------------------------------------------------
@@ -425,18 +428,28 @@ optimize_func(OptInfo, Body0, Body) :-
 optimize_func_stmt(OptInfo, Statement0, Statement) :-
     Statement0 = statement(Stmt0, Context),
 
-    % Tailcall optimization -- if we do a self tailcall, we can turn it
-    % into a loop.
     Globals = OptInfo ^ oi_globals,
-    (
+    ( if
         globals.lookup_bool_option(Globals, optimize_tailcalls, yes),
-        stmt_contains_statement(Stmt0, Call),
-        Call = statement(CallStmt, _),
+        % Does Stmt0 contain a call that we will turn into a tail call?
+        %
+        % We *could* avoid the non-deterministic enumeration of all the
+        % statements nested inside Stmt0 by (a) optimizing Stmt0 first,
+        % and (b) recording whether we *did* turn a call into a tail call.
+        % However, at the moment the optimize_in_* predicates don't return
+        % any outputs, so making them return this flag would have a
+        % nontrivial cost. At the moment, the nondet enumeration here
+        % is not expensive enough to warrant testing whether using the flag
+        % would be faster.
         ModuleName = OptInfo ^ oi_module_name,
-        EntityName = OptInfo ^ oi_entity_name,
-        can_optimize_tailcall(qual(ModuleName, module_qual, EntityName),
-            CallStmt)
-    ->
+        FunctionName = OptInfo ^ oi_func_name,
+        some [Call] (
+            stmt_contains_statement(Stmt0, SubStatement),
+            SubStatement = statement(SubStmt, _),
+            stmt_is_self_recursive_call_replaceable_with_jump_to_top(
+                ModuleName, FunctionName, SubStmt)
+        )
+    then
         Comment = ml_stmt_atomic(comment("tailcall optimized into a loop")),
         CommentStmt = statement(Comment, Context),
         % The loop can be defined either using while, break, and continue,
@@ -448,13 +461,15 @@ optimize_func_stmt(OptInfo, Statement0, Statement) :-
         (
             SupportsBreakContinue = yes,
             % Wrap a while loop around the function body:
+            %
             %   while (true) {
             %       /* tailcall optimized into a loop */
             %       <function body goes here>
             %       break;
             %   }
-            % Any tail calls in the function body will have
-            % been replaced with `continue' statements.
+            %
+            % Any tail calls in the function body will be replaced
+            % with `continue' statements.
             Stmt = ml_stmt_while(may_loop_zero_times, ml_const(mlconst_true),
                 statement(ml_stmt_block([],
                     [CommentStmt,
@@ -463,24 +478,72 @@ optimize_func_stmt(OptInfo, Statement0, Statement) :-
                 Context))
         ;
             SupportsBreakContinue = no,
-            % Add a loop_top label at the start of the function
-            % body:
+            % Add a loop_top label at the start of the function body:
+            %
             %   {
             %   loop_top:
             %       /* tailcall optimized into a loop */
             %       <function body goes here>
             %   }
-            % Any tail calls in the function body will have
-            % been replaced with `goto loop_top' statements.
+            %
+            % Any tail calls in the function body will be replaced
+            % with `goto loop_top' statements.
             Label = ml_stmt_label(tailcall_loop_label_name),
-            Stmt = ml_stmt_block([], [CommentStmt,
+            Stmt = ml_stmt_block([],
+                [CommentStmt,
                 statement(Label, Context),
                 statement(Stmt0, Context)])
         )
-    ;
+    else
         Stmt = Stmt0
     ),
     Statement = statement(Stmt, Context).
+
+    % stmt_is_self_recursive_call_replaceable_with_jump_to_top(ModuleName,
+    %   FuncName, Stmt):
+    %
+    % True if Stmt is a directly recursive call
+    % (to qual(ModuleName, module_qual, FuncName)) which we can optimize
+    % into a jump back to the start of the function.
+    %
+:- pred stmt_is_self_recursive_call_replaceable_with_jump_to_top(
+    mlds_module_name::in, mlds_function_name::in, mlds_stmt::in) is semidet.
+
+stmt_is_self_recursive_call_replaceable_with_jump_to_top(ModuleName, FuncName,
+        Stmt) :-
+    Stmt = ml_stmt_call(_Signature, CalleeRval, MaybeObject, _CallArgs,
+        _Results, CallKind, _Markers),
+
+    % Check if this call has been marked by ml_tailcall.m as one that
+    % can be optimized as a tail call.
+    %
+    % Note that a no_return_call may allocate lots of stack frames
+    % before it aborts the program. Optimizing such calls as tail calls
+    % allows the running program to give the user the program's *intended*
+    % abort message, not a message about stack exhaustion.
+    (
+        ( CallKind = tail_call
+        ; CallKind = no_return_call
+        ),
+        CallKindIsReplaceable = yes
+    ;
+        CallKind = ordinary_call,
+        CallKindIsReplaceable = no
+    ),
+    CallKindIsReplaceable = yes,
+
+    % In C++, `this' is a constant, so our usual technique of assigning
+    % the arguments won't work if it is a member function. Thus we don't do
+    % this optimization if we are optimizing a member function call.
+    % XXX We don't generate managed C++ anymore. Is this a problem for
+    % the other MLDS target languages?
+    MaybeObject = no,
+
+    % Is this a self-recursive call?
+    % We test this *after* we test CallKind, because the CallKind test
+    % is both (a) cheaper, and (b) significantly more likely to fail.
+    CalleeRval = ml_const(mlconst_code_addr(CalleeCodeAddr)),
+    code_address_is_for_this_function(CalleeCodeAddr, ModuleName, FuncName).
 
 %-----------------------------------------------------------------------------%
 
@@ -497,9 +560,9 @@ maybe_flatten_block(!Stmts) :-
 :- func flatten_block(statement) = list(statement).
 
 flatten_block(Statement) = Statements :-
-    ( Statement = statement(ml_stmt_block([], BlockStatements), _) ->
+    ( if Statement = statement(ml_stmt_block([], BlockStatements), _) then
         Statements = BlockStatements
-    ;
+    else
         Statements = [Statement]
     ).
 
@@ -511,9 +574,9 @@ flatten_block(Statement) = Statements :-
 peephole_opt_statements([], []).
 peephole_opt_statements([Stmt0], [Stmt0]).
 peephole_opt_statements([Stmt0, Stmt1 | Stmts2], Stmts) :-
-    ( peephole_opt_statement(Stmt0, Stmt1, Stmts2, ReplStmts) ->
+    ( if peephole_opt_statement(Stmt0, Stmt1, Stmts2, ReplStmts) then
         peephole_opt_statements(ReplStmts, Stmts)
-    ;
+    else
         peephole_opt_statements([Stmt1 | Stmts2], StmtsTail),
         Stmts = [Stmt0 | StmtsTail]
     ).
@@ -524,7 +587,7 @@ peephole_opt_statements([Stmt0, Stmt1 | Stmts2], Stmts) :-
 peephole_opt_statement(Statement0, Statement1, Statements2, Statements) :-
     Statement0 = statement(Stmt0, Context0),
     Statement1 = statement(Stmt1, _Context1),
-    (
+    ( if
         % This pattern optimizes redundant tests like this:
         %
         % if (TestRval) {
@@ -563,7 +626,7 @@ peephole_opt_statement(Statement0, Statement1, Statements2, Statements) :-
             MaybeStmtElse0 = yes(StmtElse0),
             statement_affects_lvals(TestRvalComponents, StmtElse0, no)
         )
-    ->
+    then
         StmtThen0 = statement(_, ContextT),
         Then = statement(ml_stmt_block([], [StmtThen0, StmtThen1]), ContextT),
         (
@@ -589,7 +652,7 @@ peephole_opt_statement(Statement0, Statement1, Statements2, Statements) :-
         Stmt = ml_stmt_if_then_else(TestRval, Then, MaybeElse),
         Statement = statement(Stmt, Context0),
         Statements = [Statement | Statements2]
-    ;
+    else
         fail
     ).
 
@@ -690,7 +753,7 @@ statement_affects_lvals(Lvals, Statement, Affects) :-
         ),
         Affects = yes
     ;
-        Stmt = ml_stmt_call(_, _, _, _, _, _),
+        Stmt = ml_stmt_call(_, _, _, _, _, _, _),
         % A call can update local variables even without referring to them
         % explicitly, by referring to the environment in which they reside.
         Affects = yes
@@ -710,9 +773,9 @@ statement_affects_lvals(Lvals, Statement, Affects) :-
             ; AtomicStmt = new_object(Lval, _, _, _, _, _, _, _, _, _)
             ; AtomicStmt = mark_hp(Lval)
             ),
-            ( set.contains(Lvals, Lval) ->
+            ( if set.contains(Lvals, Lval) then
                 Affects = yes
-            ;
+            else
                 Affects = no
             )
         ;
@@ -787,7 +850,7 @@ cases_affect_lvals(Lvals, [Head | Tail], Affects) :-
 %   }
 %
 % Note that if there are multiple initializations of the same variable,
-% then we'll apply the optimization successively, replacing the existing
+% then we will apply the optimization successively, replacing the existing
 % initializers as we go, and keeping only the last, e.g.
 %
 %       int v = 1;
@@ -802,13 +865,13 @@ cases_affect_lvals(Lvals, [Head | Tail], Affects) :-
 %
 % We need to watch out for some tricky cases that can't be safely optimized.
 % If the RHS of the assignment refers to a variable which was declared after
-% the variable whose initialization we're optimizing, e.g.
+% the variable whose initialization we are optimizing, e.g.
 %
 %       int v1 = 1;
 %       int v2 = 0;
 %       v1 = v2 + 1;    // RHS refers to variable declared after v1
 %
-% then we can't do the optimization because it would cause a forward reference
+% then we can't do the optimization because it would cause a forward reference:
 %
 %       int v1 = v2 + 1;    // error -- v2 not declared yet!
 %       int v2 = 0;
@@ -823,7 +886,7 @@ cases_affect_lvals(Lvals, [Head | Tail], Affects) :-
 %       int v1 = v1 + 1;    // error -- v1 not initialized yet!
 %
 % Similarly, if the initializers of the variables that follow
-% the one we're trying to optimize refer to it, e.g.
+% the one we are trying to optimize refer to it, e.g.
 %
 %       int v1 = 1;
 %       int v2 = v1 + 1;    // here v2 == 2
@@ -844,10 +907,12 @@ cases_affect_lvals(Lvals, [Head | Tail], Affects) :-
 maybe_convert_assignments_into_initializers(OptInfo, !Defns, !Statements) :-
     Globals = OptInfo ^ oi_globals,
     % Check if --optimize-initializations is enabled.
-    ( globals.lookup_bool_option(Globals, optimize_initializations, yes) ->
+    globals.lookup_bool_option(Globals, optimize_initializations, OptInit),
+    (
+        OptInit = yes,
         convert_assignments_into_initializers(OptInfo, !Defns, !Statements)
     ;
-        true
+        OptInit = no
     ).
 
 :- pred convert_assignments_into_initializers(opt_info::in,
@@ -855,7 +920,7 @@ maybe_convert_assignments_into_initializers(OptInfo, !Defns, !Statements) :-
     list(statement)::in, list(statement)::out) is det.
 
 convert_assignments_into_initializers(OptInfo, !Defns, !Statements) :-
-    (
+    ( if
         % Check if the first statement in the block is an assignment to one
         % of the variables declared in the block.
         !.Statements = [AssignStatement | !:Statements],
@@ -868,32 +933,33 @@ convert_assignments_into_initializers(OptInfo, !Defns, !Statements) :-
         % variable itself.
         rval_contains_var(RHS, ThisData) = no,
 
-        % We must check that the value being assign doesn't refer to any
+        % We must check that the value being assigned doesn't refer to any
         % of the variables which are declared after this one. We must also
         % check that the initializers (if any) of the variables that follow
         % this one don't refer to this variable.
         Qualifier = OptInfo ^ oi_module_name,
-        list.takewhile(isnt(var_defn(VarName)), !.Defns,
-            _PrecedingDefns, [_VarDefn | FollowingDefns]),
-        Filter = (pred(OtherDefn::in) is semidet :-
-            OtherDefn = mlds_defn(entity_data(OtherVarName),
-                _, _, mlds_data(_Type, OtherInitializer, _GC)),
-            (
-                QualOtherVar = qual(Qualifier, QualKind, OtherVarName),
-                rval_contains_var(RHS, QualOtherVar) = yes
-            ;
-                initializer_contains_var(OtherInitializer, ThisData) = yes
-            )
-        ),
-        \+ list.find_first_match(Filter, FollowingDefns, _)
-    ->
+        list.drop_while(isnt(var_defn(VarName)), !.Defns,
+            [_VarDefn | FollowingDefns]),
+        Filter =
+            ( pred(OtherDefn::in) is semidet :-
+                OtherDefn = mlds_data(mlds_data_defn(OtherVarName, _, _, 
+                    _Type, OtherInitializer, _GC)),
+                (
+                    QualOtherVar = qual(Qualifier, QualKind, OtherVarName),
+                    rval_contains_var(RHS, QualOtherVar) = yes
+                ;
+                    initializer_contains_var(OtherInitializer, ThisData) = yes
+                )
+            ),
+        not list.find_first_match(Filter, FollowingDefns, _)
+    then
         % Replace the assignment statement with an initializer
         % on the variable declaration.
         set_initializer(VarName, RHS, !Defns),
 
         % Now try to apply the same optimization again.
         convert_assignments_into_initializers(OptInfo, !Defns, !Statements)
-    ;
+    else
         % No optimization possible -- leave the block unchanged.
         true
     ).
@@ -901,7 +967,9 @@ convert_assignments_into_initializers(OptInfo, !Defns, !Statements) :-
 :- pred var_defn(mlds_var_name::in, mlds_defn::in) is semidet.
 
 var_defn(VarName, Defn) :-
-    Defn = mlds_defn(entity_data(mlds_data_var(VarName)), _, _, _).
+    Defn = mlds_data(DataDefn),
+    DataDefn = mlds_data_defn(DataName, _, _, _, _, _),
+    DataName = mlds_data_var(VarName).
 
     % set_initializer(VarName, Rval, Defns0, Defns):
     %
@@ -914,15 +982,17 @@ var_defn(VarName, Defn) :-
 set_initializer(_, _, [], _) :-
     unexpected($module, $pred, "var not found").
 set_initializer(VarName, Rval, [Defn0 | Defns0], [Defn | Defns]) :-
-    Defn0 = mlds_defn(Name, Context, Flags, DefnBody0),
-    (
-        Name = entity_data(mlds_data_var(VarName)),
-        DefnBody0 = mlds_data(Type, _OldInitializer, GCStatement)
-    ->
-        DefnBody = mlds_data(Type, init_obj(Rval), GCStatement),
-        Defn = mlds_defn(Name, Context, Flags, DefnBody),
+    ( if
+        Defn0 = mlds_data(DataDefn0),
+        DataDefn0 = mlds_data_defn(Name, Context, Flags, Type,
+            _OldInitializer, GCStatement),
+        Name = mlds_data_var(VarName)
+    then
+        DataDefn = mlds_data_defn(Name, Context, Flags, Type,
+            init_obj(Rval), GCStatement),
+        Defn = mlds_data(DataDefn),
         Defns = Defns0
-    ;
+    else
         Defn = Defn0,
         set_initializer(VarName, Rval, Defns0, Defns)
     ).
@@ -957,35 +1027,36 @@ maybe_eliminate_locals(OptInfo, !Defns, !Statements) :-
 
 eliminate_locals(_OptInfo, [], [], !Statements).
 eliminate_locals(OptInfo, [Defn0 | Defns0], Defns, !Statements) :-
-    ( try_to_eliminate_defn(OptInfo, Defn0, Defns0, Defns1, !Statements) ->
+    ( if
+        try_to_eliminate_defn(OptInfo, Defn0, Defns0, Defns1, !Statements)
+    then
         eliminate_locals(OptInfo, Defns1, Defns, !Statements)
-    ;
+    else
         eliminate_locals(OptInfo, Defns0, Defns2, !Statements),
         Defns = [Defn0 | Defns2]
     ).
 
-    % This data structure holds information that we use
-    % in this pass to eliminate initialized local variable definitions.
+    % This data structure holds information that we use in this pass
+    % to eliminate initialized local variable definitions.
 :- type var_elim_info
     --->    var_elim_info(
                 % These fields remain constant.
 
+                % The name of the variable to eliminate.
                 var_name        :: mlds_var,
-                                % The name of the variable to eliminate.
 
+                % The value to replace the eliminated variable with.
                 var_value       :: mlds_rval,
-                                % The value to replace the eliminated variable
-                                % with.
 
                 % These get updated as we go along.
 
+                % The number of occurrences of the variable.
                 replace_count   :: int,
-                                % The number of occurrences of the variable.
 
+                % `yes' if the optimization can't be applied, e.g. because
+                % the variable was assigned to, or because its address
+                % was taken.
                 invalidated     :: bool
-                                % `yes' if the optimization can't be applied,
-                                % e.g. because the variable was assigned to,
-                                % or because its address was taken.
             ).
 
     % Check if this definition is a variable that we can eliminate.
@@ -999,12 +1070,13 @@ eliminate_locals(OptInfo, [Defn0 | Defns0], Defns, !Statements) :-
     list(statement)::in, list(statement)::out) is semidet.
 
 try_to_eliminate_defn(OptInfo, Defn0, Defns0, Defns, !Statements) :-
-    Defn0 = mlds_defn(Name, _Context, Flags, DefnBody),
+    Defn0 = mlds_data(DataDefn0),
+    DataDefn0 = mlds_data_defn(Name, _Context, Flags,
+        _Type, Initializer, _GCStatement),
 
     % Check if this definition is a local variable definition...
-    Name = entity_data(mlds_data_var(VarName)),
+    Name = mlds_data_var(VarName),
     Flags = ml_gen_local_var_decl_flags,
-    DefnBody = mlds_data(_Type, Initializer, _GCStatement),
 
     % ... with a known initial value.
     QualVarName = qual(OptInfo ^ oi_module_name, module_qual, VarName),
@@ -1013,9 +1085,16 @@ try_to_eliminate_defn(OptInfo, Defn0, Defns0, Defns, !Statements) :-
     ;
         Initializer = no_initializer,
         find_initial_val_in_statements(QualVarName, Rval, !Statements)
+    ;
+        ( Initializer = init_array(_)
+        ; Initializer = init_struct(_, _)
+        ),
+        % Should we try to eliminate definitions with these kinds of
+        % initializers?
+        fail
     ),
 
-    % It's only safe to do this transformation if the variable's value
+    % It is only safe to do this transformation if the variable's value
     % is constant, otherwise we might end up moving the rvalue across
     % a statement which modifies it.
     rval_will_not_change(Rval),
@@ -1052,29 +1131,74 @@ try_to_eliminate_defn(OptInfo, Defn0, Defns0, Defns, !Statements) :-
 :- pred rval_is_cheap_enough_to_duplicate(mlds_rval::in) is semidet.
 
 rval_is_cheap_enough_to_duplicate(Rval) :-
-    ( Rval = ml_const(_)
-    ; Rval = ml_lval(ml_var(_, _))
-    ; Rval = ml_mem_addr(_)
-    ; Rval = ml_self(_)
+    require_complete_switch [Rval]
+    (
+        ( Rval = ml_const(_)
+        ; Rval = ml_mem_addr(_)
+        ; Rval = ml_self(_)
+        ; Rval = ml_scalar_common(_)
+        ; Rval = ml_vector_common_row(_, _)
+        )
+    ;
+        Rval = ml_lval(Lval),
+        require_complete_switch [Lval]
+        (
+            Lval = ml_var(_, _)
+        ;
+            ( Lval = ml_mem_ref(_, _)
+            ; Lval = ml_field(_, _, _, _, _)
+            ; Lval = ml_global_var_ref(_)
+            ),
+            fail
+        )
+    ;
+        ( Rval = ml_mkword(_, _)
+        ; Rval = ml_unop(_, _)
+        ; Rval = ml_binop(_, _, _)
+        ),
+        fail
     ).
 
     % Succeed only if the specified rval definitely won't change in value.
     %
 :- pred rval_will_not_change(mlds_rval::in) is semidet.
 
-rval_will_not_change(ml_const(_)).
-rval_will_not_change(ml_mkword(_Tag, Rval)) :-
-    rval_will_not_change(Rval).
-rval_will_not_change(ml_unop(_Op, Rval)) :-
-    rval_will_not_change(Rval).
-rval_will_not_change(ml_binop(_Op, Rval1, Rval2)) :-
-    rval_will_not_change(Rval1),
-    rval_will_not_change(Rval2).
-rval_will_not_change(ml_mem_addr(ml_var(_, _))).
-rval_will_not_change(ml_mem_addr(ml_mem_ref(Address, _Type))) :-
-    rval_will_not_change(Address).
-rval_will_not_change(ml_mem_addr(ml_field(_, Address, _, _, _))) :-
-    rval_will_not_change(Address).
+rval_will_not_change(Rval) :-
+    require_complete_switch [Rval]
+    (
+        ( Rval = ml_const(_)
+        ; Rval = ml_scalar_common(_)
+        ; Rval = ml_vector_common_row(_, _)
+        )
+    ;
+        Rval = ml_mem_addr(Lval),
+        require_complete_switch [Lval]
+        (
+            Lval = ml_var(_, _)
+        ;
+            ( Lval = ml_mem_ref(Address, _Type)
+            ; Lval = ml_field(_, Address, _, _, _)
+            ),
+            rval_will_not_change(Address)
+        ;
+            Lval = ml_global_var_ref(_),
+            fail
+        )
+    ;
+        ( Rval = ml_mkword(_Tag, SubRval)
+        ; Rval = ml_unop(_Op, SubRval)
+        ),
+        rval_will_not_change(SubRval)
+    ;
+        Rval = ml_binop(_Op, SubRvalA, SubRvalB),
+        rval_will_not_change(SubRvalA),
+        rval_will_not_change(SubRvalB)
+    ;
+        ( Rval = ml_lval(_)
+        ; Rval = ml_self(_)
+        ),
+        fail
+    ).
 
     % Succeed only if the given rval definitely can't loop,
     % throw an exception, or abort.
@@ -1082,11 +1206,26 @@ rval_will_not_change(ml_mem_addr(ml_field(_, Address, _, _, _))) :-
     %
 :- pred rval_cannot_throw(mlds_rval::in) is semidet.
 
-rval_cannot_throw(ml_const(_)).
-rval_cannot_throw(ml_mkword(_Tag, Rval)) :-
-    rval_cannot_throw(Rval).
-rval_cannot_throw(ml_mem_addr(_)).
-rval_cannot_throw(ml_self(_)).
+rval_cannot_throw(Rval) :-
+    require_complete_switch [Rval]
+    (
+        ( Rval = ml_const(_)
+        ; Rval = ml_scalar_common(_)
+        ; Rval = ml_vector_common_row(_, _)
+        ; Rval = ml_self(_)
+        ; Rval = ml_mem_addr(_)
+        )
+    ;
+        Rval = ml_mkword(_Tag, SubRval),
+        rval_cannot_throw(SubRval)
+    ;
+        ( Rval = ml_lval(_)
+        ; Rval = ml_unop(_, _)
+        ; Rval = ml_binop(_, _, _)
+        ),
+        % Some unary and binary ops may throw, though others may not.
+        fail
+    ).
 
     % Search through a list of statements, trying to find the first assignment
     % to the specified variable. Return the initial value, and a modified list
@@ -1098,23 +1237,25 @@ rval_cannot_throw(ml_self(_)).
 
 find_initial_val_in_statements(VarName, Rval, [Statement0 | Statements0],
         Statements) :-
-    ( find_initial_val_in_statement(VarName, Rval1, Statement0, Statement1) ->
+    ( if
+        find_initial_val_in_statement(VarName, Rval1, Statement0, Statement1)
+    then
         Rval = Rval1,
-        ( Statement1 = statement(ml_stmt_block([], []), _) ->
+        ( if Statement1 = statement(ml_stmt_block([], []), _) then
             Statements = Statements0
-        ;
+        else
             Statements = [Statement1 | Statements0]
         )
-    ;
+    else
         % Check that Statement0 doesn't modify the value of the variable
         % -- this includes checking that there are no labels via which code
         % could branch into the middle of Statement0. Only if we are sure
-        % that Statement0 can't modify the variable's value is it safe to go
-        % on and look for the initial value in Statements0.
+        % that Statement0 can't modify the variable's value is it safe to go on
+        % and look for the initial value in Statements0.
         VarName = qual(Mod, QualKind, UnqualVarName),
         DataName = qual(Mod, QualKind, mlds_data_var(UnqualVarName)),
         statement_contains_var(Statement0, DataName) = no,
-        \+ (
+        not (
             statement_contains_statement(Statement0, Label),
             Label = statement(ml_stmt_label(_), _)
         ),
@@ -1128,21 +1269,21 @@ find_initial_val_in_statements(VarName, Rval, [Statement0 | Statements0],
 
 find_initial_val_in_statement(Var, Rval, Statement0, Statement) :-
     Statement0 = statement(Stmt0, Context),
-    Statement = statement(Stmt, Context),
-    ( Stmt0 = ml_stmt_atomic(assign(ml_var(Var, _Type), Rval0)) ->
+    ( if Stmt0 = ml_stmt_atomic(assign(ml_var(Var, _Type), Rval0)) then
         Rval = Rval0,
         % Delete the assignment, by replacing it with an empty block.
         Stmt = ml_stmt_block([], [])
-    ; Stmt0 = ml_stmt_block(Defns0, SubStatements0) ->
+    else if Stmt0 = ml_stmt_block(Defns0, SubStatements0) then
         Var = qual(Mod, QualKind, UnqualVarName),
         Data = qual(Mod, QualKind, mlds_data_var(UnqualVarName)),
         defns_contains_var(Defns0, Data) = no,
         find_initial_val_in_statements(Var, Rval,
             SubStatements0, SubStatements),
         Stmt = ml_stmt_block(Defns0, SubStatements)
-    ;
+    else
         fail
-    ).
+    ),
+    Statement = statement(Stmt, Context).
 
     % Replace uses of this variable with the variable's value in the specified
     % definitions and statements. This will return a count of how many
@@ -1166,7 +1307,7 @@ eliminate_var(QualVarName, VarRval, !Defns, !Statements, Count, Invalidated) :-
 
 % eliminate_var_in_*:
 %
-% Process the specified construct, replacing all rvalue occurences of the
+% Process the specified construct, replacing all rvalue occurrences of the
 % variable (^var_name) with its value (^var_value), incrementing the
 % ^replace_count field for each occurrence as an rvalue, and setting
 % ^invalidated to yes if the variable occurs as an lvalue.
@@ -1189,47 +1330,66 @@ eliminate_var_in_defns(!Defns, !VarElimInfo) :-
     var_elim_info::in, var_elim_info::out) is det.
 
 eliminate_var_in_defn(Defn0, Defn, !VarElimInfo) :-
-    Defn0 = mlds_defn(Name, Context, Flags, DefnBody0),
     (
-        DefnBody0 = mlds_data(Type, Initializer0, GCStatement),
+        Defn0 = mlds_data(DataDefn0),
+        DataDefn0 = mlds_data_defn(Name, Context, Flags,
+            Type, Initializer0, GCStatement),
         eliminate_var_in_initializer(Initializer0, Initializer, !VarElimInfo),
-        DefnBody = mlds_data(Type, Initializer, GCStatement)
+        DataDefn = mlds_data_defn(Name, Context, Flags,
+            Type, Initializer, GCStatement),
+        Defn = mlds_data(DataDefn)
     ;
-        DefnBody0 = mlds_class(_),
+        Defn0 = mlds_class(_),
         % We assume that nested classes don't refer to local variables
         % in the containing scope.
-        DefnBody = DefnBody0
+        Defn = Defn0
     ;
-        DefnBody0 = mlds_function(Id, Params, Body0, Attributes, EnvVarNames),
+        Defn0 = mlds_function(FunctionDefn0),
+        FunctionDefn0 = mlds_function_defn(Name, Context, Flags, Id, Params,
+            Body0, Attributes, EnvVarNames, MaybeRequireTailrecInfo),
         eliminate_var_in_function_body(Body0, Body, !VarElimInfo),
-        DefnBody = mlds_function(Id, Params, Body, Attributes, EnvVarNames)
-    ),
-    Defn = mlds_defn(Name, Context, Flags, DefnBody).
+        FunctionDefn = mlds_function_defn(Name, Context, Flags, Id, Params,
+            Body, Attributes, EnvVarNames, MaybeRequireTailrecInfo),
+        Defn = mlds_function(FunctionDefn)
+    ).
 
 :- pred eliminate_var_in_function_body(
     mlds_function_body::in, mlds_function_body::out,
     var_elim_info::in, var_elim_info::out) is det.
 
-eliminate_var_in_function_body(body_external, body_external, !VarElimInfo).
-eliminate_var_in_function_body(body_defined_here(Stmt0),
-        body_defined_here(Stmt), !VarElimInfo) :-
-    eliminate_var_in_statement(Stmt0, Stmt, !VarElimInfo).
+eliminate_var_in_function_body(Body0, Body, !VarElimInfo) :-
+    (
+        Body0 = body_external,
+        Body = Body0
+    ;
+        Body0 = body_defined_here(Stmt0),
+        eliminate_var_in_statement(Stmt0, Stmt, !VarElimInfo),
+        Body = body_defined_here(Stmt)
+    ).
 
 :- pred eliminate_var_in_initializer(
     mlds_initializer::in, mlds_initializer::out,
     var_elim_info::in, var_elim_info::out) is det.
 
-eliminate_var_in_initializer(no_initializer, no_initializer, !VarElimInfo).
-eliminate_var_in_initializer(init_obj(Rval0), init_obj(Rval), !VarElimInfo) :-
-    eliminate_var_in_rval(Rval0, Rval, !VarElimInfo).
-eliminate_var_in_initializer(init_array(Elements0), init_array(Elements),
-        !VarElimInfo) :-
-    list.map_foldl(eliminate_var_in_initializer, Elements0, Elements,
-        !VarElimInfo).
-eliminate_var_in_initializer(init_struct(Type, Members0),
-        init_struct(Type, Members), !VarElimInfo) :-
-    list.map_foldl(eliminate_var_in_initializer, Members0, Members,
-        !VarElimInfo).
+eliminate_var_in_initializer(Init0, Init, !VarElimInfo) :-
+    (
+        Init0 = no_initializer,
+        Init = Init0
+    ;
+        Init0 = init_obj(Rval0),
+        eliminate_var_in_rval(Rval0, Rval, !VarElimInfo),
+        Init = init_obj(Rval)
+    ;
+        Init0 = init_array(Elements0),
+        list.map_foldl(eliminate_var_in_initializer, Elements0, Elements,
+            !VarElimInfo),
+        Init = init_array(Elements)
+    ;
+        Init0 = init_struct(Type, Members0),
+        list.map_foldl(eliminate_var_in_initializer, Members0, Members,
+            !VarElimInfo),
+        Init = init_struct(Type, Members)
+    ).
 
 :- pred eliminate_var_in_rvals(list(mlds_rval)::in, list(mlds_rval)::out,
     var_elim_info::in, var_elim_info::out) is det.
@@ -1252,14 +1412,14 @@ eliminate_var_in_rval(Rval0, Rval, !VarElimInfo) :-
     (
         Rval0 = ml_lval(Lval0),
         VarName = !.VarElimInfo ^ var_name,
-        ( Lval0 = ml_var(VarName, _) ->
+        ( if Lval0 = ml_var(VarName, _) then
             % We found an rvalue occurrence of the variable -- replace it
             % with the rval for the variable's value, and increment the counter
             % for the number of occurrences that we have replaced.
             Rval = !.VarElimInfo ^ var_value,
             Count0 = !.VarElimInfo ^ replace_count,
             !VarElimInfo ^ replace_count := Count0 + 1
-        ;
+        else
             eliminate_var_in_lval(Lval0, Lval, !VarElimInfo),
             Rval = ml_lval(Lval)
         )
@@ -1272,10 +1432,10 @@ eliminate_var_in_rval(Rval0, Rval, !VarElimInfo) :-
         eliminate_var_in_rval(ArgRval0, ArgRval, !VarElimInfo),
         Rval = ml_unop(Op, ArgRval)
     ;
-        Rval0 = ml_binop(Op, Arg1Rval0, Arg2Rval0),
-        eliminate_var_in_rval(Arg1Rval0, Arg1Rval, !VarElimInfo),
-        eliminate_var_in_rval(Arg2Rval0, Arg2Rval, !VarElimInfo),
-        Rval = ml_binop(Op, Arg1Rval, Arg2Rval)
+        Rval0 = ml_binop(Op, ArgRvalA0, ArgRvalB0),
+        eliminate_var_in_rval(ArgRvalA0, ArgRvalA, !VarElimInfo),
+        eliminate_var_in_rval(ArgRvalB0, ArgRvalB, !VarElimInfo),
+        Rval = ml_binop(Op, ArgRvalA, ArgRvalB)
     ;
         Rval0 = ml_mem_addr(Lval0),
         eliminate_var_in_lval(Lval0, Lval, !VarElimInfo),
@@ -1315,13 +1475,13 @@ eliminate_var_in_lval(Lval0, Lval, !VarElimInfo) :-
         Lval = Lval0
     ;
         Lval0 = ml_var(VarName, _Type),
-        ( VarName = !.VarElimInfo ^ var_name ->
-            % We found an lvalue occurrence of the variable -- if the variable
-            % that we are trying to eliminate has its address is taken,
-            % or is assigned to, or in general if it is used as an lvalue,
-            % then it's not safe to eliminate it
+        ( if VarName = !.VarElimInfo ^ var_name then
+            % We found an lvalue occurrence of the variable.
+            % If the variable that we are trying to eliminate has its
+            % address is taken, or is assigned to, or in general if it is
+            % used as an lvalue, then it is NOT safe to eliminate it.
             !VarElimInfo ^ invalidated := yes
-        ;
+        else
             true
         ),
         Lval = Lval0
@@ -1388,12 +1548,13 @@ eliminate_var_in_stmt(Stmt0, Stmt, !VarElimInfo) :-
         eliminate_var_in_rval(Rval0, Rval, !VarElimInfo),
         Stmt = ml_stmt_computed_goto(Rval, Labels)
     ;
-        Stmt0 = ml_stmt_call(Sig, Func0, Obj0, Args0, RetLvals0, TailCall),
+        Stmt0 = ml_stmt_call(Sig, Func0, Obj0, Args0, RetLvals0, TailCall,
+            Markers),
         eliminate_var_in_rval(Func0, Func, !VarElimInfo),
         eliminate_var_in_maybe_rval(Obj0, Obj, !VarElimInfo),
         eliminate_var_in_rvals(Args0, Args, !VarElimInfo),
         eliminate_var_in_lvals(RetLvals0, RetLvals, !VarElimInfo),
-        Stmt = ml_stmt_call(Sig, Func, Obj, Args, RetLvals, TailCall)
+        Stmt = ml_stmt_call(Sig, Func, Obj, Args, RetLvals, TailCall, Markers)
     ;
         Stmt0 = ml_stmt_return(Rvals0),
         eliminate_var_in_rvals(Rvals0, Rvals, !VarElimInfo),
@@ -1519,10 +1680,10 @@ eliminate_var_in_case_cond(Cond0, Cond, !VarElimInfo) :-
 
 eliminate_var_in_target_code_component(Component0, Component, !VarElimInfo) :-
     (
-        ( Component0 = raw_target_code(_Code, _Attrs)
-        ; Component0 = user_target_code(_Code, _Context, _Attrs)
+        ( Component0 = raw_target_code(_Code)
+        ; Component0 = user_target_code(_Code, _Context)
         ; Component0 = target_code_type(_Type)
-        ; Component0 = target_code_name(_Name)
+        ; Component0 = target_code_function_name(_Name)
         ; Component0 = target_code_alloc_id(_AllocId)
         ),
         Component = Component0

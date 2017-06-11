@@ -5,7 +5,7 @@
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 % vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: listing.m.
 % Author: Ralph Becket <rafe@cs.mu.oz.au>
@@ -14,11 +14,11 @@
 %
 % Unfortunately, scanning large files such as library/io.m byte-by-byte
 % in a debugging grade is likely to exhaust the stack, because debugging
-% grades do not support tail recursion.  Instead we have to handle this
+% grades do not support tail recursion. Instead we have to handle this
 % aspect using a bit of C code.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdb.listing.
 :- interface.
@@ -26,7 +26,7 @@
 :- import_module io.
 :- import_module list.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type search_path.
 :- type line_no    == int.
@@ -65,22 +65,21 @@
     %   Path, !IO):
     %
     % Print, on OutStrm, the lines from FileName with numbers in the range
-    % FirstLine ..  LastLine (the first line is numbered 1).
-    % The line numbered MarkLine is marked with a chevron, all
-    % other lines are indented appropriately.
+    % FirstLine.. LastLine (the first line is numbered 1). We mark the line
+    % numbered MarkLine with a chevron; we indent all other lines
+    % appropriately.
     %
-    % A file matching FileName is searched for by first looking
-    % in the current working directory or, failing that, by
-    % prepending each Dir on the search path stack in
-    % turn until a match is found.  If no match is found then
-    % an error message is printed.
+    % We search for the file matching FileName by first looking in the current
+    % working directory or, failing that, by prepending each Dir on the
+    % search path stack in turn until a match is found. If no match is found,
+    % we print an error message.
     %
-    % Any errors are reported on ErrStrm.
+    % We report any errors on ErrStrm.
     %
 :- pred list_file(c_file_ptr::in, c_file_ptr::in, file_name::in, line_no::in,
     line_no::in, line_no::in, search_path::in, io::di, io::uo) is det.
 
-    % As above, but implemented without foreign code.  This is used by the
+    % As above, but implemented without foreign code. This is used by the
     % source-to-source debugger which does not enable debugging in standard
     % library so does not suffer the problem of excessive stack usage.
     %
@@ -88,8 +87,8 @@
     file_name::in, line_no::in, line_no::in, line_no::in, search_path::in,
     io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -98,7 +97,7 @@
 :- import_module maybe.
 :- import_module type_desc.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type search_path  == list(path_name).
 
@@ -131,11 +130,11 @@
 listing_type = type_of(Path) :-
     clear_list_path(Path @ [], _).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 new_list_path = [].
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 get_list_path(Path) = Path.
 
@@ -143,20 +142,20 @@ set_list_path(Dirs, _, Dirs).
 
 clear_list_path(_, []).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 push_list_path(Dir, Path, [Dir | Path]).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 pop_list_path([],         []).
 pop_list_path([_ | Path], Path).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 list_file(OutStrm, ErrStrm, FileName, FirstLine, LastLine, MarkLine, Path,
         !IO) :-
-    ( dir.path_name_is_absolute(FileName) ->
+    ( if dir.path_name_is_absolute(FileName) then
         io.open_input(FileName, Result0, !IO),
         (
             Result0 = ok(InStream),
@@ -173,7 +172,7 @@ list_file(OutStrm, ErrStrm, FileName, FirstLine, LastLine, MarkLine, Path,
             write_to_c_file(ErrStrm, ErrorMsg, !IO),
             write_to_c_file(ErrStrm, "\n", !IO)
         )
-    ;
+    else
         find_and_open_file([dir.this_directory | Path], FileName, Result, !IO),
         (
             Result = yes(InStream),
@@ -198,11 +197,11 @@ list_file(OutStrm, ErrStrm, FileName, FirstLine, LastLine, MarkLine, Path,
     fputs(Str, (FILE *)ErrStrm);
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-list_file_portable(OutStrm, ErrStrm, FileName, FirstLine, LastLine, MarkLine, Path,
-        !IO) :-
-    ( dir.path_name_is_absolute(FileName) ->
+list_file_portable(OutStrm, ErrStrm, FileName, FirstLine, LastLine,
+        MarkLine, Path, !IO) :-
+    ( if dir.path_name_is_absolute(FileName) then
         io.open_input(FileName, Result0, !IO),
         (
             Result0 = ok(InStrm),
@@ -218,7 +217,7 @@ list_file_portable(OutStrm, ErrStrm, FileName, FirstLine, LastLine, MarkLine, Pa
             io.write_string(ErrStrm, ErrorMsg, !IO),
             io.write_string(ErrStrm, "\n", !IO)
         )
-    ;
+    else
         find_and_open_file([dir.this_directory | Path], FileName, Result, !IO),
         (
             Result = yes(InStrm),
@@ -233,7 +232,7 @@ list_file_portable(OutStrm, ErrStrm, FileName, FirstLine, LastLine, MarkLine, Pa
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Search for the first file with the given name on the search path
     % that we can open for reading and return the complete file name
@@ -262,7 +261,7 @@ find_and_open_file([Dir | Path], FileName, Result, !IO) :-
     InStrm = MR_file(*(MR_unwrap_input_stream(InStream)));
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % print_lines_in_range(InStrm, OutStrm, ThisLine, FirstLine, LastLine,
     %   MarkLine, !IO):
@@ -277,8 +276,8 @@ find_and_open_file([Dir | Path], FileName, Result, !IO) :-
     line_no::in, line_no::in, line_no::in, line_no::in, io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    print_lines_in_range_c(InStrm::in, OutStrm::in, ThisLine::in, FirstLine::in,
-        LastLine::in, MarkLine::in, _IO0::di, _IO::uo),
+    print_lines_in_range_c(InStrm::in, OutStrm::in, ThisLine::in,
+        FirstLine::in, LastLine::in, MarkLine::in, _IO0::di, _IO::uo),
     [promise_pure, thread_safe, will_not_call_mercury],
 "
     if (FirstLine <= ThisLine && ThisLine <= LastLine) {
@@ -304,7 +303,7 @@ find_and_open_file([Dir | Path], FileName, Result, !IO) :-
     }
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred print_lines_in_range_m(io.input_stream::in, io.output_stream::in,
     line_no::in, line_no::in, line_no::in, line_no::in, io::di, io::uo) is det.
@@ -314,14 +313,14 @@ print_lines_in_range_m(InStrm, OutStrm, ThisLine, FirstLine, LastLine,
     io.read_line_as_string(InStrm, Res, !IO),
     (
         Res = ok(Line),
-        ( FirstLine =< ThisLine, ThisLine =< LastLine ->
-            ( ThisLine = MarkLine ->
+        ( if FirstLine =< ThisLine, ThisLine =< LastLine then
+            ( if ThisLine = MarkLine then
                 io.write_string(OutStrm, "> ", !IO)
-            ;
+            else
                 io.write_string(OutStrm, "  ", !IO)
             ),
             io.write_string(OutStrm, Line, !IO)
-        ;
+        else
             true
         ),
         print_lines_in_range_m(InStrm, OutStrm, ThisLine + 1, FirstLine,
@@ -335,5 +334,5 @@ print_lines_in_range_m(InStrm, OutStrm, ThisLine, FirstLine, LastLine,
         io.write_string(OutStrm, "\n", !IO)
     ).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

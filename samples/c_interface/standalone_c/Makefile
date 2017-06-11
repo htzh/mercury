@@ -1,3 +1,7 @@
+#-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab
+#-----------------------------------------------------------------------------#
+#
 # This directory contains an example of how to create and use a stand-alone
 # interface.  Stand-alone interfaces allow exported Mercury procedures to be
 # called from "foreign" applications, that is applications whose entry point
@@ -28,7 +32,7 @@
 # To build the application we first compile `mercury_lib'.  For this example
 # we don't bother installing it since that would just lead to the command
 # lines being unwieldy.  We then build the stand-alone interface, which in
-# this example is called mercury_lib_int.  Finally we compile c_main.c and
+# this example is called mercury_lib_int.  Finally, we compile c_main.c and
 # link them all together.  Specific details concerning each step in the build
 # process are discussed below.  See c_main.c for details of how to invoke the
 # stand-alone interface from C or C++ code.
@@ -37,15 +41,15 @@ MMC = mmc
 
 all: c_main
 
-# This variables holds the options required to set the grade.
-# By default this is empty so the example will build in the default grade.
+# This variable holds the options required to set the grade.
+# By default, it is empty so the example will be built in the default grade.
 # To try, for example, a deep profiling grade, set it to:
 #
 #    GRADEOPT=--grade asm_fast.gc.profdeep
 #
 GRADEOPT=
 
-# By default we link our application statically against the Mercury libraries.
+# By default, we link our application statically against the Mercury libraries.
 # If you wish to use the shared versions of the Mercury libraries, comment
 # out the next two lines and uncomment the two following them.
 #
@@ -57,7 +61,7 @@ MERCURY_LIB_LDFLAGS = libmercury_lib.a
 
 # For using shared libraries.  (Remember to comment out the versions
 # above if you use these.)
-# 
+#
 #MERCURY_LINKAGE = --mercury-linkage shared
 #MERCURY_LIB_LDFLAGS = -L. -Wl,-rpath . -lmercury_lib
 
@@ -76,13 +80,13 @@ CC = $(shell $(MMC) --output-cc)
 #
 # Note that the output of the `--output-cflags' option also includes any other
 # flags that the Mercury compiler passes to the C compiler, for example options
-# that control optimisation settings. 
-# 
+# that control optimisation settings.
+#
 # We use a finer grained approach here that only queries the Mercury compiler
 # about which macros to define for the current grade and what directories to
 # search for header files in.  This finer grained approach is useful if a
 # foreign application is written in, for example, C++ instead of C.  In that
-# case not all of the flags in output of --output-cflags may be valid for the
+# case not all of the flags output by --output-cflags may be valid for the
 # C++ compiler.
 
 # Ask the Mercury compiler what flags to pass to the C compiler in order to
@@ -105,8 +109,8 @@ CFLAGS = $(CFLAGS_FOR_GRADE) $(CFLAGS_FOR_INCLUDES)
 #
 LD = $(shell $(MMC) --output-link-command)
 
-# Ask the Mercury compiler what flags it passes to the linker in order to link against
-# the selected set of Mercury libraries?
+# Ask the Mercury compiler what flags it passes to the linker in order to
+# link against the selected set of Mercury libraries?
 #
 LIB_LDFLAGS = $(shell $(MMC) $(GRADEOPT) $(MERCURY_LINKAGE) --output-library-link-flags)
 

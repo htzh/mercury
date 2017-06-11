@@ -33,6 +33,7 @@
 :- import_module string.
 
 main(!IO) :-
+    io.stdout_stream(StdOutStream, !IO),
     unlimit_stack(!IO),
     io.command_line_arguments(Args0, !IO),
     OptionOps = option_ops_multi(short_option, long_option, option_default),
@@ -41,7 +42,7 @@ main(!IO) :-
         GetoptResult = ok(OptionTable),
         (
             Args = [],
-            usage(!IO)
+            usage(StdOutStream, !IO)
         ;
             Args = [FileName],
             lookup_string_option(OptionTable, sort, SortStr),
@@ -50,45 +51,45 @@ main(!IO) :-
             lookup_int_option(OptionTable, max_path_column, MaxPathColumn),
             lookup_int_option(OptionTable, max_file_column, MaxFileColumn),
             lookup_string_option(OptionTable, modulename, Module),
-            ( MaxPredColumn = 0 ->
+            ( if MaxPredColumn = 0 then
                 MaybeMaxPredColumn = no
-            ;
+            else
                 MaybeMaxPredColumn = yes(MaxPredColumn)
             ),
-            ( MaxPathColumn = 0 ->
+            ( if MaxPathColumn = 0 then
                 MaybeMaxPathColumn = no
-            ;
+            else
                 MaybeMaxPathColumn = yes(MaxPathColumn)
             ),
-            ( MaxFileColumn = 0 ->
+            ( if MaxFileColumn = 0 then
                 MaybeMaxFileColumn = no
-            ;
+            else
                 MaybeMaxFileColumn = yes(MaxFileColumn)
             ),
             read_slice_to_string(FileName, SortStr, MaxRow,
                 MaybeMaxPredColumn, MaybeMaxPathColumn, MaybeMaxFileColumn,
                 Module, SliceStr, Problem, !IO),
-            ( Problem = "" ->
-                io.write_string(SliceStr, !IO)
-            ;
-                io.write_string(Problem, !IO),
-                io.nl(!IO),
+            ( if Problem = "" then
+                io.write_string(StdOutStream, SliceStr, !IO)
+            else
+                io.write_string(StdOutStream, Problem, !IO),
+                io.nl(StdOutStream, !IO),
                 io.set_exit_status(1, !IO)
             )
         ;
             Args = [_, _ | _],
-            usage(!IO)
+            usage(StdOutStream, !IO)
         )
     ;
         GetoptResult = error(GetoptErrorMsg),
-        io.write_string(GetoptErrorMsg, !IO),
-        io.nl(!IO)
+        io.write_string(StdOutStream, GetoptErrorMsg, !IO),
+        io.nl(StdOutStream, !IO)
     ).
 
-:- pred usage(io::di, io::uo) is det.
+:- pred usage(io.text_output_stream::in, io::di, io::uo) is det.
 
-usage(!IO) :-
-    io.write_string(
+usage(OutStream, !IO) :-
+    io.write_string(OutStream,
         "Usage: mslice [-s sortspec] [-m module] [-l N] [-n N] [-p N] [-f N] "
         ++ "filename\n",
         !IO).

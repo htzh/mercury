@@ -18,8 +18,10 @@
 :- module ll_backend.llds.
 :- interface.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
 :- import_module backend_libs.rtti.
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_data.
@@ -27,10 +29,15 @@
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
 :- import_module ll_backend.layout.
+:- import_module mdbcomp.
 :- import_module mdbcomp.goal_path.
 :- import_module mdbcomp.prim_data.
 :- import_module mdbcomp.program_representation.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
+:- import_module parse_tree.prog_data_pragma.
 :- import_module parse_tree.prog_foreign.
 
 :- import_module bool.
@@ -45,33 +52,14 @@
 
 %-----------------------------------------------------------------------------%
 
-    % Foreign_interface_info holds information used when generating
-    % code that uses the foreign language interface.
-    %
-:- type foreign_interface_info
-    --->    foreign_interface_info(
-                module_name,
-
-                % Info about stuff imported from C:
-                foreign_decl_info,
-                foreign_import_module_info_list,
-                foreign_body_info,
-
-                % Info about stuff exported to C:
-                foreign_export_decls,
-                foreign_export_defns
-            ).
-
-%-----------------------------------------------------------------------------%
-
     % The type `c_file' is the actual LLDS.
 
 :- type c_file
     --->    c_file(
                 cfile_modulename            :: module_name,
-                cfile_foreign_decl          :: foreign_decl_info,
-                cfile_foreign_code          :: list(user_foreign_code),
-                cfile_foreign_export        :: list(foreign_export),
+                cfile_foreign_decl_codes    :: list(foreign_decl_code),
+                cfile_foreign_body_codes    :: list(foreign_body_code),
+                cfile_foreign_export_defns  :: list(foreign_export_defn),
                 cfile_vars                  :: list(tabling_info_struct),
                 cfile_scalar_common_data    :: list(scalar_common_data_array),
                 cfile_vector_common_data    :: list(vector_common_data_array),
@@ -94,8 +82,8 @@
                 cfile_proc_var_names        :: list(int),
                 cfile_proc_body_bytecodes   :: list(int),
                 cfile_ts_string_table       :: list(string),
-                cfile_table_io_decls        :: list(table_io_decl_data),
-                cfile_table_io_decl_map     :: map(pred_proc_id,
+                cfile_table_io_entries      :: list(table_io_entry_data),
+                cfile_table_io_entry_map    :: map(pred_proc_id,
                                                 layout_slot_name),
                 cfile_proc_event_layouts    :: list(layout_slot_name),
                 cfile_exec_traces           :: list(proc_layout_exec_trace),
@@ -141,7 +129,7 @@
 :- pred build_typed_rvals(list(rval)::in, list(llds_type)::in,
     list(typed_rval)::out) is det.
 
-:- type common_cell_type 
+:- type common_cell_type
     --->    plain_type(list(llds_type))
             % The type is a structure with one field for each one
             % of the cell's arguments.
@@ -212,10 +200,11 @@
 
 :- type comp_gen_c_module
     --->    comp_gen_c_module(
+                % The name of this C module.
                 cgcm_name               :: string,
-                                        % The name of this C module.
+
+                % The code.
                 cgcm_procs              :: list(c_procedure)
-                                        % The code.
             ).
 
 :- type c_procedure
@@ -229,14 +218,14 @@
                 % The pred_proc_id of this code.
                 cproc_id                :: pred_proc_id,
 
+                % Proc_label of this procedure.
+                cproc_proc_label        :: proc_label,
+
                 % The code model of the procedure.
                 cproc_code_model        :: code_model,
 
                 % The code for this procedure.
                 cproc_code              :: list(instruction),
-
-                % Proc_label of this procedure.
-                cproc_proc_label        :: proc_label,
 
                 % Source for new label numbers.
                 cproc_label_nums        :: counter,
@@ -660,7 +649,7 @@
             % conjunct see runtime/mercury_context.{c,h}.
             % The synchronisation term is specified by the given lval.
             % The label gives the address of the code following the parallel
-            % conjunction. 
+            % conjunction.
 
     ;       lc_create_loop_control(int, lval)
             % Create a loop control structure with the given number of slots,
@@ -846,7 +835,7 @@
 :- type foreign_proc_type
     --->    foreign_proc_type(
                 string,         % The C type name.
-                list(foreign_type_assertion)
+                foreign_type_assertions
                                 % The assertions on the foreign_type
                                 % declarations that the C type name came from.
             ).
@@ -1042,7 +1031,7 @@
     % as the target of an assignment.
     %
 :- type lval
-    
+
     % Virtual machine registers.
 
     --->    reg(reg_type, int)
@@ -1213,11 +1202,12 @@
     --->    llconst_true
     ;       llconst_false
     ;       llconst_int(int)
+    ;       llconst_uint(uint)
     ;       llconst_foreign(string, llds_type)
             % A constant in the target language.
             % It may be a #defined constant in C which is why
             % it is represented as string.
-            
+
     ;       llconst_float(float)
     ;       llconst_string(string)
     ;       llconst_multi_string(list(string))
@@ -1261,11 +1251,11 @@
             % by the layout_name.
 
     ;       layout_slot_id(layout_slot_id_kind, pred_proc_id).
-            % The slot reserved for the given pred_proc_id in in the array
+            % The slot reserved for the given pred_proc_id in the array
             % identified by the layout_slot_id_kind.
 
 :- type layout_slot_id_kind
-    --->    table_io_decl_id.
+    --->    table_io_entry_id.
 
     % There are two kinds of labels: entry labels and internal labels.
     % Entry labels are the entry points of procedures; internal labels are not.
@@ -1680,6 +1670,7 @@ rval_type(mem_addr(_), lt_data_ptr).
 const_type(llconst_true, lt_bool).
 const_type(llconst_false, lt_bool).
 const_type(llconst_int(_), lt_integer).
+const_type(llconst_uint(_), lt_unsigned).
 const_type(llconst_foreign(_, Type), Type).
 const_type(llconst_float(_), lt_float).
 const_type(llconst_string(_), lt_string).
@@ -1698,6 +1689,10 @@ unop_return_type(logical_not, lt_bool).
 unop_return_type(hash_string, lt_integer).
 unop_return_type(hash_string2, lt_integer).
 unop_return_type(hash_string3, lt_integer).
+unop_return_type(hash_string4, lt_integer).
+unop_return_type(hash_string5, lt_integer).
+unop_return_type(hash_string6, lt_integer).
+unop_return_type(uint_bitwise_complement, lt_unsigned).
 
 unop_arg_type(mktag, lt_word).
 unop_arg_type(tag, lt_word).
@@ -1710,6 +1705,10 @@ unop_arg_type(logical_not, lt_bool).
 unop_arg_type(hash_string, lt_string).
 unop_arg_type(hash_string2, lt_string).
 unop_arg_type(hash_string3, lt_string).
+unop_arg_type(hash_string4, lt_string).
+unop_arg_type(hash_string5, lt_string).
+unop_arg_type(hash_string6, lt_string).
+unop_arg_type(uint_bitwise_complement, lt_unsigned).
 
 binop_return_type(int_add, lt_integer).
 binop_return_type(int_sub, lt_integer).
@@ -1726,6 +1725,8 @@ binop_return_type(logical_or, lt_bool).
 binop_return_type(eq, lt_bool).
 binop_return_type(ne, lt_bool).
 binop_return_type(array_index(_Type), lt_word).
+binop_return_type(string_unsafe_index_code_unit, lt_integer).
+binop_return_type(offset_str_eq(_), lt_bool).
 binop_return_type(str_eq, lt_bool).
 binop_return_type(str_ne, lt_bool).
 binop_return_type(str_lt, lt_bool).
@@ -1753,6 +1754,23 @@ binop_return_type(float_from_dword, lt_float).
 binop_return_type(body, lt_word).
 binop_return_type(compound_eq, lt_bool).
 binop_return_type(compound_lt, lt_bool).
+binop_return_type(pointer_equal_conservative, lt_bool).
+binop_return_type(uint_eq, lt_bool).
+binop_return_type(uint_ne, lt_bool).
+binop_return_type(uint_lt, lt_bool).
+binop_return_type(uint_gt, lt_bool).
+binop_return_type(uint_le, lt_bool).
+binop_return_type(uint_ge, lt_bool).
+binop_return_type(uint_add, lt_unsigned).
+binop_return_type(uint_sub, lt_unsigned).
+binop_return_type(uint_mul, lt_unsigned).
+binop_return_type(uint_div, lt_unsigned).
+binop_return_type(uint_mod, lt_unsigned).
+binop_return_type(uint_bitwise_and, lt_unsigned).
+binop_return_type(uint_bitwise_or, lt_unsigned).
+binop_return_type(uint_bitwise_xor, lt_unsigned).
+binop_return_type(uint_unchecked_left_shift, lt_unsigned).
+binop_return_type(uint_unchecked_right_shift, lt_unsigned).
 
 register_type(reg_r, lt_word).
 register_type(reg_f, lt_float).

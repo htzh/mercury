@@ -1,24 +1,24 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1997-2008, 2010-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: exception.m.
 % Main author: fjh.
 % Stability: medium.
-% 
+%
 % This module defines the Mercury interface for exception handling.
-% 
+%
 % Note that throwing an exception across the C interface won't work.
 % That is, if a Mercury procedure that is exported to C using
 % `pragma foreign_export' throws an exception which is not caught within that
 % procedure, then you will get undefined behaviour.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module exception.
 :- interface.
@@ -29,7 +29,7 @@
 :- import_module store.
 :- import_module univ.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % Exceptions of this type are used by many parts of the Mercury
     % implementation to indicate an internal error.
@@ -38,7 +38,8 @@
     --->    software_error(string).
 
     % throw(Exception):
-    %   Throw the specified exception.
+    %
+    % Throw the specified exception.
     %
 :- func throw(T) = _ is erroneous.
 :- pred throw(T::in) is erroneous.
@@ -57,17 +58,18 @@
     % try(Goal, Result):
     %
     % Operational semantics:
+    %
     %   Call Goal(R).
     %   If Goal(R) fails, succeed with Result = failed.
     %   If Goal(R) succeeds, succeed with Result = succeeded(R).
-    %   If Goal(R) throws an exception E, succeed with
-    %       Result = exception(E).
+    %   If Goal(R) throws an exception E, succeed with Result = exception(E).
     %
     % Declarative semantics:
-    %       try(Goal, Result) <=>
-    %               ( Goal(R), Result = succeeded(R)
-    %               ; not Goal(_), Result = failed
-    %               ; Result = exception(_)
+    %
+    %   try(Goal, Result) <=>
+    %       ( Goal(R), Result = succeeded(R)
+    %       ; not Goal(_), Result = failed
+    %       ; Result = exception(_)
     %       ).
     %
 :- pred try(pred(T),                exception_result(T)).
@@ -79,14 +81,15 @@
     % try_io(Goal, Result, IO_0, IO):
     %
     % Operational semantics:
+    %
     %   Call Goal(R, IO_0, IO_1).
-    %   If it succeeds, succeed with Result = succeeded(R)
-    %       and IO = IO_1.
+    %   If it succeeds, succeed with Result = succeeded(R) and IO = IO_1.
     %   If it throws an exception E, succeed with Result = exception(E)
-    %       and with the final IO state being whatever state
-    %       resulted from the partial computation from IO_0.
+    %   and with the final IO state being whatever state resulted from
+    %   the partial computation from IO_0.
     %
     % Declarative semantics:
+    %
     %   try_io(Goal, Result, IO_0, IO) <=>
     %       ( Goal(R, IO_0, IO), Result = succeeded(R)
     %       ; Result = exception(_)
@@ -112,13 +115,14 @@
     % try_all(Goal, MaybeException, Solutions):
     %
     % Operational semantics:
+    %
     %   Try to find all solutions to Goal(S), using backtracking.
-    %   Collect the solutions found in Solutions, until the goal
-    %   either throws an exception or fails.  If it throws an
-    %   exception E then MaybeException = yes(E), otherwise
-    %   MaybeException = no.
+    %   Collect the solutions found in Solutions, until the goal either
+    %   throws an exception or fails. If it throws an exception E,
+    %   then set MaybeException = yes(E), otherwise set MaybeException = no.
     %
     % Declaratively it is equivalent to:
+    %
     %   all [S] (list.member(S, Solutions) => Goal(S)),
     %   (
     %       MaybeException = yes(_)
@@ -135,12 +139,16 @@
 :- mode try_all(pred(out) is multi,   out, out) is cc_multi.
 :- mode try_all(pred(out) is nondet,  out, out) is cc_multi.
 
-:- inst [] ---> [].
-:- inst nil_or_singleton_list ---> [] ; [ground].
-    
+:- inst []
+    --->    [].
+:- inst nil_or_singleton_list
+    --->    []
+    ;       [ground].
+
     % incremental_try_all(Goal, AccumulatorPred, Acc0, Acc):
     %
     % Declaratively it is equivalent to:
+    %
     %   try_all(Goal, MaybeException, Solutions),
     %   list.map(wrap_success, Solutions, Results),
     %   list.foldl(AccumulatorPred, Results, Acc0, Acc1),
@@ -165,6 +173,7 @@
     pred(in, in, out) is det, in, out) is cc_multi.
 
     % rethrow(ExceptionResult):
+    %
     % Rethrows the specified exception result (which should be
     % of the form `exception(_)', not `succeeded(_)' or `failed'.).
     %
@@ -174,7 +183,8 @@
 :- func rethrow(exception_result(T)) = _.
 :- mode rethrow(in(bound(exception(ground)))) = out is erroneous.
 
-    % finally(P, PRes, Cleanup, CleanupRes, IO0, IO).
+    % finally(P, PRes, Cleanup, CleanupRes, !IO).
+    %
     % Call P and ensure that Cleanup is called afterwards,
     % no matter whether P succeeds or throws an exception.
     % PRes is bound to the output of P.
@@ -197,21 +207,20 @@
     % This predicate works only in low level C grades; in other grades,
     % it never throws an exception.
     %
-    % The predicate is impure instead of semipure because its effect
-    % depends not only on the execution of other impure predicates,
-    % but all calls.
+    % The predicate is impure instead of semipure because its effect depends
+    % not only on the execution of other impure predicates, but all calls.
     %
 :- type near_stack_limits
     --->    near_stack_limits.
 
 :- impure pred throw_if_near_stack_limits is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- interface.
 
@@ -227,7 +236,7 @@
     out(cannot_fail), di, uo) is cc_multi.
 
     % This is the version is called by code introduced by the source-to-source
-    % transformation for atomic scopes.  This predicate should not be called
+    % transformation for atomic scopes. This predicate should not be called
     % by user code.
     %
     % It is unsafe in the sense that it does not guarantee that rollback
@@ -235,21 +244,21 @@
     %
 :- pred unsafe_try_stm(pred(A, stm, stm),
     exception_result(A), stm, stm).
-:- mode unsafe_try_stm(in(pred(out, di, uo) is det), 
+:- mode unsafe_try_stm(in(pred(out, di, uo) is det),
     out(cannot_fail), di, uo) is cc_multi.
-:- mode unsafe_try_stm(in(pred(out, di, uo) is cc_multi), 
+:- mode unsafe_try_stm(in(pred(out, di, uo) is cc_multi),
     out(cannot_fail), di, uo) is cc_multi.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-    % This is used in the implementation of `try' goals.  It should never be
-    % called.
+    % This is used in the implementation of `try' goals. It should never be
+    % called in any other context.
     %
 :- pred magic_exception_result(exception_result({})::out(cannot_fail))
     is cc_multi.
 
-    % This is used in the implementation of `try' goals.  It should never be
-    % called.
+    % This is used in the implementation of `try' goals. It should never be
+    % called in any other context.
     %
 :- pred unreachable is erroneous.
 
@@ -263,7 +272,7 @@
 
 :- some [T] func exc_univ_value(univ) = T.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -271,129 +280,7 @@
 :- import_module string.
 :- import_module unit.
 
-%-----------------------------------------------------------------------------%
-
-:- pred try_det(exp_determinism, pred(T), exception_result(T)).
-:- mode try_det(in(bound(exp_detism_det)), pred(out) is det,
-    out(cannot_fail)) is cc_multi.
-:- mode try_det(in(bound(exp_detism_semidet)), pred(out) is semidet,
-    out) is cc_multi.
-:- mode try_det(in(bound(exp_detism_cc_multi)), pred(out) is cc_multi,
-    out(cannot_fail)) is cc_multi.
-:- mode try_det(in(bound(exp_detism_cc_nondet)), pred(out) is cc_nondet,
-    out) is cc_multi.
-
-:- pred try_io_det(exp_determinism, pred(T, io, io), exception_result(T),
-    io, io).
-:- mode try_io_det(in(bound(exp_detism_det)),
-    pred(out, di, uo) is det, out(cannot_fail), di, uo) is cc_multi.
-:- mode try_io_det(in(bound(exp_detism_cc_multi)),
-    pred(out, di, uo) is cc_multi, out(cannot_fail), di, uo) is cc_multi.
-
-:- pred try_store_det(exp_determinism, pred(T, store(S), store(S)),
-    exception_result(T), store(S), store(S)).
-:- mode try_store_det(in(bound(exp_detism_det)),
-    pred(out, di, uo) is det, out(cannot_fail), di, uo) is cc_multi.
-:- mode try_store_det(in(bound(exp_detism_cc_multi)),
-    pred(out, di, uo) is cc_multi, out(cannot_fail), di, uo) is cc_multi.
-
-:- pred try_all_det(exp_determinism, pred(T), maybe(univ), list(T)).
-:- mode try_all_det(in(bound(exp_detism_det)), pred(out) is det, out,
-    out(nil_or_singleton_list)) is cc_multi.
-:- mode try_all_det(in(bound(exp_detism_semidet)), pred(out) is semidet, out,
-    out(nil_or_singleton_list)) is cc_multi.
-:- mode try_all_det(in(bound(exp_detism_multi)), pred(out) is multi, out,
-    out) is cc_multi.
-:- mode try_all_det(in(bound(exp_detism_nondet)), pred(out) is nondet, out,
-    out) is cc_multi.
-
-:- type exp_determinism
-    --->    exp_detism_det
-    ;       exp_detism_semidet
-    ;       exp_detism_cc_multi
-    ;       exp_detism_cc_nondet
-    ;       exp_detism_multi
-    ;       exp_detism_nondet
-    ;       exp_detism_erroneous
-    ;       exp_detism_failure.
-
-:- pred get_determinism(pred(T), exp_determinism).
-:- mode get_determinism(pred(out) is det,
-    out(bound(exp_detism_det)))     is cc_multi.
-:- mode get_determinism(pred(out) is semidet,
-    out(bound(exp_detism_semidet))) is cc_multi.
-:- mode get_determinism(pred(out) is multi,
-    out(bound(exp_detism_multi)))   is cc_multi.
-:- mode get_determinism(pred(out) is nondet,
-    out(bound(exp_detism_nondet)))  is cc_multi.
-:- mode get_determinism(pred(out) is cc_multi,
-    out(bound(exp_detism_cc_multi))) is cc_multi.
-:- mode get_determinism(pred(out) is cc_nondet,
-    out(bound(exp_detism_cc_nondet))) is cc_multi.
-
-:- pred get_determinism_2(pred(T, S, S), exp_determinism).
-:- mode get_determinism_2(pred(out, di, uo) is det,
-    out(bound(exp_detism_det))) is cc_multi.
-:- mode get_determinism_2(pred(out, di, uo) is cc_multi,
-    out(bound(exp_detism_cc_multi))) is cc_multi.
-
-% The calls to throw/1 here are needed to ensure that the declarative
-% semantics of each clause is equivalent, but operationally they are
-% unreachable; since each mode has determinism cc_multi, it will pick the
-% first disjunct and discard the call to error/1.
-% This relies on --no-reorder-disj.
-%
-% NOTE: since there is no guarantee that modules that opt import these
-% predicates will be compiled with `--no-reorder-disj' we need to make
-% sure they are not inlined in other modules.
-
-:- pragma no_inline(get_determinism/2).
-:- pragma promise_equivalent_clauses(get_determinism/2).
-
-get_determinism(_Pred::(pred(out) is det),
-        Det::out(bound(exp_detism_det))) :-
-    ( cc_multi_equal(exp_detism_det, Det)
-    ; throw(software_error("get_determinism"))
-    ).
-get_determinism(_Pred::(pred(out) is semidet),
-        Det::out(bound(exp_detism_semidet))) :-
-    ( cc_multi_equal(exp_detism_semidet, Det)
-    ; throw(software_error("get_determinism"))
-    ).
-get_determinism(_Pred::(pred(out) is cc_multi),
-        Det::out(bound(exp_detism_cc_multi))) :-
-    ( cc_multi_equal(exp_detism_cc_multi, Det)
-    ; throw(software_error("get_determinism"))
-    ).
-get_determinism(_Pred::(pred(out) is cc_nondet),
-        Det::out(bound(exp_detism_cc_nondet))) :-
-    ( cc_multi_equal(exp_detism_cc_nondet, Det)
-    ; throw(software_error("get_determinism"))
-    ).
-get_determinism(_Pred::(pred(out) is multi),
-        Det::out(bound(exp_detism_multi))) :-
-    ( cc_multi_equal(exp_detism_multi, Det)
-    ; throw(software_error("get_determinism"))
-    ).
-get_determinism(_Pred::(pred(out) is nondet),
-        Det::out(bound(exp_detism_nondet))) :-
-    ( cc_multi_equal(exp_detism_nondet, Det)
-    ; throw(software_error("get_determinism"))
-    ).
-
-:- pragma no_inline(get_determinism_2/2).
-:- pragma promise_equivalent_clauses(get_determinism_2/2).
-
-get_determinism_2(_Pred::pred(out, di, uo) is det,
-        Det::out(bound(exp_detism_det))) :-
-    ( cc_multi_equal(exp_detism_det, Det)
-    ; throw(software_error("get_determinism_2"))
-    ).
-get_determinism_2(_Pred::pred(out, di, uo) is cc_multi,
-        Det::out(bound(exp_detism_cc_multi))) :-
-    ( cc_multi_equal(exp_detism_cc_multi, Det)
-    ; throw(software_error("get_determinism_2"))
-    ).
+%---------------------------------------------------------------------------%
 
 % These are not worth inlining, since they will (presumably) not be called
 % frequently, and so any increase in speed from inlining is not worth the
@@ -450,12 +337,12 @@ finally_2(P, Cleanup, PRes, CleanupRes, !IO) :-
         Cleanup(_, !IO),
         % The I/O state resulting from Cleanup cannot possibly be used, so we
         % have to trick the compiler into not removing the call.
-        (
+        ( if
             semidet_succeed,
             impure use(!.IO)
-        ->
+        then
             rethrow(ExcpResult)
-        ;
+        else
             throw(software_error("exception.finally_2"))
         )
     ).
@@ -479,75 +366,88 @@ finally_2(P, Cleanup, PRes, CleanupRes, !IO) :-
     [will_not_call_mercury, thread_safe],
     "void").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- pred wrap_success(pred(T), exception_result(T)) is det.
-:- mode wrap_success(pred(out) is det, out) is det.
-:- mode wrap_success(pred(out) is semidet, out) is semidet.
-:- mode wrap_success(pred(out) is multi, out) is multi.
-:- mode wrap_success(pred(out) is nondet, out) is nondet.
-:- mode wrap_success(pred(out) is cc_multi, out) is cc_multi.
-:- mode wrap_success(pred(out) is cc_nondet, out) is cc_nondet.
+:- pred wrap_success(pred(T), exception_result(T)).
+:- mode wrap_success(pred(out) is det, out(cannot_fail)) is det.
+:- mode wrap_success(pred(out) is semidet, out(cannot_fail)) is semidet.
+:- mode wrap_success(pred(out) is multi, out(cannot_fail)) is multi.
+:- mode wrap_success(pred(out) is nondet, out(cannot_fail)) is nondet.
+:- mode wrap_success(pred(out) is cc_multi, out(cannot_fail)) is cc_multi.
+:- mode wrap_success(pred(out) is cc_nondet, out(cannot_fail)) is cc_nondet.
 
-wrap_success(Goal, succeeded(R)) :- Goal(R).
+wrap_success(Goal, succeeded(R)) :-
+    Goal(R).
 
-:- pred wrap_success_or_failure(pred(T), exception_result(T)) is det.
+:- pred wrap_success_or_failure(pred(T), exception_result(T)).
 :- mode wrap_success_or_failure(pred(out) is det, out) is det.
 :- mode wrap_success_or_failure(pred(out) is semidet, out) is det.
-%:- mode wrap_success_or_failure(pred(out) is multi, out) is multi. (unused)
-%:- mode wrap_success_or_failure(pred(out) is nondet, out) is multi. (unused)
+% :- mode wrap_success_or_failure(pred(out) is multi, out) is multi. (unused)
+% :- mode wrap_success_or_failure(pred(out) is nondet, out) is multi. (unused)
 :- mode wrap_success_or_failure(pred(out) is cc_multi, out) is cc_multi.
 :- mode wrap_success_or_failure(pred(out) is cc_nondet, out) is cc_multi.
 
 wrap_success_or_failure(Goal, Result) :-
     (if Goal(R) then Result = succeeded(R) else Result = failed).
 
-/*********************
-% This doesn't work, due to
-%   bash$ mmc exception.m
-%   Software error: sorry, not implemented: taking address of pred
-%   `wrap_success_or_failure/2' with multiple modes.
-% Instead, we need to switch on the Detism argument.
+:- pred wrap_exception(univ::in, exception_result(T)::out) is det.
 
-try(_Detism, Goal, Result) :-
-    builtin_catch(wrap_success_or_failure(Goal), wrap_exception, Result).
-*********************/
+wrap_exception(Exception, exception(Exception)).
 
-try(Goal, Result) :-
-    get_determinism(Goal, Detism),
-    try_det(Detism, Goal, Result).
+%---------------------------------------------------------------------------%
 
-try_det(exp_detism_det, Goal, Result) :-
-    WrappedGoal = (pred(R::out) is det :-
-        wrap_success_or_failure(Goal, R)
-    ),
-    catch_impl(WrappedGoal, wrap_exception, Result0),
-    cc_multi_equal(Result0, Result).
-try_det(exp_detism_semidet, Goal, Result) :-
-    WrappedGoal = (pred(R::out) is det :-
-        wrap_success_or_failure(Goal, R)
-    ),
-    catch_impl(WrappedGoal, wrap_exception, Result0),
-    cc_multi_equal(Result0, Result).
-try_det(exp_detism_cc_multi, Goal, Result) :-
-    WrappedGoal = (pred(R::out) is cc_multi :-
-        wrap_success_or_failure(Goal, R)
-    ),
-    catch_impl(WrappedGoal, wrap_exception, Result).
-try_det(exp_detism_cc_nondet, Goal, Result) :-
-    WrappedGoal = (pred(R::out) is cc_multi :-
-        wrap_success_or_failure(Goal, R)
-    ),
-    catch_impl(WrappedGoal, wrap_exception, Result).
+:- pragma promise_equivalent_clauses((try)/2).
 
-% We switch on the Detism argument for a similar reason to above.
+try(Goal::pred(out) is det, Result::out(cannot_fail)) :-
+    catch_impl(wrap_success_or_failure(Goal), wrap_exception, Result0),
+    (
+        Result0 = succeeded(_),
+        Result = Result0
+    ;
+        Result0 = failed,
+        Result = exception(univ("det goal failed"))
+    ;
+        Result0 = exception(E),
+        ( Result = exception(E)
+        ; Result = exception(E) % force cc_multi
+        )
+    ).
+try(Goal::pred(out) is semidet, Result::out) :-
+    catch_impl(wrap_success_or_failure(Goal), wrap_exception, Result0),
+    (
+        Result0 = succeeded(_),
+        Result = Result0
+    ;
+        Result0 = failed,
+        Result = failed
+    ;
+        Result0 = exception(E),
+        ( Result = exception(E)
+        ; Result = exception(E) % force cc_multi
+        )
+    ).
+try(Goal::pred(out) is cc_multi, Result::out(cannot_fail)) :-
+    catch_impl(wrap_success_or_failure(Goal), wrap_exception, Result0),
+    (
+        Result0 = succeeded(_),
+        Result = Result0
+    ;
+        Result0 = failed,
+        Result = exception(univ("cc_multi goal failed"))
+    ;
+        Result0 = exception(E),
+        Result = exception(E)
+    ).
+try(Goal::pred(out) is cc_nondet, Result::out) :-
+    catch_impl(wrap_success_or_failure(Goal), wrap_exception, Result).
 
-try_all(Goal, MaybeException, Solutions) :-
-    get_determinism(Goal, Detism),
-    try_all_det(Detism, Goal, MaybeException, Solutions).
+%---------------------------------------------------------------------------%
 
-try_all_det(exp_detism_det, Goal, MaybeException, Solutions) :-
-    try_det(exp_detism_det, Goal, Result),
+:- pragma promise_equivalent_clauses(try_all/3).
+
+try_all(Goal::pred(out) is det,
+        MaybeException::out, Solutions::out(nil_or_singleton_list)) :-
+    try(Goal, Result),
     (
         Result = succeeded(Solution),
         Solutions = [Solution],
@@ -557,8 +457,9 @@ try_all_det(exp_detism_det, Goal, MaybeException, Solutions) :-
         Solutions = [],
         MaybeException = yes(Exception)
     ).
-try_all_det(exp_detism_semidet, Goal, MaybeException, Solutions) :-
-    try_det(exp_detism_semidet, Goal, Result),
+try_all(Goal::pred(out) is semidet,
+        MaybeException::out, Solutions::out(nil_or_singleton_list)) :-
+    try(Goal, Result),
     (
         Result = failed,
         Solutions = [],
@@ -572,24 +473,16 @@ try_all_det(exp_detism_semidet, Goal, MaybeException, Solutions) :-
         Solutions = [],
         MaybeException = yes(Exception)
     ).
-try_all_det(exp_detism_multi, Goal, MaybeException, Solutions) :-
-    WrappedGoal = (pred(R::out) is multi :-
-        wrap_success(Goal, R)
-    ),
-    TryOneSoln = (pred(Result::out) is multi :-
-        catch_impl(WrappedGoal, wrap_exception, Result)
-    ),
-    unsorted_solutions(TryOneSoln, ResultList), 
+try_all(Goal::pred(out) is multi,
+        MaybeException::out, Solutions::out) :-
+    unsorted_solutions(catch_impl(wrap_success(Goal), wrap_exception),
+        ResultList),
     list.foldl2(process_one_exception_result, ResultList,
         no, MaybeException, [], Solutions).
-try_all_det(exp_detism_nondet, Goal, MaybeException, Solutions) :-
-    WrappedGoal = (pred(R::out) is nondet :-
-        wrap_success(Goal, R)
-    ),
-    TryOneSoln = (pred(Result::out) is nondet :-
-        catch_impl(WrappedGoal, wrap_exception, Result)
-    ),
-    unsorted_solutions(TryOneSoln, ResultList),
+try_all(Goal::pred(out) is nondet,
+        MaybeException::out, Solutions::out) :-
+    unsorted_solutions(catch_impl(wrap_success(Goal), wrap_exception),
+        ResultList),
     list.foldl2(process_one_exception_result, ResultList,
         no, MaybeException, [], Solutions).
 
@@ -597,8 +490,8 @@ try_all_det(exp_detism_nondet, Goal, MaybeException, Solutions) :-
     maybe(univ)::in, maybe(univ)::out, list(T)::in, list(T)::out) is det.
 
 process_one_exception_result(exception(E), !MaybeException, !Solutions) :-
-    % Ignore all but the last exception that is in the list.  This is
-    % okay since there should never be more than one.
+    % Ignore all but the last exception that is in the list. This is okay
+    % since there should never be more than one.
     !.MaybeException = _,
     !:MaybeException = yes(E).
 process_one_exception_result(succeeded(S), !MaybeException, !Solutions) :-
@@ -606,53 +499,49 @@ process_one_exception_result(succeeded(S), !MaybeException, !Solutions) :-
 process_one_exception_result(failed, !MaybeException, !Solutions) :-
     throw(software_error("process_one_exception_result: unexpected failure")).
 
+%---------------------------------------------------------------------------%
+
 incremental_try_all(Goal, AccPred, !Acc) :-
-    WrappedGoal = (pred(R::out) is nondet :-
-        wrap_success(Goal, R)
-    ),
-    TryOneSoln = (pred(Result::out) is nondet :-
-        catch_impl(WrappedGoal, wrap_exception, Result)
-    ),
-    unsorted_aggregate(TryOneSoln, AccPred, !Acc).
+    unsorted_aggregate(catch_impl(wrap_success(Goal), wrap_exception),
+        AccPred, !Acc).
 
-% We need to switch on the Detism argument for the same reason as above.
+%---------------------------------------------------------------------------%
 
-try_store(StoreGoal, Result, !Store) :-
-    get_determinism_2(StoreGoal, Detism),
-    try_store_det(Detism, StoreGoal, Result, !Store).
+try_io(IO_Goal, Result, IO0, IO) :-
+    try(unsafe_call_io_goal(IO_Goal, IO0), Result0),
+    (
+        Result0 = succeeded({Res, IO1}),
+        Result = succeeded(Res),
+        % IO1 is now unique because the only other reference to
+        % the I/O state was from IO0, which we're throwing away here.
+        unsafe_promise_unique(IO1, IO)
+    ;
+        Result0 = exception(E),
+        Result = exception(E),
+        % IO0 is now unique because the only other reference to
+        % it was from the goal which just threw an exception.
+        unsafe_promise_unique(IO0, IO)
+    ).
 
-    % Store0 is not really unique in the calls to unsafe_promise_unique
-    % below, since it is also used in the calls to handle_store_result.
-    % But it is safe to treat it as if it were unique, because the
-    % other reference is only used in the case when an exception is
-    % thrown, and in that case the declarative semantics of this
-    % predicate say that the final store returned is unspecified.
-try_store_det(exp_detism_det, StoreGoal, Result, !Store) :-
-    Goal = (pred({R, S}::out) is det :-
-        unsafe_promise_unique(!.Store, S0),
-        StoreGoal(R, S0, S)
-    ),
-    try_det(exp_detism_det, Goal, Result0),
-    handle_store_result(Result0, Result, !Store).
-try_store_det(exp_detism_cc_multi, StoreGoal, Result, !Store) :-
-    Goal = (pred({R, S}::out) is cc_multi :-
-        unsafe_promise_unique(!.Store, S0),
-        StoreGoal(R, S0, S)
-    ),
-    try_det(exp_detism_cc_multi, Goal, Result0),
-    handle_store_result(Result0, Result, !Store).
+:- pred unsafe_call_io_goal(pred(T, io, io), io, {T, io}).
+:- mode unsafe_call_io_goal(pred(out, di, uo) is det, in, out) is det.
+:- mode unsafe_call_io_goal(pred(out, di, uo) is cc_multi, in, out)
+    is cc_multi.
 
-:- pred handle_store_result(exception_result({T, store(S)})::in(cannot_fail),
-    exception_result(T)::out(cannot_fail),
-    store(S)::in, store(S)::uo) is det.
+unsafe_call_io_goal(Goal, IO0, {Result, IO}) :-
+    unsafe_promise_unique(IO0, IO1),
+    Goal(Result, IO1, IO).
 
-handle_store_result(Result0, Result, !Store) :-
+%---------------------------------------------------------------------------%
+
+try_store(StoreGoal, Result, Store0, Store) :-
+    try(unsafe_call_store_goal(StoreGoal, Store0), Result0),
     (
         Result0 = succeeded({Res, NewStore}),
         Result = succeeded(Res),
         % NewStore is now unique because the only other reference to
-        % the store was from !.Store, which we're throwing away here.
-        unsafe_promise_unique(NewStore, !:Store)
+        % the store was from Store0, which we're throwing away here.
+        unsafe_promise_unique(NewStore, Store)
     ;
         Result0 = exception(E0),
         % We need to make a copy of the exception object, in case
@@ -662,72 +551,24 @@ handle_store_result(Result0, Result, !Store) :-
         Result = exception(E),
         % Store0 is now unique because the only other reference to
         % the store was from the goal which just threw an exception.
-        unsafe_promise_unique(!Store)
+        unsafe_promise_unique(Store0, Store)
     ).
 
-try_io(IO_Goal, Result, !IO) :-
-    get_determinism_2(IO_Goal, Detism),
-    try_io_det(Detism, IO_Goal, Result, !IO).
+:- pred unsafe_call_store_goal(pred(T, store(S), store(S)),
+    store(S), {T, store(S)}).
+:- mode unsafe_call_store_goal(pred(out, di, uo) is det, in, out) is det.
+:- mode unsafe_call_store_goal(pred(out, di, uo) is cc_multi, in, out)
+    is cc_multi.
 
-% We'd better not inline try_io/5, since it uses a horrible hack
-% with unsafe_perform_io (see below) that might confuse the compiler.
-:- pragma no_inline(try_io_det/5).
+unsafe_call_store_goal(Goal, Store0, {Result, Store}) :-
+    % Store0 is not really unique, but it is safe to treat it as if it were
+    % unique because the other reference is only used in the case when an
+    % exception is thrown, and in that case the declarative semantics of
+    % try_store say that the final store returned is unspecified.
+    unsafe_promise_unique(Store0, Store1),
+    Goal(Result, Store1, Store).
 
-try_io_det(exp_detism_det, IO_Goal, Result, !IO) :-
-    Goal = (pred(R::out) is det :-
-        very_unsafe_perform_io(IO_Goal, R)
-    ),
-    try_det(exp_detism_det, Goal, Result).
-try_io_det(exp_detism_cc_multi, IO_Goal, Result, !IO) :-
-    Goal = (pred(R::out) is cc_multi :-
-        very_unsafe_perform_io(IO_Goal, R)
-    ),
-    try_det(exp_detism_cc_multi, Goal, Result).
-
-:- pred very_unsafe_perform_io(pred(T, io, io), T).
-:- mode very_unsafe_perform_io(pred(out, di, uo) is det, out) is det.
-:- mode very_unsafe_perform_io(pred(out, di, uo) is cc_multi, out) is cc_multi.
-
-% Mercury doesn't support impure higher-order pred terms, so if we want
-% to form a closure from unsafe_perform_io, as we need to do above,
-% then we must (falsely!) promise that it is pure.
-:- pragma promise_pure(very_unsafe_perform_io/2). % XXX this is a lie
-
-very_unsafe_perform_io(Goal, Result) :-
-    impure make_io_state(IO0),
-    Goal(Result, IO0, IO),
-    impure consume_io_state(IO).
-
-:- impure pred make_io_state(io::uo) is det.
-:- pragma foreign_proc("C", make_io_state(_IO::uo),
-    [will_not_call_mercury, thread_safe, will_not_modify_trail, no_sharing],
-    "").
-:- pragma foreign_proc("C#", make_io_state(_IO::uo),
-    [will_not_call_mercury, thread_safe], "").
-:- pragma foreign_proc("Java", make_io_state(_IO::uo),
-    [will_not_call_mercury, thread_safe], "").
-:- pragma foreign_proc("Erlang", make_io_state(_IO::uo),
-    [will_not_call_mercury, thread_safe], "void").
-
-:- impure pred consume_io_state(io::di) is det.
-:- pragma foreign_proc("C",
-    consume_io_state(_IO::di),
-    [will_not_call_mercury, thread_safe, no_sharing], "").
-:- pragma foreign_proc("C#",
-    consume_io_state(_IO::di),
-    [will_not_call_mercury, thread_safe], "").
-:- pragma foreign_proc("Java",
-    consume_io_state(_IO::di),
-    [will_not_call_mercury, thread_safe], "").
-:- pragma foreign_proc("Erlang",
-    consume_io_state(_IO::di),
-    [will_not_call_mercury, thread_safe], "void").
-
-:- pred wrap_exception(univ::in, exception_result(T)::out) is det.
-
-wrap_exception(Exception, exception(Exception)).
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 try_stm(Goal, Result, !STM) :-
     unsafe_try_stm(Goal, Result0, !STM),
@@ -739,74 +580,51 @@ try_stm(Goal, Result, !STM) :-
         % If the exception is an STM rollback exception rethrow it since
         % the handler at the beginning of the atomic scope should deal with
         % it; otherwise let the user deal with it.
-        (
+        ( if
             ( Exception = univ(stm_builtin.rollback_invalid_transaction)
             ; Exception = univ(stm_builtin.rollback_retry)
             )
-        ->
+        then
             rethrow(Result0)
-        ;
+        else
             Result = Result0
         )
     ).
 
-:- pragma promise_equivalent_clauses(unsafe_try_stm/4).
-
-unsafe_try_stm(TransactionGoal::in(pred(out, di, uo) is det), 
-        Result::out(cannot_fail), STM0::di, STM::uo) :-
-    get_determinism_2(TransactionGoal, Detism),
-    try_stm_det(Detism, TransactionGoal, Result, STM0, STM).
-
-unsafe_try_stm(TransactionGoal::in(pred(out, di, uo) is cc_multi), 
-        Result::out(cannot_fail), STM0::di, STM::uo) :-
-    get_determinism_2(TransactionGoal, Detism),
-    try_stm_cc_multi(Detism, TransactionGoal, Result, STM0, STM).
-
-:- pred try_stm_det(exp_determinism, pred(T, stm, stm),
-    exception_result(T), stm, stm).
-:- mode try_stm_det(in(bound(exp_detism_det)),
-    pred(out, di, uo) is det, out(cannot_fail), di, uo) is cc_multi.
-
-try_stm_det(exp_detism_det, TransactionGoal, Result, !STM) :-
-    Goal = (pred({R, S}::out) is det :-
-        unsafe_promise_unique(!.STM, S0),
-        TransactionGoal(R, S0, S)
-    ),
-    try_det(exp_detism_det, Goal, Result0),
-    handle_stm_result(Result0, Result, !STM).
-
-:- pred try_stm_cc_multi(exp_determinism, pred(T, stm, stm),
-    exception_result(T), stm, stm).
-:- mode try_stm_cc_multi(in(bound(exp_detism_cc_multi)),
-    pred(out, di, uo) is cc_multi, out(cannot_fail), di, uo) is cc_multi.
-
-try_stm_cc_multi(exp_detism_cc_multi, TransactionGoal, Result, !STM) :-
-    Goal = (pred({R, S}::out) is cc_multi :-
-        unsafe_promise_unique(!.STM, S0),
-        TransactionGoal(R, S0, S)
-    ),
-    try_det(exp_detism_cc_multi, Goal, Result0),
-    handle_stm_result(Result0, Result, !STM).
-
-:- pred handle_stm_result(exception_result({T, stm})::in(cannot_fail),
-    exception_result(T)::out(cannot_fail), stm::in, stm::uo) is det.
-
-handle_stm_result(Result0, Result, !STM) :-
+unsafe_try_stm(Goal, Result, STM0, STM) :-
+    try(unsafe_call_transaction_goal(Goal, STM0), Result0),
     (
         Result0 = succeeded({Res, NewSTM}),
         Result = succeeded(Res),
-        unsafe_promise_unique(NewSTM, !:STM)
+        unsafe_promise_unique(NewSTM, STM)
     ;
         Result0 = exception(E0),
+        % XXX is this copy necessary?
         copy(E0, E),
         Result = exception(E),
-        unsafe_promise_unique(!STM)
+        unsafe_promise_unique(STM0, STM)
     ).
 
-%-----------------------------------------------------------------------------%
+:- pred unsafe_call_transaction_goal(pred(T, stm, stm), stm, {T, stm}).
+:- mode unsafe_call_transaction_goal(pred(out, di, uo) is det, in, out) is det.
+:- mode unsafe_call_transaction_goal(pred(out, di, uo) is cc_multi, in, out)
+    is cc_multi.
 
-magic_exception_result(succeeded({})).
-magic_exception_result(succeeded({})).  % force cc_multi
+unsafe_call_transaction_goal(Goal, STM0, {Result, STM}) :-
+    unsafe_promise_unique(STM0, STM1),
+    Goal(Result, STM1, STM).
+
+%---------------------------------------------------------------------------%
+
+magic_exception_result(Res) :-
+    ( if semidet_true then
+        throw("magic_exception_result: should never be called")
+    else
+        % Avoid determinism warning.
+        ( Res = succeeded({})
+        ; Res = succeeded({})
+        )
+    ).
 
 unreachable :-
     throw("unreachable code reached").
@@ -816,7 +634,7 @@ exc_univ_to_type(Univ, Object) :-
 
 exc_univ_value(Univ) = univ.univ_value(Univ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred throw_impl(univ::in) is erroneous.
 
@@ -824,10 +642,13 @@ exc_univ_value(Univ) = univ.univ_value(Univ).
 :- inst handler == (pred(in, out) is det).
 
 %
-% catch_impl/3 is actually impure.  But we don't declare it as impure,
-% because the code for try_all/3 takes its address (to pass to
-% unsorted_solutions/2), and Mercury does not (yet?) support
-% impure higher-order pred terms.
+% catch_impl/3 is actually impure. If the call tree of p(...) contains more
+% than one throw, it returns just ONE of the exceptions p(...) can throw,
+% and the declarative semantics does not say WHICH one it returns.
+%
+% XXX We don't declare catch_impl as impure because there do not yet exist
+% unsorted_solutions/2 and unsorted_aggregate/2 predicates that take impure
+% higher-order pred terms.
 %
 :- pragma promise_pure(catch_impl/3).
 :- /* impure */
@@ -839,37 +660,23 @@ exc_univ_value(Univ) = univ.univ_value(Univ).
 :- mode catch_impl(pred(out) is multi,     in(handler), out) is multi.
 :- mode catch_impl(pred(out) is nondet,    in(handler), out) is nondet.
 
-%
-% By default we call the external implementation, but specific backends
+% By default, we call the external implementation, but specific backends
 % can provide their own definition using foreign_proc.
-% NOTE: The subterm dependency tracking algorithm in the declarative
-%       debugger expects builtin_catch to only be called from catch_impl.
-%       If catch_impl is modified for a backend that supports debugging,
-%       or builtin_catch is called from somewhere else, then
-%       the code in browser/declarative_tree.m will need to be modified.
 %
+% NOTE: The subterm dependency tracking algorithm in the declarative debugger
+% expects builtin_catch to only be called from catch_impl. If catch_impl
+% is modified for a backend that supports debugging, or builtin_catch
+% is called from somewhere else, then the code in browser/declarative_tree.m
+% will need to be modified.
 
 throw_impl(Univ::in) :-
     builtin_throw(Univ).
 
-catch_impl(Pred::(pred(out) is det), Handler::in(handler), T::out) :-
-    builtin_catch(Pred, Handler, T).
-catch_impl(Pred::(pred(out) is semidet), Handler::in(handler), T::out) :-
-    builtin_catch(Pred, Handler, T).
-catch_impl(Pred::(pred(out) is cc_multi), Handler::in(handler), T::out) :-
-    builtin_catch(Pred, Handler, T).
-catch_impl(Pred::(pred(out) is cc_nondet), Handler::in(handler), T::out) :-
-    builtin_catch(Pred, Handler, T).
-catch_impl(Pred::(pred(out) is multi), Handler::in(handler), T::out) :-
-    builtin_catch(Pred, Handler, T).
-catch_impl(Pred::(pred(out) is nondet), Handler::in(handler), T::out) :-
+catch_impl(Pred, Handler, T) :-
     builtin_catch(Pred, Handler, T).
 
-% builtin_throw and builtin_catch are implemented below using
-% hand-coded low-level C code.
-%
-:- pragma terminates(builtin_throw/1).
 :- pred builtin_throw(univ::in) is erroneous.
+:- pragma terminates(builtin_throw/1).
 
 :- /* impure */
    pred builtin_catch(pred(T), handler(T), T).
@@ -880,20 +687,20 @@ catch_impl(Pred::(pred(out) is nondet), Handler::in(handler), T::out) :-
 :- mode builtin_catch(pred(out) is multi, in(handler), out) is multi.
 :- mode builtin_catch(pred(out) is nondet, in(handler), out) is nondet.
 
+% builtin_throw and builtin_catch are implemented below using
+% hand-coded low-level C code.
 %
 % IMPORTANT: any changes or additions to external predicates should be
 % reflected in the definition of pred_is_external in
-% mdbcomp/program_representation.m.  The debugger needs to know what predicates
+% mdbcomp/program_representation.m. The debugger needs to know what predicates
 % are defined externally, so that it knows not to expect events for those
 % predicates.
-%
+:- pragma external_pred(builtin_throw/1).
+:- pragma external_pred(builtin_catch/3).
 
-:- external(builtin_throw/1).
-:- external(builtin_catch/3).
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
-% The --high-level-code implementation
+% The --high-level-code implementation.
 %
 
 :- pragma foreign_decl("C",
@@ -994,7 +801,7 @@ catch_impl(Pred::(pred(out) is nondet), Handler::in(handler), T::out) :-
 
 /*
 ** We also need to provide definitions of these builtins
-** as functions rather than as macros.  This is needed
+** as functions rather than as macros. This is needed
 ** (a) in case we take their address, and (b) for the
 ** GCC back-end interface.
 */
@@ -1320,7 +1127,7 @@ mercury__exception__builtin_catch_model_non(MR_Mercury_Type_Info type_info,
         /*
         ** If we get here, it means that the continuation
         ** has failed, and so we are about to redo the
-        ** nondet goal.  Thus we need to re-establish
+        ** nondet goal. Thus we need to re-establish
         ** its exception handler.
         */
         ML_SET_EXCEPTION_HANDLER(&this_handler);
@@ -1437,7 +1244,7 @@ mercury__exception__builtin_catch_model_non(MR_Mercury_Type_Info type_info,
 #endif /* MR_HIGHLEVEL_CODE */
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_code("C#", "
 /*
@@ -1464,7 +1271,7 @@ public static SsdbHooks ssdb_hooks = new SsdbHooks();
     catch_impl(Pred::pred(out) is det, Handler::in(handler), T::out),
     [will_not_call_mercury, promise_pure],
 "
-    int CSN = ssdb_hooks.on_catch_impl();
+    int CSN = exception.ssdb_hooks.on_catch_impl();
     try {
         T = exception.ML_call_goal_det(TypeInfo_for_T, Pred);
     }
@@ -1479,7 +1286,7 @@ public static SsdbHooks ssdb_hooks = new SsdbHooks();
     catch_impl(Pred::pred(out) is cc_multi, Handler::in(handler), T::out),
     [will_not_call_mercury, promise_pure],
 "
-    int CSN = ssdb_hooks.on_catch_impl();
+    int CSN = exception.ssdb_hooks.on_catch_impl();
     try {
         T = exception.ML_call_goal_det(TypeInfo_for_T, Pred);
     }
@@ -1512,14 +1319,14 @@ public static SsdbHooks ssdb_hooks = new SsdbHooks();
     catch_impl(Pred::pred(out) is multi, Handler::in(handler), _T::out),
     [will_not_call_mercury, promise_pure, ordinary_despite_detism],
 "
-    int CSN = ssdb_hooks.on_catch_impl();
+    int CSN = exception.ssdb_hooks.on_catch_impl();
     try {
         runtime.MethodPtr3_r0<object, object, object> pred =
             (runtime.MethodPtr3_r0<object, object, object>) Pred[1];
         pred(Pred, cont, cont_env_ptr);
     }
     catch (runtime.Exception ex) {
-        ssdb_hooks.on_catch_impl_exception(CSN);
+        exception.ssdb_hooks.on_catch_impl_exception(CSN);
         object T = exception.ML_call_handler_det(TypeInfo_for_T, Handler,
             (univ.Univ_0) ex.exception);
         ((runtime.MethodPtr2_r0<object, object>) cont)(T, cont_env_ptr);
@@ -1533,14 +1340,14 @@ public static SsdbHooks ssdb_hooks = new SsdbHooks();
     catch_impl(Pred::pred(out) is nondet, Handler::in(handler), _T::out),
     [will_not_call_mercury, promise_pure, ordinary_despite_detism],
 "
-    int CSN = ssdb_hooks.on_catch_impl();
+    int CSN = exception.ssdb_hooks.on_catch_impl();
     try {
         runtime.MethodPtr3_r0<object, object, object> pred =
             (runtime.MethodPtr3_r0<object, object, object>) Pred[1];
         pred(Pred, cont, cont_env_ptr);
     }
     catch (runtime.Exception ex) {
-        ssdb_hooks.on_catch_impl_exception(CSN);
+        exception.ssdb_hooks.on_catch_impl_exception(CSN);
         object T = exception.ML_call_handler_det(TypeInfo_for_T, Handler,
             (univ.Univ_0) ex.exception);
         ((runtime.MethodPtr2_r0<object, object>) cont)(T, cont_env_ptr);
@@ -1550,7 +1357,7 @@ public static SsdbHooks ssdb_hooks = new SsdbHooks();
     SUCCESS_INDICATOR = false;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_proc("Erlang",
     throw_impl(T::in),
@@ -1612,60 +1419,48 @@ public static SsdbHooks ssdb_hooks = new SsdbHooks();
         end.
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred call_goal(pred(T), T).
 :- mode call_goal(pred(out) is det, out) is det.
 :- mode call_goal(pred(out) is semidet, out) is semidet.
-%:- mode call_goal(pred(out) is nondet, out) is nondet. % see comments below
+% :- mode call_goal(pred(out) is nondet, out) is nondet. % see comments below
 
-call_goal(Goal, Result) :- Goal(Result).
+call_goal(Goal, Result) :-
+    Goal(Result).
 
 :- pred call_handler(pred(univ, T), univ, T).
 :- mode call_handler(pred(in, out) is det, in, out) is det.
-%:- mode call_handler(pred(in, out) is semidet, in, out) is semidet. % unused
-%:- mode call_handler(pred(in, out) is nondet, in, out) is nondet. % unused
+% :- mode call_handler(pred(in, out) is semidet, in, out) is semidet. % unused
+% :- mode call_handler(pred(in, out) is nondet, in, out) is nondet.   % unused
 
-call_handler(Handler, Exception, Result) :- Handler(Exception, Result).
+call_handler(Handler, Exception, Result) :-
+    Handler(Exception, Result).
 
 :- pragma foreign_export("C", call_goal(pred(out) is det, out),
-    "ML_call_goal_det").
-:- pragma foreign_export("IL", call_goal(pred(out) is det, out),
     "ML_call_goal_det").
 :- pragma foreign_export("C#", call_goal(pred(out) is det, out),
     "ML_call_goal_det").
 :- pragma foreign_export("Java", call_goal(pred(out) is det, out),
     "ML_call_goal_det").
-:- pragma foreign_export("C", call_goal(pred(out) is semidet, out),
-    "ML_call_goal_semidet").
-:- pragma foreign_export("IL", call_goal(pred(out) is semidet, out),
-    "ML_call_goal_semidet").
-:- pragma foreign_export("C#", call_goal(pred(out) is semidet, out),
-    "ML_call_goal_semidet").
-:- pragma foreign_export("Java", call_goal(pred(out) is semidet, out),
-    "ML_call_goal_semidet").
 
-% This causes problems because the LLDS back-end
-% does not let you export code with determinism `nondet'.
-% Instead for C backends we hand-code it... see below.
-% Hand-coding it also avoids the casting needed to use MR_Word
-% (which `pragma export' procedures use for polymorphically
-% typed arguments) rather than MR_Box.
-%
-% XXX for .NET backend we don't yet implement nondet exception handling.
+% This causes problems because the LLDS back-end does not let you export
+% code with determinism `nondet'. Instead for C backends we hand-code it...
+% see below. Hand-coding it also avoids the casting needed to use MR_Word
+% (which `pragma export' procedures use for polymorphically typed arguments)
+% rather than MR_Box.
 
-% :- pragma export(call_goal(pred(out) is nondet,  out), "ML_call_goal_nondet").
+% :- pragma export(call_goal(pred(out) is nondet,  out),
+%   "ML_call_goal_nondet").
 
 :- pragma foreign_export("C", call_handler(pred(in, out) is det, in, out),
-    "ML_call_handler_det").
-:- pragma foreign_export("IL", call_handler(pred(in, out) is det, in, out),
     "ML_call_handler_det").
 :- pragma foreign_export("C#", call_handler(pred(in, out) is det, in, out),
     "ML_call_handler_det").
 :- pragma foreign_export("Java", call_handler(pred(in, out) is det, in, out),
     "ML_call_handler_det").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_code("Java", "
 /*
@@ -1797,7 +1592,7 @@ static {
     SUCCESS_INDICATOR = false;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % The --no-high-level-code implementation.
 %
@@ -1832,18 +1627,18 @@ void mercury_sys_init_exceptions_write_out_proc_statics(FILE *deep_fp,
 /*
 ** MR_throw_walk_stack():
 ** Unwind the stack as far as possible, until we reach a frame
-** with an exception handler.  As we go, invoke either or both
+** with an exception handler. As we go, invoke either or both
 ** of two actions.
 **
 ** (1) If MR_debug_enabled is set, then invoke
 **     `MR_trace(..., MR_PORT_EXCEPTION, ...)' for each stack frame,
 **     to signal to the debugger that the procedure has exited via
-**     an exception.  This allows to user to use the `retry' command
+**     an exception. This allows to user to use the `retry' command
 **     to restart a goal which exited via an exception.
 **
 **     Note that if MR_STACK_TRACE is not defined, then we may not be
 **     able to traverse the stack all the way; in that case, we just
-**     print a warning and then continue.  It might be better to just
+**     print a warning and then continue. It might be better to just
 **     `#ifdef' out all this code (and the code in builtin_throw which
 **     calls it) if MR_STACK_TRACE is not defined.
 **
@@ -2171,7 +1966,7 @@ MR_proc_static_user_one_site(exception, builtin_catch, 3, 5,
 **
 ** Additionally, the compiler generated declaration for the proc_layout
 ** structure will be declared extern if the address is required in other
-** modules.  GCC 4 and above consider a static definition and a non-static
+** modules. GCC 4 and above consider a static definition and a non-static
 ** declaration to be an error.
 */
 MR_EXTERN_USER_PROC_STATIC_PROC_LAYOUT(
@@ -2249,7 +2044,7 @@ MR_proc_static_user_no_site(exception, builtin_throw, 1, 0,
 
 /*
 ** See the above comments regarding builtin_catch for the reason we
-** must use MR_EXTERN_USER_PROC_STATIC_PROC_LAYOUT instead of 
+** must use MR_EXTERN_USER_PROC_STATIC_PROC_LAYOUT instead of
 ** MR_STATIC_USER_PROC_STATIC_PROC_LAYOUT here.
 */
 MR_EXTERN_USER_PROC_STATIC_PROC_LAYOUT(
@@ -2510,7 +2305,7 @@ MR_define_entry(mercury__exception__builtin_throw_1_0);
     ** Search the nondet stack for an exception handler,
     ** i.e. a frame whose redoip is `MR_exception_handler_do_fail'
     ** (one created by `builtin_catch').
-    ** N.B.  We search down the `succfr' chain, not the `prevfr' chain;
+    ** N.B. We search down the `succfr' chain, not the `prevfr' chain;
     ** this ensures that we only find handlers installed by our callers,
     ** not handlers installed by procedures that we called but which
     ** are still on the nondet stack because they left choice points
@@ -2610,7 +2405,7 @@ MR_define_entry(mercury__exception__builtin_throw_1_0);
 #endif
 #ifdef MR_RECLAIM_HP_ON_FAILURE
     /*
-    ** Reset the heap.  But we need to be careful to preserve the
+    ** Reset the heap. But we need to be careful to preserve the
     ** thrown exception object.
     **
     ** The following algorithm uses the `solutions heap', and will work
@@ -2690,7 +2485,7 @@ MR_define_entry(mercury__exception__builtin_throw_1_0);
 
     /*
     ** Pop the final exception handler frame off the nondet stack,
-    ** and reset the nondet stack top.  (This must be done last,
+    ** and reset the nondet stack top. (This must be done last,
     ** since it invalidates all the framevars.)
     */
     MR_maxfr_word = MR_prevfr_slot_word(MR_curfr);
@@ -2808,11 +2603,9 @@ mercury_sys_init_exceptions_write_out_proc_statics(FILE *deep_fp,
 
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_export("C", report_uncaught_exception(in, di, uo),
-    "ML_report_uncaught_exception").
-:- pragma foreign_export("IL", report_uncaught_exception(in, di, uo),
     "ML_report_uncaught_exception").
 :- pragma foreign_export("C#", report_uncaught_exception(in, di, uo),
     "ML_report_uncaught_exception").
@@ -2837,12 +2630,13 @@ report_uncaught_exception(Exception, !IO) :-
     io::di, io::uo) is det.
 
 report_uncaught_exception_2(Exception, unit, !IO) :-
-    io.flush_output(!IO),
-    io.stderr_stream(StdErr, !IO),
-    io.write_string(StdErr, "Uncaught Mercury exception:\n", !IO),
-    io.write_string(StdErr, exception_to_string(Exception), !IO),
-    io.nl(StdErr, !IO),
-    io.flush_output(StdErr, !IO).
+    io.output_stream(CurOutStream, !IO),
+    io.flush_output(CurOutStream, !IO),
+    io.stderr_stream(StdErrStream, !IO),
+    io.write_string(StdErrStream, "Uncaught Mercury exception:\n", !IO),
+    io.write_string(StdErrStream, exception_to_string(Exception), !IO),
+    io.nl(StdErrStream, !IO),
+    io.flush_output(StdErrStream, !IO).
 
 :- func exception_to_string(univ) = string.
 
@@ -2850,9 +2644,9 @@ report_uncaught_exception_2(Exception, unit, !IO) :-
     "ML_exception_to_string").
 
 exception_to_string(Exception) = Message :-
-    ( univ_to_type(Exception, software_error(MessagePrime)) ->
+    ( if univ_to_type(Exception, software_error(MessagePrime)) then
         Message = "Software Error: " ++ MessagePrime
-    ;
+    else
         Message = string(univ_value(Exception))
     ).
 
@@ -2876,14 +2670,14 @@ set_get_message_hook(!IO).
     IO = IO0;
 ").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma no_inline(throw_if_near_stack_limits/0).
 
 throw_if_near_stack_limits :-
-    ( impure now_near_stack_limits ->
+    ( if impure now_near_stack_limits then
         throw(near_stack_limits)
-    ;
+    else
         true
     ).
 
@@ -2892,7 +2686,7 @@ throw_if_near_stack_limits :-
 
 :- pragma foreign_proc("C",
     now_near_stack_limits,
-    [will_not_call_mercury, no_sharing],
+    [will_not_call_mercury, thread_safe, no_sharing],
 "
 #ifdef  MR_HIGHLEVEL_CODE
     /*
@@ -2918,5 +2712,27 @@ throw_if_near_stack_limits :-
 now_near_stack_limits :-
     semidet_fail.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+
+    % The Java runtime system sometimes wants to report exceptions. Create
+    % a reference that it can use to call library code to report exceptions.
+    %
+:- pragma foreign_code("Java", "
+
+public static class ReportUncaughtException
+        implements jmercury.runtime.JavaInternal.ExceptionReporter
+{
+    public void reportUncaughtException(jmercury.runtime.Exception e)
+    {
+        ML_report_uncaught_exception((univ.Univ_0) e.exception);
+    }
+}
+
+static {
+    jmercury.runtime.JavaInternal.setExceptionReporter(
+        new ReportUncaughtException());
+}
+").
+
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

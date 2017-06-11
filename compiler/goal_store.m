@@ -18,10 +18,11 @@
 :- module transform_hlds.goal_store.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.instmap.
-:- import_module parse_tree.prog_data.
+:- import_module hlds.vartypes.
 
 :- import_module bool.
 :- import_module set.
@@ -91,10 +92,10 @@ ancestors_2(_GoalStore, [], _VisitedIds, _VarTypes, _ModuleInfo, _FullyStrict)
         = set.init.
 ancestors_2(GoalStore, [Id|Ids], VisitedIds, VarTypes, ModuleInfo, FullyStrict)
         =  AncestorIds :-
-    ( set.member(Id, VisitedIds) ->
+    ( if set.member(Id, VisitedIds) then
         AncestorIds = ancestors_2(GoalStore, Ids, VisitedIds, VarTypes,
             ModuleInfo, FullyStrict)
-    ;
+    else
         Ancestors = direct_ancestors(GoalStore, Id, VarTypes, ModuleInfo,
             FullyStrict),
         AncestorIds = set.list_to_set(Ancestors) `union`

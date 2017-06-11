@@ -9,30 +9,30 @@
 % Module: transform_hlds.ssdebug.m.
 % Authors: oannet, wangp.
 %
-% The ssdebug module does a source to source tranformation on each procedure
-% which allows the procedure to be debugged.
+% The ssdebug module does a source-to-source tranformation on each procedure
+% that allows the procedure to be debugged.
 %
 % The ssdebug transformation is disabled on standard library predicates,
 % because it would introduce cyclic dependencies between ssdb.m and the
-% standard library.  Disabling the transformation on the standard library is
+% standard library. Disabling the transformation on the standard library is
 % also useful for maintaining decent performance.
 %
-% The tranformation is divided into two passes.
+% The transformation is divided into two passes.
 %
 % The first pass replaces calls to standard library predicates, and closure
 % constructions referring to standard library predicates, by calls to and
-% closures over proxy predicates.  The proxy predicates generate events on
-% behalf of the standard library predicates.  There will be no events for
+% closures over proxy predicates. The proxy predicates generate events on
+% behalf of the standard library predicates. There will be no events for
 % further calls within the standard library, but that is better for
 % performance.
 %
 % The first pass also inserts calls to a context update procedure before every
-% procedure call (first or higher order).  This will update global variables
+% procedure call (first or higher order). This will update global variables
 % with the location of the next call site, which will be used by the CALL event
-% handler.  Context update calls are not required within proxy predicates.
+% handler. Context update calls are not required within proxy predicates.
 %
 % The second pass performs the main ssdebug transformation, adding calls to
-% procedures to handle debugger events.  The transformation depends on the
+% procedures to handle debugger events. The transformation depends on the
 % determinism of the procedure.
 %
 % det/cc_multi:
@@ -69,11 +69,11 @@
 %           CallVarDescs = [ ... ],
 %           Level = ...,
 %           impure handle_event_call(ProcId, CallVarDescs, Level),
-%           (
+%           ( if
 %               promise_equivalent_solutions [...] (
 %                   <original body>     % renaming outputs
 %               )
-%           ->
+%           then
 %               ExitVarDescs = [ ... | CallVarDescs ],
 %               impure handle_event_exit(ProcId, ExitVarDescs, DoRetryA),
 %               (
@@ -83,7 +83,7 @@
 %                   DoRetryA = do_not_retry,
 %                   % bind outputs
 %               )
-%           ;
+%           else
 %               impure handle_event_fail(ProcId, CallVarDescs, DoRetryB),
 %               (
 %                   DoRetryB = do_retry,
@@ -171,12 +171,14 @@
 %
 %    :- type pos == int.
 %
-%    :- type ssdb_tracel_level ---> shallow ; deep.
+%    :- type ssdb_tracel_level
+%       --->    shallow
+%       ;       deep.
 %
 % Output head variables may appear twice in a variable description list --
-% initially unbound, then overridden by a bound_head_var functor.  Then the
+% initially unbound, then overridden by a bound_head_var functor. Then the
 % ExitVarDescs can add output variable bindings to the CallVarDescs list,
-% instead of building new lists.  The pos fields give the argument numbers
+% instead of building new lists. The pos fields give the argument numbers
 % of head variables.
 %
 % The ProcId is of type ssdb.ssdb_proc_id.
@@ -187,18 +189,26 @@
 :- module transform_hlds.ssdebug.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
+:- import_module libs.
+:- import_module libs.globals.
 
 :- import_module io.
 
-:- pred ssdebug_transform_module(module_info::in, module_info::out,
-    io::di, io::uo) is det.
+:- inst shallow_or_deep % for ssdb_trace_level
+    --->    shallow
+    ;       deep.
+
+:- pred ssdebug_transform_module(ssdb_trace_level::in(shallow_or_deep),
+    module_info::in, module_info::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module check_hlds.polymorphism.
 :- import_module check_hlds.purity.
@@ -206,20 +216,25 @@
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.instmap.
+:- import_module hlds.make_goal.
 :- import_module hlds.passes_aux.
 :- import_module hlds.pred_table.
 :- import_module hlds.quantification.
-:- import_module libs.
-:- import_module libs.globals.
-:- import_module libs.trace_params.
+:- import_module hlds.status.
+:- import_module hlds.vartypes.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.builtin_lib_types.
 :- import_module parse_tree.file_names.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_detism.
+:- import_module parse_tree.prog_rename.
 :- import_module parse_tree.prog_type.
 
 :- import_module int.
-:- import_module io.
 :- import_module list.
 :- import_module map.
 :- import_module maybe.
@@ -230,33 +245,22 @@
 
 %-----------------------------------------------------------------------------%
 
-ssdebug_transform_module(!ModuleInfo, !IO) :-
-    module_info_ssdb_trace_level(!.ModuleInfo, SSTraceLevel),
+ssdebug_transform_module(SSTraceLevel, !ModuleInfo, !IO) :-
     (
-        SSTraceLevel = none,
-        true
-    ;
         SSTraceLevel = shallow,
-        % In the shallow trace level the parent of the library
-        % procedure also be of trace level shallow, thus we
-        % don't need to proxy the library methods.
+        % With the shallow trace level, the parent of a library procedure
+        % will also be have trace level shallow, thus we don't need to proxy
+        % the library methods.
         process_all_nonimported_procs(
-            update_module(ssdebug_process_proc(SSTraceLevel)),
+            update_module(ssdebug_process_proc_if_needed(SSTraceLevel)),
             !ModuleInfo)
     ;
         SSTraceLevel = deep,
         ssdebug_first_pass(!ModuleInfo),
         process_all_nonimported_procs(
-            update_module(ssdebug_process_proc(SSTraceLevel)),
+            update_module(ssdebug_process_proc_if_needed(SSTraceLevel)),
             !ModuleInfo)
     ).
-
-:- pred module_info_ssdb_trace_level(module_info::in, ssdb_trace_level::out)
-    is det.
-
-module_info_ssdb_trace_level(ModuleInfo, SSTraceLevel) :-
-    module_info_get_globals(ModuleInfo, Globals),
-    globals.get_ssdb_trace_level(Globals, SSTraceLevel).
 
 %-----------------------------------------------------------------------------%
 %
@@ -268,7 +272,7 @@ module_info_ssdb_trace_level(ModuleInfo, SSTraceLevel) :-
 :- pred ssdebug_first_pass(module_info::in, module_info::out) is det.
 
 ssdebug_first_pass(!ModuleInfo) :-
-    module_info_get_valid_predids(PredIds, !ModuleInfo),
+    module_info_get_valid_pred_ids(!.ModuleInfo, PredIds),
     list.foldl2(ssdebug_first_pass_in_pred, PredIds,
         map.init, _ProxyMap, !ModuleInfo).
 
@@ -304,10 +308,10 @@ ssdebug_first_pass_in_goal(!Goal, !ProcInfo, !ProxyMap, !ModuleInfo) :-
     !.Goal = hlds_goal(GoalExpr0, GoalInfo0),
     (
         GoalExpr0 = unify(_, _, _, Unification0, _),
-        (
+        ( if
             Unification0 = construct(_, ConsId0, _, _, _, _, _),
             ConsId0 = closure_cons(ShroudedPredProcId, lambda_normal)
-        ->
+        then
             PredProcId = unshroud_pred_proc_id(ShroudedPredProcId),
             PredProcId = proc(PredId, ProcId),
             lookup_proxy_pred(PredId, MaybeNewPredId, !ProxyMap, !ModuleInfo),
@@ -322,7 +326,7 @@ ssdebug_first_pass_in_goal(!Goal, !ProcInfo, !ProxyMap, !ModuleInfo) :-
             ;
                 MaybeNewPredId = no
             )
-        ;
+        else
             true
         )
     ;
@@ -346,8 +350,6 @@ ssdebug_first_pass_in_goal(!Goal, !ProcInfo, !ProxyMap, !ModuleInfo) :-
             insert_context_update_call(!.ModuleInfo, !Goal, !ProcInfo)
         ;
             Builtin = inline_builtin
-        ;
-            Builtin = out_of_line_builtin
         )
     ;
         GoalExpr0 = generic_call(_, _, _, _, _),
@@ -415,15 +417,15 @@ ssdebug_first_pass_in_case(Case0, Case, !ProcInfo, !ProxyMap, !ModuleInfo) :-
     proxy_map::in, proxy_map::out, module_info::in, module_info::out) is det.
 
 lookup_proxy_pred(PredId, MaybeNewPredId, !ProxyMap, !ModuleInfo) :-
-    ( map.search(!.ProxyMap, PredId, MaybeNewPredId0) ->
+    ( if map.search(!.ProxyMap, PredId, MaybeNewPredId0) then
         MaybeNewPredId = MaybeNewPredId0
-    ;
+    else
         module_info_pred_info(!.ModuleInfo, PredId, PredInfo),
         PredModule = pred_info_module(PredInfo),
-        ( mercury_std_library_module_name(PredModule) ->
+        ( if mercury_std_library_module_name(PredModule) then
             create_proxy_pred(PredId, NewPredId, !ModuleInfo),
             MaybeNewPredId = yes(NewPredId)
-        ;
+        else
             MaybeNewPredId = no
         ),
         map.det_insert(PredId, MaybeNewPredId, !ProxyMap)
@@ -435,7 +437,7 @@ lookup_proxy_pred(PredId, MaybeNewPredId, !ProxyMap, !ModuleInfo) :-
 create_proxy_pred(PredId, NewPredId, !ModuleInfo) :-
     some [!PredInfo] (
         module_info_pred_info(!.ModuleInfo, PredId, !:PredInfo),
-        pred_info_set_import_status(status_local, !PredInfo),
+        pred_info_set_status(pred_status(status_local), !PredInfo),
 
         ProcIds = pred_info_procids(!.PredInfo),
         list.foldl2(create_proxy_proc(PredId), ProcIds, !PredInfo,
@@ -512,33 +514,41 @@ insert_context_update_call(ModuleInfo, Goal0, Goal, !ProcInfo) :-
 % The main transformation.
 %
 
-:- pred ssdebug_process_proc(ssdb_trace_level::in,
+:- pred ssdebug_process_proc_if_needed(ssdb_trace_level::in,
     pred_proc_id::in, proc_info::in, proc_info::out,
     module_info::in, module_info::out) is det.
 
-ssdebug_process_proc(none, proc(_PredId, _ProcId), !ProcInfo, !ModuleInfo).
-ssdebug_process_proc(shallow, proc(PredId, ProcId), !ProcInfo, !ModuleInfo) :-
-        % Only transform the procedures in the interface
+ssdebug_process_proc_if_needed(SSTraceLevel, PredProcId,
+        !ProcInfo, !ModuleInfo) :-
+    (
+        SSTraceLevel = none
+    ;
+        SSTraceLevel = shallow,
+        PredProcId = proc(PredId, _ProcId),
+        % Only transform the procedures in the interface.
         % XXX We still need to fix the ssdb so that events generated
         % below the shallow call event aren't seen.
-    module_info_pred_info(!.ModuleInfo, PredId, PredInfo),
-    ( pred_info_is_exported(PredInfo) ->
-        ssdebug_process_proc_2(proc(PredId, ProcId), !ProcInfo, !ModuleInfo)
+        module_info_pred_info(!.ModuleInfo, PredId, PredInfo),
+        ( if pred_info_is_exported(PredInfo) then
+            ssdebug_process_proc(SSTraceLevel, PredProcId,
+                !ProcInfo, !ModuleInfo)
+        else
+            true
+        )
     ;
-        true
+        SSTraceLevel = deep,
+        % Transfrom all procedures.
+        ssdebug_process_proc(SSTraceLevel, PredProcId, !ProcInfo, !ModuleInfo)
     ).
-ssdebug_process_proc(deep, proc(PredId, ProcId), !ProcInfo, !ModuleInfo) :-
-        % Transfrom all procedures
-    ssdebug_process_proc_2(proc(PredId, ProcId), !ProcInfo, !ModuleInfo).
-    
-    
-:- pred ssdebug_process_proc_2(
+
+:- pred ssdebug_process_proc(ssdb_trace_level::in(shallow_or_deep),
     pred_proc_id::in, proc_info::in, proc_info::out,
     module_info::in, module_info::out) is det.
 
-ssdebug_process_proc_2(proc(PredId, ProcId), !ProcInfo, !ModuleInfo) :-
+ssdebug_process_proc(SSTraceLevel, PredProcId, !ProcInfo, !ModuleInfo) :-
+    PredProcId = proc(PredId, ProcId),
     proc_info_get_argmodes(!.ProcInfo, ArgModes),
-    ( check_arguments_modes(!.ModuleInfo, ArgModes) ->
+    ( if all_args_fully_input_or_output(!.ModuleInfo, ArgModes) then
         % We have different transformations for procedures of different
         % determinisms.
 
@@ -550,38 +560,43 @@ ssdebug_process_proc_2(proc(PredId, ProcId), !ProcInfo, !ModuleInfo) :-
             ( Determinism = detism_det
             ; Determinism = detism_cc_multi
             ),
-            ssdebug_process_proc_det(PredId, ProcId, !ProcInfo, !ModuleInfo)
+            ssdebug_process_proc_det(SSTraceLevel, PredId, ProcId,
+                !ProcInfo, !ModuleInfo)
         ;
             ( Determinism = detism_semi
             ; Determinism = detism_cc_non
             ),
-            ssdebug_process_proc_semi(PredId, ProcId, !ProcInfo, !ModuleInfo)
+            ssdebug_process_proc_semi(SSTraceLevel, PredId, ProcId,
+                !ProcInfo, !ModuleInfo)
         ;
             ( Determinism = detism_multi
             ; Determinism = detism_non
             ),
-            ssdebug_process_proc_nondet(PredId, ProcId, !ProcInfo, !ModuleInfo)
+            ssdebug_process_proc_nondet(SSTraceLevel, PredId, ProcId,
+                !ProcInfo, !ModuleInfo)
         ;
             Determinism = detism_erroneous,
-            ssdebug_process_proc_erroneous(PredId, ProcId, !ProcInfo,
-                !ModuleInfo)
+            ssdebug_process_proc_erroneous(SSTraceLevel, PredId, ProcId,
+                !ProcInfo, !ModuleInfo)
         ;
             Determinism = detism_failure,
-            ssdebug_process_proc_failure(PredId, ProcId, !ProcInfo,
-                !ModuleInfo)
+            ssdebug_process_proc_failure(SSTraceLevel, PredId, ProcId,
+                !ProcInfo, !ModuleInfo)
         )
-    ;
-        % In the case of a mode which is not fully input or output, the
-        % procedure is not transformed.
+    else
+        % In the case of a mode which is not fully input or output,
+        % we don't transform the procedure, since we don't know how.
         true
     ).
 
     % Source-to-source transformation for a deterministic goal.
     %
-:- pred ssdebug_process_proc_det(pred_id::in, proc_id::in,
-    proc_info::in, proc_info::out, module_info::in, module_info::out) is det.
+:- pred ssdebug_process_proc_det(ssdb_trace_level::in(shallow_or_deep),
+    pred_id::in, proc_id::in, proc_info::in, proc_info::out,
+    module_info::in, module_info::out) is det.
 
-ssdebug_process_proc_det(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
+ssdebug_process_proc_det(SSTraceLevel, PredId, ProcId,
+        !ProcInfo, !ModuleInfo) :-
     some [!PredInfo, !VarSet, !VarTypes] (
         module_info_pred_info(!.ModuleInfo, PredId, !:PredInfo),
         proc_info_get_goal(!.ProcInfo, OrigBodyGoal),
@@ -602,7 +617,7 @@ ssdebug_process_proc_det(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
             !VarTypes, map.init, BoundVarDescsAtCall),
 
         % Set the ssdb_tracing_level.
-        make_level_construction(!.ModuleInfo,
+        make_level_construction(SSTraceLevel,
             ConstructLevelGoal, LevelVar, !VarSet, !VarTypes),
 
         % Generate the call to handle_event_call(ProcId, VarList).
@@ -670,10 +685,12 @@ ssdebug_process_proc_det(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
 
     % Source-to-source transformation for a semidet goal.
     %
-:- pred ssdebug_process_proc_semi(pred_id::in, proc_id::in,
-    proc_info::in, proc_info::out, module_info::in, module_info::out) is det.
+:- pred ssdebug_process_proc_semi(ssdb_trace_level::in(shallow_or_deep),
+    pred_id::in, proc_id::in, proc_info::in, proc_info::out,
+    module_info::in, module_info::out) is det.
 
-ssdebug_process_proc_semi(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
+ssdebug_process_proc_semi(SSTraceLevel, PredId, ProcId,
+        !ProcInfo, !ModuleInfo) :-
     some [!PredInfo, !VarSet, !VarTypes] (
         module_info_pred_info(!.ModuleInfo, PredId, !:PredInfo),
         proc_info_get_goal(!.ProcInfo, OrigBodyGoal),
@@ -694,7 +711,7 @@ ssdebug_process_proc_semi(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
             !VarTypes, map.init, BoundVarDescsAtCall),
 
         % Set the ssdb_tracing_level.
-        make_level_construction(!.ModuleInfo,
+        make_level_construction(SSTraceLevel,
             ConstructLevelGoal, LevelVar, !VarSet, !VarTypes),
 
         % Generate the call to handle_event_call.
@@ -741,7 +758,7 @@ ssdebug_process_proc_semi(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
         ImpureGoalInfo = impure_goal_info(ProcDetism),
 
         % The condition of the if-then-else is the original body with renamed
-        % output variables.  Introduce a promise_equivalent_solutions scope to
+        % output variables. Introduce a promise_equivalent_solutions scope to
         % put it into a single solution context if the procedure (which we call
         % recursively later) was _declared_ to have more solutions.
         determinism_components(ProcDetism, _CanFail, Solns),
@@ -798,10 +815,12 @@ ssdebug_process_proc_semi(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
 
     % Source-to-source transformation for a nondeterministic procedure.
     %
-:- pred ssdebug_process_proc_nondet(pred_id::in, proc_id::in,
-    proc_info::in, proc_info::out, module_info::in, module_info::out) is det.
+:- pred ssdebug_process_proc_nondet(ssdb_trace_level::in(shallow_or_deep),
+    pred_id::in, proc_id::in, proc_info::in, proc_info::out,
+    module_info::in, module_info::out) is det.
 
-ssdebug_process_proc_nondet(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
+ssdebug_process_proc_nondet(SSTraceLevel, PredId, ProcId,
+        !ProcInfo, !ModuleInfo) :-
     some [!PredInfo, !VarSet, !VarTypes] (
         module_info_pred_info(!.ModuleInfo, PredId, !:PredInfo),
         proc_info_get_goal(!.ProcInfo, OrigBodyGoal),
@@ -822,7 +841,7 @@ ssdebug_process_proc_nondet(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
             !VarTypes, map.init, BoundVarDescsAtCall),
 
         % Set the ssdb_tracing_level.
-        make_level_construction(!.ModuleInfo,
+        make_level_construction(SSTraceLevel,
             ConstructLevelGoal, LevelVar, !VarSet, !VarTypes),
 
         % Generate the call to handle_event_call.
@@ -896,10 +915,12 @@ ssdebug_process_proc_nondet(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
 
     % Source-to-source transformation for a failure procedure.
     %
-:- pred ssdebug_process_proc_failure(pred_id::in, proc_id::in,
-    proc_info::in, proc_info::out, module_info::in, module_info::out) is det.
+:- pred ssdebug_process_proc_failure(ssdb_trace_level::in(shallow_or_deep),
+    pred_id::in, proc_id::in, proc_info::in, proc_info::out,
+    module_info::in, module_info::out) is det.
 
-ssdebug_process_proc_failure(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
+ssdebug_process_proc_failure(SSTraceLevel, PredId, ProcId,
+        !ProcInfo, !ModuleInfo) :-
     some [!PredInfo, !VarSet, !VarTypes] (
         module_info_pred_info(!.ModuleInfo, PredId, !:PredInfo),
         proc_info_get_goal(!.ProcInfo, OrigBodyGoal),
@@ -921,7 +942,7 @@ ssdebug_process_proc_failure(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
             !VarTypes, map.init, _BoundVarDescsAtCall),
 
         % Set the ssdb_tracing_level.
-        make_level_construction(!.ModuleInfo,
+        make_level_construction(SSTraceLevel,
             ConstructLevelGoal, LevelVar, !VarSet, !VarTypes),
 
         % Generate the call to handle_event_call.
@@ -963,10 +984,12 @@ ssdebug_process_proc_failure(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
 
     % Source-to-source transformation for an erroneous procedure.
     %
-:- pred ssdebug_process_proc_erroneous(pred_id::in, proc_id::in,
-    proc_info::in, proc_info::out, module_info::in, module_info::out) is det.
+:- pred ssdebug_process_proc_erroneous(ssdb_trace_level::in(shallow_or_deep),
+    pred_id::in, proc_id::in, proc_info::in, proc_info::out,
+    module_info::in, module_info::out) is det.
 
-ssdebug_process_proc_erroneous(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
+ssdebug_process_proc_erroneous(SSTraceLevel, PredId, ProcId,
+        !ProcInfo, !ModuleInfo) :-
     some [!PredInfo, !VarSet, !VarTypes] (
         module_info_pred_info(!.ModuleInfo, PredId, !:PredInfo),
         proc_info_get_goal(!.ProcInfo, OrigBodyGoal),
@@ -988,7 +1011,7 @@ ssdebug_process_proc_erroneous(PredId, ProcId, !ProcInfo, !ModuleInfo) :-
             !VarTypes, map.init, _BoundVarDescsAtCall),
 
         % Set the ssdb_tracing_level.
-        make_level_construction(!.ModuleInfo,
+        make_level_construction(SSTraceLevel,
             ConstructLevelGoal, LevelVar, !VarSet, !VarTypes),
 
         % Generate the call to handle_event_call(ProcId, VarList).
@@ -1199,7 +1222,7 @@ make_handle_event(HandleTypeString, Arguments, HandleEventGoal, !ModuleInfo,
     %   !VarSet, !VarTypes)
     %
     % Returns a set of goals, Goals, which build the ssdb_proc_id structure
-    % for the given pred and proc infos.  The Var returned holds the
+    % for the given pred and proc infos. The Var returned holds the
     % ssdb_proc_id.
     %
 :- pred make_proc_id_construction(module_info::in, pred_info::in,
@@ -1209,13 +1232,13 @@ make_handle_event(HandleTypeString, Arguments, HandleEventGoal, !ModuleInfo,
 make_proc_id_construction(ModuleInfo, PredInfo, Goals, ProcIdVar,
         !VarSet, !VarTypes) :-
     pred_info_get_origin(PredInfo, Origin),
-    (
+    ( if
         Origin = origin_transformed(transform_source_to_source_debug, _,
             OrigPredId)
-    ->
+    then
         % This predicate is a proxy for a standard library predicate.
         module_info_pred_info(ModuleInfo, OrigPredId, OrigPredInfo)
-    ;
+    else
         OrigPredInfo = PredInfo
     ),
     SymModuleName = pred_info_module(OrigPredInfo),
@@ -1243,16 +1266,12 @@ make_proc_id_construction(ModuleInfo, PredInfo, Goals, ProcIdVar,
     % Construct the goal which sets the ssdb_tracing_level for
     % the current goal. ie Level = shallow
     %
-:- pred make_level_construction(module_info::in,
+:- pred make_level_construction(ssdb_trace_level::in(shallow_or_deep),
     hlds_goal::out, prog_var::out, prog_varset::in, prog_varset::out,
     vartypes::in, vartypes::out) is det.
 
-make_level_construction(ModuleInfo, Goal, LevelVar, !VarSet, !VarTypes) :-
-    module_info_ssdb_trace_level(ModuleInfo, SSTraceLevel),
+make_level_construction(SSTraceLevel, Goal, LevelVar, !VarSet, !VarTypes) :-
     (
-        SSTraceLevel = none,
-        unexpected($module, $pred, "unexpected ss trace level")
-    ;
         SSTraceLevel = shallow,
         ConsId = shallow_cons_id
     ;
@@ -1266,10 +1285,10 @@ make_level_construction(ModuleInfo, Goal, LevelVar, !VarSet, !VarTypes) :-
     % XXX Other mode than fully input or output are not handled for the
     % moment. So the code of these procedures will not be generated.
     %
-:- pred check_arguments_modes(module_info::in, list(mer_mode)::in)
+:- pred all_args_fully_input_or_output(module_info::in, list(mer_mode)::in)
     is semidet.
 
-check_arguments_modes(ModuleInfo, HeadModes) :-
+all_args_fully_input_or_output(ModuleInfo, HeadModes) :-
     all [Modes] (
         list.member(Mode, HeadModes)
     =>
@@ -1324,23 +1343,23 @@ make_arg_list(Pos0, InstMap, [ProgVar | ProgVars], Renaming, OutVar,
         !ModuleInfo, !ProcInfo, !PredInfo, !VarSet, !VarTypes, !BoundVarDescs),
 
     lookup_var_type(!.VarTypes, ProgVar, ProgVarType),
-    (
+    ( if
         ( ProgVarType = io_state_type
         ; ProgVarType = io_io_type
         )
-    ->
+    then
         OutVar = OutVar0,
         Goals = Goals0
-    ;
+    else
         % BoundVarDescs is filled with the description of the input variable
         % during the first call to make_arg_list predicate.
         % At the second call, we search if the current ProgVar already exist
         % in the map and if yes, copy his recorded description.
 
-        ( map.search(!.BoundVarDescs, ProgVar, ExistingVarDesc) ->
+        ( if map.search(!.BoundVarDescs, ProgVar, ExistingVarDesc) then
             ValueGoals = [],
             VarDesc = ExistingVarDesc
-        ;
+        else
             make_var_value(InstMap, ProgVar, Renaming, VarDesc, Pos0,
                 ValueGoals, !ModuleInfo, !ProcInfo, !PredInfo, !VarSet,
                 !VarTypes, !BoundVarDescs)
@@ -1392,7 +1411,7 @@ make_var_value(InstMap, VarToInspect, Renaming, VarDesc, VarPos, Goals,
         ConstructVarPos, VarPosVar, !VarSet, !VarTypes),
 
     varset.new_named_var("VarDesc", VarDesc, !VarSet),
-    ( var_is_ground_in_instmap(!.ModuleInfo, InstMap, VarToInspect) ->
+    ( if var_is_ground_in_instmap(!.ModuleInfo, InstMap, VarToInspect) then
         % Update proc_varset and proc_vartypes; without this,
         % polymorphism_make_type_info_var uses a prog_var which is
         % already bound.
@@ -1413,7 +1432,10 @@ make_var_value(InstMap, VarToInspect, Renaming, VarDesc, VarPos, Goals,
         lookup_var_type(!.VarTypes, VarToInspect, MerType),
         polymorphism_make_type_info_var(MerType, Context, TypeInfoVar,
             TypeInfoGoals0, PolyInfo0, PolyInfo),
-        poly_info_extract(PolyInfo, !PredInfo, !ProcInfo, !:ModuleInfo),
+        poly_info_extract(PolyInfo, PolySpecs, !PredInfo, !ProcInfo,
+            !:ModuleInfo),
+        expect(unify(PolySpecs, []), $module, $pred,
+            "got errors while making type_info_var"),
 
         proc_info_get_varset(!.ProcInfo, !:VarSet),
         proc_info_get_vartypes(!.ProcInfo, !:VarTypes),
@@ -1425,10 +1447,10 @@ make_var_value(InstMap, VarToInspect, Renaming, VarDesc, VarPos, Goals,
 
         % Renaming contains the names of all instantiated arguments
         % during the execution of the procedure's body.
-        ( map.is_empty(Renaming) ->
+        ( if map.is_empty(Renaming) then
             construct_functor(VarDesc, ConsId, [TypeInfoVar, VarNameVar,
                 VarPosVar, VarToInspect], ConstructVarGoal)
-        ;
+        else
             map.lookup(Renaming, VarToInspect, RenamedVar),
             construct_functor(VarDesc, ConsId, [TypeInfoVar, VarNameVar,
                 VarPosVar, RenamedVar], ConstructVarGoal)
@@ -1444,7 +1466,7 @@ make_var_value(InstMap, VarToInspect, Renaming, VarDesc, VarPos, Goals,
         Goals = [ConstructVarName, ConstructVarPos | TypeInfoGoals] ++
             [ConstructVarGoal],
         map.det_insert(VarToInspect, VarDesc, !BoundVarDescs)
-    ;
+    else
         ConsId = cons(qualified(SSDBModule, "unbound_head_var"), 2,
             VarValueTypeCtor),
         add_var_type(VarDesc, VarValueType, !VarTypes),

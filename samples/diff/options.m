@@ -5,11 +5,11 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % Main author: bromage
-% 
+%
 % This module contains all the option handling code for diff.
-% 
+%
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -22,7 +22,7 @@
 
 %-----------------------------------------------------------------------------%
 
-:- pred options.get_option_ops(option_ops(option) :: out(option_ops)) is det.
+:- pred get_option_ops(option_ops(option)::out(option_ops)) is det.
 
     % Process the option table, perhaps returning an error message
     % if there was some inconsistency or other error.
@@ -47,7 +47,7 @@
     % Output styles
     --->    help
     ;       version
-    ;       context 
+    ;       context
     ;       context_style_output
     ;       unified
     ;       unified_style_output
@@ -300,7 +300,7 @@ special_handler(context_style_output, bool(yes), !.Options, ok(!:Options)) :-
     (
         Context0 = no,
         Context = yes(3)
-    ;   
+    ;
         Context0 = yes(C),
         Context = yes(C)
     ),
@@ -371,7 +371,7 @@ special_handler(binary, _, _, error(Msg)) :-
 
 %-----------------------------------------------------------------------------%
 
-options.get_option_ops(OptionOps) :-
+get_option_ops(OptionOps) :-
     OptionOps = option_ops_multi(
         short_option,
         long_option,
@@ -384,11 +384,11 @@ options.get_option_ops(OptionOps) :-
     % Postprocess the options.
     %
 postprocess_options(ok(OptionTable0), Result, !IO) :-
-    ( postprocess_output_style(OptionTable0, OutputStyle) ->
+    ( if postprocess_output_style(OptionTable0, OutputStyle) then
         globals.io_init(OptionTable0, !IO),
         globals.io_set_output_style(OutputStyle, !IO),
         Result = no
-    ;
+    else
         Result = yes("Can't set more than one output style.")
     ).
 postprocess_options(error(Msg), yes(Msg), !IO).
@@ -399,7 +399,7 @@ postprocess_options(error(Msg), yes(Msg), !IO).
     is semidet.
 
 postprocess_output_style(OptionTable, Style) :-
-    (
+    ( if
         map.search(OptionTable, help, bool(UseHelp)),
         map.search(OptionTable, version, bool(UseVersion)),
         map.search(OptionTable, context, maybe_int(UseContext)),
@@ -411,11 +411,11 @@ postprocess_output_style(OptionTable, Style) :-
         map.search(OptionTable, ifdef, maybe_string(UseIfdef)),
         map.search(OptionTable, side_by_side, bool(UseSideBySide)),
         map.search(OptionTable, cvs_merge_conflict, bool(CVS))
-    ->
+    then
         postprocess_output_style_2(UseHelp, UseVersion, UseContext,
             UseUnified, UseEd, UseForwardEd, UseRCS, UseBrief,
             UseIfdef, UseSideBySide, CVS, Style)
-    ;
+    else
         error("postprocess_output_style")
     ).
 
@@ -474,7 +474,7 @@ options_help(!IO) :-
         "\t-q, --brief\n",
         "\t\tOutput only whether or not files differ.\n",
         "\t-D <name>, --ifdef <name>\n",
-        "\t\tProduce output in #ifdef <name> format.\n", 
+        "\t\tProduce output in #ifdef <name> format.\n",
         "\t-y, --side-by-side\n",
         "\t\tProduce output in side-by-side format.\n",
         "\t\t-w <num>, --width <num>  Output at most <num> (default 130)\n",

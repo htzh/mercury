@@ -21,7 +21,7 @@
 :- import_module hlds.
 :- import_module hlds.hlds_data.
 :- import_module mdbcomp.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
@@ -1073,6 +1073,25 @@ binop_code(compound_lt,             38).
 binop_code(str_cmp,                 39).
 binop_code(float_word_bits,         40).
 binop_code(float_from_dword,        41).
+binop_code(pointer_equal_conservative, 42).
+binop_code(offset_str_eq(_),        43).
+binop_code(string_unsafe_index_code_unit, 44).
+binop_code(uint_eq,                 45).
+binop_code(uint_ne,                 46).
+binop_code(uint_lt,                 47).
+binop_code(uint_gt,                 48).
+binop_code(uint_le,                 49).
+binop_code(uint_ge,                 50).
+binop_code(uint_add,                51).
+binop_code(uint_sub,                52).
+binop_code(uint_mul,                53).
+binop_code(uint_div,                54).
+binop_code(uint_mod,                55).
+binop_code(uint_bitwise_and,        56).
+binop_code(uint_bitwise_or,         57).
+binop_code(uint_bitwise_xor,        58).
+binop_code(uint_unchecked_left_shift, 59).
+binop_code(uint_unchecked_right_shift, 60).
 
 :- pred binop_debug(binary_op::in, string::out) is det.
 
@@ -1118,6 +1137,25 @@ binop_debug(compound_lt,            "compound_lt").
 binop_debug(str_cmp,                "strcmp").
 binop_debug(float_word_bits,        "float_word_bits").
 binop_debug(float_from_dword,       "float_from_dword").
+binop_debug(pointer_equal_conservative, "pointer_equal_conservative").
+binop_debug(offset_str_eq(_),       "offset_str_eq").
+binop_debug(string_unsafe_index_code_unit, "string_unsafe_index_code_unit").
+binop_debug(uint_eq,                "uint_eq").
+binop_debug(uint_ne,                "uint_ne").
+binop_debug(uint_lt,                "uint_lt").
+binop_debug(uint_gt,                "uint_gt").
+binop_debug(uint_le,                "uint_le").
+binop_debug(uint_ge,                "uint_ge").
+binop_debug(uint_add,               "uint_add").
+binop_debug(uint_sub,               "uint_sub").
+binop_debug(uint_mul,               "uint_mul").
+binop_debug(uint_div,               "uint_div").
+binop_debug(uint_mod,               "uint_mod").
+binop_debug(uint_bitwise_and,       "uint_bitwise_and").
+binop_debug(uint_bitwise_or,        "uint_bitwise_or").
+binop_debug(uint_bitwise_xor,       "uint_bitwise_xor").
+binop_debug(uint_unchecked_left_shift, "uint_unchecked_left_shift").
+binop_debug(uint_unchecked_right_shift, "uint_unchecked_right_shift").
 
 :- pred unop_code(unary_op::in, int::out) is det.
 
@@ -1132,6 +1170,10 @@ unop_code(logical_not,          7).
 unop_code(hash_string,          8).
 unop_code(hash_string2,         9).
 unop_code(hash_string3,        10).
+unop_code(hash_string4,        11).
+unop_code(hash_string5,        12).
+unop_code(hash_string6,        13).
+unop_code(uint_bitwise_complement, 14).
 
 :- pred unop_debug(unary_op::in, string::out) is det.
 
@@ -1146,6 +1188,10 @@ unop_debug(logical_not,         "not").
 unop_debug(hash_string,         "hash_string").
 unop_debug(hash_string2,        "hash_string2").
 unop_debug(hash_string3,        "hash_string3").
+unop_debug(hash_string4,        "hash_string4").
+unop_debug(hash_string5,        "hash_string5").
+unop_debug(hash_string6,        "hash_string6").
+unop_debug(uint_bitwise_complement, "uint_bitwise_complement").
 
 %---------------------------------------------------------------------------%
 
@@ -1154,12 +1200,13 @@ unop_debug(hash_string3,        "hash_string3").
 :- pred debug_cstring(string::in, io::di, io::uo) is det.
 
 debug_cstring(Str, !IO) :-
-    io.write_char('"', !IO),
-    c_util.output_quoted_string(Str, !IO),
-    io.write_char('"', !IO),
+    io.output_stream(Stream, !IO),
+    io.write_char(Stream, '"', !IO),
+    c_util.output_quoted_string(Stream, Str, !IO),
+    io.write_char(Stream, '"', !IO),
     % XXX: We need the trailing space in case something follows
     % the string as a bytecode argument. This is not very elegant.
-    io.write_char(' ', !IO).
+    io.write_char(Stream, ' ', !IO).
 
 :- pred debug_string(string::in, io::di, io::uo) is det.
 

@@ -5,19 +5,20 @@
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
-% 
+%
 % File: inst_graph.m.
 % Author: dmo.
-% 
+%
 % This module defines operations on instantiation graphs. The purpose of the
 % data structure and of the operations on it are defined in chapter 6 of
 % David Overton's PhD thesis.
-% 
+%
 %-----------------------------------------------------------------------------%
 
 :- module hlds.inst_graph.
 :- interface.
 
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module io.
@@ -135,12 +136,11 @@
     list(prog_var)::in, list(prog_var)::in, prog_var::out, prog_var::out)
     is nondet.
 
-    % Merge two inst_graphs by renaming the variables in the second
-    % inst_graph. Also return the variable substitution map.
+    % Merge two inst_graphs by renaming the variables in the second inst_graph.
+    % Also return the variable substitution map.
     %
 :- pred merge(inst_graph::in, prog_varset::in, inst_graph::in, prog_varset::in,
-    inst_graph::out, prog_varset::out, map(prog_var, prog_var)::out)
-    is det.
+    inst_graph::out, prog_varset::out, map(prog_var, prog_var)::out) is det.
 
 %   % Join two inst_graphs together by taking the maximum unrolling
 %   % of the type tree of each variable from the two graphs.
@@ -185,8 +185,7 @@
 
 :- implementation.
 
-:- import_module hlds.hlds_out.
-:- import_module hlds.hlds_out.hlds_out_util.
+:- import_module parse_tree.prog_out.
 
 :- import_module require.
 :- import_module set.
@@ -239,9 +238,9 @@ descendant_2(InstGraph, Seen, Var, Descendant) :-
     (
         Descendant = Arg
     ;
-        ( Arg `set.member` Seen ->
+        ( if Arg `set.member` Seen then
             fail
-        ;
+        else
             descendant_2(InstGraph, Seen `set.insert` Arg, Arg, Descendant)
         )
     ).
@@ -267,9 +266,9 @@ foldl_reachable_aux(P, InstGraph, Var, Seen, !Acc) :-
     map.lookup(InstGraph, Var, node(Functors, _)),
     map.foldl((pred(_ConsId::in, Args::in, MAcc0::in, MAcc::out) is det :-
         list.foldl((pred(Arg::in, LAcc0::in, LAcc::out) is det :-
-            ( Arg `set.member` Seen ->
+            ( if Arg `set.member` Seen then
                 LAcc = LAcc0
-            ;
+            else
                 foldl_reachable_aux(P, InstGraph, Arg, Seen `set.insert` Arg,
                     LAcc0, LAcc)
             )
@@ -296,10 +295,10 @@ foldl_reachable_aux2(P, InstGraph, Var, Seen, !Acc1, !Acc2) :-
             MAcc20::in, MAcc2::out) is det :-
         list.foldl2((pred(Arg::in, LAccA0::in, LAccA::out,
                 LAccB0::in, LAccB::out) is det :-
-            ( Arg `set.member` Seen ->
+            ( if Arg `set.member` Seen then
                 LAccA = LAccA0,
                 LAccB = LAccB0
-            ;
+            else
                 foldl_reachable_aux2(P, InstGraph, Arg, Seen `set.insert` Arg,
                     LAccA0, LAccA, LAccB0, LAccB)
             )
@@ -334,18 +333,18 @@ corresponding_nodes_2(InstGraphA, InstGraphB, SeenA0, SeenB0, A, B, V, W) :-
     SeenA = SeenA0 `set.insert` A,
     SeenB = SeenB0 `set.insert` B,
 
-    ( map.member(FunctorsA, ConsId, ArgsA) ->
-        ( map.is_empty(FunctorsB) ->
+    ( if map.member(FunctorsA, ConsId, ArgsA) then
+        ( if map.is_empty(FunctorsB) then
             list.member(V0, ArgsA),
             corresponding_nodes_2(InstGraphA, InstGraphB, SeenA, SeenB,
                 V0, B, V, W)
-        ;
+        else
             map.search(FunctorsB, ConsId, ArgsB),
             corresponding_members(ArgsA, ArgsB, V0, W0),
             corresponding_nodes_2(InstGraphA, InstGraphB, SeenA, SeenB,
                 V0, W0, V, W)
         )
-    ;
+    else
         map.member(FunctorsB, _ConsId, ArgsB),
         list.member(W0, ArgsB),
         corresponding_nodes_2(InstGraphA, InstGraphB, SeenA, SeenB,
@@ -360,24 +359,17 @@ corresponding_members([A | _], [B | _], A, B).
 corresponding_members([_ | As], [_ | Bs], A, B) :-
     corresponding_members(As, Bs, A, B).
 
-merge(InstGraph0, VarSet0, NewInstGraph, NewVarSet, InstGraph, VarSet, Sub) :-
-    varset.merge_subst_without_names(VarSet0, NewVarSet, VarSet, Sub0),
-    (
-        map.map_values_only(pred(term.variable(V, _)::in, V::out) is semidet,
-            Sub0, Sub1)
-    ->
-        Sub = Sub1
-    ;
-        unexpected($module, $pred, "non-variable terms in substitution")
-    ),
+merge(InstGraph0, VarSet0, NewInstGraph, NewVarSet, InstGraph, VarSet,
+        Renaming) :-
+    varset.merge_renaming_without_names(VarSet0, NewVarSet, VarSet, Renaming),
     map.foldl((pred(Var0::in, Node0::in, IG0::in, IG::out) is det :-
         Node0 = node(Functors0, MaybeParent),
         map.map_values_only(
             (pred(Args0::in, Args::out) is det :-
-                map.apply_to_list(Args0, Sub, Args)),
+                map.apply_to_list(Args0, Renaming, Args)),
             Functors0, Functors),
         Node = node(Functors, MaybeParent),
-        map.lookup(Sub, Var0, Var),
+        map.lookup(Renaming, Var0, Var),
         map.det_insert(Var, Node, IG0, IG)
     ), NewInstGraph, InstGraph0, InstGraph).
 
@@ -390,11 +382,11 @@ merge(InstGraph0, VarSet0, NewInstGraph, NewVarSet, InstGraph, VarSet, Sub) :-
 %       ), VarsB),
 %   list.foldl2(join_nodes(InstGraphB, VarSetB), VarsB, InstGraphA,
 %       InstGraph, VarSetA, VarSet).
-% 
+%
 % :- pred join_nodes(inst_graph, prog_varset, prog_var, inst_graph, inst_graph,
 %       prog_varset, prog_varset).
 % :- mode join_nodes(in, in, in, in, out, in, out) is det.
-% 
+%
 % join_nodes(_, _, _, _, _, _, _) :- error("join_nodes: NYI").
 
 %-----------------------------------------------------------------------------%
@@ -424,7 +416,7 @@ dump_node(VarSet, Var, Node, !IO) :-
 
 dump_functor(VarSet, ConsId, Args, !IO) :-
     io.write_string("%%\t", !IO),
-    write_cons_id_and_arity(ConsId, !IO),
+    io.write_string(cons_id_and_arity_to_string(ConsId), !IO),
     (
         Args = [_ | _],
         io.write_char('(', !IO),
@@ -444,23 +436,21 @@ dump_var(VarSet, Var, !IO) :-
 
 :- type inst_graph_info
     --->    inst_graph_info(
+                % Inst graph derived from the mode declarations,
+                % if there are any. If there are no mode declarations
+                % for the pred, this is the same as the
+                % implementation_inst_graph.
                 interface_inst_graph    :: inst_graph,
-                                        % Inst graph derived from the mode
-                                        % declarations, if there are any.
-                                        % If there are no mode declarations
-                                        % for the pred, this is the same as
-                                        % the implementation_inst_graph.
 
+                % Vars that appear in the head of the mode declaration
+                % constraint.
                 interface_vars          :: list(prog_var),
-                                        % Vars that appear in the head of the
-                                        % mode declaration constraint.
 
+                % Varset used for interface_inst_graph.
                 interface_varset        :: prog_varset,
-                                        % Varset used for interface_inst_graph.
 
+                % Inst graph derived from the body of the predicate.
                 implementation_inst_graph :: inst_graph
-                                        % Inst graph derived from the body of
-                                        % the predicate.
             ).
 
 inst_graph_info_init = inst_graph_info(InstGraph, [], VarSet, InstGraph) :-

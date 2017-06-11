@@ -18,33 +18,41 @@
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_out.hlds_out_util.
 :- import_module hlds.hlds_pred.
+:- import_module hlds.status.
+:- import_module hlds.vartypes.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module parse_tree.
+:- import_module parse_tree.parse_tree_out_info.
 :- import_module parse_tree.prog_data.
 
-:- import_module bool.
 :- import_module io.
 :- import_module list.
 
 %-----------------------------------------------------------------------------%
 
-:- pred write_pred(hlds_out_info::in, output_lang::in, int::in,
-    module_info::in, pred_id::in, pred_info::in, io::di, io::uo) is det.
+:- pred write_pred(hlds_out_info::in, output_lang::in, module_info::in,
+    int::in, pred_id::in, pred_info::in, io::di, io::uo) is det.
 
-    % write_clause(Info, Lang, Indent, ModuleInfo, PredId, VarSet,
-    %   AppendVarNums, HeadTerms, PredOrFunc, Clause, UseDeclaredModes,
-    %   MaybeVarTypes, !IO).
-    %
-:- pred write_clause(hlds_out_info::in, output_lang::in, int::in,
-    module_info::in, pred_id::in, prog_varset::in, bool::in,
-    list(prog_term)::in, pred_or_func::in, clause::in, bool::in,
-    maybe_vartypes::in, io::di, io::uo) is det.
+:- type write_which_modes
+    --->    write_actual_modes
+    ;       write_declared_modes.
 
-    % write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
-    %    ImportStatus, Proc, !IO).
+    % write_clause(Info, Lang, ModuleInfo, PredId, PredOrFunc,
+    %   VarSet, TypeQual, VarNamePrint, WriteWhichModes, Indent,
+    %   HeadTerms, Clause, !IO).
     %
-:- pred write_proc(hlds_out_info::in, int::in, bool::in, module_info::in,
-    pred_id::in, proc_id::in, import_status::in, proc_info::in,
-    io::di, io::uo) is det.
+:- pred write_clause(hlds_out_info::in, output_lang::in, module_info::in,
+    pred_id::in, pred_or_func::in, prog_varset::in, maybe_vartypes::in,
+    var_name_print::in, write_which_modes::in, int::in,
+    list(prog_term)::in, clause::in, io::di, io::uo) is det.
+
+    % write_proc(Info, ModuleInfo, PredId, ImportStatus, VarNamePrint, Indent,
+    %   ProcId, ProcInfo, !IO).
+    %
+:- pred write_proc(hlds_out_info::in, module_info::in,
+    pred_id::in, pred_status::in, var_name_print::in, int::in,
+    proc_id::in, proc_info::in, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 
@@ -56,15 +64,13 @@
 
 %-----------------------------------------------------------------------------%
 
-:- func import_status_to_string(import_status) = string.
-
     % Print out the name of a marker.
     %
-:- pred write_marker(marker::in, io::di, io::uo) is det.
+:- pred write_marker(pred_marker::in, io::di, io::uo) is det.
 
     % Find the name of a marker.
     %
-:- pred marker_name(marker::in, string::out) is det.
+:- pred marker_name(pred_marker::in, string::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -76,22 +82,29 @@
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_llds.
 :- import_module hlds.hlds_out.hlds_out_goal.
-:- import_module hlds.hlds_out.hlds_out_mode.
 :- import_module hlds.hlds_rtti.
 :- import_module mdbcomp.goal_path.
 :- import_module mdbcomp.program_representation.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.mercury_to_mercury.
+:- import_module parse_tree.parse_tree_out_pragma.
+:- import_module parse_tree.parse_tree_out_pred_decl.
+:- import_module parse_tree.parse_tree_out_term.
+:- import_module parse_tree.parse_tree_to_term.
 :- import_module parse_tree.prog_ctgc.
+:- import_module parse_tree.prog_data_pragma.
 :- import_module parse_tree.prog_out.
 :- import_module parse_tree.prog_util.
 :- import_module parse_tree.set_of_var.
 
 :- import_module assoc_list.
+:- import_module bool.
 :- import_module int.
 :- import_module map.
 :- import_module maybe.
 :- import_module pair.
 :- import_module require.
+:- import_module set.
 :- import_module string.
 :- import_module term.
 :- import_module varset.
@@ -101,7 +114,7 @@
 % Write out predicates.
 %
 
-write_pred(Info, Lang, Indent, ModuleInfo, PredId, PredInfo, !IO) :-
+write_pred(Info, Lang, ModuleInfo, Indent, PredId, PredInfo, !IO) :-
     Module = pred_info_module(PredInfo),
     PredName = pred_info_name(PredInfo),
     PredOrFunc = pred_info_is_pred_or_func(PredInfo),
@@ -109,41 +122,40 @@ write_pred(Info, Lang, Indent, ModuleInfo, PredId, PredInfo, !IO) :-
     pred_info_get_exist_quant_tvars(PredInfo, ExistQVars),
     pred_info_get_typevarset(PredInfo, TVarSet),
     pred_info_get_clauses_info(PredInfo, ClausesInfo),
-    pred_info_get_context(PredInfo, Context),
-    pred_info_get_import_status(PredInfo, ImportStatus),
+    pred_info_get_status(PredInfo, PredStatus),
     pred_info_get_markers(PredInfo, Markers),
     pred_info_get_class_context(PredInfo, ClassContext),
-    pred_info_get_constraint_proofs(PredInfo, Proofs),
+    pred_info_get_constraint_proof_map(PredInfo, ProofMap),
     pred_info_get_constraint_map(PredInfo, ConstraintMap),
     pred_info_get_purity(PredInfo, Purity),
-    pred_info_get_head_type_params(PredInfo, HeadTypeParams),
+    pred_info_get_external_type_params(PredInfo, ExternalTypeParams),
     pred_info_get_var_name_remap(PredInfo, VarNameRemap),
     DumpOptions = Info ^ hoi_dump_hlds_options,
-    ( string.contains_char(DumpOptions, 'v') ->
-        AppendVarNums = yes
-    ;
-        AppendVarNums = no
+    ( if string.contains_char(DumpOptions, 'v') then
+        VarNamePrint = print_name_and_num
+    else
+        VarNamePrint = print_name_only
     ),
-    ( string.contains_char(DumpOptions, 'C') ->
+    ( if string.contains_char(DumpOptions, 'C') then
         % Information about predicates is dumped if 'C' suboption is on.
         (
             PredOrFunc = pf_predicate,
-            mercury_output_pred_type(TVarSet, ExistQVars,
-                qualified(Module, PredName), ArgTypes, no, Purity,
-                ClassContext, Context, AppendVarNums, !IO)
+            mercury_output_pred_type(TVarSet, VarNamePrint, ExistQVars,
+                qualified(Module, PredName), ArgTypes, no,
+                Purity, ClassContext, !IO)
         ;
             PredOrFunc = pf_function,
             pred_args_to_func_args(ArgTypes, FuncArgTypes, FuncRetType),
-            mercury_output_func_type(TVarSet, ExistQVars,
+            mercury_output_func_type(TVarSet, VarNamePrint, ExistQVars,
                 qualified(Module, PredName), FuncArgTypes, FuncRetType, no,
-                Purity, ClassContext, Context, AppendVarNums, !IO)
+                Purity, ClassContext, !IO)
         )
-    ;
+    else
         true
     ),
     ClausesInfo = clauses_info(VarSet, _, _, VarTypes, HeadVars, ClausesRep,
-        _ItemNumbers, RttiVarMaps, _HaveForeignClauses),
-    ( string.contains_char(DumpOptions, 'C') ->
+        _ItemNumbers, RttiVarMaps, _HaveForeignClauses, _HadSyntaxErrors),
+    ( if string.contains_char(DumpOptions, 'C') then
         write_indent(Indent, !IO),
         io.write_string("% pred id: ", !IO),
         pred_id_to_int(PredId, PredInt),
@@ -151,7 +163,7 @@ write_pred(Info, Lang, Indent, ModuleInfo, PredId, PredInfo, !IO) :-
         io.write_string(", category: ", !IO),
         write_pred_or_func(PredOrFunc, !IO),
         io.write_string(", status: ", !IO),
-        io.write_string(import_status_to_string(ImportStatus), !IO),
+        io.write_string(pred_import_status_to_string(PredStatus), !IO),
         io.write_string("\n", !IO),
         io.write_string("% goal_type: ", !IO),
         pred_info_get_goal_type(PredInfo, GoalType),
@@ -166,32 +178,33 @@ write_pred(Info, Lang, Indent, ModuleInfo, PredId, PredInfo, !IO) :-
             write_marker_list(MarkerList, !IO),
             io.write_string("\n", !IO)
         ),
-        write_rtti_varmaps(Indent, AppendVarNums, RttiVarMaps, VarSet, TVarSet,
+        write_rtti_varmaps(VarSet, TVarSet, VarNamePrint, Indent, RttiVarMaps,
             !IO),
-        ( map.is_empty(Proofs) ->
+        ( if map.is_empty(ProofMap) then
             true
-        ;
-            write_constraint_proofs(Indent, TVarSet, Proofs, AppendVarNums,
+        else
+            write_constraint_proof_map(TVarSet, VarNamePrint, Indent, ProofMap,
                 !IO),
             io.write_string("\n", !IO)
         ),
-        ( map.is_empty(ConstraintMap) ->
+        ( if map.is_empty(ConstraintMap) then
             true
-        ;
-            write_constraint_map(Indent, TVarSet, ConstraintMap, AppendVarNums,
+        else
+            write_constraint_map(TVarSet, VarNamePrint, Indent, ConstraintMap,
                 !IO)
         ),
 
         (
-            HeadTypeParams = [_ | _],
-            io.write_string("% head_type_params:\n", !IO),
+            ExternalTypeParams = [_ | _],
+            io.write_string("% external_type_params:\n", !IO),
             io.write_string("% ", !IO),
-            mercury_output_vars(TVarSet, AppendVarNums, HeadTypeParams, !IO),
+            mercury_output_vars(TVarSet, VarNamePrint, ExternalTypeParams,
+                !IO),
             io.write_string("\n", !IO)
         ;
-            HeadTypeParams = []
+            ExternalTypeParams = []
         ),
-        write_var_types(Indent, VarSet, AppendVarNums, VarTypes, TVarSet, !IO),
+        write_var_types(VarSet, TVarSet, VarNamePrint, Indent, VarTypes, !IO),
 
         map.to_assoc_list(VarNameRemap, VarNameRemapList),
         (
@@ -200,18 +213,18 @@ write_pred(Info, Lang, Indent, ModuleInfo, PredId, PredInfo, !IO) :-
             VarNameRemapList = [VarNameRemapHead | VarNameRemapTail],
             write_indent(Indent, !IO),
             io.write_string("% var name remap: ", !IO),
-            write_var_name_remap(VarNameRemapHead, VarNameRemapTail, VarSet,
+            write_var_name_remap(VarSet, VarNameRemapHead, VarNameRemapTail,
                 !IO),
             io.nl(!IO)
         ),
 
-        get_clause_list(ClausesRep, Clauses),
+        get_clause_list_maybe_repeated(ClausesRep, Clauses),
         (
             Clauses = [_ | _],
             set_dump_opts_for_clauses(Info, InfoForClauses),
-            write_clauses(InfoForClauses, Lang, Indent, ModuleInfo,
-                PredId, VarSet, AppendVarNums, HeadVars, PredOrFunc, Clauses,
-                no_varset_vartypes, !IO)
+            write_clauses(InfoForClauses, Lang, ModuleInfo, PredId, PredOrFunc,
+                VarSet, no_varset_vartypes, VarNamePrint, Indent,
+                HeadVars, Clauses, !IO)
         ;
             Clauses = []
         ),
@@ -223,26 +236,26 @@ write_pred(Info, Lang, Indent, ModuleInfo, PredId, PredInfo, !IO) :-
                 InstanceTypes, InstanceConstraints, ClassMethodConstraints),
             io.write_string("% instance method constraints:\n", !IO),
             ClassId = class_id(ClassName, _),
-            mercury_output_constraint(TVarSet, AppendVarNums,
+            mercury_output_constraint(TVarSet, VarNamePrint,
                 constraint(ClassName, InstanceTypes), !IO),
             io.nl(!IO),
             io.write_string("instance constraints: ", !IO),
             io.write_list(InstanceConstraints, ", ",
-                mercury_output_constraint(TVarSet, AppendVarNums), !IO),
+                mercury_output_constraint(TVarSet, VarNamePrint), !IO),
             io.nl(!IO),
 
             ClassMethodConstraints = constraints(MethodUnivConstraints,
                 MethodExistConstraints),
             io.write_string("method univ constraints: ", !IO),
             io.write_list(MethodUnivConstraints, ", ",
-                mercury_output_constraint(TVarSet, AppendVarNums), !IO),
+                mercury_output_constraint(TVarSet, VarNamePrint), !IO),
             io.nl(!IO),
             io.write_string("method exist constraints: ", !IO),
             io.write_list(MethodExistConstraints, ", ",
-                mercury_output_constraint(TVarSet, AppendVarNums), !IO),
+                mercury_output_constraint(TVarSet, VarNamePrint), !IO),
             io.nl(!IO)
         ;
-            Origin = origin_special_pred(_),
+            Origin = origin_special_pred(_, _),
             io.write_string("% special pred\n", !IO)
         ;
             Origin = origin_transformed(Transformation, _, OrigPredId),
@@ -264,15 +277,93 @@ write_pred(Info, Lang, Indent, ModuleInfo, PredId, PredInfo, !IO) :-
             Origin = origin_assertion(_, _),
             io.write_string("% assertion\n", !IO)
         ;
-            Origin = origin_lambda(_, _, _)
+            Origin = origin_solver_type(TypeCtorSymName, TypeCtorArity,
+                SolverAuxPredKind),
+            TypeCtorStr = sym_name_and_arity_to_string(
+                sym_name_arity(TypeCtorSymName, TypeCtorArity)),
+            (
+                SolverAuxPredKind = solver_type_to_ground_pred,
+                SolverAuxPredKindStr = "to ground conversion predicate"
+            ;
+                SolverAuxPredKind = solver_type_to_any_pred,
+                SolverAuxPredKindStr = "to any conversion predicate"
+            ;
+                SolverAuxPredKind = solver_type_from_ground_pred,
+                SolverAuxPredKindStr = "from ground conversion predicate"
+            ;
+                SolverAuxPredKind = solver_type_from_any_pred,
+                SolverAuxPredKindStr = "from any conversion predicate"
+            ),
+            io.format("%% %s for %s\n",
+                [s(SolverAuxPredKindStr), s(TypeCtorStr)], !IO)
         ;
-            Origin = origin_user(_)
+            Origin = origin_tabling(BasePredCallId, TablingAuxPredKind),
+            BasePredStr = simple_call_id_to_string(BasePredCallId),
+            (
+                TablingAuxPredKind = tabling_aux_pred_stats,
+                TablingAuxPredKindStr = "table statistics predicate"
+            ;
+                TablingAuxPredKind = tabling_aux_pred_reset,
+                TablingAuxPredKindStr = "table reset predicate"
+            ),
+            io.format("%% %s for %s\n",
+                [s(TablingAuxPredKindStr), s(BasePredStr)], !IO)
+        ;
+            Origin = origin_mutable(MutableModuleName, MutableName,
+                MutablePredKind),
+            MutableModuleNameStr = sym_name_to_string(MutableModuleName),
+            (
+                MutablePredKind = mutable_pred_std_get,
+                MutablePredKindStr = "std get predicate"
+            ;
+                MutablePredKind = mutable_pred_std_set,
+                MutablePredKindStr = "std set predicate"
+            ;
+                MutablePredKind = mutable_pred_io_get,
+                MutablePredKindStr = "io get predicate"
+            ;
+                MutablePredKind = mutable_pred_io_set,
+                MutablePredKindStr = "io set predicate"
+            ;
+                MutablePredKind = mutable_pred_unsafe_get,
+                MutablePredKindStr = "unsafe get predicate"
+            ;
+                MutablePredKind = mutable_pred_unsafe_set,
+                MutablePredKindStr = "unsafe set predicate"
+            ;
+                MutablePredKind = mutable_pred_constant_get,
+                MutablePredKindStr = "constant get predicate"
+            ;
+                MutablePredKind = mutable_pred_constant_secret_set,
+                MutablePredKindStr = "constant secret set predicate"
+            ;
+                MutablePredKind = mutable_pred_lock,
+                MutablePredKindStr = "lock predicate"
+            ;
+                MutablePredKind = mutable_pred_unlock,
+                MutablePredKindStr = "unlock predicate"
+            ;
+                MutablePredKind = mutable_pred_pre_init,
+                MutablePredKindStr = "preinit predicate"
+            ;
+                MutablePredKind = mutable_pred_init,
+                MutablePredKindStr = "init predicate"
+            ),
+            io.format("%% %s for mutable %s in module %s\n",
+                [s(MutablePredKindStr), s(MutableName),
+                s(MutableModuleNameStr)], !IO)
+        ;
+            ( Origin = origin_lambda(_, _, _)
+            ; Origin = origin_user(_)
+            )
         )
-    ;
+    else
         true
     ),
-    write_procs(Info, Indent, AppendVarNums, ModuleInfo, PredId, ImportStatus,
-        PredInfo, !IO),
+    pred_info_get_proc_table(PredInfo, ProcTable),
+    ProcIds = pred_info_procids(PredInfo),
+    write_procs_loop(Info, ModuleInfo, PredId, PredStatus, VarNamePrint,
+        ProcTable, Indent, ProcIds, !IO),
     io.write_string("\n", !IO).
 
 :- pred set_dump_opts_for_clauses(hlds_out_info::in, hlds_out_info::out)
@@ -282,29 +373,29 @@ set_dump_opts_for_clauses(Info, ClausesInfo) :-
     OptionsStr = Info ^ hoi_dump_hlds_options,
     some [!DumpStr] (
         !:DumpStr = "",
-        ( string.contains_char(OptionsStr, 'c') ->
+        ( if string.contains_char(OptionsStr, 'c') then
             !:DumpStr = !.DumpStr ++ "c"
-        ;
+        else
             true
         ),
-        ( string.contains_char(OptionsStr, 'n') ->
+        ( if string.contains_char(OptionsStr, 'n') then
             !:DumpStr = !.DumpStr ++ "n"
-        ;
+        else
             true
         ),
-        ( string.contains_char(OptionsStr, 'v') ->
+        ( if string.contains_char(OptionsStr, 'v') then
             !:DumpStr = !.DumpStr ++ "v"
-        ;
+        else
             true
         ),
-        ( string.contains_char(OptionsStr, 'g') ->
+        ( if string.contains_char(OptionsStr, 'g') then
             !:DumpStr = !.DumpStr ++ "g"
-        ;
+        else
             true
         ),
-        ( string.contains_char(OptionsStr, 'P') ->
+        ( if string.contains_char(OptionsStr, 'P') then
             !:DumpStr = !.DumpStr ++ "P"
-        ;
+        else
             true
         ),
         DumpStr = !.DumpStr
@@ -312,46 +403,46 @@ set_dump_opts_for_clauses(Info, ClausesInfo) :-
     ClausesInfo = Info ^ hoi_dump_hlds_options := DumpStr.
 
     % write_clauses(Info, Indent, ModuleInfo, PredId, VarSet,
-    %   AppendVarNums, HeadVars, PredOrFunc, Clauses, MaybeVarTypes, !IO).
+    %   VarNamePrint, HeadVars, PredOrFunc, Clauses, MaybeVarTypes, !IO).
     %
-:- pred write_clauses(hlds_out_info::in, output_lang::in, int::in,
-    module_info::in, pred_id::in, prog_varset::in, bool::in,
-    proc_arg_vector(prog_var)::in, pred_or_func::in, list(clause)::in,
-    maybe_vartypes::in, io::di, io::uo) is det.
+:- pred write_clauses(hlds_out_info::in, output_lang::in, module_info::in,
+    pred_id::in, pred_or_func::in, prog_varset::in, maybe_vartypes::in,
+    var_name_print::in, int::in, proc_arg_vector(prog_var)::in,
+    list(clause)::in, io::di, io::uo) is det.
 
-write_clauses(Info, Lang, Indent, ModuleInfo, PredId, VarSet, AppendVarNums,
-        HeadVars, PredOrFunc, Clauses0, TypeQual, !IO) :-
+write_clauses(Info, Lang, ModuleInfo, PredId, PredOrFunc, VarSet, TypeQual,
+        VarNamePrint, Indent, HeadVars, Clauses, !IO) :-
     HeadVarList = proc_arg_vector_to_list(HeadVars),
-    write_clauses_loop(Info, Lang, Indent, ModuleInfo, PredId, VarSet,
-        AppendVarNums, HeadVarList, PredOrFunc, Clauses0, TypeQual, 1, !IO).
+    write_clauses_loop(Info, Lang, ModuleInfo, PredId, PredOrFunc,
+        VarSet, TypeQual, VarNamePrint, Indent, HeadVarList, Clauses, 1, !IO).
 
-:- pred write_clauses_loop(hlds_out_info::in, output_lang::in, int::in,
-    module_info::in, pred_id::in, prog_varset::in, bool::in,
-    list(prog_var)::in, pred_or_func::in, list(clause)::in, maybe_vartypes::in,
+:- pred write_clauses_loop(hlds_out_info::in, output_lang::in, module_info::in,
+    pred_id::in, pred_or_func::in, prog_varset::in, maybe_vartypes::in,
+    var_name_print::in, int::in, list(prog_var)::in, list(clause)::in,
     int::in, io::di, io::uo) is det.
 
-write_clauses_loop(Info, Lang, Indent, ModuleInfo, PredId,
-        VarSet, AppendVarNums, HeadVars, PredOrFunc, Clauses0,
-        TypeQual, ClauseNum, !IO) :-
+write_clauses_loop(Info, Lang, ModuleInfo, PredId, PredOrFunc,
+        VarSet, TypeQual, VarNamePrint, Indent, HeadVars, Clauses, ClauseNum,
+        !IO) :-
     (
-        Clauses0 = [Clause | Clauses],
+        Clauses = [FirstClause | LaterClauses],
+        % ZZZ
         term.var_list_to_term_list(HeadVars, HeadTerms),
-        UseDeclaredModes = no,
         io.write_string("% clause ", !IO),
         io.write_int(ClauseNum, !IO),
         io.write_string("\n", !IO),
-        write_clause(Info, Lang, Indent, ModuleInfo, PredId, VarSet,
-            AppendVarNums, HeadTerms, PredOrFunc, Clause,
-            UseDeclaredModes, TypeQual, !IO),
-        write_clauses_loop(Info, Lang, Indent, ModuleInfo, PredId, VarSet,
-            AppendVarNums, HeadVars, PredOrFunc, Clauses, TypeQual,
+        write_clause(Info, Lang, ModuleInfo, PredId, PredOrFunc,
+            VarSet, TypeQual, VarNamePrint, write_actual_modes, Indent,
+            HeadTerms, FirstClause, !IO),
+        write_clauses_loop(Info, Lang, ModuleInfo,PredId, PredOrFunc,
+            VarSet, TypeQual, VarNamePrint, Indent, HeadVars, LaterClauses,
             ClauseNum + 1, !IO)
     ;
-        Clauses0 = []
+        Clauses = []
     ).
 
-write_clause(Info, Lang, Indent, ModuleInfo, PredId, VarSet, AppendVarNums,
-        HeadTerms, PredOrFunc, Clause, UseDeclaredModes, TypeQual, !IO) :-
+write_clause(Info, Lang, ModuleInfo,PredId, PredOrFunc, VarSet, TypeQual,
+        VarNamePrint, WriteWhichModes, Indent, HeadTerms, Clause, !IO) :-
     Clause = clause(ApplicableModes, Goal, ImplLang, Context,
         _StateVarWarnings),
     Indent1 = Indent + 1,
@@ -360,13 +451,13 @@ write_clause(Info, Lang, Indent, ModuleInfo, PredId, VarSet, AppendVarNums,
         ApplicableModes = all_modes
     ;
         ApplicableModes = selected_modes(Modes),
-        ( string.contains_char(DumpOptions, 'm') ->
+        ( if string.contains_char(DumpOptions, 'm') then
             write_indent(Indent, !IO),
             io.write_string("% Modes for which this clause applies: ", !IO),
             ModeInts = list.map(proc_id_to_int, Modes),
             write_intlist(ModeInts, !IO),
             io.write_string("\n", !IO)
-        ;
+        else
             true
         )
     ),
@@ -380,54 +471,56 @@ write_clause(Info, Lang, Indent, ModuleInfo, PredId, VarSet, AppendVarNums,
     ),
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
     AllProcIds = pred_info_procids(PredInfo),
-    (
+    ( if
         ApplicableModes = selected_modes(SelectedProcIds),
         SelectedProcIds \= AllProcIds
-    ->
+    then
         % If SelectedProcIds contains more than one mode, the output will have
         % multiple clause heads. This won't be pretty and it won't be
         % syntactically valid, but it is more useful for debugging
         % than a compiler abort during the dumping process.
-        write_annotated_clause_heads(ModuleInfo, Lang, Context, PredId,
-            SelectedProcIds, VarSet, AppendVarNums, HeadTerms, PredOrFunc,
-            UseDeclaredModes, !IO)
-    ;
-        write_clause_head(ModuleInfo, PredId, VarSet, AppendVarNums,
-            HeadTerms, PredOrFunc, !IO)
+        write_annotated_clause_heads(ModuleInfo, Lang, VarSet, VarNamePrint,
+            WriteWhichModes, PredId, PredOrFunc, SelectedProcIds,
+            Context, HeadTerms, !IO)
+    else
+        write_clause_head(ModuleInfo, VarSet, VarNamePrint,
+            PredId, PredOrFunc, HeadTerms, !IO)
     ),
-    ( Goal = hlds_goal(conj(plain_conj, []), _GoalInfo) ->
+    ( if Goal = hlds_goal(conj(plain_conj, []), _GoalInfo) then
         io.write_string(".\n", !IO)
-    ;
+    else
         io.write_string(" :-\n", !IO),
-        do_write_goal(Info, Goal, ModuleInfo, VarSet, AppendVarNums,
-            Indent1, ".\n", TypeQual, !IO)
+        do_write_goal(Info, ModuleInfo, VarSet, TypeQual, VarNamePrint,
+            Indent1, ".\n", Goal, !IO)
     ).
 
 :- pred write_annotated_clause_heads(module_info::in, output_lang::in,
-    term.context::in, pred_id::in, list(proc_id)::in, prog_varset::in,
-    bool::in, list(prog_term)::in, pred_or_func::in, bool::in,
-    io::di, io::uo) is det.
+    prog_varset::in, var_name_print::in, write_which_modes::in,
+    pred_id::in, pred_or_func::in, list(proc_id)::in,
+    term.context::in, list(prog_term)::in, io::di, io::uo) is det.
 
-write_annotated_clause_heads(_, _, _, _, [], _, _, _, _, _, !IO).
-write_annotated_clause_heads(ModuleInfo, Lang, Context, PredId,
-        [ProcId | ProcIds], VarSet, AppendVarNums, HeadTerms, PredOrFunc,
-        UseDeclaredModes, !IO) :-
-    write_annotated_clause_head(ModuleInfo, Lang, Context, PredId,
-        ProcId, VarSet, AppendVarNums, HeadTerms,
-        PredOrFunc, UseDeclaredModes, !IO),
-    write_annotated_clause_heads(ModuleInfo, Lang, Context, PredId,
-        ProcIds, VarSet, AppendVarNums, HeadTerms,
-        PredOrFunc, UseDeclaredModes, !IO).
+write_annotated_clause_heads(_, _, _, _, _, _, _, [], _, _, !IO).
+write_annotated_clause_heads(ModuleInfo, Lang, VarSet, VarNamePrint,
+        WriteWhichModes, PredId, PredOrFunc, [ProcId | ProcIds],
+        Context, HeadTerms, !IO) :-
+    write_annotated_clause_head(ModuleInfo, Lang, VarSet, VarNamePrint,
+        WriteWhichModes, PredId, PredOrFunc, ProcId,
+        Context, HeadTerms, !IO),
+    write_annotated_clause_heads(ModuleInfo, Lang, VarSet, VarNamePrint,
+        WriteWhichModes, PredId, PredOrFunc, ProcIds,
+        Context, HeadTerms, !IO).
 
 :- pred write_annotated_clause_head(module_info::in, output_lang::in,
-    term.context::in, pred_id::in, proc_id::in, prog_varset::in, bool::in,
-    list(prog_term)::in, pred_or_func::in, bool::in, io::di, io::uo) is det.
+    prog_varset::in, var_name_print::in, write_which_modes::in,
+    pred_id::in, pred_or_func::in, proc_id::in,
+    term.context::in, list(prog_term)::in, io::di, io::uo) is det.
 
-write_annotated_clause_head(ModuleInfo, Lang, Context, PredId, ProcId, VarSet,
-        AppendVarNums, HeadTerms, PredOrFunc, UseDeclaredModes, !IO) :-
+write_annotated_clause_head(ModuleInfo, Lang,VarSet, VarNamePrint,
+        WriteWhichModes, PredId, PredOrFunc, ProcId,
+        Context, HeadTerms, !IO) :-
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    pred_info_get_procedures(PredInfo, Procedures),
-    ( map.search(Procedures, ProcId, ProcInfo) ->
+    pred_info_get_proc_table(PredInfo, Procedures),
+    ( if map.search(Procedures, ProcId, ProcInfo) then
         % When writing `.opt' files, use the declared argument modes so that
         % the modes are guaranteed to be syntactically identical to those
         % in the original program. The test in add_clause.m to check whether
@@ -440,19 +533,19 @@ write_annotated_clause_head(ModuleInfo, Lang, Context, PredId, ProcId, VarSet,
         % so the call to assoc_list.from_corresponding_lists below
         % will abort. `.opt' files are written before the polymorphism pass.
         (
-            UseDeclaredModes = yes,
-            proc_info_declared_argmodes(ProcInfo, ArgModes)
-        ;
-            UseDeclaredModes = no,
+            WriteWhichModes = write_actual_modes,
             proc_info_get_argmodes(ProcInfo, ArgModes)
+        ;
+            WriteWhichModes = write_declared_modes,
+            proc_info_declared_argmodes(ProcInfo, ArgModes)
         ),
         assoc_list.from_corresponding_lists(HeadTerms, ArgModes,
             AnnotatedPairs),
         AnnotatedHeadTerms = list.map(add_mode_qualifier(Lang, Context),
             AnnotatedPairs),
-        write_clause_head(ModuleInfo, PredId, VarSet, AppendVarNums,
-            AnnotatedHeadTerms, PredOrFunc, !IO)
-    ;
+        write_clause_head(ModuleInfo, VarSet, VarNamePrint, PredId,
+            PredOrFunc, AnnotatedHeadTerms, !IO)
+    else
         % This procedure, even though it existed in the past, has been
         % eliminated.
         true
@@ -466,119 +559,88 @@ add_mode_qualifier(Lang, Context, HeadTerm - Mode) = AnnotatedTerm :-
         [HeadTerm, mode_to_term_with_context(Lang, Context, Mode)],
         Context, AnnotatedTerm).
 
-:- pred write_clause_head(module_info::in, pred_id::in,
-    prog_varset::in, bool::in, list(prog_term)::in, pred_or_func::in,
-    io::di, io::uo) is det.
+:- pred write_clause_head(module_info::in, prog_varset::in, var_name_print::in,
+    pred_id::in, pred_or_func::in, list(prog_term)::in, io::di, io::uo) is det.
 
-write_clause_head(ModuleInfo, PredId, VarSet, AppendVarNums, HeadTerms,
-        PredOrFunc, !IO) :-
+write_clause_head(ModuleInfo, VarSet, VarNamePrint, PredId, PredOrFunc,
+        HeadTerms, !IO) :-
     PredName = predicate_name(ModuleInfo, PredId),
     ModuleName = predicate_module(ModuleInfo, PredId),
     (
         PredOrFunc = pf_function,
         pred_args_to_func_args(HeadTerms, FuncArgs, RetVal),
-        write_qualified_functor_with_term_args(ModuleName,
-            term.atom(PredName), FuncArgs, VarSet, AppendVarNums, !IO),
+        write_qualified_functor_with_term_args(VarSet, VarNamePrint,
+            ModuleName, term.atom(PredName), FuncArgs, !IO),
         io.write_string(" = ", !IO),
-        mercury_output_term_nq(VarSet, AppendVarNums, next_to_graphic_token,
+        mercury_output_term_nq(VarSet, VarNamePrint, next_to_graphic_token,
             RetVal, !IO)
     ;
         PredOrFunc = pf_predicate,
-        write_qualified_functor_with_term_args(ModuleName,
-            term.atom(PredName), HeadTerms, VarSet, AppendVarNums, !IO)
+        write_qualified_functor_with_term_args(VarSet, VarNamePrint,
+            ModuleName, term.atom(PredName), HeadTerms, !IO)
     ).
 
-import_status_to_string(status_local) =
-    "local".
-import_status_to_string(status_exported) =
-    "exported".
-import_status_to_string(status_opt_exported) =
-    "opt_exported".
-import_status_to_string(status_abstract_exported) =
-    "abstract_exported".
-import_status_to_string(status_pseudo_exported) =
-    "pseudo_exported".
-import_status_to_string(status_imported(import_locn_interface)) =
-    "imported in the interface".
-import_status_to_string(status_imported(import_locn_implementation)) =
-    "imported in the implementation".
-import_status_to_string(status_imported(
-        import_locn_ancestor_private_interface_proper)) =
-    "imported from an ancestor's private interface".
-import_status_to_string(status_imported(import_locn_ancestor)) =
-    "imported by an ancestor".
-import_status_to_string(status_external(Status)) =
-    "external (and " ++ import_status_to_string(Status) ++ ")".
-import_status_to_string(status_abstract_imported) =
-    "abstract_imported".
-import_status_to_string(status_opt_imported) =
-    "opt_imported".
-import_status_to_string(status_pseudo_imported) =
-    "pseudo_imported".
-import_status_to_string(status_exported_to_submodules) =
-    "exported_to_submodules".
+:- pred write_var_types(prog_varset::in, tvarset::in, var_name_print::in,
+    int::in, vartypes::in, io::di, io::uo) is det.
 
-:- pred write_var_types(int::in, prog_varset::in, bool::in,
-    vartypes::in, tvarset::in, io::di, io::uo) is det.
-
-write_var_types(Indent, VarSet, AppendVarNums, VarTypes, TVarSet, !IO) :-
+write_var_types(VarSet, TVarSet, VarNamePrint, Indent, VarTypes, !IO) :-
     vartypes_count(VarTypes, NumVarTypes),
     write_indent(Indent, !IO),
     io.write_string("% variable types map ", !IO),
     io.format("(%d entries):\n", [i(NumVarTypes)], !IO),
     vartypes_vars(VarTypes, Vars),
-    write_var_types_loop(Vars, Indent, VarSet, AppendVarNums, VarTypes,
-        TVarSet, !IO).
+    write_var_types_loop(VarSet, TVarSet, VarNamePrint, VarTypes, Indent,
+        Vars, !IO).
 
-:- pred write_var_types_loop(list(prog_var)::in, int::in, prog_varset::in,
-    bool::in, vartypes::in, tvarset::in, io::di, io::uo) is det.
+:- pred write_var_types_loop(prog_varset::in, tvarset::in, var_name_print::in,
+    vartypes::in, int::in, list(prog_var)::in, io::di, io::uo) is det.
 
-write_var_types_loop([], _, _, _, _, _, !IO).
-write_var_types_loop([Var | Vars], Indent, VarSet, AppendVarNums, VarTypes,
-        TypeVarSet, !IO) :-
+write_var_types_loop(_, _, _, _, _, [], !IO).
+write_var_types_loop(VarSet, TypeVarSet, VarNamePrint, VarTypes, Indent,
+        [Var | Vars], !IO) :-
     lookup_var_type(VarTypes, Var, Type),
     write_indent(Indent, !IO),
     io.write_string("% ", !IO),
-    mercury_output_var(VarSet, AppendVarNums, Var, !IO),
+    mercury_output_var(VarSet, VarNamePrint, Var, !IO),
     io.write_string(" (number ", !IO),
     term.var_to_int(Var, VarNum),
     io.write_int(VarNum, !IO),
     io.write_string(")", !IO),
     io.write_string(": ", !IO),
-    mercury_output_type(TypeVarSet, AppendVarNums, Type, !IO),
+    mercury_output_type(TypeVarSet, VarNamePrint, Type, !IO),
     io.write_string("\n", !IO),
-    write_var_types_loop(Vars, Indent, VarSet, AppendVarNums, VarTypes,
-        TypeVarSet, !IO).
+    write_var_types_loop(VarSet, TypeVarSet, VarNamePrint, VarTypes, Indent,
+        Vars, !IO).
 
-:- pred write_rtti_varmaps(int::in, bool::in, rtti_varmaps::in,
-    prog_varset::in, tvarset::in, io::di, io::uo) is det.
+:- pred write_rtti_varmaps(prog_varset::in, tvarset::in, var_name_print::in,
+    int::in, rtti_varmaps::in, io::di, io::uo) is det.
 
-write_rtti_varmaps(Indent, AppendVarNums, RttiVarMaps, VarSet, TVarSet, !IO) :-
+write_rtti_varmaps(VarSet, TVarSet, VarNamePrint, Indent, RttiVarMaps, !IO) :-
     write_indent(Indent, !IO),
     io.write_string("% type_info varmap:\n", !IO),
     rtti_varmaps_tvars(RttiVarMaps, TypeVars),
-    list.foldl(write_type_info_locn(Indent, AppendVarNums, RttiVarMaps,
-        VarSet, TVarSet), TypeVars, !IO),
+    list.foldl(write_type_info_locn(VarSet, TVarSet, VarNamePrint,
+        RttiVarMaps, Indent), TypeVars, !IO),
     write_indent(Indent, !IO),
     io.write_string("% typeclass_info varmap:\n", !IO),
     rtti_varmaps_reusable_constraints(RttiVarMaps, Constraints),
-    list.foldl(write_typeclass_info_var(Indent, AppendVarNums, RttiVarMaps,
-        VarSet, TVarSet), Constraints, !IO),
+    list.foldl(write_typeclass_info_var(VarSet, TVarSet, VarNamePrint,
+        RttiVarMaps, Indent), Constraints, !IO),
     write_indent(Indent, !IO),
     io.write_string("% rtti_var_info:\n", !IO),
     rtti_varmaps_rtti_prog_vars(RttiVarMaps, ProgVars),
-    list.foldl(write_rtti_var_info(Indent, AppendVarNums, RttiVarMaps,
-        VarSet, TVarSet), ProgVars, !IO).
+    list.foldl(write_rtti_var_info(VarSet, TVarSet, VarNamePrint,
+        RttiVarMaps, Indent), ProgVars, !IO).
 
-:- pred write_type_info_locn(int::in, bool::in, rtti_varmaps::in,
-    prog_varset::in, tvarset::in, tvar::in, io::di, io::uo) is det.
+:- pred write_type_info_locn(prog_varset::in, tvarset::in, var_name_print::in,
+    rtti_varmaps::in, int::in, tvar::in, io::di, io::uo) is det.
 
-write_type_info_locn(Indent, AppendVarNums, RttiVarMaps, VarSet, TVarSet, TVar,
+write_type_info_locn(VarSet, TVarSet, VarNamePrint, RttiVarMaps, Indent, TVar,
         !IO) :-
     write_indent(Indent, !IO),
     io.write_string("% ", !IO),
 
-    mercury_output_var(TVarSet, AppendVarNums, TVar, !IO),
+    mercury_output_var(TVarSet, VarNamePrint, TVar, !IO),
     io.write_string(" (number ", !IO),
     term.var_to_int(TVar, TVarNum),
     io.write_int(TVarNum, !IO),
@@ -589,12 +651,12 @@ write_type_info_locn(Indent, AppendVarNums, RttiVarMaps, VarSet, TVarSet, TVar,
     (
         Locn = type_info(Var),
         io.write_string("type_info(", !IO),
-        mercury_output_var(VarSet, AppendVarNums, Var, !IO),
+        mercury_output_var(VarSet, VarNamePrint, Var, !IO),
         io.write_string(") ", !IO)
     ;
         Locn = typeclass_info(Var, Index),
         io.write_string("typeclass_info(", !IO),
-        mercury_output_var(VarSet, AppendVarNums, Var, !IO),
+        mercury_output_var(VarSet, VarNamePrint, Var, !IO),
         io.write_string(", ", !IO),
         io.write_int(Index, !IO),
         io.write_string(") ", !IO)
@@ -605,27 +667,28 @@ write_type_info_locn(Indent, AppendVarNums, RttiVarMaps, VarSet, TVarSet, TVar,
     io.write_string(")", !IO),
     io.write_string("\n", !IO).
 
-:- pred write_typeclass_info_var(int::in, bool::in, rtti_varmaps::in,
-    prog_varset::in, tvarset::in, prog_constraint::in, io::di, io::uo) is det.
+:- pred write_typeclass_info_var(prog_varset::in, tvarset::in,
+    var_name_print::in, rtti_varmaps::in, int::in,
+    prog_constraint::in, io::di, io::uo) is det.
 
-write_typeclass_info_var(Indent, AppendVarNums, RttiVarMaps, VarSet, TVarSet,
+write_typeclass_info_var(VarSet, TVarSet, VarNamePrint, RttiVarMaps, Indent,
         Constraint, !IO) :-
     write_indent(Indent, !IO),
     io.write_string("% ", !IO),
-    mercury_output_constraint(TVarSet, AppendVarNums, Constraint, !IO),
+    mercury_output_constraint(TVarSet, VarNamePrint, Constraint, !IO),
     io.write_string(" -> ", !IO),
     rtti_lookup_typeclass_info_var(RttiVarMaps, Constraint, Var),
-    mercury_output_var(VarSet, AppendVarNums, Var, !IO),
+    mercury_output_var(VarSet, VarNamePrint, Var, !IO),
     io.nl(!IO).
 
-:- pred write_rtti_var_info(int::in, bool::in, rtti_varmaps::in,
-    prog_varset::in, tvarset::in, prog_var::in, io::di, io::uo) is det.
+:- pred write_rtti_var_info(prog_varset::in, tvarset::in, var_name_print::in,
+    rtti_varmaps::in, int::in, prog_var::in, io::di, io::uo) is det.
 
-write_rtti_var_info(Indent, AppendVarNums, RttiVarMaps, VarSet, TVarSet, Var,
+write_rtti_var_info(VarSet, TVarSet, VarNamePrint, RttiVarMaps, Indent, Var,
         !IO) :-
     write_indent(Indent, !IO),
     io.write_string("% ", !IO),
-    mercury_output_var(VarSet, AppendVarNums, Var, !IO),
+    mercury_output_var(VarSet, VarNamePrint, Var, !IO),
     io.write_string(" (number ", !IO),
     term.var_to_int(Var, VarNum),
     io.write_int(VarNum, !IO),
@@ -635,54 +698,53 @@ write_rtti_var_info(Indent, AppendVarNums, RttiVarMaps, VarSet, TVarSet, Var,
     (
         VarInfo = type_info_var(Type),
         io.write_string("type_info for ", !IO),
-        mercury_output_type(TVarSet, AppendVarNums, Type, !IO)
+        mercury_output_type(TVarSet, VarNamePrint, Type, !IO)
     ;
         VarInfo = typeclass_info_var(Constraint),
         io.write_string("typeclass_info for ", !IO),
-        mercury_output_constraint(TVarSet, AppendVarNums, Constraint, !IO)
+        mercury_output_constraint(TVarSet, VarNamePrint, Constraint, !IO)
     ;
         VarInfo = non_rtti_var,
         unexpected($module, $pred, "non rtti var")
     ),
     io.nl(!IO).
 
-:- pred write_stack_slots(int::in, stack_slots::in, prog_varset::in,
-    bool::in, io::di, io::uo) is det.
+:- pred write_stack_slots(prog_varset::in, var_name_print::in, int::in,
+    stack_slots::in, io::di, io::uo) is det.
 
-write_stack_slots(Indent, StackSlots, VarSet, AppendVarNums, !IO) :-
+write_stack_slots(VarSet, VarNamePrint, Indent, StackSlots, !IO) :-
     map.to_assoc_list(StackSlots, VarSlotList0),
     VarSlotList = assoc_list.map_values_only(stack_slot_to_abs_locn,
         VarSlotList0),
-    write_var_to_abs_locns(VarSlotList, VarSet, AppendVarNums, Indent, !IO).
+    write_var_to_abs_locns(VarSet, VarNamePrint, Indent, VarSlotList, !IO).
 
-:- pred write_untuple_info(untuple_proc_info::in, prog_varset::in,
-    bool::in, int::in, io::di, io::uo) is det.
+:- pred write_untuple_info(prog_varset::in, var_name_print::in, int::in,
+    untuple_proc_info::in, io::di, io::uo) is det.
 
-write_untuple_info(untuple_proc_info(UntupleMap), VarSet, AppendVarNums,
-        Indent, !IO) :-
+write_untuple_info(VarSet, VarNamePrint, Indent, UntupleInfo, !IO) :-
+    UntupleInfo = untuple_proc_info(UntupleMap),
     write_indent(Indent, !IO),
     io.write_string("% untuple:\n", !IO),
-    map.foldl(write_untuple_info_loop(VarSet, AppendVarNums, Indent),
+    map.foldl(write_untuple_info_loop(VarSet, VarNamePrint, Indent),
         UntupleMap, !IO).
 
-:- pred write_untuple_info_loop(prog_varset::in, bool::in, int::in,
+:- pred write_untuple_info_loop(prog_varset::in, var_name_print::in, int::in,
     prog_var::in, prog_vars::in, io::di, io::uo) is det.
 
-write_untuple_info_loop(VarSet, AppendVarNums, Indent, OldVar, NewVars, !IO) :-
+write_untuple_info_loop(VarSet, VarNamePrint, Indent, OldVar, NewVars, !IO) :-
     write_indent(Indent, !IO),
     io.write_string("%\t", !IO),
-    mercury_output_var(VarSet, AppendVarNums, OldVar, !IO),
+    mercury_output_var(VarSet, VarNamePrint, OldVar, !IO),
     io.write_string("\t-> ", !IO),
-    mercury_output_vars(VarSet, AppendVarNums, NewVars, !IO),
+    mercury_output_vars(VarSet, VarNamePrint, NewVars, !IO),
     io.nl(!IO).
 
-:- pred write_var_name_remap(pair(prog_var, string)::in,
-    list(pair(prog_var, string))::in, prog_varset::in, io::di, io::uo) is det.
+:- pred write_var_name_remap(prog_varset::in, pair(prog_var, string)::in,
+    list(pair(prog_var, string))::in, io::di, io::uo) is det.
 
-write_var_name_remap(Head, Tail, VarSet, !IO) :-
+write_var_name_remap(VarSet, Head, Tail, !IO) :-
     Head = Var - NewName,
-    AppendVarNums = yes,
-    mercury_output_var(VarSet, AppendVarNums, Var, !IO),
+    mercury_output_var(VarSet, print_name_and_num, Var, !IO),
     io.write_string(" -> ", !IO),
     io.write_string(NewName, !IO),
     (
@@ -690,7 +752,7 @@ write_var_name_remap(Head, Tail, VarSet, !IO) :-
     ;
         Tail = [TailHead | TailTail],
         io.write_string(", ", !IO),
-        write_var_name_remap(TailHead, TailTail, VarSet, !IO)
+        write_var_name_remap(VarSet, TailHead, TailTail, !IO)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -698,62 +760,53 @@ write_var_name_remap(Head, Tail, VarSet, !IO) :-
 % Write out procedures.
 %
 
-:- pred write_procs(hlds_out_info::in, int::in, bool::in, module_info::in,
-    pred_id::in, import_status::in, pred_info::in, io::di, io::uo) is det.
+:- pred write_procs_loop(hlds_out_info::in, module_info::in,
+    pred_id::in, pred_status::in, var_name_print::in, proc_table::in,
+    int::in, list(proc_id)::in, io::di, io::uo) is det.
 
-write_procs(Info, Indent, AppendVarNums, ModuleInfo, PredId, ImportStatus,
-        PredInfo, !IO) :-
-    pred_info_get_procedures(PredInfo, ProcTable),
-    ProcIds = pred_info_procids(PredInfo),
-    write_procs_loop(Info, ProcIds, AppendVarNums, ModuleInfo, Indent, PredId,
-        ImportStatus, ProcTable, !IO).
-
-:- pred write_procs_loop(hlds_out_info::in, list(proc_id)::in, bool::in,
-    module_info::in, int::in, pred_id::in, import_status::in, proc_table::in,
-    io::di, io::uo) is det.
-
-write_procs_loop(_, [], _, _, _, _, _, _, !IO).
-write_procs_loop(Info, [ProcId | ProcIds], AppendVarNums, ModuleInfo, Indent,
-        PredId, ImportStatus, ProcTable, !IO) :-
+write_procs_loop(_, _, _, _, _, _, _, [], !IO).
+write_procs_loop(Info, ModuleInfo, PredId, PredStatus, VarNamePrint,
+        ProcTable, Indent, [ProcId | ProcIds], !IO) :-
     map.lookup(ProcTable, ProcId, ProcInfo),
-    write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
-        ImportStatus, ProcInfo, !IO),
-    write_procs_loop(Info, ProcIds, AppendVarNums, ModuleInfo, Indent,
-        PredId, ImportStatus, ProcTable, !IO).
+    write_proc(Info, ModuleInfo, PredId, PredStatus, VarNamePrint,
+        Indent, ProcId, ProcInfo, !IO),
+    write_procs_loop(Info, ModuleInfo, PredId, PredStatus, VarNamePrint,
+        ProcTable, Indent, ProcIds, !IO).
 
-write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
-        ImportStatus, Proc, !IO) :-
+write_proc(Info, ModuleInfo, PredId, PredStatus, VarNamePrint, Indent,
+        ProcId, ProcInfo, !IO) :-
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
     pred_info_get_typevarset(PredInfo, TVarSet),
-    proc_info_get_vartypes(Proc, VarTypes),
-    proc_info_get_declared_determinism(Proc, DeclaredDeterminism),
-    proc_info_get_inferred_determinism(Proc, InferredDeterminism),
-    proc_info_get_varset(Proc, VarSet),
-    proc_info_get_headvars(Proc, HeadVars),
-    proc_info_get_argmodes(Proc, HeadModes),
-    proc_info_get_maybe_arglives(Proc, MaybeArgLives),
-    proc_info_get_reg_r_headvars(Proc, RegR_HeadVars),
-    proc_info_maybe_arg_info(Proc, MaybeArgInfos),
-    proc_info_get_goal(Proc, Goal),
-    proc_info_get_context(Proc, ModeContext),
-    proc_info_get_maybe_arg_size_info(Proc, MaybeArgSize),
-    proc_info_get_maybe_termination_info(Proc, MaybeTermination),
-    proc_info_get_structure_sharing(Proc, MaybeStructureSharing),
-    proc_info_get_structure_reuse(Proc, MaybeStructureReuse),
-    proc_info_get_rtti_varmaps(Proc, RttiVarMaps),
-    proc_info_get_eval_method(Proc, EvalMethod),
-    proc_info_get_is_address_taken(Proc, IsAddressTaken),
-    proc_info_get_has_parallel_conj(Proc, HasParallelConj),
-    proc_info_get_has_user_event(Proc, HasUserEvent),
-    proc_info_get_maybe_proc_table_io_info(Proc, MaybeProcTableIOInfo),
-    proc_info_get_call_table_tip(Proc, MaybeCallTableTip),
-    proc_info_get_maybe_deep_profile_info(Proc, MaybeDeepProfileInfo),
-    proc_info_get_maybe_untuple_info(Proc, MaybeUntupleInfo),
-    proc_info_get_var_name_remap(Proc, VarNameRemap),
+    proc_info_get_can_process(ProcInfo, CanProcess),
+    proc_info_get_varset(ProcInfo, VarSet),
+    proc_info_get_vartypes(ProcInfo, VarTypes),
+    proc_info_get_declared_determinism(ProcInfo, DeclaredDeterminism),
+    proc_info_get_inferred_determinism(ProcInfo, InferredDeterminism),
+    proc_info_get_headvars(ProcInfo, HeadVars),
+    proc_info_get_argmodes(ProcInfo, HeadModes),
+    proc_info_get_maybe_arglives(ProcInfo, MaybeArgLives),
+    proc_info_get_reg_r_headvars(ProcInfo, RegR_HeadVars),
+    proc_info_get_maybe_arg_info(ProcInfo, MaybeArgInfos),
+    proc_info_get_goal(ProcInfo, Goal),
+    proc_info_get_maybe_arg_size_info(ProcInfo, MaybeArgSize),
+    proc_info_get_maybe_termination_info(ProcInfo, MaybeTermination),
+    proc_info_get_structure_sharing(ProcInfo, MaybeStructureSharing),
+    proc_info_get_structure_reuse(ProcInfo, MaybeStructureReuse),
+    proc_info_get_rtti_varmaps(ProcInfo, RttiVarMaps),
+    proc_info_get_eval_method(ProcInfo, EvalMethod),
+    proc_info_get_deleted_call_callees(ProcInfo, DeletedCallCalleeSet),
+    proc_info_get_is_address_taken(ProcInfo, IsAddressTaken),
+    proc_info_get_has_parallel_conj(ProcInfo, HasParallelConj),
+    proc_info_get_has_user_event(ProcInfo, HasUserEvent),
+    proc_info_get_maybe_proc_table_io_info(ProcInfo, MaybeProcTableIOInfo),
+    proc_info_get_call_table_tip(ProcInfo, MaybeCallTableTip),
+    proc_info_get_maybe_deep_profile_info(ProcInfo, MaybeDeepProfileInfo),
+    proc_info_get_maybe_untuple_info(ProcInfo, MaybeUntupleInfo),
+    proc_info_get_var_name_remap(ProcInfo, VarNameRemap),
     Indent1 = Indent + 1,
 
     DumpOptions = Info ^ hoi_dump_hlds_options,
-    ( string.contains_char(DumpOptions, 'x') ->
+    ( if string.contains_char(DumpOptions, 'x') then
         write_indent(Indent1, !IO),
         io.write_string("% pred id ", !IO),
         pred_id_to_int(PredId, PredInt),
@@ -768,60 +821,70 @@ write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
         io.write_string(" (", !IO),
         io.write_string(determinism_to_string(InferredDeterminism), !IO),
         io.write_string("):\n", !IO),
+        (
+            CanProcess = can_process_now
+        ;
+            CanProcess = cannot_process_yet,
+            write_indent(Indent, !IO),
+            io.write_string("% cannot_process_yet", !IO),
+            io.nl(!IO)
+        ),
 
-        ( string.contains_char(DumpOptions, 't') ->
+        ( if string.contains_char(DumpOptions, 't') then
             write_indent(Indent, !IO),
             io.write_string("% Arg size properties: ", !IO),
-            write_maybe_arg_size_info(MaybeArgSize, yes, !IO),
+            write_maybe_arg_size_info(yes, MaybeArgSize, !IO),
             io.nl(!IO),
             write_indent(Indent, !IO),
             io.write_string("% Termination properties: ", !IO),
-            write_maybe_termination_info(MaybeTermination, yes, !IO),
+            write_maybe_termination_info(yes, MaybeTermination, !IO),
             io.nl(!IO)
-        ;
+        else
             true
         ),
 
         % Dump structure sharing information.
-        ( string.contains_char(DumpOptions, 'S') ->
+        ( if
+            string.contains_char(DumpOptions, 'S'),
+            MaybeStructureSharing = yes(StructureSharing)
+        then
             write_indent(Indent, !IO),
             io.write_string("% Structure sharing: \n", !IO),
-            (
-                MaybeStructureSharing = yes(StructureSharing),
-                StructureSharing =
-                    structure_sharing_domain_and_status(SharingAs, _Status),
-                dump_maybe_structure_sharing_domain(VarSet, TVarSet,
-                    yes(SharingAs), !IO)
-            ;
-                MaybeStructureSharing = no,
-                dump_maybe_structure_sharing_domain(VarSet, TVarSet, no, !IO)
-            )
-        ;
+            StructureSharing =
+                structure_sharing_domain_and_status(SharingAs, _Status),
+            dump_structure_sharing_domain(VarSet, TVarSet, SharingAs, !IO)
+        else
             true
         ),
 
         % Dump structure reuse information.
-        ( string.contains_char(DumpOptions, 'R') ->
+        ( if
+            string.contains_char(DumpOptions, 'R'),
+            MaybeStructureReuse = yes(StructureReuse)
+        then
             write_indent(Indent, !IO),
             io.write_string("% Structure reuse: \n", !IO),
-            (
-                MaybeStructureReuse = yes(StructureReuse),
-                StructureReuse =
-                    structure_reuse_domain_and_status(ReuseAs, _ReuseStatus),
-                dump_maybe_structure_reuse_domain(VarSet, TVarSet,
-                    yes(ReuseAs), !IO)
-            ;
-                MaybeStructureReuse = no,
-                dump_maybe_structure_reuse_domain(VarSet, TVarSet, no, !IO)
-            )
-        ;
+            StructureReuse =
+                structure_reuse_domain_and_status(ReuseAs, _ReuseStatus),
+            dump_structure_reuse_domain(VarSet, TVarSet, ReuseAs, !IO)
+        else
             true
         ),
 
         write_indent(Indent, !IO),
-        write_var_types(Indent, VarSet, AppendVarNums, VarTypes, TVarSet, !IO),
-        write_rtti_varmaps(Indent, AppendVarNums, RttiVarMaps, VarSet, TVarSet,
+        write_var_types(VarSet, TVarSet, VarNamePrint, Indent, VarTypes, !IO),
+        write_rtti_varmaps(VarSet, TVarSet, VarNamePrint, Indent, RttiVarMaps,
             !IO),
+
+        set.to_sorted_list(DeletedCallCalleeSet, DeletedCallCallees),
+        (
+            DeletedCallCallees = []
+        ;
+            DeletedCallCallees = [_ | _],
+            io.write_string("% procedures called from deleted goals: ", !IO),
+            io.write(DeletedCallCallees, !IO),
+            io.nl(!IO)
+        ),
 
         (
             IsAddressTaken = address_is_taken,
@@ -831,17 +894,17 @@ write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
             io.write_string("% address is not taken\n", !IO)
         ),
         (
-            HasParallelConj = yes,
+            HasParallelConj = has_parallel_conj,
             io.write_string("% contains parallel conjunction\n", !IO)
         ;
-            HasParallelConj = no,
+            HasParallelConj = has_no_parallel_conj,
             io.write_string("% does not contain parallel conjunction\n", !IO)
         ),
         (
-            HasUserEvent = yes,
+            HasUserEvent = has_user_event,
             io.write_string("% contains user event\n", !IO)
         ;
-            HasUserEvent = no,
+            HasUserEvent = has_no_user_event,
             io.write_string("% does not contain user event\n", !IO)
         ),
         (
@@ -865,7 +928,7 @@ write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
         (
             MaybeCallTableTip = yes(CallTableTip),
             io.write_string("% call table tip: ", !IO),
-            mercury_output_var(VarSet, AppendVarNums, CallTableTip, !IO),
+            mercury_output_var(VarSet, VarNamePrint, CallTableTip, !IO),
             io.write_string("\n", !IO)
         ;
             MaybeCallTableTip = no
@@ -903,13 +966,13 @@ write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
                     MaybeOldOutermost),
                 io.write_string("% deep layout info: ", !IO),
                 io.write_string("TopCSD is ", !IO),
-                mercury_output_var(VarSet, AppendVarNums, TopCSD, !IO),
+                mercury_output_var(VarSet, VarNamePrint, TopCSD, !IO),
                 io.write_string(", MiddleCSD is ", !IO),
-                mercury_output_var(VarSet, AppendVarNums, MiddleCSD, !IO),
+                mercury_output_var(VarSet, VarNamePrint, MiddleCSD, !IO),
                 (
                     MaybeOldOutermost = yes(OldOutermost),
                     io.write_string(", OldOutermost is ", !IO),
-                    mercury_output_var(VarSet, AppendVarNums, OldOutermost,
+                    mercury_output_var(VarSet, VarNamePrint, OldOutermost,
                         !IO)
                 ;
                     MaybeOldOutermost = no
@@ -923,8 +986,7 @@ write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
         ),
         (
             MaybeUntupleInfo = yes(UntupleInfo),
-            write_untuple_info(UntupleInfo, VarSet, AppendVarNums,
-                Indent, !IO)
+            write_untuple_info(VarSet, VarNamePrint, Indent, UntupleInfo, !IO)
         ;
             MaybeUntupleInfo = no
         ),
@@ -935,7 +997,7 @@ write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
             VarNameRemapList = [VarNameRemapHead | VarNameRemapTail],
             write_indent(Indent, !IO),
             io.write_string("% var name remap: ", !IO),
-            write_var_name_remap(VarNameRemapHead, VarNameRemapTail, VarSet,
+            write_var_name_remap(VarSet, VarNameRemapHead, VarNameRemapTail,
                 !IO),
             io.nl(!IO)
         ),
@@ -946,14 +1008,16 @@ write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
         varset.init(ModeVarSet),
         (
             PredOrFunc = pf_predicate,
-            mercury_output_pred_mode_decl(ModeVarSet, unqualified(PredName),
-                HeadModes, DeclaredDeterminism, ModeContext, !IO)
+            MaybeWithInst = maybe.no,
+            mercury_output_pred_mode_decl(output_debug, ModeVarSet,
+                unqualified(PredName), HeadModes,
+                MaybeWithInst, DeclaredDeterminism, !IO)
         ;
             PredOrFunc = pf_function,
             pred_args_to_func_args(HeadModes, FuncHeadModes, RetHeadMode),
-            mercury_output_func_mode_decl(ModeVarSet, unqualified(PredName),
-                FuncHeadModes, RetHeadMode, DeclaredDeterminism, ModeContext,
-                !IO)
+            mercury_output_func_mode_decl(output_debug, ModeVarSet,
+                unqualified(PredName), FuncHeadModes, RetHeadMode,
+                DeclaredDeterminism, !IO)
         ),
 
         (
@@ -965,44 +1029,44 @@ write_proc(Info, Indent, AppendVarNums, ModuleInfo, PredId, ProcId,
         ;
             MaybeArgLives = no
         ),
-        ( set_of_var.is_non_empty(RegR_HeadVars) ->
+        ( if set_of_var.is_non_empty(RegR_HeadVars) then
             write_indent(Indent, !IO),
             io.write_string("% reg_r headvars: ", !IO),
             io.write_list(set_of_var.to_sorted_list(RegR_HeadVars),
-                ", ", mercury_output_var(VarSet, AppendVarNums), !IO),
+                ", ", mercury_output_var(VarSet, VarNamePrint), !IO),
             io.nl(!IO)
-        ;
+        else
             true
         ),
-        (
+        ( if
             string.contains_char(DumpOptions, 'A'),
             MaybeArgInfos = yes(ArgInfos)
-        ->
+        then
             write_indent(Indent, !IO),
             io.write_string("% arg_infos: ", !IO),
             io.print(ArgInfos, !IO),
             io.nl(!IO)
-        ;
+        else
             true
         ),
-        (
-            ImportStatus = status_pseudo_imported,
+        ( if
+            PredStatus = pred_status(status_pseudo_imported),
             hlds_pred.in_in_unification_proc_id(ProcId)
-        ->
+        then
             true
-        ;
-            proc_info_get_stack_slots(Proc, StackSlots),
+        else
+            proc_info_get_stack_slots(ProcInfo, StackSlots),
             write_indent(Indent, !IO),
-            write_stack_slots(Indent, StackSlots, VarSet, AppendVarNums, !IO),
+            write_stack_slots(VarSet, VarNamePrint, Indent, StackSlots, !IO),
             write_indent(Indent, !IO),
             term.var_list_to_term_list(HeadVars, HeadTerms),
-            write_clause_head(ModuleInfo, PredId, VarSet, AppendVarNums,
-                HeadTerms, PredOrFunc, !IO),
+            write_clause_head(ModuleInfo, VarSet, VarNamePrint, PredId,
+                PredOrFunc, HeadTerms, !IO),
             io.write_string(" :-\n", !IO),
-            write_goal(Info, Goal, ModuleInfo, VarSet, AppendVarNums,
-                Indent1, ".\n", !IO)
+            write_goal(Info, ModuleInfo, VarSet, VarNamePrint,
+                Indent1, ".\n", Goal, !IO)
         )
-    ;
+    else
         true
     ).
 
@@ -1088,9 +1152,15 @@ coverage_point_to_string(cp_type_branch_arm) = "branch arm".
     io::di, io::uo) is det.
 
 write_proc_table_io_info(TVarSet, ProcTableIOInfo, !IO) :-
-    ProcTableIOInfo = proc_table_io_info(ArgInfos),
-    io.write_string("% proc table io info: io tabled\n", !IO),
-    write_table_arg_infos(TVarSet, ArgInfos, !IO).
+    ProcTableIOInfo = proc_table_io_info(MaybeArgInfos),
+    (
+        MaybeArgInfos = no,
+        io.write_string("% proc table io info: io tabled, no arg_infos\n", !IO)
+    ;
+        MaybeArgInfos = yes(ArgInfos),
+        io.write_string("% proc table io info: io tabled, arg_infos:\n", !IO),
+        write_table_arg_infos(TVarSet, ArgInfos, !IO)
+    ).
 
 write_table_arg_infos(TVarSet, TableArgInfos, !IO) :-
     TableArgInfos = table_arg_infos(ArgInfos, TVarMap),
@@ -1117,7 +1187,8 @@ write_table_arg_info(TVarSet, ArgInfo, !IO) :-
     io.write_string(" in slot ", !IO),
     io.write_int(SlotNum, !IO),
     io.write_string(", type ", !IO),
-    io.write_string(mercury_type_to_string(TVarSet, yes, Type), !IO),
+    io.write_string(mercury_type_to_string(TVarSet, print_name_and_num, Type),
+        !IO),
     io.nl(!IO).
 
 :- pred write_table_tvar_map_entry(tvarset::in,
@@ -1125,7 +1196,8 @@ write_table_arg_info(TVarSet, ArgInfo, !IO) :-
 
 write_table_tvar_map_entry(TVarSet, TVar - Locn, !IO) :-
     io.write_string("% typeinfo for ", !IO),
-    io.write_string(mercury_var_to_string(TVarSet, yes, TVar), !IO),
+    io.write_string(mercury_var_to_string(TVarSet, print_name_and_num, TVar),
+        !IO),
     io.write_string(" -> ", !IO),
     (
         Locn = table_locn_direct(N),
@@ -1148,6 +1220,9 @@ table_trie_step_desc(TVarSet, Step) = Str :-
     (
         Step = table_trie_step_int,
         Str = "int"
+    ;
+        Step = table_trie_step_uint,
+        Str = "uint"
     ;
         Step = table_trie_step_char,
         Str = "char"
@@ -1182,7 +1257,8 @@ table_trie_step_desc(TVarSet, Step) = Str :-
             IsAddr = table_addr,
             IsAddrStr = "addr"
         ),
-        Str = "general(" ++ mercury_type_to_string(TVarSet, yes, Type) ++
+        Str = "general(" ++
+            mercury_type_to_string(TVarSet, print_name_and_num, Type) ++
             ", " ++ IsPolyStr ++ ", " ++ IsAddrStr ++ ")"
     ;
         Step = table_trie_step_typeinfo,
@@ -1200,25 +1276,25 @@ table_trie_step_desc(TVarSet, Step) = Str :-
 % Write out constraint maps.
 %
 
-:- pred write_constraint_map(int::in, tvarset::in,
-    constraint_map::in, bool::in, io::di, io::uo) is det.
+:- pred write_constraint_map(tvarset::in, var_name_print::in, int::in,
+    constraint_map::in, io::di, io::uo) is det.
 
-write_constraint_map(Indent, VarSet, ConstraintMap, AppendVarNums, !IO) :-
+write_constraint_map(VarSet, VarNamePrint, Indent, ConstraintMap, !IO) :-
     write_indent(Indent, !IO),
-    io.write_string("% Constraint Map:\n", !IO),
-    map.foldl(write_constraint_map_entry(Indent, VarSet, AppendVarNums),
+    io.write_string("% Constraint map:\n", !IO),
+    map.foldl(write_constraint_map_entry(VarSet, VarNamePrint, Indent),
         ConstraintMap, !IO).
 
-:- pred write_constraint_map_entry(int::in, tvarset::in, bool::in,
+:- pred write_constraint_map_entry(tvarset::in, var_name_print::in, int::in,
     constraint_id::in, prog_constraint::in, io::di, io::uo) is det.
 
-write_constraint_map_entry(Indent, VarSet, AppendVarNums, ConstraintId,
-        ProgConstraint, !IO) :-
+write_constraint_map_entry(VarSet, VarNamePrint, Indent,
+        ConstraintId, ProgConstraint, !IO) :-
     write_indent(Indent, !IO),
     io.write_string("% ", !IO),
     write_constraint_id(ConstraintId, !IO),
     io.write_string(": ", !IO),
-    mercury_output_constraint(VarSet, AppendVarNums, ProgConstraint, !IO),
+    mercury_output_constraint(VarSet, VarNamePrint, ProgConstraint, !IO),
     io.nl(!IO).
 
 :- pred write_constraint_id(constraint_id::in, io::di, io::uo) is det.
@@ -1243,7 +1319,7 @@ write_constraint_id(ConstraintId, !IO) :-
 % Write out predicate markers.
 %
 
-:- pred write_marker_list(list(marker)::in, io::di, io::uo) is det.
+:- pred write_marker_list(list(pred_marker)::in, io::di, io::uo) is det.
 
 write_marker_list(Markers, !IO) :-
     io.write_list(Markers, ", ", write_marker, !IO).
@@ -1259,6 +1335,7 @@ marker_name(marker_infer_modes, "infer_modes").
 marker_name(marker_user_marked_inline, "inline").
 marker_name(marker_user_marked_no_inline, "no_inline").
 marker_name(marker_heuristic_inline, "heuristic_inline").
+marker_name(marker_consider_used, "consider_used").
 marker_name(marker_obsolete, "obsolete").
 marker_name(marker_no_detism_warning, "no_determinism_warning").
 marker_name(marker_class_method, "class_method").
@@ -1276,6 +1353,7 @@ marker_name(marker_calls_are_fully_qualified, "calls_are_fully_qualified").
 marker_name(marker_mode_check_clauses, "mode_check_clauses").
 marker_name(marker_mutable_access_pred, "mutable_access_pred").
 marker_name(marker_has_require_scope, "has_require_scope").
+marker_name(marker_has_incomplete_switch, "has_incomplete_switch").
 marker_name(marker_has_format_call, "has_format_call").
 
 %-----------------------------------------------------------------------------%

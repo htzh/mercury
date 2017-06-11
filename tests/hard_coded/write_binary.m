@@ -1,5 +1,9 @@
-% Test case for io__write_binary/io__read_binary.
-% (adapted from tests/hard_coded/write.m, which tests io__write).
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
+%
+% Test case for io.write_binary/io.read_binary.
+% (adapted from tests/hard_coded/write.m, which tests io.write).
 
 % XXX currently we do not pass the test of "univ"!
 
@@ -7,202 +11,224 @@
 :- interface.
 :- import_module io.
 
-:- pred main(io__state::di, io__state::uo) is cc_multi.
+:- pred main(io::di, io::uo) is cc_multi.
 
 :- implementation.
 
-:- import_module char, list, int, std_util, term, map, array, exception.
+:- import_module array.
+:- import_module char.
+:- import_module exception.
+:- import_module int.
+:- import_module list.
+:- import_module map.
+:- import_module require.
+:- import_module std_util.
+:- import_module term.
 
-:- pred test_ops(io__state::di, io__state::uo) is cc_multi.
-:- pred test_builtins(io__state::di, io__state::uo) is cc_multi.
-:- pred test_discriminated(io__state::di, io__state::uo) is cc_multi.
-:- pred test_polymorphism(io__state::di, io__state::uo) is cc_multi.
-:- pred test_other(io__state::di, io__state::uo) is cc_multi.
-:- pred do_test(T::in, io__state::di, io__state::uo) is cc_multi.
-:- pred do_test_2(T::in, T::out, io__state::di, io__state::uo) is det.
+:- pred test_ops(io::di, io::uo) is cc_multi.
+:- pred test_builtins(io::di, io::uo) is cc_multi.
+:- pred test_discriminated(io::di, io::uo) is cc_multi.
+:- pred test_polymorphism(io::di, io::uo) is cc_multi.
+:- pred test_other(io::di, io::uo) is cc_multi.
+:- pred do_test(T::in, io::di, io::uo) is cc_multi.
+:- pred do_test_2(T::in, T::out, io::di, io::uo) is det.
 
+:- type enum
+    --->    one
+    ;       two
+    ;       three.
 
-:- type enum	--->	one	;	two	;	three.
+:- type fruit
+    --->    apple(list(int))
+    ;       banana(list(enum)).
 
-:- type fruit	--->	apple(list(int))
-		;	banana(list(enum)).
+:- type thingie
+    --->    foo
+    ;       bar(int)
+    ;       bar(int, int)
+    ;       qux(int)
+    ;       quux(int)
+    ;       quuux(int, int)
+    ;       wombat
+    ;       zoom(int)
+    ;       zap(int, float)
+    ;       zip(int, int)
+    ;       zop(float, float).
 
-:- type thingie	--->	foo ; bar(int) ; bar(int, int) ; qux(int) ;
-			quux(int) ; quuux(int, int) ; wombat ; 
-			zoom(int) ; zap(int, float) ; zip(int, int) ;
-			zop(float, float).
+:- type poly(A, B)
+    --->    poly_one(A)
+    ;       poly_two(B)
+    ;       poly_three(B, A, poly(B, A)).
 
-:- type poly(A, B)	--->	poly_one(A) ; poly_two(B) ; 
-				poly_three(B, A, poly(B, A)).
+:- type no_tag
+    --->    qwerty(int).
 
-:- type no_tag		---> 	qwerty(int).
+:- type expr
+    --->    var(string)
+    ;       int(int)
+    ;       expr + expr
+    ;       expr - expr
+    ;       expr * expr
+    ;       (expr, expr)
+    ;       {expr; expr}
+    ;       {{expr}}
+    ;       (type)
+    ;       blah
+    ;       (?-).
 
-:- type expr		--->	var(string)
-			;	int(int)
-			;	expr + expr
-			;	expr - expr
-			; 	expr * expr
-			;	(expr, expr)
-			;	{expr; expr}
-			;	{{expr}}
-			;	(type)
-			;	blah
-			;	(:-)
-			.
+main(!IO) :-
+    test_ops(!IO),
+    test_discriminated(!IO),
+    test_polymorphism(!IO),
+    test_builtins(!IO),
+    test_other(!IO).
 
-main -->
-	test_ops,
-	test_discriminated,
-	test_polymorphism,
-	test_builtins, 
-	test_other.
+test_ops(!IO) :-
+    io.write_string("TESTING TERMS WITH OPERATORS\n", !IO),
+    do_test(var("X") + int(3) * var("X^2") ; (type), !IO),
+    do_test(write_binary.{type}, !IO),
+    do_test(write_binary.{?-}, !IO),
+    do_test((?-), !IO),
+    do_test(write_binary.{blah}, !IO),
+    do_test((blah ; (type), (type) * blah ; (type)), !IO),
+    do_test(((blah ; blah), blah) * blah ; blah, !IO),
+    do_test((type) * blah ; (type), !IO).
 
+test_discriminated(!IO) :-
+    io.write_string("TESTING DISCRIMINATED UNIONS\n", !IO),
 
-test_ops -->
-	io__write_string("TESTING TERMS WITH OPERATORS\n"),
-	do_test(var("X") + int(3) * var("X^2") ; (type)),
-	do_test(write_binary.{type}),
-	do_test(write_binary.{:-}),
-	do_test((:-)),
-	do_test(write_binary.{blah}),
-	do_test((blah ; (type), (type) * blah ; (type))),
-	do_test(((blah ; blah), blah) * blah ; blah),
-	do_test((type) * blah ; (type)).
+    % test enumerations
+    do_test(one, !IO),
+    do_test(two, !IO),
+    do_test(three, !IO),
 
-test_discriminated -->
-	io__write_string("TESTING DISCRIMINATED UNIONS\n"),
+    % test simple tags
+    do_test(apple([9, 5, 1]), !IO),
+    do_test(banana([three, one, two]), !IO),
 
-		% test enumerations
-	do_test(one),
-	do_test(two),
-	do_test(three),
+    % test complicated tags
+    do_test(zop(3.3, 2.03), !IO),
+    do_test(zip(3, 2), !IO),
+    do_test(zap(3, -2.111), !IO),
 
-		% test simple tags
-	do_test(apple([9,5,1])),
-	do_test(banana([three, one, two])),
+    % test complicated constant
+    do_test(wombat, !IO),
+    do_test(foo, !IO).
 
-		% test complicated tags
-	do_test(zop(3.3, 2.03)),
-	do_test(zip(3, 2)),
-	do_test(zap(3, -2.111)),
+test_polymorphism(!IO) :-
+    io.write_string("TESTING POLYMORPHISM\n", !IO),
+    do_test(poly_one([2399.3]) `with_type` poly(list(float), int), !IO),
+    do_test(poly_two(3) `with_type` poly(list(float), int), !IO),
+    do_test(poly_three(3.33, 4, poly_one(9.11)), !IO).
 
-		% test complicated constant
-	do_test(wombat),
-	do_test(foo).
+test_builtins(!IO) :-
+    io.write_string("TESTING BUILTINS\n", !IO),
 
-test_polymorphism -->
-	io__write_string("TESTING POLYMORPHISM\n"),
-	do_test(poly_one([2399.3]) `with_type` poly(list(float), int)),
-	do_test(poly_two(3) `with_type` poly(list(float), int)),
-	do_test(poly_three(3.33, 4, poly_one(9.11))).
+    % test strings
+    do_test("", !IO),
+    do_test("Hello, world\n", !IO),
+    do_test("Foo%sFoo", !IO),
+    do_test("""", !IO),
 
+    % test characters
+    do_test('a' `with_type` char, !IO),
+    do_test('&' `with_type` char, !IO),
+    do_test('.' `with_type` char, !IO),
+    do_test('%' `with_type` char, !IO),
+    do_test(' ' `with_type` char, !IO),
+    do_test('\t' `with_type` char, !IO),
+    do_test('\n' `with_type` char, !IO),
+    do_test(('\\') `with_type` char, !IO),
+    do_test('*' `with_type` char, !IO),
+    do_test('/' `with_type` char, !IO),
 
-test_builtins -->
-	io__write_string("TESTING BUILTINS\n"),
+    % test floats
+    do_test(3.14159, !IO),
+    do_test(11.28324983E-22, !IO),
+    do_test(22.3954899E22, !IO),
 
-		% test strings
- 	do_test(""),
- 	do_test("Hello, world\n"),
- 	do_test("Foo%sFoo"),
- 	do_test(""""),
-
-		% test characters
-	do_test('a' `with_type` char),
-	do_test('&' `with_type` char),
-	do_test('.' `with_type` char),
-	do_test('%' `with_type` char),
-	do_test(' ' `with_type` char),
-	do_test('\t' `with_type` char),
-	do_test('\n' `with_type` char),
-	do_test(('\\') `with_type` char),
-	do_test('*' `with_type` char),
-	do_test('/' `with_type` char),
-
-		% test floats
-	do_test(3.14159),
-	do_test(11.28324983E-22),
-	do_test(22.3954899E22),
-
-		% test integers
-	do_test(-65),
-	do_test(4),
+    % test integers
+    do_test(-65, !IO),
+    do_test(4, !IO),
 
 %%% XXX currently we do not pass this test!
-%%%		% test univ.
-%%%	{ type_to_univ(["hi! I'm a univ!"], Univ) }, 
-%%%	do_test(Univ),
-	
-		% test predicates	
-		% io__read_binary doesn't work for higher-order terms,
-		% so this test is expected to fail.
-	io__write_string("next text is expected to fail:\n"),
-	do_test(do_test `with_type` pred(int, io, io)),
+%%%     % test univ.
+%%% type_to_univ(["hi! I'm a univ!"], Univ),
+%%% do_test(Univ, !IO),
 
-	{ true }.
+    % test predicates
+    % io.read_binary doesn't work for higher-order terms,
+    % so this test is expected to fail.
+    io.write_string("next text is expected to fail:\n", !IO),
+    do_test(do_test `with_type` pred(int, io, io), !IO).
 
-test_other -->
-	io__write_string("TESTING OTHER TYPES\n"),
-	{ term__init_var_supply(VarSupply `with_type` var_supply(generic)) },
-	{ term__create_var(Var, VarSupply, NewVarSupply) },
-	do_test(Var),
-	do_test(VarSupply),
-	do_test(NewVarSupply),
+test_other(!IO) :-
+    io.write_string("TESTING OTHER TYPES\n", !IO),
+    term.init_var_supply(VarSupply `with_type` var_supply(generic)),
+    term.create_var(Var, VarSupply, NewVarSupply),
+    do_test(Var, !IO),
+    do_test(VarSupply, !IO),
+    do_test(NewVarSupply, !IO),
 
-		% presently, at least, map is an equivalence and
-		% an abstract type.
-	{ map__init(Map `with_type` map(int, string)) },
-	do_test(Map),
+    % presently, at least, map is an equivalence and
+    % an abstract type.
+    map.init(Map `with_type` map(int, string)),
+    do_test(Map, !IO),
 
-		% a no tag type 
-	do_test(qwerty(4)),
+    % a no tag type
+    do_test(qwerty(4), !IO),
 
-	{ array__from_list([1,2,3,4], Array) },
-	do_test(Array).
+    array.from_list([1, 2, 3, 4], Array),
+    do_test(Array, !IO).
 
-do_test(Term) -->
-	try_io(do_test_2(Term), Result),
-	( { Result = succeeded(TermRead) } ->
-		io__print("test passed:\n"),
-		io__print(Term), io__nl,
-		io__print(TermRead), io__nl
-	;
-		io__print("test failed:\n"),
-		io__print(Result), io__nl,
-		io__print(Term), io__nl
-	).
+do_test(Term, !IO) :-
+    try_io(do_test_2(Term), Result, !IO),
+    ( if Result = succeeded(TermRead) then
+        io.print("test passed:\n", !IO),
+        io.print(Term, !IO), io.nl(!IO),
+        io.print(TermRead, !IO), io.nl(!IO)
+    else
+        io.print("test failed:\n", !IO),
+        io.print(Result, !IO), io.nl(!IO),
+        io.print(Term, !IO), io.nl(!IO)
+    ).
 
-do_test_2(Term, TermRead) -->
-	io__make_temp(FileName),
-	io__open_binary_output(FileName, OutputRes),
-	( { OutputRes = ok(OutputStream) } ->
-		io__write_byte(OutputStream, 42),
-		io__write_binary(OutputStream, Term),
-		io__write_byte(OutputStream, 43),
-		io__close_binary_output(OutputStream),
-		io__open_binary_input(FileName, InputRes),
-		( { InputRes = ok(InputStream) } ->
-			io__read_byte(InputStream, B42),
-			io__read_binary(InputStream, Result),
-			io__read_byte(InputStream, B43),
-			io__close_binary_input(InputStream),
-			(
-				{ B42 = ok(42) },
-				{ B43 = ok(43) },
-				{ Result = ok(TermRead0) },
-				{ TermRead0 = Term }
-			->
-				io__remove_file(FileName, _),
-				io__print("ok... "),
-				{ TermRead = TermRead0 }
-			;
-				io__remove_file(FileName, _),
-				{ throw("error reading term back in again") }
-			)
-		;
-			io__remove_file(FileName, _),
-			{ throw(InputRes) }
-		)
-	;
-		io__remove_file(FileName, _),
-		{ throw(OutputRes) }
-	).
+do_test_2(Term, TermRead, !IO) :-
+    io.make_temp_file(FileNameRes, !IO),
+    ( if FileNameRes = ok(FileName) then
+        io.open_binary_output(FileName, OutputRes, !IO),
+        ( if OutputRes = ok(OutputStream) then
+            io.write_byte(OutputStream, 42, !IO),
+            io.write_binary(OutputStream, Term, !IO),
+            io.write_byte(OutputStream, 43, !IO),
+            io.close_binary_output(OutputStream, !IO),
+            io.open_binary_input(FileName, InputRes, !IO),
+            ( if InputRes = ok(InputStream) then
+                io.read_byte(InputStream, B42, !IO),
+                io.read_binary(InputStream, Result, !IO),
+                io.read_byte(InputStream, B43, !IO),
+                io.close_binary_input(InputStream, !IO),
+                ( if
+                    B42 = ok(42),
+                    B43 = ok(43),
+                    Result = ok(TermRead0),
+                    TermRead0 = Term
+                then
+                    io.remove_file(FileName, _, !IO),
+                    io.print("ok... ", !IO),
+                    TermRead = TermRead0
+                else
+                    io.remove_file(FileName, _, !IO),
+                    throw("error reading term back in again")
+                )
+            else
+                io.remove_file(FileName, _, !IO),
+                throw(InputRes)
+            )
+        else
+            io.remove_file(FileName, _, !IO),
+            throw(OutputRes)
+        )
+    else
+        unexpected($pred, "cannot open temp file")
+    ).

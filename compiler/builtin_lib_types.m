@@ -25,6 +25,7 @@
 %
 
 :- func int_type = mer_type.
+:- func uint_type = mer_type.
 :- func float_type = mer_type.
 :- func string_type = mer_type.
 :- func char_type = mer_type.
@@ -58,6 +59,7 @@
 %
 
 :- func int_type_ctor = type_ctor.
+:- func uint_type_ctor = type_ctor.
 :- func float_type_ctor = type_ctor.
 :- func char_type_ctor = type_ctor.
 :- func string_type_ctor = type_ctor.
@@ -71,12 +73,6 @@
 :- func stm_valid_result_type_ctor = type_ctor.
 :- func stm_rollback_exception_type_ctor = type_ctor.
 :- func stm_dummy_output_type_ctor = type_ctor.
-
-%-----------------------------------------------------------------------------%
-
-    % Succeed iff the given variable is of region_type.
-    %
-:- pred is_region_var(vartypes::in, prog_var::in) is semidet.
 
 %-----------------------------------------------------------------------------%
 %
@@ -108,14 +104,17 @@
 
 :- implementation.
 
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
+:- import_module mdbcomp.sym_name.
 
 :- import_module list.
-:- import_module map.
 
 %-----------------------------------------------------------------------------%
 
 int_type = builtin_type(builtin_type_int).
+
+uint_type = builtin_type(builtin_type_uint).
 
 float_type = builtin_type(builtin_type_float).
 
@@ -217,6 +216,8 @@ future_type(ValueType) = defined_type(Name, [ValueType], kind_star) :-
 
 int_type_ctor = type_ctor(Name, 0) :-
     Name = unqualified("int").
+uint_type_ctor = type_ctor(Name, 0) :-
+    Name = unqualified("uint").
 float_type_ctor = type_ctor(Name, 0) :-
     Name = unqualified("float").
 char_type_ctor = type_ctor(Name, 0) :-
@@ -239,12 +240,6 @@ stm_rollback_exception_type_ctor = type_ctor(Name, 0) :-
     Name = qualified(mercury_stm_builtin_module, "rollback_exception").
 stm_dummy_output_type_ctor = type_ctor(Name, 0) :-
     Name = qualified(mercury_stm_builtin_module, "stm_dummy_output").
-
-%-----------------------------------------------------------------------------%
-
-is_region_var(VarTypes, Var)  :-
-    lookup_var_type(VarTypes, Var, Type),
-    Type = region_type.
 
 %-----------------------------------------------------------------------------%
 
@@ -277,4 +272,6 @@ stm_dummy_output_functor = cons(Name, 0, TypeCtor) :-
     Name = qualified(mercury_stm_builtin_module, "stm_dummy_output"),
     TypeCtor = stm_dummy_output_type_ctor.
 
+%-----------------------------------------------------------------------------%
+:- end_module parse_tree.builtin_lib_types.
 %-----------------------------------------------------------------------------%

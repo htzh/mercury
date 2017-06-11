@@ -19,10 +19,13 @@
 
 :- import_module erl_backend.elds.
 :- import_module erl_backend.erl_code_util.
+:- import_module hlds.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_pred.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
 
 :- import_module list.
 :- import_module maybe.
@@ -70,10 +73,10 @@
 :- pred erl_gen_cast(prog_context::in, prog_vars::in, maybe(elds_expr)::in,
     elds_expr::out, erl_gen_info::in, erl_gen_info::out) is det.
 
-    % Generate ELDS code for a call to foreign code.
+    % Generate ELDS code for a call to foreign proc.
     %
-:- pred erl_gen_foreign_code_call(list(foreign_arg)::in,
-    maybe(trace_expr(trace_runtime))::in, pragma_foreign_code_impl::in,
+:- pred erl_gen_foreign_proc_call(list(foreign_arg)::in,
+    maybe(trace_expr(trace_runtime))::in, pragma_foreign_proc_impl::in,
     code_model::in, prog_context::in, maybe(elds_expr)::in,
     elds_expr::out, erl_gen_info::in, erl_gen_info::out) is det.
 
@@ -103,18 +106,19 @@
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
 :- import_module hlds.hlds_module.
+:- import_module hlds.vartypes.
 
 :- import_module int.
-:- import_module map.
-:- import_module pair.
 :- import_module require.
 
 %-----------------------------------------------------------------------------%
 %
-% Code for procedure calls
+% Code for procedure calls.
 %
 
 erl_gen_call(PredId, ProcId, ArgVars, _ActualArgTypes,
@@ -264,7 +268,7 @@ make_nondet_call(CallTarget, InputExprs, OutputVars, SuccessCont0,
 
 %-----------------------------------------------------------------------------%
 %
-% Code for generic calls
+% Code for generic calls.
 %
 
 erl_gen_higher_order_call(GenericCall, ArgVars, Modes, Detism,
@@ -340,10 +344,10 @@ erl_gen_class_method_call(GenericCall, ArgVars, Modes, Detism,
 
 erl_gen_cast(_Context, ArgVars, MaybeSuccessExpr, Statement, !Info) :-
     erl_variable_types(!.Info, ArgVars, ArgTypes),
-    (
+    ( if
         ArgVars = [SrcVar, DestVar],
         ArgTypes = [_SrcType, DestType]
-    ->
+    then
         erl_gen_info_get_module_info(!.Info, ModuleInfo),
         IsDummy = check_dummy_type(ModuleInfo, DestType),
         (
@@ -356,44 +360,38 @@ erl_gen_cast(_Context, ArgVars, MaybeSuccessExpr, Statement, !Info) :-
             Assign = elds_eq(expr_from_var(DestVar), SrcVarExpr),
             Statement = maybe_join_exprs(Assign, MaybeSuccessExpr)
         )
-    ;
+    else
         unexpected($module, $pred, "wrong number of args for cast")
     ).
 
 %-----------------------------------------------------------------------------%
 %
-% Code for builtins
+% Code for builtins.
 %
 
-    % XXX many of the "standard" builtins in builtin_ops.m do not apply to the
-    % Erlang back-end.
-    %
 erl_gen_builtin(PredId, ProcId, ArgVars, CodeModel, _Context,
         MaybeSuccessExpr, Statement, !Info) :-
+    % XXX many of the "standard" builtins in builtin_ops.m do not apply to the
+    % Erlang back-end.
+
     erl_gen_info_get_module_info(!.Info, ModuleInfo),
     erl_gen_info_get_var_types(!.Info, VarTypes),
     ModuleName = predicate_module(ModuleInfo, PredId),
     PredName = predicate_name(ModuleInfo, PredId),
-    (
-        builtin_ops.translate_builtin(ModuleName, PredName,
-            ProcId, ArgVars, SimpleCode0)
-    ->
-        SimpleCode = SimpleCode0
-    ;
-        unexpected($module, $pred, "unknown builtin predicate")
-    ),
+    builtin_ops.translate_builtin(ModuleName, PredName, ProcId, ArgVars,
+        SimpleCode),
     (
         CodeModel = model_det,
         (
             SimpleCode = assign(Lval, SimpleExpr),
-            (
+            ( if
                 % We need to avoid generating assignments to dummy variables
                 % introduced for types such as io.state.
                 lookup_var_type(VarTypes, Lval, LvalType),
                 check_dummy_type(ModuleInfo, LvalType) = is_dummy_type
-            ->
+            then
                 Statement = expr_or_void(MaybeSuccessExpr)
-            ;
+            else
                 Rval = erl_gen_simple_expr(ModuleInfo, VarTypes, SimpleExpr),
                 Assign = elds.elds_eq(elds.expr_from_var(Lval), Rval),
                 Statement = maybe_join_exprs(Assign, MaybeSuccessExpr)
@@ -446,24 +444,30 @@ erl_gen_simple_expr(ModuleInfo, VarTypes, SimpleExpr) = Expr :-
         SimpleExpr = int_const(Int),
         Expr = elds_term(elds_int(Int))
     ;
+        SimpleExpr = uint_const(UInt),
+        Expr = elds_term(elds_uint(UInt))
+    ;
         SimpleExpr = float_const(Float),
         Expr = elds_term(elds_float(Float))
     ;
         SimpleExpr = unary(StdOp, Expr0),
-        ( std_unop_to_elds(StdOp, Op) ->
+        ( if std_unop_to_elds(StdOp, Op) then
             SimpleExpr1 = erl_gen_simple_expr(ModuleInfo, VarTypes, Expr0),
             Expr = elds_unop(Op, SimpleExpr1)
-        ;
+        else
             sorry($module, $pred,
                 "unary builtin not supported on erlang target")
         )
     ;
         SimpleExpr = binary(StdOp, Expr1, Expr2),
-        ( std_binop_to_elds(StdOp, Op) ->
+        ( if std_binop_to_elds(StdOp, Op) then
             SimpleExpr1 = erl_gen_simple_expr(ModuleInfo, VarTypes, Expr1),
             SimpleExpr2 = erl_gen_simple_expr(ModuleInfo, VarTypes, Expr2),
             Expr = elds_binop(Op, SimpleExpr1, SimpleExpr2)
-        ;
+        else if StdOp = pointer_equal_conservative then
+            % This is as conservative as possible.
+            Expr = elds_term(elds_false)
+        else
             sorry($module, $pred,
                 "binary builtin not supported on erlang target")
         )
@@ -471,61 +475,105 @@ erl_gen_simple_expr(ModuleInfo, VarTypes, SimpleExpr) = Expr :-
 
 :- pred std_unop_to_elds(unary_op::in, elds_unop::out) is semidet.
 
-std_unop_to_elds(mktag, _) :- fail.
-std_unop_to_elds(tag, _) :- fail.
-std_unop_to_elds(unmktag, _) :- fail.
-std_unop_to_elds(strip_tag, _) :- fail.
-std_unop_to_elds(mkbody, _) :- fail.
-std_unop_to_elds(unmkbody, _) :- fail.
-std_unop_to_elds(hash_string, _) :- fail.
-std_unop_to_elds(bitwise_complement, elds.bnot).
-std_unop_to_elds(logical_not, elds.logical_not).
+std_unop_to_elds(StdUnOp, EldsUnOp) :-
+    require_complete_switch [StdUnOp]
+    (
+        ( StdUnOp = mktag
+        ; StdUnOp = tag
+        ; StdUnOp = unmktag
+        ; StdUnOp = strip_tag
+        ; StdUnOp = mkbody
+        ; StdUnOp = unmkbody
+        ; StdUnOp = hash_string
+        ; StdUnOp = hash_string2
+        ; StdUnOp = hash_string3
+        ; StdUnOp = hash_string4
+        ; StdUnOp = hash_string5
+        ; StdUnOp = hash_string6
+        ),
+        fail
+    ;
+        ( StdUnOp = bitwise_complement,      EldsUnOp = elds.bnot
+        ; StdUnOp = uint_bitwise_complement, EldsUnOp = elds.bnot
+        ; StdUnOp = logical_not,             EldsUnOp = elds.logical_not
+        )
+    ).
 
 :- pred std_binop_to_elds(binary_op::in, elds_binop::out) is semidet.
 
-std_binop_to_elds(int_add, elds.add).
-std_binop_to_elds(int_sub, elds.sub).
-std_binop_to_elds(int_mul, elds.mul).
-std_binop_to_elds(int_div, elds.int_div).
-std_binop_to_elds(int_mod, elds.(rem)).
-std_binop_to_elds(unchecked_left_shift, elds.bsl).
-std_binop_to_elds(unchecked_right_shift, elds.bsr).
-std_binop_to_elds(bitwise_and, elds.band).
-std_binop_to_elds(bitwise_or, elds.bor).
-std_binop_to_elds(bitwise_xor, elds.bxor).
-std_binop_to_elds(logical_and, elds.andalso).
-std_binop_to_elds(logical_or, elds.orelse).
-std_binop_to_elds(eq, elds.(=:=)).
-std_binop_to_elds(ne, elds.(=/=)).
-std_binop_to_elds(body, _) :- fail.
-std_binop_to_elds(array_index(_), _) :- fail.
-std_binop_to_elds(str_eq, elds.(=:=)).
-std_binop_to_elds(str_ne, elds.(=/=)).
-std_binop_to_elds(str_lt, elds.(<)).
-std_binop_to_elds(str_gt, elds.(>)).
-std_binop_to_elds(str_le, elds.(=<)).
-std_binop_to_elds(str_ge, elds.(>=)).
-std_binop_to_elds(int_lt, elds.(<)).
-std_binop_to_elds(int_gt, elds.(>)).
-std_binop_to_elds(int_le, elds.(=<)).
-std_binop_to_elds(int_ge, elds.(>=)).
-std_binop_to_elds(unsigned_le, _) :- fail.
-std_binop_to_elds(float_plus, elds.add).
-std_binop_to_elds(float_minus, elds.sub).
-std_binop_to_elds(float_times, elds.mul).
-std_binop_to_elds(float_divide, elds.float_div).
-std_binop_to_elds(float_eq, elds.(=:=)).
-std_binop_to_elds(float_ne, elds.(=/=)).
-std_binop_to_elds(float_lt, elds.(<)).
-std_binop_to_elds(float_gt, elds.(>)).
-std_binop_to_elds(float_le, elds.(=<)).
-std_binop_to_elds(float_ge, elds.(>=)).
-std_binop_to_elds(compound_eq, elds.(=:=)).
-std_binop_to_elds(compound_lt, elds.(<)).
+std_binop_to_elds(StdBinOp, EldsBinOp) :-
+    require_complete_switch [StdBinOp]
+    (
+        ( StdBinOp = body
+        ; StdBinOp = array_index(_)
+        ; StdBinOp = unsigned_le
+        ; StdBinOp = float_from_dword
+        ; StdBinOp = float_word_bits
+        ; StdBinOp = str_cmp
+        ; StdBinOp = pointer_equal_conservative     % handled in our caller
+        ; StdBinOp = string_unsafe_index_code_unit  % we *could* implement this
+        ),
+        fail
+    ;
+        ( StdBinOp = int_add,               EldsBinOp = elds.add
+        ; StdBinOp = int_sub,               EldsBinOp = elds.sub
+        ; StdBinOp = int_mul,               EldsBinOp = elds.mul
+        ; StdBinOp = int_div,               EldsBinOp = elds.int_div
+        ; StdBinOp = int_mod,               EldsBinOp = elds.(rem)
+        ; StdBinOp = unchecked_left_shift,  EldsBinOp = elds.bsl
+        ; StdBinOp = unchecked_right_shift, EldsBinOp = elds.bsr
+        ; StdBinOp = bitwise_and,           EldsBinOp = elds.band
+        ; StdBinOp = bitwise_or,            EldsBinOp = elds.bor
+        ; StdBinOp = bitwise_xor,           EldsBinOp = elds.bxor
+        ; StdBinOp = logical_and,           EldsBinOp = elds.andalso
+        ; StdBinOp = logical_or,            EldsBinOp = elds.orelse
+        ; StdBinOp = eq,                    EldsBinOp = elds.(=:=)
+        ; StdBinOp = ne,                    EldsBinOp = elds.(=/=)
+        ; StdBinOp = offset_str_eq(_),      EldsBinOp = elds.(=:=)
+        ; StdBinOp = str_eq,                EldsBinOp = elds.(=:=)
+        ; StdBinOp = str_ne,                EldsBinOp = elds.(=/=)
+        ; StdBinOp = str_lt,                EldsBinOp = elds.(<)
+        ; StdBinOp = str_gt,                EldsBinOp = elds.(>)
+        ; StdBinOp = str_le,                EldsBinOp = elds.(=<)
+        ; StdBinOp = str_ge,                EldsBinOp = elds.(>=)
+        ; StdBinOp = int_lt,                EldsBinOp = elds.(<)
+        ; StdBinOp = int_gt,                EldsBinOp = elds.(>)
+        ; StdBinOp = int_le,                EldsBinOp = elds.(=<)
+        ; StdBinOp = int_ge,                EldsBinOp = elds.(>=)
+        ; StdBinOp = float_plus,            EldsBinOp = elds.add
+        ; StdBinOp = float_minus,           EldsBinOp = elds.sub
+        ; StdBinOp = float_times,           EldsBinOp = elds.mul
+        ; StdBinOp = float_divide,          EldsBinOp = elds.float_div
+        ; StdBinOp = float_eq,              EldsBinOp = elds.(=:=)
+        ; StdBinOp = float_ne,              EldsBinOp = elds.(=/=)
+        ; StdBinOp = float_lt,              EldsBinOp = elds.(<)
+        ; StdBinOp = float_gt,              EldsBinOp = elds.(>)
+        ; StdBinOp = float_le,              EldsBinOp = elds.(=<)
+        ; StdBinOp = float_ge,              EldsBinOp = elds.(>=)
+        ; StdBinOp = compound_eq,           EldsBinOp = elds.(=:=)
+        ; StdBinOp = compound_lt,           EldsBinOp = elds.(<)
+        ; StdBinOp = uint_eq,               EldsBinOp = elds.(=:=)
+        ; StdBinOp = uint_ne,               EldsBinOp = elds.(=/=)
+        ; StdBinOp = uint_lt,               EldsBinOp = elds.(<)
+        ; StdBinOp = uint_gt,               EldsBinOp = elds.(>)
+        ; StdBinOp = uint_le,               EldsBinOp = elds.(=<)
+        ; StdBinOp = uint_ge,               EldsBinOp = elds.(>=)
+        ; StdBinOp = uint_add,              EldsBinOp = elds.add
+        ; StdBinOp = uint_sub,              EldsBinOp = elds.sub
+        ; StdBinOp = uint_mul,              EldsBinOp = elds.mul
+        ; StdBinOp = uint_div,              EldsBinOp = elds.int_div
+        ; StdBinOp = uint_mod,              EldsBinOp = elds.(rem)
+        ; StdBinOp = uint_bitwise_and,      EldsBinOp = elds.band
+        ; StdBinOp = uint_bitwise_or,       EldsBinOp = elds.bor
+        ; StdBinOp = uint_bitwise_xor,      EldsBinOp = elds.bxor
+        ; StdBinOp = uint_unchecked_left_shift, EldsBinOp = elds.bsl
+        ; StdBinOp = uint_unchecked_right_shift, EldsBinOp = elds.bsr
+        )
+    ).
 
 %-----------------------------------------------------------------------------%
 %
-% Code for foreign code calls
+% Code for foreign proc calls.
 %
 
 % Currently dummy arguments do not exist at all. The writer of the foreign
@@ -537,10 +585,10 @@ std_binop_to_elds(compound_lt, elds.(<)).
 % Materialising dummy input variables would not be a good idea unless
 % unused variable warnings were switched off in the Erlang compiler.
 
-erl_gen_foreign_code_call(ForeignArgs, MaybeTraceRuntimeCond,
+erl_gen_foreign_proc_call(ForeignArgs, MaybeTraceRuntimeCond,
         PragmaImpl, CodeModel, OuterContext, MaybeSuccessExpr, Statement,
         !Info) :-
-    PragmaImpl = fc_impl_ordinary(ForeignCode, MaybeContext),
+    PragmaImpl = fp_impl_ordinary(ForeignCode, MaybeContext),
     (
         MaybeTraceRuntimeCond = no,
         (
@@ -549,7 +597,7 @@ erl_gen_foreign_code_call(ForeignArgs, MaybeTraceRuntimeCond,
             MaybeContext = no,
             Context = OuterContext
         ),
-        erl_gen_ordinary_pragma_foreign_code(ForeignArgs, ForeignCode,
+        erl_gen_ordinary_pragma_foreign_proc(ForeignArgs, ForeignCode,
             CodeModel, Context, MaybeSuccessExpr, Statement, !Info)
     ;
         MaybeTraceRuntimeCond = yes(TraceRuntimeCond),
@@ -558,11 +606,11 @@ erl_gen_foreign_code_call(ForeignArgs, MaybeTraceRuntimeCond,
 
 %-----------------------------------------------------------------------------%
 
-:- pred erl_gen_ordinary_pragma_foreign_code(list(foreign_arg)::in,
+:- pred erl_gen_ordinary_pragma_foreign_proc(list(foreign_arg)::in,
     string::in, code_model::in, prog_context::in, maybe(elds_expr)::in,
     elds_expr::out, erl_gen_info::in, erl_gen_info::out) is det.
 
-erl_gen_ordinary_pragma_foreign_code(ForeignArgs, ForeignCode,
+erl_gen_ordinary_pragma_foreign_proc(ForeignArgs, ForeignCode,
         CodeModel, OuterContext, MaybeSuccessExpr, Statement, !Info) :-
     %
     % In the following, F<n> are input variables to the foreign code (with
@@ -655,18 +703,18 @@ erl_gen_ordinary_pragma_foreign_code(ForeignArgs, ForeignCode,
 
 foreign_arg_type_mode(foreign_arg(_, MaybeNameMode, Type, _), Type, Mode) :-
     (
-        MaybeNameMode = yes(_Name - Mode)
+        MaybeNameMode = yes(foreign_arg_name_mode(_Name, Mode))
     ;
         MaybeNameMode = no,
         % This argument is unused.
-        Mode = (free -> free)
+        Mode = from_to_mode(free, free)
     ).
 
 :- func foreign_arg_name(foreign_arg) = string.
 
 foreign_arg_name(foreign_arg(_, MaybeNameMode, _, _)) = Name :-
     (
-        MaybeNameMode = yes(Name - _)
+        MaybeNameMode = yes(foreign_arg_name_mode(Name, _))
     ;
         MaybeNameMode = no,
         % This argument is unused.

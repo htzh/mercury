@@ -3,18 +3,18 @@
 # This file may only be copied under the terms of the GNU General
 # Public License - see the file COPYING in the Mercury distribution.
 #-----------------------------------------------------------------------------#
-
-# Mmake.vars - variables for building Mercury programs
-
+#
+# Mmake.vars - variables for building Mercury programs.
+#
 # This file gives the default values for certain variables.
 # The values here can be overridden by individual Mmake files.
 
 # Ensure that commands use /bin/sh not the user's shell
-SHELL		= /bin/sh
+SHELL = /bin/sh
 
-ALL_EXTRA_LIBRARIES	= $(TARGET_EXTRA_LIBRARIES) $(EXTRA_LIBRARIES)
-EXTRA_LIB_DIRS		=
-EXTRA_LIBRARIES		=
+ALL_EXTRA_LIBRARIES = $(TARGET_EXTRA_LIBRARIES) $(EXTRA_LIBRARIES)
+EXTRA_LIB_DIRS =
+EXTRA_LIBRARIES =
 
 ifneq ($(MMAKE_USE_MMC_MAKE),yes)
 EXTRA_INT_DIRS		= $(patsubst %,%/ints,$(EXTRA_LIB_DIRS))
@@ -34,15 +34,15 @@ MERCURY_EXTRA_INT_DIRS =
 EXTRA_C_LIB_DIRS =
 EXTRA_C_INCL_DIRS =
 EXTRA_INIT_DIRS =
-MERCURY_EXTRA_INIT_DIRS	=
+MERCURY_EXTRA_INIT_DIRS =
 endif
 
-# Set the directory search path. 
+# Set the directory search path.
 # (See the GNU Make manual for documentation about VPATH and GPATH.)
 # We need to substitute all spaces with colons for the VPATH to work.
 # Getting a space to be recognised as the first argument of the subst
 # function is problematic; hence the `$(nullstring)' hack.
-# As VPATH uses colon as the seperator we also need to convert all the
+# As VPATH uses colon as the separator we also need to convert all the
 # directories into cygwin unix format if they are in windows format.
 # XXX Note that directory names with spaces in them (e.g. under Windows)
 # will cause problems for the VPATH settings below, as well as every
@@ -53,14 +53,14 @@ UNIX_MERC_INT_DIR = $(shell @CYGPATHU@ "$(MERC_INT_DIR)")
 UNIX_MERCURY_EXTRA_INIT_DIRS = $(foreach dir, $(MERCURY_EXTRA_INIT_DIRS),\
 				$(shell @CYGPATHU@ "$(dir)"))
 
-nullstring	=
+nullstring =
 MMAKE_VPATH	= $(subst $(nullstring) ,:,$(strip \
 			$(UNIX_MERCURY_EXTRA_INT_DIRS) $(UNIX_MERC_INT_DIR)\
 			$(UNIX_MERCURY_EXTRA_INIT_DIRS)))
 VPATH		= $(MMAKE_VPATH) # do not remove the `:' from this comment!!!
 #			 the above comment works around a misfeature of
 #			 autoconf which causes it to delete assignments to
-#			 VPATH unless they contain a `:'
+#			 VPATH unless they contain a `:' character.
 GPATH		= $(VPATH)
 
 DEFAULT_GRADE	= $(MERCURY_DEFAULT_GRADE)
@@ -69,10 +69,9 @@ GRADESTRING	= $(shell $(MCOGS) $(ALL_GRADEFLAGS) $(ALL_MCFLAGS))
 
 MERCURY_MAIN_MODULES =
 
-#
 # Files which should be built using `mmc --make' rather than `make'
 # when `--use-mmc-make' is passed on the mmake command line.
-#
+
 ALL_MC_BUILD_FILES0 =	$(MERCURY_MAIN_MODULES) \
 			$(MERCURY_MAIN_MODULES:%=lib%.$A) \
 			$(MERCURY_MAIN_MODULES:%=lib%.so) \
@@ -99,7 +98,7 @@ endif
 #-----------------------------------------------------------------------------#
 #-----------------------------------------------------------------------------#
 #
-# Stuff which is not specific to any back-end
+# Stuff which is not specific to any back-end.
 #
 
 ALL_GRADEFLAGS  = $(USUAL_GRADEFLAGS)
@@ -115,16 +114,14 @@ LIB_MCFLAGS	= $(patsubst %,--mld %,$(EXTRA_LIB_DIRS)) \
 			$(patsubst %,--ml %,$(EXTRA_LIBRARIES))
 
 # Flags for use with `mmc --make'.
-# Pass the options as a Mercury.options file on stdin rather
-# than on the command line. This avoids problems with quoting
-# and unwanted word splitting.
+# Pass the options as a Mercury.options file on stdin rather than on the
+# command line. This avoids problems with quoting and unwanted word splitting.
 ECHO_MERCURY_OPTIONS = { \
 	echo MCFLAGS += '$(ALL_GRADEFLAGS) $(ALL_MCFLAGS)'; \
 	echo MCFLAGS += '$(MC_MAKE_FLAGS) $(EXTRA_MC_MAKE_FLAGS)'; \
 	echo CFLAGS += '$(ALL_CFLAGS)'; \
 	echo JAVACFLAGS += '$(ALL_JAVACFLAGS)'; \
 	echo CSCFLAGS += '$(ALL_CSCFLAGS)'; \
-	echo ILASMFLAGS += '$(ALL_ILASMFLAGS)'; \
 	echo C2INITARGS += '$(ALL_C2INITARGS)'; \
 	echo MLLIBS += '$(ALL_MLLIBS)'; \
 	echo MLOBJS += '$(ALL_MLOBJS)'; \
@@ -189,11 +186,11 @@ EXTRA_MCSFLAGS	= $(EXTRA_MCFLAGS)
 
 #-----------------------------------------------------------------------------#
 #
-# Stuff which is specific to the C back-ends
+# Stuff which is specific to the C back-ends.
 #
 
 # FIX_PATH_FOR_<foo> should be set to a script which converts path names
-# from Unix/Cygwin format into a format suitable for the <foo> command.  
+# from Unix/Cygwin format into a format suitable for the <foo> command.
 # If <foo> is a Unix/Cygwin command that expects Unix-style path names,
 # FIX_PATH_FOR_<foo> should be set to "echo".
 # If <foo> is a Windows command that expects Windows-style path names,
@@ -203,7 +200,7 @@ FIX_PATH_FOR_CC	= @FIX_PATH_FOR_CC@
 MGNUC		= mgnuc
 ALL_MGNUCFLAGS	= $(MGNUCFLAGS) $(EXTRA_MGNUCFLAGS) $(TARGET_MGNUCFLAGS) \
 		  -- $(ALL_CFLAGS)
-MGNUCFLAGS	=
+MGNUCFLAGS =
 EXTRA_MGNUCFLAGS =
 
 ALL_CFLAGS	= $(CFLAGS) $(EXTRA_CFLAGS) $(TARGET_CFLAGS) $(LIB_CFLAGS)
@@ -215,39 +212,13 @@ LIB_CFLAGS	= $(patsubst %,-I %,$(EXTRA_C_INCL_DIRS))
 #
 # Stuff for the .NET back-end
 #
-MS_DOTNET_SDK_DIR=@MS_DOTNET_SDK_DIR@
-# The system libraries were once needed here, but are currently unnecessary.
-
-# MERCURY_STDLIB_DIR should be set by the `mmake' script.
-MERC_C_INCL_DIR = $(MERCURY_STDLIB_DIR)/inc
-MERC_DLL_DIR    = $(MERCURY_STDLIB_DIR)/lib/$(GRADESTRING)
-
-# ILASM is the Microsoft IL assembler, which turns IL assembly code
-# into bytecode.
-# XXX we should also support the Portable.NET version of ILASM,
-# which has a different command-line interface. 
-# (Is there a Mono ILASM too?  What about Rotor?)
-ILASM		= @ILASM@
-ALL_ILASMFLAGS= $(ILASMFLAGS) $(EXTRA_ILASMFLAGS) \
-		$(TARGET_ILASMFLAGS) $(LIB_ILASMFLAGS) $(ILASM_KEYFLAG)
-ILASMFLAGS	=
-EXTRA_ILASMFLAGS =
-LIB_ILASMFLAGS= $(patsubst %,-I %,$(EXTRA_C_INCL_DIRS))
-
-# MS_AL is the Microsoft assembly linker, which creates assemblies.
-MS_AL		= @MS_AL@ 
-
-# CSC is the command line version of C# compiler
-# XXX we should also support the Portable.NET and Mono C# compilers,
-# which have a different command-line interface. 
-# (What about Rotor?)
 
 FIX_PATH_FOR_CSC = @CYGPATH@
 CSC		= @CSC@
 ALL_CSCFLAGS	= $(CSCFLAGS) $(EXTRA_CSCFLAGS) $(TARGET_CSCFLAGS) \
 		$(LIB_CSCFLAGS)
 CSCFLAGS	=
-EXTRA_CSCFLAGS =
+EXTRA_CSCFLAGS  =
 LIB_CSCFLAGS	=
 
 #-----------------------------------------------------------------------------#
@@ -260,10 +231,10 @@ LIB_CSCFLAGS	=
 JAVAC		= @JAVAC@
 ALL_JAVACFLAGS	= $(JAVACFLAGS) $(EXTRA_JAVACFLAGS) $(TARGET_JAVACFLAGS) \
 		$(LIB_JAVACFLAGS)
-JAVACFLAGS	= @JAVAC_FLAGS_FOR_HEAP_SIZE@
+JAVACFLAGS	= @JAVAC_FLAGS_FOR_HEAP_SIZE_MMAKE@
 EXTRA_JAVACFLAGS =
 # XXX Should we set LIB_JAVACFLAGS?
-LIB_JAVACFLAGS	= 
+LIB_JAVACFLAGS	=
 
 # JAVA_INTERPRETER is the command line Java interpreter;
 # it should be able to run Java bytecode files.
@@ -342,7 +313,7 @@ MERCURY_LINKAGE = @DEFAULT_LINKAGE@
 
 #-----------------------------------------------------------------------------#
 #
-# Stuff related to creating libraries
+# Stuff related to creating libraries.
 #
 
 AR		= @AR@
@@ -356,7 +327,7 @@ ALL_RANLIBFLAGS	= $(RANLIBFLAGS) $(EXTRA_RANLIBFLAGS) $(TARGET_RANLIBFLAGS)
 RANLIBFLAGS	= @RANLIBFLAGS@
 EXTRA_RANLIBFLAGS =
 
-# List of grades to install for a library
+# List of grades to install for a library.
 ALL_LIBGRADES	= $(TARGET_LIBGRADES) $(EXTRA_TARGET_LIBGRADES)
 EXTRA_LIBGRADES	=
 
@@ -364,10 +335,6 @@ EXTRA_LIBGRADES	=
 # (We use `.pic_o' as the extension for `.o' files that must have
 # position-independent code.)
 CFLAGS_FOR_PIC		= @CFLAGS_FOR_PIC@
-
-# $(GCCFLAGS_FOR_PIC) is passed to the GCC back-end when creating
-# `.pic_s' files.
-GCCFLAGS_FOR_PIC	= -fpic
 
 # $(EXT_FOR_PIC_OBJECTS) will be either `.o', if $(CFLAGS_FOR_PIC) is empty,
 # or `.pic_o', if special flags are required for compiling files that
@@ -380,21 +347,21 @@ EXT_FOR_PIC_OBJECTS	= @EXT_FOR_PIC_OBJECTS@
 # shared libraries.
 EXT_FOR_SHARED_LIB	= @EXT_FOR_SHARED_LIB@
 
-# lists of targets that depend on $(ALL_MLOBJS) and $(ALL_MLPICOBJS)
-MLOBJS_DEPS = 
-MLPICOBJS_DEPS = 
+# Lists of targets that depend on $(ALL_MLOBJS) and $(ALL_MLPICOBJS).
+MLOBJS_DEPS =
+MLPICOBJS_DEPS =
 
 #-----------------------------------------------------------------------------#
 
 # `TARGET_<prog>FLAGS' is used to pass different flags to <prog> for
-# different targets.  By setting MCFLAGS-foo, for example, you can add
+# different targets. By setting MCFLAGS-foo, for example, you can add
 # extra values to TARGET_MCFLAGS that will used only for compiling foo.m.
 #
 # For each program <prog>, `TARGET_<prog>FLAGS' expands to
 # `$(<prog>FLAGS-$@)' and/or `$(<prog>FLAGS-$*)'.
 # $@ and $* are the builtin variables that expand to the
 # current target and (for pattern rules) the base name of the current target,
-# respectively.  So $* is used for flags variables used by pattern rules,
+# respectively. So $* is used for flags variables used by pattern rules,
 # whereas $@ is used for flags variables used by hard-coded rules,
 # including the ones in the generated .dep files.
 #
@@ -513,16 +480,6 @@ TARGET_CSCFLAGS = \
 maybe-base-CSCFLAGS- = $(CSCFLAGS-$*)
 maybe-base-CSCFLAGS-undefined =
 
-TARGET_ILASMFLAGS = \
-   $(maybe-base-ILASMFLAGS-$(findstring undefined,$(origin ILASMFLAGS-$*)))
-maybe-base-ILASMFLAGS- = $(ILASMFLAGS-$*)
-maybe-base-ILASMFLAGS-undefined =
-
-ILASM_KEYFLAG = \
-  $(maybe-target-ILASM_KEYFLAG-$(findstring undefined,$(origin ILASM_KEYFLAG-$*)))
-maybe-target-ILASM_KEYFLAG- = $(ILASM_KEYFLAG-$*)
-maybe-target-ILASM_KEYFLAG-undefined =
-
 TARGET_JAVACFLAGS = \
    $(maybe-base-JAVACFLAGS-$(findstring undefined,$(origin JAVACFLAGS-$*)))
 maybe-base-JAVACFLAGS- = $(JAVACFLAGS-$*)
@@ -541,7 +498,7 @@ maybe-base-JAVACFLAGS-undefined =
 # for each of these extensions.
 GRADE_SUBDIR_EXTS = \
 	mih optdate trans_opt trans_opt_date c c_date java java_date \
-	class il il_date dll s s_date pic_s pic_s_date o pic_o
+	class dll s s_date pic_s pic_s_date o pic_o
 
 ifeq ($(MMAKE_USE_SUBDIRS),yes)
 
@@ -567,16 +524,12 @@ useds_subdir=$(SUBDIR)useds/
 mihs_subdir=$(SUBDIR)mihs/
 cs_subdir=$(SUBDIR)cs/
 dlls_subdir=$(SUBDIR)dlls/
-ss_subdir=$(SUBDIR)ss/
-pic_ss_subdir=$(SUBDIR)pic_ss/
 os_subdir=$(SUBDIR)os/
-ils_subdir=$(SUBDIR)ils/
 javas_subdir=$(SUBDIR)javas/
 dirs_subdir=$(SUBDIR)dirs/
 c_dates_subdir=$(SUBDIR)c_dates/
 s_dates_subdir=$(SUBDIR)s_dates/
 pic_s_dates_subdir=$(SUBDIR)pic_s_dates/
-il_dates_subdir=$(SUBDIR)il_dates/
 java_dates_subdir=$(SUBDIR)java_dates/
 classes_subdir=$(SUBDIR)classs/
 err_dates_subdir=$(SUBDIR)err_dates/
@@ -605,17 +558,12 @@ useds_subdir=
 mihs_subdir=
 cs_subdir=
 dlls_subdir=
-ss_subdir=
-pic_ss_subdir=
 os_subdir=
-rlos_subdir=
-ils_subdir=
 javas_subdir=
 dirs_subdir=
 c_dates_subdir=
 s_dates_subdir=
 pic_s_dates_subdir=
-il_dates_subdir=
 java_dates_subdir=
 classes_subdir=
 err_dates_subdir=
@@ -626,7 +574,7 @@ endif
 
 # This needs to go here so that user Mmake files can add new suffixes.
 
-.SUFFIXES: # reset sufix list to be empty
+.SUFFIXES: # reset suffix list to be empty
 
 #-----------------------------------------------------------------------------#
 
@@ -649,18 +597,18 @@ INSTALL_MKDIR = mkdir -p
 # HTML files.
 
 # FINAL_INSTALL_PREFIX describes the directory that the installation
-# will finally end up in.  When building the Mercury compiler, it should
-# only be set by the configure script.  Other FINAL_INSTALL_* variables
+# will finally end up in. When building the Mercury compiler, it should
+# only be set by the configure script. Other FINAL_INSTALL_* variables
 # have a similar meaning.
 #
-# If you want to install to a different directory temporarily (e.g.  to
+# If you want to install to a different directory temporarily (e.g. to
 # build a package, or if you don't have the permissions to install to a
-# final directory), set DESTDIR on the command-line.  If you have
+# final directory), set DESTDIR on the command-line. If you have
 # previously configured to the directory you want to finally install to,
 # you will then be able to move the files safely, since any hard-coded
 # paths will be set to their final destination already (note that the
 # installation in the temporary directory may not work until moved into
-# its final destination).  e.g.
+# its final destination). e.g.
 #
 #      configure --prefix /usr
 #      make DESTDIR=/some/temporary/directory
@@ -671,27 +619,36 @@ INSTALL_MKDIR = mkdir -p
 # (e.g. in the shell scripts mmc, ml, mmake, etc) that will not be
 # updated simply by overriding INSTALL_PREFIX.
 
+ifeq ($(origin DESTDIR),undefined)
+DESTDIR =
+endif
+
 ifeq ($(DESTDIR),)
     # DESTDIR is the empty string, DESTDIR_AND_SLASH must therefore be empty.
     # Otherwise the slash can change a relative path into an absolute one; or
     # on Windows, it can create an invalid path name.
-    DESTDIR_AND_SLASH=
+    DESTDIR_AND_SLASH =
 else
     # We cannot append paths like this in Windows, but we don't think anyone
     # will use DESTDIR on Windows.
-    DESTDIR_AND_SLASH=$(DESTDIR)/
+    DESTDIR_AND_SLASH = $(DESTDIR)/
 endif
+
+# Handle some autoconf weirdness, it relies on these variables but doesn't
+# define them.
+prefix=@prefix@
+PACKAGE=mercury-$(VERSION)
 
 INSTALL_PREFIX		= $(DESTDIR_AND_SLASH)@prefix@
 INSTALL_BINDIR		= $(INSTALL_PREFIX)/bin
 INSTALL_LIBDIR		= $(INSTALL_PREFIX)/lib/mercury
-INSTALL_INFO_DIR	= $(INSTALL_PREFIX)/info
-INSTALL_DVI_DIR		= $(INSTALL_PREFIX)/lib/mercury/doc
-INSTALL_TEXT_DIR	= $(INSTALL_PREFIX)/lib/mercury/doc
-INSTALL_PS_DIR		= $(INSTALL_PREFIX)/lib/mercury/doc
-INSTALL_PDF_DIR		= $(INSTALL_PREFIX)/lib/mercury/doc
-INSTALL_MAN_DIR		= $(INSTALL_PREFIX)/man
-INSTALL_HTML_DIR	= $(INSTALL_PREFIX)/lib/mercury/html
+INSTALL_INFO_DIR	= $(DESTDIR_AND_SLASH)@infodir@
+INSTALL_DVI_DIR		= $(DESTDIR_AND_SLASH)@docdir@
+INSTALL_TEXT_DIR	= $(DESTDIR_AND_SLASH)@docdir@
+INSTALL_PS_DIR		= $(DESTDIR_AND_SLASH)@docdir@
+INSTALL_PDF_DIR		= $(DESTDIR_AND_SLASH)@docdir@
+INSTALL_MAN_DIR		= $(DESTDIR_AND_SLASH)@mandir@
+INSTALL_HTML_DIR	= $(DESTDIR_AND_SLASH)@docdir@
 INSTALL_MDB_DOC_DIR	= $(INSTALL_PREFIX)/lib/mercury/mdb
 INSTALL_ELISP_DIR	= $(INSTALL_PREFIX)/lib/mercury/elisp
 INSTALL_CGI_DIR		= $(DESTDIR_AND_SLASH)@CGIDIR@
@@ -699,12 +656,12 @@ INSTALL_CGI_DIR		= $(DESTDIR_AND_SLASH)@CGIDIR@
 FINAL_INSTALL_PREFIX	= @prefix@
 FINAL_INSTALL_BINDIR 	= $(FINAL_INSTALL_PREFIX)/bin
 FINAL_INSTALL_LIBDIR	= $(FINAL_INSTALL_PREFIX)/lib/mercury
-FINAL_INSTALL_INFO_DIR	= $(FINAL_INSTALL_PREFIX)/info
-FINAL_INSTALL_MAN_DIR	= $(FINAL_INSTALL_PREFIX)/man
+FINAL_INSTALL_INFO_DIR	= @infodir@
+FINAL_INSTALL_MAN_DIR	= @mandir@
 FINAL_INSTALL_ELISP_DIR	= $(FINAL_INSTALL_PREFIX)/lib/mercury/elisp
 FINAL_INSTALL_CGI_DIR	= @CGIDIR@
 
-# You should not need to override anything below here
+# You should not need to override anything below here.
 
 INSTALL_CONF_DIR	= $(INSTALL_LIBDIR)/conf
 INSTALL_RECONF_DIR	= $(INSTALL_LIBDIR)/reconf
@@ -733,14 +690,14 @@ LIBGRADES		= @LIBGRADES@
 
 #-----------------------------------------------------------------------------#
 
-# The command to use to make symlinks, `false' if we shouldn't use
-# symlinks (e.g. because Windows executables don't understand them).
+# The command to use to make symlinks, `false' if we shouldn't use symlinks
+# (e.g. because Windows executables don't understand them).
 LN_S			= @LN_S@
 
 #-----------------------------------------------------------------------------#
 
 # We need to use $(empty_string) here to prevent Make from truncating
-# any trailing spaces in @OBJFILE_OPT@
+# any trailing spaces in @OBJFILE_OPT@.
 empty_string=
 OBJFILE_OPT=@OBJFILE_OPT@$(empty_string)
 EXEFILE_OPT=@EXEFILE_OPT@$(empty_string)
@@ -752,7 +709,7 @@ A=@LIB_SUFFIX@
 #-----------------------------------------------------------------------------#
 
 # This variable contains the shell syntax to redirect the output of
-# a compilation command to a file.  Normally the file chosen is *.err.
+# a compilation command to a file. Normally the file chosen is *.err.
 # However, you can override this variable to modify that behaviour.
 # Setting this variable to the empty string will cause all errors to
 # go to stdout/stderr.
@@ -764,6 +721,8 @@ ERR_REDIRECT = > $(*F).err 2>&1
 
 # If this variable is set to no, then mmake doesn't automatically include
 # the ".d" files in the current directory in the Mmakefile.
-MMAKE_AUTO_INCLUDE_DS=yes
+MMAKE_AUTO_INCLUDE_DS = yes
 
+#-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab ft=make
 #-----------------------------------------------------------------------------#

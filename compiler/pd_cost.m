@@ -18,6 +18,7 @@
 :- module transform_hlds.pd_cost.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 
 %-----------------------------------------------------------------------------%
@@ -42,7 +43,9 @@
 
 :- implementation.
 
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.set_of_var.
 
 :- import_module int.
@@ -81,9 +84,7 @@ goal_expr_cost(GoalExpr, GoalInfo, Cost) :-
             BuiltinState = inline_builtin,
             Cost = cost_of_builtin_call
         ;
-            ( BuiltinState = out_of_line_builtin
-            ; BuiltinState = not_builtin
-            ),
+            BuiltinState = not_builtin,
             list.length(Args, Arity),
             InputArgs = Arity // 2, % rough
             Cost = cost_of_stack_flush + cost_of_call
@@ -94,9 +95,9 @@ goal_expr_cost(GoalExpr, GoalInfo, Cost) :-
         goal_cost(Goal, Cost)
     ;
         GoalExpr = scope(Reason, Goal),
-        ( Reason = from_ground_term(_, from_ground_term_construct) ->
+        ( if Reason = from_ground_term(_, from_ground_term_construct) then
             Cost = cost_of_reg_assign
-        ;
+        else
             goal_cost(Goal, Cost)
         )
     ;
@@ -110,9 +111,9 @@ goal_expr_cost(GoalExpr, GoalInfo, Cost) :-
         unify_cost(NonLocals, Unification, Cost)
     ;
         GoalExpr = call_foreign_proc(Attributes, _, _, Args, _, _, _),
-        ( get_may_call_mercury(Attributes) = proc_will_not_call_mercury ->
+        ( if get_may_call_mercury(Attributes) = proc_will_not_call_mercury then
             Cost1 = 0
-        ;
+        else
             Cost1 = cost_of_stack_flush
         ),
         % XXX This is *too* rough.
@@ -139,10 +140,10 @@ unify_cost(NonLocals, Unification, Cost) :-
         Cost = cost_of_simple_test
     ;
         Unification = construct(Var, _, Args, _, _, _, _),
-        ( set_of_var.member(NonLocals, Var) ->
+        ( if set_of_var.member(NonLocals, Var) then
             list.length(Args, Arity),
             Cost = cost_of_heap_incr + Arity * cost_of_heap_assign
-        ;
+        else
             Cost = 0
         )
     ;

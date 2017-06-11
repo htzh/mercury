@@ -26,6 +26,8 @@ CFLAGS_FOR_REGS="@CFLAGS_FOR_REGS@"
 CFLAGS_FOR_GOTOS="@CFLAGS_FOR_GOTOS@"
 CFLAGS_FOR_THREADS="@CFLAGS_FOR_THREADS@"
 CFLAGS_FOR_NO_STRICT_ALIASING="@CFLAGS_FOR_NO_STRICT_ALIASING@"
+CFLAGS_FOR_ANSI="@CFLAGS_FOR_ANSI@"
+CFLAGS_FOR_SANITIZERS="@CFLAGS_FOR_SANITIZERS@"
 AS="@AS@"
 BYTES_PER_WORD="@BYTES_PER_WORD@"
 MKTEMP=@MKTEMP@
@@ -33,7 +35,7 @@ TMPDIR=${TMPDIR=/tmp}
 
 case "$C_COMPILER_TYPE" in
     gcc*)
-        ANSI_OPTS="-ansi"
+        ANSI_OPTS="@CFLAGS_FOR_ANSI@"
         CHECK_OPTS="
             -Wall -Wwrite-strings
             -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wno-unused"
@@ -72,22 +74,14 @@ case "$C_COMPILER_TYPE" in
         COMPILER=gcc
         ;;
     clang*)
-        ANSI_OPTS="-ansi"
+        ANSI_OPTS=
         CHECK_OPTS="-w"
         OPT_OPTS="@OPT_FLAGS_FOR_CLANG@ $CFLAGS_FOR_NO_STRICT_ALIASING -fomit-frame-pointer"
         DEBUG_OPT="-g"
         DISABLE_OPTS_OPT="-O0"
         COMPILER=clang
         ;;
-    lcc*)
-        ANSI_OPTS=
-        CHECK_OPTS="-w"     # turn off all warnings due to spurious warnings.
-        OPT_OPTS=""
-        DEBUG_OPT="-g"
-        DISABLE_OPTS_OPT="-O0"
-        COMPILER=lcc
-        ;;
-    msvc*|cl*)
+    msvc*)
         ANSI_OPTS=""
         CHECK_OPTS="-nologo"    # Suppress the MSVC banner message.
         OPT_OPTS=""
@@ -132,8 +126,7 @@ Options:
     -v, --verbose
         Echo gcc command before executing it.
     --no-ansi
-        Don't pass \`-ansi' to gcc. Use the full contents of system headers,
-        rather than the ANSI subset.
+        Use the full contents of system headers, rather than the ANSI subset.
     --no-check
         Don't enable any of gcc's warnings.
     --low-level-debug
@@ -342,7 +335,6 @@ case $gc_method in
     boehm_debug)    GC_OPTS="$boehm_opts -DMR_BOEHM_GC_DEBUG -DGC_DEBUG -DKEEP_BACK_PTRS" ;;
     hgc)            GC_OPTS="-DMR_CONSERVATIVE_GC -DMR_HGC" ;;
     conservative)   GC_OPTS="-DMR_CONSERVATIVE_GC -DMR_BOEHM_GC" ;;
-    mps)            GC_OPTS="-DMR_CONSERVATIVE_GC -DMR_MPS_GC" ;;
     none)           GC_OPTS="" ;;
 esac
 
@@ -435,11 +427,6 @@ case $pregenerated_dist,$single_prec_float in
     false,false)    PREGEN_SPF_OPTS="" ;;
 esac
 
-case $pic_reg in
-    true)           PICREG_OPTS="-DMR_PIC_REG" ;;
-    false)          PICREG_OPTS="" ;;
-esac
-
 case $debug in
     true)           TRACE_OPTS="-DMR_EXEC_TRACE" ;;
     false)          TRACE_OPTS="" ;;
@@ -515,6 +502,9 @@ case $non_local_gotos in
     false)      ;;
 esac
 
+# if sanitizers were enabled at configure time, add CFLAGS_FOR_SANITIZERS
+SANITIZER_OPTS="$CFLAGS_FOR_SANITIZERS"
+
 #
 # Special case hacks for particular architectures
 # Any code here needs to be duplicated in ../configure.in.
@@ -522,18 +512,6 @@ esac
 
 ARCH_OPTS=""
 case "$FULLARCH" in
-    mips-sgi-irix5.*)
-        # Nonlocal gotos don't work with PIC, which is the default for Irix 5,
-        # so if nonlocal gotos are enabled we need to disable the use of
-        # shared libraries.
-        case $non_local_gotos in
-            true)
-                LIBRARY_PATH="$NONSHARED_LIB_DIR:/usr/lib/nonshared:$LIBRARY_PATH"
-                export LIBRARY_PATH
-                AS_OPTS="-non_shared"
-            ;;
-        esac
-        ;;
     i*86-*|x86_64*)
         # The use of stack_pointer in the ASM_JUMP macro defined in
         # runtime/mercury_goto.h causes lots of warnings about using possibly
@@ -554,48 +532,10 @@ case "$FULLARCH" in
         ;;
 esac
 
-# Kludge for gcc-2.6.3 bug on mips: if you use gcc global registers and -O2,
-# gcc 2.6.3 gets an internal error compiling library/int.c and
-# compiler/bytecode.c.  As a work-around, we compile those file with -O1.
-# Similarly library/bag.c needs to be compiled with -O0.
-# Similarly for gcc-2.6.3 on alpha with compiler/modules.c.
-# Similarly for gcc-2.7.0 on i386 with compiler/call_gen.c.
-# Similarly for egcs-1.1 on sparc with library/lexer.c, library/string.c,
-# and compiler/{deforest,dupelim,mercury_to_mercury,modules}.c.
-# Similarly for egcs-1.1.2 on i386 with library/table_builtin.c.
-
 case $COMPILER in gcc)
     case "$FULLARCH" in
-        mips*)
-            case "$*" in
-            *" int.c "*|*" int.dir/int_"*".c "*)
-                case "`$CC --version 2>/dev/null`" in 2.6.*)
-                    ARCH_OPTS="$ARCH_OPTS -O1" ;;
-                esac;;
-            *" bytecode.c "*|*" bytecode.dir/bytecode_"*".c "*)
-                case "`$CC --version 2>/dev/null`" in 2.6.*)
-                    ARCH_OPTS="$ARCH_OPTS -O1" ;;
-                esac;;
-            *" bag.c "*)
-                case "`$CC --version 2>/dev/null`" in 2.6.*)
-                    ARCH_OPTS="$ARCH_OPTS -O0" ;;
-                esac;;
-            esac ;;
-        alpha*)
-            case "$*" in
-            *" modules.c "*|*" modules.dir/modules_"*".c "*)
-                case "`$CC --version 2>/dev/null`" in 2.6.*)
-                    ARCH_OPTS="$ARCH_OPTS -O1" ;;
-                esac
-            esac ;;
         i*86*)
             case "$*" in
-            *" call_gen.c "*|*" modules.dir/call_gen"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O0" ;;
-            *" table_builtin.c "*|*" modules.dir/table_builtin"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O0" ;;
-            *" random.c "*|*" random.dir/random"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O0" ;;
             # Workarounds for internal problems with GCC in asm_fast.gc
             # on i*86.  Reported against gcc 4.4.5 and 4.6.0.
             *" ml_backend.ml_closure_gen.c "*)
@@ -614,23 +554,6 @@ case $COMPILER in gcc)
                 esac
                 ;;
             esac ;;
-        sparc*)
-            case "$*" in
-            *" lexer.c "*|*" modules.dir/lexer"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O1" ;;
-            *" string.c "*|*" modules.dir/string"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O1" ;;
-            *" deforest.c "*|*" modules.dir/deforest"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O1" ;;
-            *" dupelim.c "*|*" modules.dir/dupelim"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O1" ;;
-            *" dl.c "*|*" modules.dir/dl"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O1" ;;
-            *" mercury_to_mercury.c "*|*" modules.dir/mercury_to_mercury"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O1" ;;
-            *" modules.c "*|*" modules.dir/modules"*".c "*)
-                ARCH_OPTS="$ARCH_OPTS -O1" ;;
-            esac
     esac ;;
 esac
 
@@ -727,11 +650,11 @@ ALL_CC_OPTS="$MERC_ALL_C_INCL_DIRS\
     $RECORD_TERM_SIZE_OPTS\
     $MINIMAL_MODEL_OPTS\
     $PREGEN_SPF_OPTS\
+    $SANITIZER_OPTS\
     $SPLIT_OPTS\
     $THREAD_OPTS\
     $THREADSCOPE_OPTS\
     $REGION_OPTS\
-    $PICREG_OPTS\
     $ARCH_OPTS\
     $ARG_OPTS\
     $FN_ALIGN_OPTS\

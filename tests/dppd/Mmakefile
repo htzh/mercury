@@ -1,28 +1,28 @@
-THIS_DIR = dppd
-TESTS_DIR = ..
-SUBDIRS =
+#-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab ft=make
+#-----------------------------------------------------------------------------#
 
-# We currently don't do any testing in grade java on this directory.
-ifneq "$(findstring java,$(GRADE))" ""
-	PROGS =
-else
-	# For this directory, rather than having a separate main
-	# for each test, there is a single Mercury test harness
-	# which invokes all of the different tests.
-	PROGS = run
-endif
+THIS_DIR = dppd
+SUBDIRS =
+TESTS_DIR = ..
+MAYBE_J1 = -j1
+
+# For this directory, rather than having a separate main
+# for each test, there is a single Mercury test harness
+# which invokes all of the different tests.
+PROGS = run
 
 TESTS = $(sort $(PROGS))
 include $(TESTS_DIR)/Mmake.common
 
-# Module-specific options should go in Mercury.options so they
-# can be found by `mmc --make'.
+# Module-specific options should go in Mercury.options so they can be found
+# by `mmc --make'.
 include Mercury.options
 
 run.runtest: run.res
 
-#MCFLAGS += --pd --no-inlining -d 35 -D petdr #-d 99
-#GRADE=asm_fast.gc.prof
-#MLFLAGS += --static
+# MCFLAGS += --pd --no-inlining -d 35 -D petdr #-d 99
+# GRADE=asm_fast.gc.prof
+# MLFLAGS += --static
 
 depend:	run.depend

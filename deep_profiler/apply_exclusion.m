@@ -1,16 +1,16 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2008-2009, 2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: apply_exclusion.m.
 %
 % This module contains the predicates required to implement contour exclusion.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module apply_exclusion.
 :- interface.
@@ -44,7 +44,7 @@
 :- func pair_contour(deep, excluded_modules, call_site_dynamic_ptr)
     = pair(call_site_dynamic_ptr).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -70,7 +70,7 @@ group_csds_by_clique(Deep, GroupCostCSDPtrs) = Groups :-
         GroupCostCSDPtrs, map.init),
     map.to_assoc_list(GroupMap, Groups).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- func accumulate_csds_by_call_site(deep, pair(call_site_dynamic_ptr),
     map(call_site_static_ptr, list(call_site_dynamic_ptr))) =
@@ -78,9 +78,9 @@ group_csds_by_clique(Deep, GroupCostCSDPtrs) = Groups :-
 
 accumulate_csds_by_call_site(Deep, GroupCSDPtr - CostCSDPtr, Map0) = Map :-
     deep_lookup_call_site_static_map(Deep, GroupCSDPtr, GroupCSSPtr),
-    ( map.search(Map0, GroupCSSPtr, CostCSDPtrs0) ->
+    ( if map.search(Map0, GroupCSSPtr, CostCSDPtrs0) then
         map.det_update(GroupCSSPtr, [CostCSDPtr | CostCSDPtrs0], Map0, Map)
-    ;
+    else
         map.det_insert(GroupCSSPtr, [CostCSDPtr], Map0, Map)
     ).
 
@@ -92,9 +92,9 @@ accumulate_csds_by_procedure(Deep, GroupCSDPtr - CostCSDPtr, Map0) = Map :-
     deep_lookup_call_site_static_map(Deep, GroupCSDPtr, GroupCSSPtr),
     deep_lookup_call_site_statics(Deep, GroupCSSPtr, GroupCSS),
     GroupPSPtr = GroupCSS ^ css_container,
-    ( map.search(Map0, GroupPSPtr, CostCSDPtrs0) ->
+    ( if map.search(Map0, GroupPSPtr, CostCSDPtrs0) then
         map.det_update(GroupPSPtr, [CostCSDPtr | CostCSDPtrs0], Map0, Map)
-    ;
+    else
         map.det_insert(GroupPSPtr, [CostCSDPtr], Map0, Map)
     ).
 
@@ -108,9 +108,9 @@ accumulate_csds_by_module(Deep, GroupCSDPtr - CostCSDPtr, Map0) = Map :-
     GroupPSPtr = GroupCSS ^ css_container,
     deep_lookup_proc_statics(Deep, GroupPSPtr, GroupPS),
     GroupModuleName = GroupPS ^ ps_decl_module,
-    ( map.search(Map0, GroupModuleName, CostCSDPtrs0) ->
+    ( if map.search(Map0, GroupModuleName, CostCSDPtrs0) then
         map.det_update(GroupModuleName, [CostCSDPtr | CostCSDPtrs0], Map0, Map)
-    ;
+    else
         map.det_insert(GroupModuleName, [CostCSDPtr], Map0, Map)
     ).
 
@@ -122,13 +122,13 @@ accumulate_csds_by_clique(Deep, GroupCSDPtr - CostCSDPtr, Map0) = Map :-
     deep_lookup_call_site_dynamics(Deep, GroupCSDPtr, GroupCSD),
     CallerPDPtr = GroupCSD ^ csd_caller,
     deep_lookup_clique_index(Deep, CallerPDPtr, CliquePtr),
-    ( map.search(Map0, CliquePtr, CostCSDPtrs0) ->
+    ( if map.search(Map0, CliquePtr, CostCSDPtrs0) then
         map.det_update(CliquePtr, [CostCSDPtr | CostCSDPtrs0], Map0, Map)
-    ;
+    else
         map.det_insert(CliquePtr, [CostCSDPtr], Map0, Map)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 compute_parent_csd_prof_info(Deep, CalleePSPtr, CSDPtrs, Own, Desc) :-
     list.foldl2(accumulate_parent_csd_prof_info(Deep, CalleePSPtr), CSDPtrs,
@@ -142,11 +142,11 @@ compute_parent_csd_prof_info(Deep, CalleePSPtr, CSDPtrs, Own, Desc) :-
 accumulate_parent_csd_prof_info(Deep, CallerPSPtr, CSDPtr,
         Own0, Own, Desc0, Desc) :-
     deep_lookup_call_site_dynamics(Deep, CSDPtr, CSD),
-    ( CSD ^ csd_callee = CSD ^ csd_caller ->
+    ( if CSD ^ csd_callee = CSD ^ csd_caller then
         % We want to sum only cross-clique callers.
         Own = Own0,
         Desc = Desc0
-    ;
+    else
         deep_lookup_csd_own(Deep, CSDPtr, CSDOwn),
         deep_lookup_csd_desc(Deep, CSDPtr, CSDDesc),
         add_own_to_own(Own0, CSDOwn) = Own,
@@ -164,18 +164,18 @@ accumulate_parent_csd_prof_info(Deep, CallerPSPtr, CSDPtr,
 
 compensate_using_comp_table(Deep, CallerPSPtr, PDPtr, Desc0, Desc) :-
     deep_lookup_pd_comp_table(Deep, PDPtr, CompTableArray),
-    ( map.search(CompTableArray, CallerPSPtr, InnerTotal) ->
+    ( if map.search(CompTableArray, CallerPSPtr, InnerTotal) then
         Desc = subtract_inherit_from_inherit(InnerTotal, Desc0)
-    ;
+    else
         Desc = Desc0
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 pair_self(CSDPtr) = CSDPtr - CSDPtr.
 
 pair_contour(Deep, ExcludeSpec, CSDPtr) =
     apply_contour_exclusion(Deep, ExcludeSpec, CSDPtr) - CSDPtr.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 

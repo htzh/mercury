@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %---------------------------------------------------------------------------%
 % Copyright (C) 2010 The University of Melbourne.
+% Copyright (C) 2015, 2017 The Mercury team.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -11,7 +12,7 @@
 % A Mercury binding to the cairo 2D graphics library.
 %
 % TODO: scaled fonts
-% 
+%
 %---------------------------------------------------------------------------%
 
 :- module cairo.
@@ -31,6 +32,7 @@
 :- include_module pdf.
 :- include_module png.
 :- include_module ps.
+:- include_module recording.
 :- include_module region.
 :- include_module surface.
 :- include_module svg.
@@ -92,7 +94,7 @@
     ;       format_rgb24
             % Each pixel is a 32-bit quantity, with the upper 8 bits unused.
             % Red, Green, and Blue are stored in the remaining 24 bits in that
-            % order. 
+            % order.
 
     ;       format_a8
             % Each pixel is a 8-bit quantity holding an alpha value.
@@ -114,12 +116,25 @@
                 rect_height :: int  % Height
             ).
 
+:- type rectangle_f
+    --->    rectangle_f(
+                rectf_x :: float,
+                rectf_y :: float,
+                rectf_width :: float,
+                rectf_height :: float
+            ).
+
 %---------------------------------------------------------------------------%
 %
 % Error handling
 %
 
     % The cairo status.
+    %
+    % XXX This type is liable to become out of date as status codes are added
+    % to the cairo API. "Complete" switches on status values may not actually
+    % cover some possibilities. Attempting to print status values which are not
+    % enumerated here will result in a crash. And so on.
     %
 :- type cairo.status
     --->    status_success
@@ -153,31 +168,14 @@
     ;       status_negative_count
     ;       status_invalid_clusters
     ;       status_invalid_slant
-    ;       status_invalid_weight.
-
-    % Status information for surfaces.
-    %
-:- inst cairo.surface_status
-    --->    status_success
-    ;       status_null_pointer
-    ;       status_no_memory
-    ;       status_read_error
-    ;       status_invalid_content
-    ;       status_invalid_format
-    ;       status_invalid_visual.
-
-    % Status information for patterns.
-    %
-:- inst cairo.pattern_status
-    --->    status_success
-    ;       status_no_memory
-    ;       status_pattern_type_mismatch.
-
-    % Status information for regions.
-    %
-:- inst cairo.region_status
-    --->    status_success
-    ;       status_no_memory.
+    ;       status_invalid_weight
+    ;       status_invalid_size
+    ;       status_user_font_not_implemented
+    ;       status_device_type_mismatch
+    ;       status_device_error
+    ;       status_invalid_mesh_construction
+    ;       status_device_finished
+    ;       status_jbig2_global_missing.
 
     % Exceptions of this type are thrown to indicate a cairo error.
     %
@@ -207,7 +205,7 @@
     % stack of saved states for Context.
     %
 :- pred save(context(S)::in, io::di, io::uo) is det.
-    
+
     % cairo.restore(Context, !IO):
     % Restore Context to the state saved by a preceding call to cairo.save/3
     % and remove that state from the stack of saved states.
@@ -253,8 +251,8 @@
     % for Context.  (X, Y) is the user-space coordinate at which the surface
     % origin should appear.
     %
-:- pred set_source_surface(context(S)::in, S::in, float::in, float::in,
-    io::di, io::uo) is det <= surface(S).
+:- pred set_source_surface(context(S)::in, T::in, float::in, float::in,
+    io::di, io::uo) is det <= surface(T).
 
     % cairo.get_source(Context, Pattern, !IO):
     % Pattern is the current source pattern for Context.
@@ -350,7 +348,7 @@
 
     ;       line_join_round
             % Use a rounded join, the center of the circle is the joint point.
-    
+
     ;       line_join_bevel.
             % Use a cut-off join, the join is cut off at half the line width
             % from the joint point.
@@ -389,19 +387,39 @@
     % operations (See: <http://cairographics.org/operators/> for details.)
     %
 :- type operator
-    --->    operator_source
+    --->    operator_clear
+
+    ;       operator_source
     ;       operator_over
     ;       operator_in
     ;       operator_out
     ;       operator_atop
+
     ;       operator_dest
     ;       operator_dest_over
     ;       operator_dest_in
     ;       operator_dest_out
     ;       operator_dest_atop
+
     ;       operator_xor
     ;       operator_add
-    ;       operator_saturate.  
+    ;       operator_saturate
+
+    ;       operator_multiply
+    ;       operator_screen
+    ;       operator_overlay
+    ;       operator_darken
+    ;       operator_lighten
+    ;       operator_color_dodge
+    ;       operator_color_burn
+    ;       operator_hard_light
+    ;       operator_soft_light
+    ;       operator_difference
+    ;       operator_exclusion
+    ;       operator_hsl_hue
+    ;       operator_hsl_saturation
+    ;       operator_hsl_color
+    ;       operator_hsl_luminosity.
 
     % cairo.set_operator(Context, Operator, !IO):
     % Set the compositing operator for Context to Operator.
@@ -507,7 +525,7 @@
 :- pred paint_with_alpha(context(S)::in, float::in, io::di, io::uo) is det.
 
     % cairo.stroke(Context, !IO):
-    % Stork the current path according to the current line width, line join,
+    % Stroke the current path according to the current line width, line join,
     % line cap, and dash settings for Context.
     % The current path will be cleared.
     %
@@ -560,20 +578,18 @@
     % cairo.surface_status(Surface, Status, !IO):
     % Status is the current status of Surface.
     %
-:- pred surface_status(S::in, status::out(surface_status),
-    io::di, io::uo) is det <= surface(S).
+:- pred surface_status(S::in, status::out, io::di, io::uo) is det
+   <= surface(S).
 
     % cairo.pattern_status(Pattern, Status, !IO):
     % Status is the current status of Pattern.
     %
-:- pred pattern_status(pattern::in, status::out(pattern_status),
-    io::di, io::uo) is det.
+:- pred pattern_status(pattern::in, status::out, io::di, io::uo) is det.
 
     % cairo.region_status(Region, Status, !IO):
     % Status is the current status of Region.
     %
-:- pred region_status(region::in, status::out(region_status),
-    io::di, io::uo) is det.
+:- pred region_status(region::in, status::out, io::di, io::uo) is det.
 
     % cairo.status_to_string(Status) = String:
     % String is a human-readable description of Status.
@@ -586,6 +602,7 @@
 :- implementation.
 
 :- import_module exception.
+:- import_module int.
 :- import_module cairo.text.
 
 :- pragma require_feature_set([conservative_gc, double_prec_float]).
@@ -598,7 +615,7 @@
 :- pragma foreign_decl("C", "
 
 #include <cairo.h>
-    
+
 typedef struct {
     cairo_t         *mcairo_raw_context;
     MR_Word         mcairo_cached_font_face;
@@ -607,7 +624,7 @@ typedef struct {
 typedef struct {
     cairo_pattern_t *mcairo_raw_pattern;
 } MCAIRO_pattern;
-    
+
 typedef struct {
     cairo_surface_t *mcairo_raw_surface;
 } MCAIRO_surface;
@@ -692,19 +709,39 @@ MCAIRO_finalize_scaled_font(void *scaled_font, void *client_data);
 ]).
 
 :- pragma foreign_enum("C", operator/0, [
+    operator_clear     - "CAIRO_OPERATOR_CLEAR",
+
     operator_source    - "CAIRO_OPERATOR_SOURCE",
     operator_over      - "CAIRO_OPERATOR_OVER",
     operator_in        - "CAIRO_OPERATOR_IN",
     operator_out       - "CAIRO_OPERATOR_OUT",
     operator_atop      - "CAIRO_OPERATOR_ATOP",
+
     operator_dest      - "CAIRO_OPERATOR_DEST",
     operator_dest_over - "CAIRO_OPERATOR_DEST_OVER",
     operator_dest_in   - "CAIRO_OPERATOR_DEST_IN",
     operator_dest_out  - "CAIRO_OPERATOR_DEST_OUT",
     operator_dest_atop - "CAIRO_OPERATOR_DEST_ATOP",
+
     operator_xor       - "CAIRO_OPERATOR_XOR",
     operator_add       - "CAIRO_OPERATOR_ADD",
-    operator_saturate  - "CAIRO_OPERATOR_SATURATE"
+    operator_saturate  - "CAIRO_OPERATOR_SATURATE",
+
+    operator_multiply       - "CAIRO_OPERATOR_MULTIPLY",
+    operator_screen         - "CAIRO_OPERATOR_SCREEN",
+    operator_overlay        - "CAIRO_OPERATOR_OVERLAY",
+    operator_darken         - "CAIRO_OPERATOR_DARKEN",
+    operator_lighten        - "CAIRO_OPERATOR_LIGHTEN",
+    operator_color_dodge    - "CAIRO_OPERATOR_COLOR_DODGE",
+    operator_color_burn     - "CAIRO_OPERATOR_COLOR_BURN",
+    operator_hard_light     - "CAIRO_OPERATOR_HARD_LIGHT",
+    operator_soft_light     - "CAIRO_OPERATOR_SOFT_LIGHT",
+    operator_difference     - "CAIRO_OPERATOR_DIFFERENCE",
+    operator_exclusion      - "CAIRO_OPERATOR_EXCLUSION",
+    operator_hsl_hue        - "CAIRO_OPERATOR_HSL_HUE",
+    operator_hsl_saturation - "CAIRO_OPERATOR_HSL_SATURATION",
+    operator_hsl_color      - "CAIRO_OPERATOR_HSL_COLOR",
+    operator_hsl_luminosity - "CAIRO_OPERATOR_HSL_LUMINOSITY"
 ]).
 
 :- pragma foreign_enum("C", cairo.format/0, [
@@ -747,8 +784,16 @@ MCAIRO_finalize_scaled_font(void *scaled_font, void *client_data);
     status_negative_count         - "CAIRO_STATUS_NEGATIVE_COUNT",
     status_invalid_clusters       - "CAIRO_STATUS_INVALID_CLUSTERS",
     status_invalid_slant          - "CAIRO_STATUS_INVALID_SLANT",
-    status_invalid_weight         - "CAIRO_STATUS_INVALID_WEIGHT"
+    status_invalid_weight         - "CAIRO_STATUS_INVALID_WEIGHT",
+    status_invalid_size           - "CAIRO_STATUS_INVALID_SIZE",
+    status_user_font_not_implemented- "CAIRO_STATUS_USER_FONT_NOT_IMPLEMENTED",
+    status_device_type_mismatch     - "CAIRO_STATUS_DEVICE_TYPE_MISMATCH",
+    status_device_error             - "CAIRO_STATUS_DEVICE_ERROR",
+    status_invalid_mesh_construction- "CAIRO_STATUS_INVALID_MESH_CONSTRUCTION",
+    status_device_finished          - "CAIRO_STATUS_DEVICE_FINISHED",
+    status_jbig2_global_missing     - "CAIRO_STATUS_JBIG2_GLOBAL_MISSING"
 ]).
+
 :- pragma foreign_code("C", "
 
 void
@@ -819,9 +864,7 @@ create_context(Surface, Context, !IO) :-
     % Make sure that the cached font face object is set to
     % a meaningful value.  (See the comments in the implementation
     % of {get,set}_font_face for details.)
-    cairo.text.toy_font_face_create("",
-        slant_normal, weight_normal, ToyFF, !IO),
-    cairo.text.set_font_face(Context, ToyFF, !IO).
+    cairo.text.set_default_font_face(Context, !IO).
 
 :- pred create_context_2(S::in, context(S)::out,
     io::di, io::uo) is det <= surface(S).
@@ -831,7 +874,7 @@ create_context(Surface, Context, !IO) :-
     [promise_pure, will_not_call_mercury],
 "
     cairo_t *raw_context;
-    
+
     raw_context = cairo_create(
         ((MCAIRO_surface *)Surface)->mcairo_raw_surface);
     Context = MR_GC_NEW(MCAIRO_context);
@@ -839,12 +882,12 @@ create_context(Surface, Context, !IO) :-
     /*
     ** We fill the cached font face in later.
     */
-    Context->mcairo_cached_font_face = 0;    
+    Context->mcairo_cached_font_face = 0;
     MR_GC_register_finalizer(Context, MCAIRO_finalize_context, 0);
 ").
 
 %---------------------------------------------------------------------------%
-    
+
 :- pragma foreign_proc("C",
     save(Ctxt::in, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
@@ -865,17 +908,17 @@ create_context(Surface, Context, !IO) :-
 "
     cairo_surface_t     *raw_surface;
     MCAIRO_surface      *wrapped_surface;
-    
+
     raw_surface = cairo_get_target(Ctxt->mcairo_raw_context);
-    /* 
-    ** The object returned by cairo_get_target() is owned by cairo,
-    ** since we are keeping a reference to it we need to increment
+    /*
+    ** The object returned by cairo_get_target() is owned by cairo.
+    ** Since we are keeping a reference to it we need to increment
     ** its reference count.
     */
     raw_surface = cairo_surface_reference(raw_surface);
     wrapped_surface = MR_GC_NEW(MCAIRO_surface);
     wrapped_surface->mcairo_raw_surface = raw_surface;
-        MR_GC_register_finalizer(wrapped_surface, MCAIRO_finalize_surface, 0);
+    MR_GC_register_finalizer(wrapped_surface, MCAIRO_finalize_surface, 0);
     Target = (MR_Word) wrapped_surface;
 ").
 
@@ -898,7 +941,7 @@ create_context(Surface, Context, !IO) :-
     [promise_pure, will_not_call_mercury],
 "
     cairo_pattern_t *new_pattern;
-    
+
     new_pattern = cairo_pop_group(Ctxt->mcairo_raw_context);
     Pattern = MR_GC_NEW(MCAIRO_pattern);
     Pattern->mcairo_raw_pattern = new_pattern;
@@ -918,11 +961,17 @@ create_context(Surface, Context, !IO) :-
 "
     cairo_surface_t     *raw_surface;
     MCAIRO_surface      *wrapped_surface;
-    
+
     raw_surface = cairo_get_group_target(Ctxt->mcairo_raw_context);
+    /*
+    ** The object returned by cairo_get_group_target() is owned by cairo.
+    ** Since we are keeping a reference to it we need to increment
+    ** its reference count.
+    */
+    raw_surface = cairo_surface_reference(raw_surface);
     wrapped_surface = MR_GC_NEW(MCAIRO_surface);
     wrapped_surface->mcairo_raw_surface = raw_surface;
-        MR_GC_register_finalizer(wrapped_surface, MCAIRO_finalize_surface, 0);
+    MR_GC_register_finalizer(wrapped_surface, MCAIRO_finalize_surface, 0);
     Target = (MR_Word) wrapped_surface;
 ").
 
@@ -966,7 +1015,7 @@ create_context(Surface, Context, !IO) :-
     cairo_pattern_t *raw_pattern;
 
     raw_pattern = cairo_get_source(Ctxt->mcairo_raw_context);
-    
+
     /*
     ** The value returned by cairo_get_surface() is owned by
     ** by cairo.  Since we are going to retain a reference to
@@ -982,56 +1031,56 @@ create_context(Surface, Context, !IO) :-
     set_fill_rule(Ctxt::in, FillRule::in, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-   cairo_set_fill_rule(Ctxt->mcairo_raw_context, FillRule);
+    cairo_set_fill_rule(Ctxt->mcairo_raw_context, FillRule);
 ").
 
 :- pragma foreign_proc("C",
     get_fill_rule(Ctxt::in, FillRule::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-   FillRule = cairo_get_fill_rule(Ctxt->mcairo_raw_context);
+    FillRule = cairo_get_fill_rule(Ctxt->mcairo_raw_context);
 ").
 
 :- pragma foreign_proc("C",
     set_line_cap(Ctxt::in, LineCap::in, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-   cairo_set_line_cap(Ctxt->mcairo_raw_context, LineCap);
+    cairo_set_line_cap(Ctxt->mcairo_raw_context, LineCap);
 ").
 
 :- pragma foreign_proc("C",
     get_line_cap(Ctxt::in, LineCap::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-   LineCap = cairo_get_line_cap(Ctxt->mcairo_raw_context);
+    LineCap = cairo_get_line_cap(Ctxt->mcairo_raw_context);
 ").
 
 :- pragma foreign_proc("C",
     copy_page(Ctxt::in, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-   cairo_copy_page(Ctxt->mcairo_raw_context);
+    cairo_copy_page(Ctxt->mcairo_raw_context);
 ").
 
 :- pragma foreign_proc("C",
     show_page(Ctxt::in, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-   cairo_show_page(Ctxt->mcairo_raw_context);
+    cairo_show_page(Ctxt->mcairo_raw_context);
 ").
 
 :- pragma foreign_proc("C",
     set_antialias(Ctxt::in, AA::in, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-   cairo_set_antialias(Ctxt->mcairo_raw_context, (cairo_antialias_t)AA);
+    cairo_set_antialias(Ctxt->mcairo_raw_context, (cairo_antialias_t)AA);
 ").
 
 :- pragma foreign_proc("C",
     get_antialias(Ctxt::in, AA::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-   AA = cairo_get_antialias(Ctxt->mcairo_raw_context);
+    AA = cairo_get_antialias(Ctxt->mcairo_raw_context);
 ").
 
 set_dash(Context, Dashes, OffSet, !IO) :-
@@ -1064,7 +1113,7 @@ set_dash(Context, Dashes, OffSet, !IO) :-
         Dashes = MR_list_tail(Dashes);
         i++;
     }
-    
+
     cairo_set_dash(Ctxt->mcairo_raw_context, dashes, (int)NumDashes, OffSet);
 
     if (cairo_status(Ctxt->mcairo_raw_context) == CAIRO_STATUS_INVALID_DASH) {
@@ -1170,8 +1219,13 @@ set_dash(Context, Dashes, OffSet, !IO) :-
        _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-    cairo_clip_extents(Ctxt->mcairo_raw_context,
-        &X1, &Y1, &X2, &Y2);
+    double  x1, y1, x2, y2;
+
+    cairo_clip_extents(Ctxt->mcairo_raw_context, &x1, &y1, &x2, &y2);
+    X1 = x1;
+    Y1 = y1;
+    X2 = x2;
+    Y2 = y2;
 ").
 
 :- pragma foreign_proc("C",
@@ -1211,8 +1265,13 @@ set_dash(Context, Dashes, OffSet, !IO) :-
             _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-    cairo_fill_extents(Ctxt->mcairo_raw_context,
-        &X1, &Y1, &X2, &Y2);
+    double  x1, y1, x2, y2;
+
+    cairo_fill_extents(Ctxt->mcairo_raw_context, &x1, &y1, &x2, &y2);
+    X1 = x1;
+    Y1 = y1;
+    X2 = x2;
+    Y2 = y2;
 ").
 
 :- pragma foreign_proc("C",
@@ -1240,7 +1299,7 @@ set_dash(Context, Dashes, OffSet, !IO) :-
 "
     cairo_mask_surface(Ctxt->mcairo_raw_context,
         ((MCAIRO_surface *)Surface)->mcairo_raw_surface,
-        X, Y);  
+        X, Y);
 ").
 
 :- pragma foreign_proc("C",
@@ -1276,7 +1335,13 @@ set_dash(Context, Dashes, OffSet, !IO) :-
         _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury],
 "
-    cairo_stroke_extents(Ctxt->mcairo_raw_context, &X1, &Y1, &X2, &Y2);
+    double  x1, y1, x2, y2;
+
+    cairo_stroke_extents(Ctxt->mcairo_raw_context, &x1, &y1, &x2, &y2);
+    X1 = x1;
+    Y1 = y1;
+    X2 = x2;
+    Y2 = y2;
 ").
 
 :- pragma foreign_proc("C",
@@ -1298,8 +1363,7 @@ set_dash(Context, Dashes, OffSet, !IO) :-
 ").
 
 :- pragma foreign_proc("C",
-    surface_status(Surface::in, Status::out(surface_status),
-        _IO0::di, _IO::uo),
+    surface_status(Surface::in, Status::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     Status = cairo_surface_status(
@@ -1307,16 +1371,14 @@ set_dash(Context, Dashes, OffSet, !IO) :-
 ").
 
 :- pragma foreign_proc("C",
-    pattern_status(Pattern::in, Status::out(pattern_status),
-        _IO0::di, _IO::uo),
+    pattern_status(Pattern::in, Status::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     Status = cairo_pattern_status(Pattern->mcairo_raw_pattern);
 ").
 
 :- pragma foreign_proc("C",
-    region_status(Region::in, Status::out(region_status),
-        _IO0::di, _IO::uo),
+    region_status(Region::in, Status::out, _IO0::di, _IO::uo),
     [promise_pure, will_not_call_mercury, tabled_for_io],
 "
     Status = cairo_region_status(Region->mcairo_raw_region);
@@ -1330,6 +1392,60 @@ set_dash(Context, Dashes, OffSet, !IO) :-
 
    desc = cairo_status_to_string(Status);
    MR_make_aligned_string_copy(Str, desc);
+").
+
+%---------------------------------------------------------------------------%
+%
+% Glyph array
+%
+
+:- type glyph_array.
+
+:- pragma foreign_type("C", glyph_array, "cairo_glyph_t *",
+    [can_pass_as_mercury_type]).
+
+:- pred make_glyph_array(list(glyph)::in, glyph_array::uo, int::out,
+    io::di, io::uo) is det.
+
+make_glyph_array(Glyphs, Array, NumGlyphs, !IO) :-
+    list.length(Glyphs, NumGlyphs),
+    alloc_glyph_array(NumGlyphs, Array0),
+    fill_glyph_array(Glyphs, 0, Array0, Array).
+
+:- pred alloc_glyph_array(int::in, glyph_array::uo) is det.
+
+:- pragma foreign_proc("C",
+    alloc_glyph_array(Size::in, Array::uo),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    MR_Word ptr;
+
+    MR_incr_hp_atomic_msg(ptr, MR_bytes_to_words(Size * sizeof(cairo_glyph_t)),
+        MR_ALLOC_ID, ""cairo.glyph_array/0"");
+    Array = (cairo_glyph_t *) ptr;
+").
+
+:- pred fill_glyph_array(list(glyph)::in, int::in,
+    glyph_array::di, glyph_array::uo) is det.
+
+fill_glyph_array([], _Slot, !Array).
+fill_glyph_array([G | Gs], Slot, !Array) :-
+    G = glyph(Index, X, Y),
+    set_glyph_array_slot(Slot, Index, X, Y, !Array),
+    fill_glyph_array(Gs, Slot + 1, !Array).
+
+:- pred set_glyph_array_slot(int::in, int::in, float::in, float::in,
+    glyph_array::di, glyph_array::uo) is det.
+
+:- pragma foreign_proc("C",
+    set_glyph_array_slot(Slot::in, Index::in, X::in, Y::in,
+        Array0::di, Array::uo),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    Array = Array0;
+    Array[Slot].index = Index;
+    Array[Slot].x = X;
+    Array[Slot].y = Y;
 ").
 
 %---------------------------------------------------------------------------%

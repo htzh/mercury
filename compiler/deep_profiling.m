@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2001-2012 The University of Melbourne.
+% Copyright (C) 2015, 2017 The Mercury team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -18,9 +19,12 @@
 :- module ll_backend.deep_profiling.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module hlds.vartypes.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
@@ -50,27 +54,35 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module hlds.code_model.
 :- import_module hlds.goal_path.
 :- import_module hlds.goal_util.
+:- import_module hlds.hlds_dependency_graph.
 :- import_module hlds.hlds_out.
 :- import_module hlds.hlds_out.hlds_out_util.
 :- import_module hlds.hlds_rtti.
 :- import_module hlds.instmap.
+:- import_module hlds.make_goal.
 :- import_module hlds.pred_table.
+:- import_module libs.
+:- import_module libs.dependency_graph.
 :- import_module libs.file_util.
 :- import_module libs.globals.
 :- import_module libs.options.
 :- import_module ll_backend.coverage_profiling.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.goal_path.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.builtin_lib_types.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.set_of_var.
 :- import_module transform_hlds.
 :- import_module transform_hlds.dead_proc_elim.
-:- import_module transform_hlds.dependency_graph.
 
 :- import_module assoc_list.
 :- import_module bool.
@@ -92,7 +104,7 @@ apply_deep_profiling_transform(!ModuleInfo) :-
     % predicates, which changes what labels they get generated. The
     % call_site_static structures we generate must match the labels created
     % during code generation.
-    dead_proc_elim(elim_opt_imported, !ModuleInfo, _ElimSpecs),
+    dead_proc_elim(elim_opt_imported, !ModuleInfo),
     module_info_get_globals(!.ModuleInfo, Globals),
     globals.lookup_bool_option(Globals, deep_profile_tail_recursion,
         TailRecursion),
@@ -102,7 +114,7 @@ apply_deep_profiling_transform(!ModuleInfo) :-
     ;
         TailRecursion = no
     ),
-    module_info_get_valid_predids(PredIds, !ModuleInfo),
+    module_info_get_valid_pred_ids(!.ModuleInfo, PredIds),
     module_info_get_predicate_table(!.ModuleInfo, PredTable0),
     predicate_table_get_preds(PredTable0, PredMap0),
     list.foldl(deep_prof_transform_pred(!.ModuleInfo), PredIds,
@@ -116,12 +128,11 @@ apply_deep_profiling_transform(!ModuleInfo) :-
     is det.
 
 apply_deep_prof_tail_rec_transform(!ModuleInfo) :-
-    module_info_ensure_dependency_info(!ModuleInfo),
-    module_info_dependency_info(!.ModuleInfo, DepInfo),
-    hlds_dependency_info_get_dependency_ordering(DepInfo, SCCs),
+    module_info_ensure_dependency_info(!ModuleInfo, DepInfo),
+    SCCs = dependency_info_get_bottom_up_sccs(DepInfo),
     list.foldl(apply_deep_prof_tail_rec_transform_to_scc, SCCs, !ModuleInfo).
 
-:- pred apply_deep_prof_tail_rec_transform_to_scc(list(pred_proc_id)::in,
+:- pred apply_deep_prof_tail_rec_transform_to_scc(scc::in,
     module_info::in, module_info::out) is det.
 
 apply_deep_prof_tail_rec_transform_to_scc(SCC, !ModuleInfo) :-
@@ -130,9 +141,9 @@ apply_deep_prof_tail_rec_transform_to_scc(SCC, !ModuleInfo) :-
     % call in Proc A could end up calling the other procedure Proc B
     % in the SCC, which could then call back to Proc A. This would screw up
     % our bookkeeping.
-    ( SCC = [PredProcId] ->
+    ( if set.is_singleton(SCC, PredProcId) then
         apply_deep_prof_tail_rec_transform_to_proc(PredProcId, !ModuleInfo)
-    ;
+    else
         true
     ).
 
@@ -145,11 +156,11 @@ apply_deep_prof_tail_rec_transform_to_proc(PredProcId, !ModuleInfo) :-
     map.lookup(PredTable0, PredId, PredInfo0),
     pred_info_get_arg_types(PredInfo0, Types),
     pred_info_get_origin(PredInfo0, Origin),
-    pred_info_get_procedures(PredInfo0, ProcTable0),
+    pred_info_get_proc_table(PredInfo0, ProcTable0),
     map.lookup(ProcTable0, ProcId, ProcInfo0),
     proc_info_get_goal(ProcInfo0, Goal0),
     proc_info_interface_determinism(ProcInfo0, Detism),
-    (
+    ( if
         determinism_components(Detism, _CanFail, SolnCount),
         SolnCount \= at_most_many,
         proc_info_get_headvars(ProcInfo0, HeadVars),
@@ -169,11 +180,11 @@ apply_deep_prof_tail_rec_transform_to_proc(PredProcId, !ModuleInfo) :-
         % guarantee that a unification or comparison procedure is alone
         % in its SCC unless it cannot call builtin.unify and builtin.compare.
         (
-            Origin = origin_special_pred(_)
+            Origin = origin_special_pred(_, _)
         =>
             goal_contains_builtin_unify_or_compare(Goal) = no
         )
-    ->
+    then
         proc_info_set_goal(Goal, ProcInfo0, ProcInfo1),
         figure_out_rec_call_numbers(Goal, 0, _Num, [], TailCallSites),
         OrigDeepRecInfo = yes(deep_recursion_info(
@@ -193,10 +204,10 @@ apply_deep_prof_tail_rec_transform_to_proc(PredProcId, !ModuleInfo) :-
             ProcInfo1, CloneProcInfo),
         map.det_update(ProcId, ProcInfo, ProcTable0, ProcTable1),
         map.det_insert(CloneProcId, CloneProcInfo, ProcTable1, ProcTable),
-        pred_info_set_procedures(ProcTable, PredInfo0, PredInfo),
+        pred_info_set_proc_table(ProcTable, PredInfo0, PredInfo),
         map.det_update(PredId, PredInfo, PredTable0, PredTable),
         module_info_set_preds(PredTable, !ModuleInfo)
-    ;
+    else
         true
     ).
 
@@ -204,9 +215,11 @@ apply_deep_prof_tail_rec_transform_to_proc(PredProcId, !ModuleInfo) :-
     list(mer_type)::in, module_info::in, list(prog_var)::out) is det.
 
 find_list_of_output_args(Vars, Modes, Types, ModuleInfo, !:Outputs) :-
-    ( find_list_of_output_args_2(Vars, Modes, Types, ModuleInfo, !:Outputs) ->
+    ( if
+        find_list_of_output_args_2(Vars, Modes, Types, ModuleInfo, !:Outputs)
+    then
         true
-    ;
+    else
         unexpected($module, $pred, "list length mismatch")
     ).
 
@@ -217,13 +230,13 @@ find_list_of_output_args_2([], [], [], _, []).
 find_list_of_output_args_2([Var | Vars], [Mode | Modes], [Type | Types],
         ModuleInfo, Outputs) :-
     find_list_of_output_args_2(Vars, Modes, Types, ModuleInfo, LaterOutputs),
-    mode_to_arg_mode(ModuleInfo, Mode, Type, ArgMode),
+    mode_to_top_functor_mode(ModuleInfo, Mode, Type, TopFunctorMode),
     (
-        ArgMode = top_in,
+        TopFunctorMode = top_in,
         Outputs = LaterOutputs
     ;
-        ( ArgMode = top_out
-        ; ArgMode = top_unused
+        ( TopFunctorMode = top_out
+        ; TopFunctorMode = top_unused
         ),
         Outputs = [Var | LaterOutputs]
     ).
@@ -264,13 +277,13 @@ goal_contains_builtin_unify_or_compare(Goal) = Contains :-
         Contains = cases_contain_builtin_unify_or_compare(Cases)
     ;
         GoalExpr = if_then_else(_, Cond, Then, Else),
-        (
+        ( if
             goal_contains_builtin_unify_or_compare(Cond) = no,
             goal_contains_builtin_unify_or_compare(Then) = no,
             goal_contains_builtin_unify_or_compare(Else) = no
-        ->
+        then
             Contains = no
-        ;
+        else
             Contains = yes
         )
     ;
@@ -287,9 +300,9 @@ goal_contains_builtin_unify_or_compare(Goal) = Contains :-
 
 goals_contain_builtin_unify_or_compare([]) = no.
 goals_contain_builtin_unify_or_compare([Goal | Goals]) = Contains :-
-    ( goal_contains_builtin_unify_or_compare(Goal) = yes ->
+    ( if goal_contains_builtin_unify_or_compare(Goal) = yes then
         Contains = yes
-    ;
+    else
         Contains = goals_contain_builtin_unify_or_compare(Goals)
     ).
 
@@ -298,9 +311,9 @@ goals_contain_builtin_unify_or_compare([Goal | Goals]) = Contains :-
 cases_contain_builtin_unify_or_compare([]) = no.
 cases_contain_builtin_unify_or_compare([Case | Cases]) = Contains :-
     Case = case(_, _, Goal),
-    ( goal_contains_builtin_unify_or_compare(Goal) = yes ->
+    ( if goal_contains_builtin_unify_or_compare(Goal) = yes then
         Contains = yes
-    ;
+    else
         Contains = cases_contain_builtin_unify_or_compare(Cases)
     ).
 
@@ -328,7 +341,7 @@ apply_deep_prof_tail_rec_to_goal(Goal0, Goal, TailRecInfo, !FoundTailCall,
     ;
         GoalExpr0 = plain_call(PredId, ProcId, Args, Builtin, UnifyContext,
             SymName),
-        (
+        ( if
             PredProcId = proc(PredId, ProcId),
             assoc_list.search(TailRecInfo ^ dptri_scc_ppids, PredProcId,
                 ClonePredProcId),
@@ -342,15 +355,15 @@ apply_deep_prof_tail_rec_to_goal(Goal0, Goal, TailRecInfo, !FoundTailCall,
                 TailRecInfo ^ dptri_moduleinfo, CallOutputs),
             CallOutputs = TailRecInfo ^ dptri_outputs,
             Builtin = not_builtin
-        ->
+        then
             ClonePredProcId = proc(ClonePredId, CloneProcId),
             GoalExpr = plain_call(ClonePredId, CloneProcId, Args,
                 Builtin, UnifyContext, SymName),
-            goal_info_add_feature(feature_deep_tail_rec_call,
+            goal_info_add_feature(feature_deep_self_tail_rec_call,
                 GoalInfo0, GoalInfo),
             Goal = hlds_goal(GoalExpr, GoalInfo),
             !:FoundTailCall = yes
-        ;
+        else
             Goal = Goal0
         ),
         Continue = no
@@ -429,9 +442,9 @@ apply_deep_prof_tail_rec_to_goal(Goal0, Goal, TailRecInfo, !FoundTailCall,
 apply_deep_prof_tail_rec_to_assign([], _, _, []).
 apply_deep_prof_tail_rec_to_assign([Output0 | Outputs0], ToVar, FromVar,
         [Output | Outputs]) :-
-    ( ToVar = Output0 ->
+    ( if ToVar = Output0 then
         Output = FromVar
-    ;
+    else
         Output = Output0
     ),
     apply_deep_prof_tail_rec_to_assign(Outputs0, ToVar, FromVar, Outputs).
@@ -504,15 +517,13 @@ figure_out_rec_call_numbers(Goal, !N, !TailCallSites) :-
     ;
         GoalExpr = plain_call(_, _, _, BuiltinState, _, _),
         Features = goal_info_get_features(GoalInfo),
-        ( set.member(feature_deep_tail_rec_call, Features) ->
+        ( if set.member(feature_deep_self_tail_rec_call, Features) then
             !:TailCallSites = [!.N | !.TailCallSites]
-        ;
+        else
             true
         ),
         (
-            ( BuiltinState = out_of_line_builtin
-            ; BuiltinState = not_builtin
-            ),
+            BuiltinState = not_builtin,
             !:N = !.N + 1
         ;
             BuiltinState = inline_builtin
@@ -541,14 +552,14 @@ figure_out_rec_call_numbers(Goal, !N, !TailCallSites) :-
         figure_out_rec_call_numbers(SubGoal, !N, !TailCallSites)
     ;
         GoalExpr = scope(Reason, SubGoal),
-        (
+        ( if
             Reason = from_ground_term(_, FGT),
             ( FGT = from_ground_term_construct
             ; FGT = from_ground_term_deconstruct
             )
-        ->
+        then
             true
-        ;
+        else
             figure_out_rec_call_numbers(SubGoal, !N, !TailCallSites)
         )
     ;
@@ -581,10 +592,10 @@ figure_out_rec_call_numbers_in_case_list([Case|Cases], !N, !TailCallSites) :-
 deep_prof_transform_pred(ModuleInfo, PredId, !PredMap) :-
     map.lookup(!.PredMap, PredId, PredInfo0),
     ProcIds = pred_info_non_imported_procids(PredInfo0),
-    pred_info_get_procedures(PredInfo0, ProcTable0),
+    pred_info_get_proc_table(PredInfo0, ProcTable0),
     list.foldl(deep_prof_maybe_transform_proc(ModuleInfo, PredId),
         ProcIds, ProcTable0, ProcTable),
-    pred_info_set_procedures(ProcTable, PredInfo0, PredInfo),
+    pred_info_set_proc_table(ProcTable, PredInfo0, PredInfo),
     map.det_update(PredId, PredInfo, !PredMap).
 
 :- pred deep_prof_maybe_transform_proc(module_info::in,
@@ -593,13 +604,13 @@ deep_prof_transform_pred(ModuleInfo, PredId, !PredMap) :-
 deep_prof_maybe_transform_proc(ModuleInfo, PredId, ProcId, !ProcTable) :-
     map.lookup(!.ProcTable, ProcId, ProcInfo0),
     PredModuleName = predicate_module(ModuleInfo, PredId),
-    (
+    ( if
         % We don't want to transform the procedures for managing the deep
         % profiling call graph, or we'd get infinite recursion.
         PredModuleName = mercury_profiling_builtin_module
-    ->
+    then
         true
-    ;
+    else
         trace [io(!IO)] (
             module_info_get_globals(ModuleInfo, Globals),
             globals.lookup_bool_option(Globals, very_verbose, VeryVerbose),
@@ -620,13 +631,13 @@ deep_prof_transform_proc(ModuleInfo, PredProcId, !ProcInfo) :-
     (
         MaybeDeepInfo = yes(DeepInfo0),
         DeepInfo0 = deep_profile_proc_info(MaybeDeepRecInfo, _, OrigBody),
-        (
+        ( if
             MaybeDeepRecInfo = yes(RecInfo),
             RecInfo ^ dri_role = deep_prof_inner_proc(_)
-        ->
+        then
             deep_prof_transform_inner_proc(ModuleInfo, PredProcId, !ProcInfo),
             MaybeDeepLayoutInfo = no
-        ;
+        else
             deep_prof_transform_normal_proc(ModuleInfo, PredProcId, !ProcInfo,
                 DeepLayoutInfo),
             MaybeDeepLayoutInfo = yes(DeepLayoutInfo)
@@ -732,12 +743,12 @@ deep_prof_transform_normal_proc(ModuleInfo, PredProcId, !ProcInfo,
             CoveragePoints = []
         ),
 
-        (
+        ( if
             MaybeRecInfo = yes(RecInfo),
             RecInfo ^ dri_role = deep_prof_inner_proc(OuterPredProcId)
-        ->
+        then
             OuterPredProcId = proc(PredId, ProcId)
-        ;
+        else
             PredProcId = proc(PredId, ProcId)
         ),
 
@@ -825,13 +836,13 @@ deep_prof_transform_inner_proc(ModuleInfo, PredProcId, !ProcInfo) :-
 
 is_proc_in_interface(ModuleInfo, PredId, _ProcId) = IsInInterface :-
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    (
+    ( if
         ( pred_info_is_exported(PredInfo)
         ; pred_info_is_pseudo_exported(PredInfo)
         )
-    ->
+    then
         IsInInterface = yes
-    ;
+    else
         IsInInterface = no
     ).
 
@@ -899,7 +910,7 @@ build_semi_proc_body(ModuleInfo, TopCSD, MiddleCSD, ProcStaticVar,
         generate_deep_det_call(ModuleInfo, "semi_exit_port_code_sr", 3,
             [TopCSD, MiddleCSD, ActivationPtr1], [], ExitPortCode),
         generate_deep_call(ModuleInfo, "semi_fail_port_code_sr", 3,
-            [TopCSD, MiddleCSD, ActivationPtr1], no, detism_failure,
+            [TopCSD, MiddleCSD, ActivationPtr1], maybe.no, detism_failure,
             FailPortCode),
         NewNonlocals =
             set_of_var.list_to_set([TopCSD, MiddleCSD, ActivationPtr1])
@@ -913,7 +924,7 @@ build_semi_proc_body(ModuleInfo, TopCSD, MiddleCSD, ProcStaticVar,
         generate_deep_det_call(ModuleInfo, "semi_exit_port_code_ac", 2,
             [TopCSD, MiddleCSD], [], ExitPortCode),
         generate_deep_call(ModuleInfo, "semi_fail_port_code_ac", 2,
-            [TopCSD, MiddleCSD], no, detism_failure, FailPortCode),
+            [TopCSD, MiddleCSD], maybe.no, detism_failure, FailPortCode),
         NewNonlocals = set_of_var.list_to_set([TopCSD, MiddleCSD])
     ),
 
@@ -954,12 +965,13 @@ build_non_proc_body(ModuleInfo, TopCSD, MiddleCSD, ProcStaticVar,
             [TopCSD, MiddleCSD, OldOutermostProcDyn2], [],
             ExitPortCode),
         generate_deep_call(ModuleInfo, "non_fail_port_code_sr", 3,
-            [TopCSD, MiddleCSD, OldOutermostProcDyn2], no,
+            [TopCSD, MiddleCSD, OldOutermostProcDyn2], maybe.no,
             detism_failure, FailPortCode),
         generate_deep_call(ModuleInfo, "non_redo_port_code_sr", 2,
-            [MiddleCSD, NewOutermostProcDyn], no,
+            [MiddleCSD, NewOutermostProcDyn], maybe.no,
             detism_failure, RedoPortCode0),
-        NewNonlocals = list_to_set([TopCSD, MiddleCSD, OldOutermostProcDyn2])
+        NewNonlocals =
+            set_of_var.list_to_set([TopCSD, MiddleCSD, OldOutermostProcDyn2])
     ;
         MaybeOldActivationPtr = no,
         generate_deep_det_call(ModuleInfo, "non_call_port_code_ac", 4,
@@ -971,11 +983,11 @@ build_non_proc_body(ModuleInfo, TopCSD, MiddleCSD, ProcStaticVar,
         generate_deep_det_call(ModuleInfo, "non_exit_port_code_ac", 2,
             [TopCSD, MiddleCSD], [], ExitPortCode),
         generate_deep_call(ModuleInfo, "non_fail_port_code_ac", 2,
-            [TopCSD, MiddleCSD], no, detism_failure, FailPortCode),
+            [TopCSD, MiddleCSD], maybe.no, detism_failure, FailPortCode),
         generate_deep_call(ModuleInfo, "non_redo_port_code_ac", 2,
-            [MiddleCSD, NewOutermostProcDyn], no,
+            [MiddleCSD, NewOutermostProcDyn], maybe.no,
             detism_failure, RedoPortCode0),
-        NewNonlocals = list_to_set([TopCSD, MiddleCSD])
+        NewNonlocals = set_of_var.list_to_set([TopCSD, MiddleCSD])
     ),
 
     RedoPortCode0 = hlds_goal(RedoPortExpr, RedoPortGoalInfo0),
@@ -1036,9 +1048,7 @@ deep_prof_transform_goal(Goal0, Goal, AddedImpurity, !DeepInfo) :-
     (
         GoalExpr0 = plain_call(_, _, _, BuiltinState, _, _),
         (
-            ( BuiltinState = out_of_line_builtin
-            ; BuiltinState = not_builtin
-            ),
+            BuiltinState = not_builtin,
             deep_prof_wrap_call(Goal1, Goal, !DeepInfo),
             AddedImpurity = yes
         ;
@@ -1063,10 +1073,10 @@ deep_prof_transform_goal(Goal0, Goal, AddedImpurity, !DeepInfo) :-
         )
     ;
         GoalExpr0 = call_foreign_proc(Attrs, _, _, _, _, _, _),
-        ( get_may_call_mercury(Attrs) = proc_may_call_mercury ->
+        ( if get_may_call_mercury(Attrs) = proc_may_call_mercury then
             deep_prof_wrap_foreign_code(Goal1, Goal, !DeepInfo),
             AddedImpurity = yes
-        ;
+        else
             Goal = Goal1,
             AddedImpurity = no
         )
@@ -1104,14 +1114,14 @@ deep_prof_transform_goal(Goal0, Goal, AddedImpurity, !DeepInfo) :-
         deep_prof_transform_goal(Cond0, Cond, AddedImpurityC, !DeepInfo),
         deep_prof_transform_goal(Then0, Then, AddedImpurityT, !DeepInfo),
         deep_prof_transform_goal(Else0, Else, AddedImpurityE, !DeepInfo),
-        (
+        ( if
             ( AddedImpurityC = yes
             ; AddedImpurityT = yes
             ; AddedImpurityE = yes
             )
-        ->
+        then
             AddedImpurity = yes
-        ;
+        else
             AddedImpurity = no
         ),
         add_impurity_if_needed(AddedImpurity, GoalInfo1, GoalInfo),
@@ -1122,10 +1132,10 @@ deep_prof_transform_goal(Goal0, Goal, AddedImpurity, !DeepInfo) :-
         SubGoal0 = hlds_goal(_, InnerInfo),
         OuterDetism = goal_info_get_determinism(GoalInfo1),
         InnerDetism = goal_info_get_determinism(InnerInfo),
-        ( InnerDetism = OuterDetism ->
+        ( if InnerDetism = OuterDetism then
             Reason = Reason0,
             AddForceCommit = no
-        ;
+        else
             % Given a subgoal containing both at_most_many code and impure
             % code, determinism analysis will remove the `scope' wrapped
             % around that subgoal if it is allowed to. If we get here, then
@@ -1134,27 +1144,27 @@ deep_prof_transform_goal(Goal0, Goal, AddedImpurity, !DeepInfo) :-
             % and the deep profiling transformation will make it impure
             % as well.
 
-            ( Reason0 = commit(_) ->
+            ( if Reason0 = commit(_) then
                 Reason = commit(force_pruning),
                 AddForceCommit = no
-            ;
+            else
                 Reason = Reason0,
                 AddForceCommit = yes
             )
         ),
-        (
+        ( if
             Reason = from_ground_term(_, FGT),
             ( FGT = from_ground_term_construct
             ; FGT = from_ground_term_deconstruct
             )
-        ->
+        then
             % We must annotate the scope goal and its children with a default
             % deep profiling information structure, this is required by the
             % coverage profiling transformation.
             transform_all_goals(deep_prof_mark_goal_as_not_mdprof_inst,
                 SubGoal0, SubGoal),
             AddedImpurity = no
-        ;
+        else
             deep_prof_transform_goal(SubGoal0, SubGoal, AddedImpurity,
                 !DeepInfo)
         ),
@@ -1193,12 +1203,12 @@ deep_prof_transform_conj(ConjType, [Goal0 | Goals0], Goals,
     deep_prof_transform_conj(ConjType, Goals0, TailGoals,
         AddedImpurityLater, !DeepInfo),
     Goal = hlds_goal(GoalExpr, _),
-    (
+    ( if
         GoalExpr = conj(plain_conj, Conjuncts),
         ConjType = plain_conj
-    ->
+    then
         Goals = Conjuncts ++ TailGoals
-    ;
+    else
         Goals = [Goal | TailGoals]
     ),
     bool.or(AddedImpurityFirst, AddedImpurityLater, AddedImpurity).
@@ -1238,7 +1248,8 @@ deep_prof_wrap_call(Goal0, Goal, !DeepInfo) :-
 
     ModuleInfo = !.DeepInfo ^ deep_module_info,
     GoalFeatures = goal_info_get_features(GoalInfo0),
-    goal_info_remove_feature(feature_deep_tail_rec_call, GoalInfo0, GoalInfo1),
+    goal_info_remove_feature(feature_deep_self_tail_rec_call,
+        GoalInfo0, GoalInfo1),
     make_impure(GoalInfo1, GoalInfo2),
     goal_info_set_mdprof_inst(goal_is_mdprof_inst, GoalInfo2,
         MdprofInstGoalInfo),
@@ -1268,34 +1279,34 @@ deep_prof_wrap_call(Goal0, Goal, !DeepInfo) :-
     CallKind = classify_call(ModuleInfo, GoalExpr0),
     (
         CallKind = call_class_normal(PredProcId),
-        ( set.member(feature_deep_tail_rec_call, GoalFeatures) ->
+        ( if set.member(feature_deep_self_tail_rec_call, GoalFeatures) then
             generate_deep_det_call(ModuleInfo, "prepare_for_tail_call", 1,
                 [SiteNumVar], [], PrepareGoal)
-        ;
+        else
             generate_deep_det_call(ModuleInfo, "prepare_for_normal_call", 1,
                 [SiteNumVar], [], PrepareGoal)
         ),
         PredProcId = proc(PredId, ProcId),
         TypeSubst = compute_type_subst(GoalExpr0, !.DeepInfo),
         MaybeRecInfo = !.DeepInfo ^ deep_maybe_rec_info,
-        (
+        ( if
             MaybeRecInfo = yes(RecInfo1),
             RecInfo1 ^ dri_role = deep_prof_inner_proc(OuterPredProcId),
             PredProcId = !.DeepInfo ^ deep_pred_proc_id
-        ->
+        then
             OuterPredProcId = proc(OuterPredId, OuterProcId),
             RttiProcLabel = make_rtti_proc_label(ModuleInfo,
                 OuterPredId, OuterProcId)
-        ;
+        else if
             MaybeRecInfo = yes(RecInfo2),
             RecInfo2 ^ dri_role = deep_prof_outer_proc(InnerPredProcId),
             PredProcId = InnerPredProcId
-        ->
+        then
             OuterPredProcId = !.DeepInfo ^ deep_pred_proc_id,
             OuterPredProcId = proc(OuterPredId, OuterProcId),
             RttiProcLabel = make_rtti_proc_label(ModuleInfo,
                 OuterPredId, OuterProcId)
-        ;
+        else
             RttiProcLabel = make_rtti_proc_label(ModuleInfo, PredId, ProcId)
         ),
         CallSite = normal_call(RttiProcLabel, TypeSubst,
@@ -1353,11 +1364,11 @@ deep_prof_wrap_call(Goal0, Goal, !DeepInfo) :-
 
     !DeepInfo ^ deep_call_sites :=
         cord.snoc(!.DeepInfo ^ deep_call_sites, CallSite),
-    (
-        set.member(feature_deep_tail_rec_call, GoalFeatures),
+    ( if
+        set.member(feature_deep_self_tail_rec_call, GoalFeatures),
         !.DeepInfo ^ deep_maybe_rec_info = yes(RecInfo),
         RecInfo ^ dri_role = deep_prof_outer_proc(_)
-    ->
+    then
         VisSCC = RecInfo ^ dri_visible_scc,
         MiddleCSD = !.DeepInfo ^ deep_current_csd,
         (
@@ -1419,7 +1430,7 @@ deep_prof_wrap_call(Goal0, Goal, !DeepInfo) :-
             Goals = CallGoals ++ [DisjGoal],
             GoalExpr = conj(plain_conj, Goals)
         )
-    ;
+    else
         GoalExpr = conj(plain_conj, [SiteNumVarGoal, PrepareGoal, Goal2])
     ),
     Goal = hlds_goal(GoalExpr, MdprofInstGoalInfo).
@@ -1583,9 +1594,9 @@ deep_prof_wrap_foreign_code(Goal0, Goal, !DeepInfo) :-
 :- pred compress_filename(deep_info::in, string::in, string::out) is det.
 
 compress_filename(Deep, FileName0, FileName) :-
-    ( FileName0 = Deep ^ deep_proc_filename ->
+    ( if FileName0 = Deep ^ deep_proc_filename then
         FileName = ""
-    ;
+    else
         FileName = FileName0
     ).
 
@@ -1605,29 +1616,29 @@ compress_filename(Deep, FileName0, FileName) :-
 classify_call(ModuleInfo, Expr) = Class :-
     (
         Expr = plain_call(PredId, ProcId, Args, _, _, _),
-        (
+        ( if
             lookup_builtin_pred_proc_id(ModuleInfo,
                 mercury_public_builtin_module, "unify",
                 pf_predicate, 2, mode_no(0), PredId, _),
             Args = [TypeInfoVar | _]
-        ->
+        then
             Class = call_class_special(proc(PredId, ProcId), TypeInfoVar)
-        ;
+        else if
             lookup_builtin_pred_proc_id(ModuleInfo,
                 mercury_public_builtin_module, "compare",
                 pf_predicate, 3, mode_no(0), PredId, _),
             Args = [TypeInfoVar | _]
-        ->
+        then
             Class = call_class_special(proc(PredId, ProcId), TypeInfoVar)
-        ;
+        else if
             lookup_builtin_pred_proc_id(ModuleInfo,
                 mercury_public_builtin_module,
                 "compare_representation", pf_predicate, 3,
                 mode_no(0), PredId, _),
             Args = [TypeInfoVar | _]
-        ->
+        then
             Class = call_class_special(proc(PredId, ProcId), TypeInfoVar)
-        ;
+        else
             Class = call_class_normal(proc(PredId, ProcId))
         )
     ;
@@ -1729,12 +1740,12 @@ generate_depth_var(CSN, DepthVar, !DeepInfo) :-
     deep_info::in, deep_info::out) is det.
 
 generate_csn_vector(Length, CSNs, CSNVars, UnifyGoals, CellVar, !DeepInfo) :-
-    ( CSNs = [CSN] ->
+    ( if CSNs = [CSN] then
         generate_single_csn_unify(CSN, CSNVar - UnifyGoal, !DeepInfo),
         CSNVars = [CSNVar],
         UnifyGoals = [UnifyGoal],
         CellVar = CSNVar
-    ;
+    else
         expect(Length =< max_save_restore_vector_size, $module, $pred,
             "too long"),
         list.map_foldl(generate_single_csn_unify, CSNs, CSNVarsGoals,
@@ -1782,7 +1793,7 @@ generate_deep_det_call(ModuleInfo, Name, Arity, ArgVars, OutputVars, Goal) :-
 generate_deep_call(ModuleInfo, Name, Arity, ArgVars, MaybeOutputVars, Detism,
         Goal) :-
     get_deep_profile_builtin_ppid(ModuleInfo, Name, Arity, PredId, ProcId),
-    NonLocals = list_to_set(ArgVars),
+    NonLocals = set_of_var.list_to_set(ArgVars),
     (
         MaybeOutputVars = yes(OutputVars),
         InstMapDelta = instmap_delta_bind_vars(OutputVars)
@@ -1797,37 +1808,39 @@ generate_deep_call(ModuleInfo, Name, Arity, ArgVars, MaybeOutputVars, Detism,
     Goal = hlds_goal(GoalExpr, GoalInfo).
 
 generate_deep_const_unify(ConsId, Var, Goal) :-
-    Ground = ground(shared, none),
+    Ground = ground(shared, none_or_default_func),
+    UnifyMode = unify_modes_lhs_rhs(
+        from_to_insts(free, Ground),
+        from_to_insts(Ground, Ground)),
+    Unification = construct(Var, ConsId, [], [], construct_statically,
+        cell_is_shared, no_construct_sub_info),
+    GoalExpr = unify(Var, rhs_functor(ConsId, is_not_exist_constr, []),
+        UnifyMode, Unification, unify_context(umc_explicit, [])),
     NonLocals = set_of_var.make_singleton(Var),
     InstMapDelta = instmap_delta_bind_var(Var),
-    Determinism = detism_det,
-    goal_info_init(NonLocals, InstMapDelta, Determinism, purity_pure,
+    goal_info_init(NonLocals, InstMapDelta, detism_det, purity_pure,
         GoalInfo1),
     goal_info_set_mdprof_inst(goal_is_mdprof_inst, GoalInfo1, GoalInfo),
-    GoalExpr = unify(Var, rhs_functor(ConsId, no, []),
-        (free -> Ground) - (Ground -> Ground),
-        construct(Var, ConsId, [], [], construct_statically,
-            cell_is_shared, no_construct_sub_info),
-        unify_context(umc_explicit, [])),
     Goal = hlds_goal(GoalExpr, GoalInfo).
 
 :- pred generate_deep_cell_unify(int::in, cons_id::in, list(prog_var)::in,
     prog_var::in, hlds_goal::out) is det.
 
 generate_deep_cell_unify(Length, ConsId, Args, Var, Goal) :-
-    Ground = ground(shared, none),
+    Ground = ground(shared, none_or_default_func),
+    UnifyMode = unify_modes_lhs_rhs(
+        from_to_insts(free, Ground),
+        from_to_insts(Ground, Ground)),
+    list.duplicate(Length, UnifyMode, ArgModes),
+    Unification = construct(Var, ConsId, Args, ArgModes,
+        construct_statically, cell_is_shared, no_construct_sub_info),
+    GoalExpr = unify(Var, rhs_functor(ConsId, is_not_exist_constr, Args),
+        UnifyMode, Unification, unify_context(umc_explicit, [])),
     NonLocals = set_of_var.list_to_set([Var | Args]),
     InstMapDelta = instmap_delta_bind_var(Var),
     Determinism = detism_det,
     goal_info_init(NonLocals, InstMapDelta, Determinism, purity_pure,
         GoalInfo),
-    ArgMode = ((free - Ground) -> (Ground - Ground)),
-    list.duplicate(Length, ArgMode, ArgModes),
-    GoalExpr = unify(Var, rhs_functor(ConsId, no, Args),
-        (free -> Ground) - (Ground -> Ground),
-        construct(Var, ConsId, Args, ArgModes,
-            construct_statically, cell_is_shared, no_construct_sub_info),
-        unify_context(umc_explicit, [])),
     Goal = hlds_goal(GoalExpr, GoalInfo).
 
 generate_var(Name, Type, Var, !VarInfo) :-

@@ -24,14 +24,18 @@ from version 10.5 or later.  For information about installing Mercury on
 versions of Mac OS X before 10.5, including on PowerPC systems, see the
 sections below.
 
-The 'asm_fast*' and 'reg*' grades are not available on Intel Mac OS X systems.
-The only low-level C grades available are the 'none*' grades.  The high-level
-C, Java, Erlang and C# grades all work.  The 'erlang' grade requires an Erlang
-installation to be available and the C# grades require the Mono .NET
-implementation.  (See README.Erlang and README.CSharp for further details.)
+The 'asm_fast*' and 'reg*' grades are only available on 64-bit Intel Mac OS X
+systems and only when using GCC version 4.3 or later as the C compiler.
+(This has only been tested with the MacPorts builds of GCC however.)
 
-Unless otherwise directed, the 'hlc.gc' grade will be used as the default grade
-for compiling applications.
+If clang is being used as the C compiler then the only low-level C grades
+available are the 'none*' grades.  The high-level C, Java, Erlang and C# grades
+all work.  The 'erlang' grade requires an Erlang installation to be available
+and the C# grades require the Mono .NET implementation.  (See README.Erlang and
+README.CSharp for further details.)
+
+If the 'asm_fast.gc' grade is not available and unless otherwise directed, the
+'hlc.gc' grade will be used as the default grade for compiling applications.
 
 By default, 64-bit versions of the executables and libraries in the Mercury
 system will be installed on x86-64 machines running Mac OS X 10.6 or later.  To
@@ -48,21 +52,6 @@ or:
 By default, 32-bit versions of the executables and libraries are installed on
 x86-64 machines running Mac OS X 10.5.  To build and install 64-bit Mercury on
 such a system you must pass the "-m64" option to the C compiler.
-
-Note that if you are building Mercury from scratch using an existing installed
-Mercury compiler, i.e. you are not installing using the pre-generated C files in
-the source distribution, and you are using a 32-bit Mercury compiler to
-bootstrap a 64-bit installation (or vice versa) then you must compile with
---cross-compiling enabled.  Not enabling it will result in library installation
-aborting with an error message like the following:
-
-    Uncaught Mercury exception:
-    Software Error: pred_table.m: Unexpected: can't locate compare/3
-
-You can enable cross-compilation by putting the following line in a file named
-Mmake.params at the top-level of the source tree:
-
-    MCFLAGS = --cross-compiling
 
 Mercury cannot be compiled with llvm-gcc on Mac OS X.
 
@@ -192,9 +181,6 @@ to your Mercury.options or Mmakefile.
 -----------------------------------
 Known bugs and unsupported features
 -----------------------------------
-
-The following feature is not supported on Mac OS X:
-	- interactive queries in mdb
 
 The 'asm_fast' grades will not work on *-apple-darwin machines, primarily
 because of a (long-standing) bug in gcc (GCC bug #10901).  By default, 

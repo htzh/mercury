@@ -1,3 +1,7 @@
+%---------------------------------------------------------------------------%
+% vim: ts=4 sw=4 et ft=mercury
+%---------------------------------------------------------------------------%
+
 :- module inst_perf_bug_1.
 :- interface.
 
@@ -44,5 +48,5 @@
 
 :- implementation.
 
-:- external(p/1).
+:- pragma external_pred(p/1).
 :- pragma foreign_code("Erlang", "p_1_p_0(_) -> void.").

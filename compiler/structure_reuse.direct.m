@@ -25,9 +25,11 @@
 :- module transform_hlds.ctgc.structure_reuse.direct.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
 :- import_module transform_hlds.ctgc.structure_reuse.domain.
+:- import_module transform_hlds.ctgc.structure_sharing.
 :- import_module transform_hlds.ctgc.structure_sharing.domain.
 
 :- import_module list.
@@ -53,6 +55,8 @@
 
 :- import_module analysis.
 :- import_module hlds.passes_aux.
+:- import_module hlds.status.
+:- import_module libs.
 :- import_module libs.file_util.
 :- import_module libs.globals.
 :- import_module libs.options.
@@ -72,7 +76,7 @@
 
 direct_reuse_pass(SharingTable, !ModuleInfo, !ReuseTable) :-
     % Gather the pred_ids of the preds that need to be analysed.
-    module_info_get_valid_predids(AllPredIds, !ModuleInfo),
+    module_info_get_valid_pred_ids(!.ModuleInfo, AllPredIds),
     list.filter(pred_requires_analysis(!.ModuleInfo), AllPredIds,
         ToBeAnalysedPredIds),
 
@@ -86,22 +90,23 @@ direct_reuse_pass(SharingTable, !ModuleInfo, !ReuseTable) :-
 
 direct_reuse_process_pred(SharingTable, PredId, !ModuleInfo, !ReuseTable) :-
     module_info_pred_info(!.ModuleInfo, PredId, PredInfo0),
-    (
+    ( if
         pred_info_get_origin(PredInfo0, Origin),
-        Origin = origin_special_pred(_)
-    ->
+        Origin = origin_special_pred(_, _)
+    then
         % We can't analyse compiler generated special predicates.
         true
-    ;
-        pred_info_get_import_status(PredInfo0, status_external(_))
-    ->
-        % We can't analyse `:- external' predicates but add an extry to the
-        % reuse table so something will be written out to optimisation
-        % interface files.
+    else if
+        pred_info_get_status(PredInfo0, PredStatus),
+        PredStatus = pred_status(status_external(_))
+    then
+        % We can't analyse `:- pragma external_{pred/func}' procedures,
+        % but we add an extry to the reuse table so something will be written
+        % out to optimisation interface files.
         list.foldl(
             set_external_pred_reuse_as(PredId, reuse_as_init, optimal),
             pred_info_procids(PredInfo0), !ReuseTable)
-    ;
+    else
         ProcIds = pred_info_non_imported_procids(PredInfo0),
         list.foldl2(direct_reuse_process_proc(SharingTable, PredId),
             ProcIds, !ModuleInfo, !ReuseTable)
@@ -139,7 +144,7 @@ direct_reuse_process_proc(SharingTable, PredId, ProcId,
         !ModuleInfo, !ReuseTable) :-
     module_info_get_preds(!.ModuleInfo, Preds0),
     map.lookup(Preds0, PredId, Pred0),
-    pred_info_get_procedures(Pred0, Procs0),
+    pred_info_get_proc_table(Pred0, Procs0),
     map.lookup(Procs0, ProcId, Proc0),
 
     direct_reuse_process_proc_2(SharingTable, PredId, ProcId,
@@ -150,7 +155,7 @@ direct_reuse_process_proc(SharingTable, PredId, ProcId,
     reuse_as_table_set(proc(PredId, ProcId), AsAndStatus, !ReuseTable),
 
     map.det_update(ProcId, Proc, Procs0, Procs),
-    pred_info_set_procedures(Procs, Pred0, Pred),
+    pred_info_set_proc_table(Procs, Pred0, Pred),
     map.det_update(PredId, Pred, Preds0, Preds),
     module_info_set_preds(Preds, !ModuleInfo).
 
@@ -253,9 +258,9 @@ dead_cell_table_remove_conditionals(!Table) :-
     reuse_condition::in, dead_cell_table::in, dead_cell_table::out) is det.
 
 dead_cell_table_add_unconditional(PP, C, !Table) :-
-    ( reuse_condition_is_conditional(C) ->
+    ( if reuse_condition_is_conditional(C) then
         true
-    ;
+    else
         dead_cell_table_set(PP, C, !Table)
     ).
 
@@ -278,9 +283,9 @@ dead_cell_table_maybe_dump(MaybeDump, Table, !IO) :-
     io::di, io::uo) is det.
 
 dead_cell_entry_dump(PP, Cond, !IO) :-
-    ( reuse_condition_is_conditional(Cond) ->
+    ( if reuse_condition_is_conditional(Cond) then
         io.write_string("\t\t|  cond  |\t", !IO)
-    ;
+    else
         io.write_string("\t\t| always |\t", !IO)
     ),
     dump_program_point(PP, !IO),

@@ -1,23 +1,22 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1998-2001, 2003, 2005-2006, 2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: debugger_interface.m.
 % Authors: fjh, jahier.
-% 
+%
 % Purpose:
 %   This module provide support routines needed by
 %   runtime/mercury_trace_external.c for interfacing to an external
-%   (in a different process) debugger, in particular an Opium-style
-%   debugger.
+%   (in a different process) debugger, in particular an Opium-style debugger.
 %
 % This module corresponds to what is called the "Query Handler" in Opium.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdb.debugger_interface.
 :- interface.
@@ -35,13 +34,14 @@
 
 :- pred dummy_pred_to_avoid_warning_about_nothing_exported is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module mdb.interactive_query.
 :- import_module mdb.util.
+:- import_module mdbcomp.
 :- import_module mdbcomp.goal_path.
 :- import_module mdbcomp.prim_data.
 
@@ -82,9 +82,10 @@ dummy_pred_to_avoid_warning_about_nothing_exported.
             % match either user-defined or compiler-generated preds
 
 % This is known as "debugger_query" in the Opium documentation.
-% The debugger_request type is used for request sent
-% from the debugger process to the Mercury program being debugged.
-% This type would need to be extended to handle spypoints, etc.
+% The debugger_request type is used for request sent from the debugger process
+% to the Mercury program being debugged. This type would need to be extended
+% to handle spypoints, etc.
+
 :- type debugger_request
     --->    hello_reply     % yes, I'm here
 
@@ -164,7 +165,7 @@ dummy_pred_to_avoid_warning_about_nothing_exported.
     ;       io_query(imports)
             % To type interactive queries that perform io.
 
-    ;       mmc_options(options)
+    ;       mmc_options(options_string)
             % Options to compile queries with.
 
     ;       browse(string)
@@ -202,19 +203,19 @@ dummy_pred_to_avoid_warning_about_nothing_exported.
     % The debugger_response type is used for response sent
     % to the debugger process from the Mercury program being debugged.
 :- type debugger_response
-    --->    hello
+    --->    response_hello
             % sending hello
             % are you there?
 
-    ;       start
+    ;       response_start
             % start the synchronous communication with the debugger
 
-    ;       forward_move_match_found
-    ;       forward_move_match_not_found
-            % responses to forward_move
+    % responses to forward_move
+    ;       response_forward_move_match_found
+    ;       response_forward_move_match_not_found
 
     % responses to current
-    ;       current_slots_user(
+    ;       response_current_slots_user(
                 % responses to current_slots for user event
                 event_number,
                 call_number,
@@ -231,7 +232,7 @@ dummy_pred_to_avoid_warning_about_nothing_exported.
                 line_number
             )
 
-    ;       current_slots_comp(
+    ;       response_current_slots_comp(
                 % responses to current_slots for compiler generated event
                 event_number,
                 call_number,
@@ -249,75 +250,77 @@ dummy_pred_to_avoid_warning_about_nothing_exported.
             )
 
     % responses to current_vars
-    ;   current_vars(list(univ), list(string))
+    ;       response_current_vars(list(univ), list(string))
 
     % responses to current_nth_var
-    ;       current_nth_var(univ)
+    ;       response_current_nth_var(univ)
 
     % responses to current_live_var_names
-    ;       current_live_var_names(list(string), list(string))
+    ;       response_current_live_var_names(list(string), list(string))
 
     % response sent when the last event is reached
-    ;       last_event
+    ;       response_last_event
 
     % responses to a successful browse request session
-    ;       browser_end
+    ;       response_browser_end
 
     % responses to a successful mmc_option request
-    ;       mmc_option_ok
+    ;       response_mmc_option_ok
 
     % responses to requests that proceeded successfully
-    ;       ok
+    ;       response_ok
 
     % responses to requests that went wrong
-    ;           error(string)
+    ;           response_error(string)
 
     % responses to stack
     % The protocol between the debugger and the debuggee is described is
     % trace/mercury_trace_external.c.
-    ;       level(int)                              % stack level
-    ;       proc(string, string, string, int, int)  % compiler generated proc
-    ;       proc(string, string, int, int)          % user generated proc
-    ;       def_module(string)
-    ;       detail(int, int, int)
-    ;       (pred)
-    ;       (func)
-    ;       det(string)
-    ;       end_stack
+    ;       response_level(int)
+            % stack level
+    ;       response_proc(string, string, string, int, int)
+            % compiler generated proc
+    ;       response_proc(string, string, int, int)
+            % user generated proc
+    ;       response_def_module(string)
+    ;       response_detail(int, int, int)
+    ;       response_pred
+    ;       response_func
+    ;       response_det(string)
+    ;       response_end_stack
 
     % responses to stack_regs
-    ;       stack_regs(int, int, int)
+    ;       response_stack_regs(int, int, int)
 
     % responses to link_collect
-    ;       link_collect_succeeded
-    ;       link_collect_failed
+    ;       response_link_collect_succeeded
+    ;       response_link_collect_failed
 
     % responses to collect
-    ;       collect_linked
-    ;       collect_not_linked
+    ;       response_collect_linked
+    ;       response_collect_not_linked
 
     % responses to current_grade
-    ;       grade(string)
+    ;       response_grade(string)
 
     % responses to collect
-    %;  collected(collected_type)
-    % This is commented out because collected_type is unknown at
-    % compile time since it is defined by users in the dynamically
-    % linked collect module.
+    %;      response_collected(collected_type)
+    % This is commented out because collected_type is unknown at compile time,
+    % since it is defined by users in the dynamically linked collect module.
 
     % sent if the execution is not terminated after a collect request
-    ;       execution_continuing
+    ;       response_execution_continuing
 
     % sent if the execution is terminated after a collect request
-    ;       execution_terminated
+    ;       response_execution_terminated
 
     % responses to collect_arg_on
-    ;       collect_arg_on_ok
+    ;       response_collect_arg_on_ok
 
     % responses to collect_arg_off
-    ;       collect_arg_off_ok.
+    ;       response_collect_arg_off_ok.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %   send to the debugger (e.g. Opium) the wanted features.
 
 % output_current_slots_user "ML_DI_output_current_slots_user":
@@ -339,10 +342,10 @@ dummy_pred_to_avoid_warning_about_nothing_exported.
 output_current_slots_user(EventNumber, CallNumber, DepthNumber, Port,
         PredOrFunc, DeclModuleName, DefModuleName, PredName, Arity, ModeNum,
         Determinism, Path, LineNo, OutputStream, !IO) :-
-    CurrentTraceInfo = current_slots_user(EventNumber, CallNumber,
+    Response = response_current_slots_user(EventNumber, CallNumber,
         DepthNumber, Port, PredOrFunc, DeclModuleName, DefModuleName,
         PredName, Arity, ModeNum, Determinism, Path, LineNo),
-    io.write(OutputStream, CurrentTraceInfo, !IO),
+    io.write(OutputStream, Response, !IO),
     io.print(OutputStream, ".\n", !IO),
     io.flush_output(OutputStream, !IO).
 
@@ -365,10 +368,10 @@ output_current_slots_user(EventNumber, CallNumber, DepthNumber, Port,
 output_current_slots_comp(EventNumber, CallNumber, DepthNumber, Port,
         NameType, ModuleType, DefModuleName, PredName, Arity,
         ModeNum, Determinism, Path, LineNo, OutputStream, !IO) :-
-    CurrentTraceInfo = current_slots_comp(EventNumber, CallNumber,
+    Response = response_current_slots_comp(EventNumber, CallNumber,
         DepthNumber, Port, NameType, ModuleType, DefModuleName,
         PredName, Arity, ModeNum, Determinism, Path, LineNo),
-    io.write(OutputStream, CurrentTraceInfo, !IO),
+    io.write(OutputStream, Response, !IO),
     io.print(OutputStream, ".\n", !IO),
     io.flush_output(OutputStream, !IO).
 
@@ -383,8 +386,8 @@ output_current_slots_comp(EventNumber, CallNumber, DepthNumber, Port,
     io.output_stream::in, io::di, io::uo) is det.
 
 output_current_vars(VarList, StringList, OutputStream, !IO) :-
-    CurrentTraceInfo = current_vars(VarList, StringList),
-    io.write(OutputStream, CurrentTraceInfo, !IO),
+    Response = response_current_vars(VarList, StringList),
+    io.write(OutputStream, Response, !IO),
     io.print(OutputStream, ".\n", !IO),
     io.flush_output(OutputStream, !IO).
 
@@ -398,8 +401,8 @@ output_current_vars(VarList, StringList, OutputStream, !IO) :-
     is det.
 
 output_current_nth_var(Var, OutputStream, !IO) :-
-    CurrentTraceInfo = current_nth_var(Var),
-    io.write(OutputStream, CurrentTraceInfo, !IO),
+    Response = response_current_nth_var(Var),
+    io.write(OutputStream, Response, !IO),
     io.print(OutputStream, ".\n", !IO),
     io.flush_output(OutputStream, !IO).
 
@@ -412,13 +415,13 @@ output_current_nth_var(Var, OutputStream, !IO) :-
 
 output_current_live_var_names(LiveVarNameList, LiveVarTypeList, OutputStream,
         !IO) :-
-    CurrentTraceInfo = current_live_var_names(LiveVarNameList,
+    Response = response_current_live_var_names(LiveVarNameList,
         LiveVarTypeList),
-    io.write(OutputStream, CurrentTraceInfo, !IO),
+    io.write(OutputStream, Response, !IO),
     io.print(OutputStream, ".\n", !IO),
     io.flush_output(OutputStream, !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_export("C", get_var_number(in) = out,
     "ML_DI_get_var_number").
@@ -429,13 +432,13 @@ output_current_live_var_names(LiveVarNameList, LiveVarTypeList, OutputStream,
 :- func get_var_number(debugger_request) = int.
 
 get_var_number(DebuggerRequest) = VarNumber :-
-    ( DebuggerRequest = current_nth_var(Var) ->
+    ( if DebuggerRequest = current_nth_var(Var) then
         Var = VarNumber
-    ;
-        error("get_var_number: not a current_nth_var request")
+    else
+        unexpected($module, $pred, "not a current_nth_var request")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma foreign_export("C",
     found_match_user(in, in, in, in, in, in, in, in, in, in, in, in, in, in),
@@ -452,24 +455,24 @@ found_match_user(EventNumber, CallNumber, DepthNumber, Port, PredOrFunc,
         DeclModuleName, DefModuleName, PredName, Arity, ModeNum,
         Determinism, Args, Path, DebuggerRequest) :-
     % XXX We could provide better ways of matching on arguments.
-    (
+    ( if
         DebuggerRequest = forward_move(MatchEventNumber,
             MatchCallNumber, MatchDepthNumber, MatchPort,
             UserPredMatch, MatchDefModuleName, MatchPredName,
             MatchArity, MatchModeNum, MatchDeterminism,
             MatchArgs, MatchPath)
-    ->
+    then
         match(MatchEventNumber, EventNumber),
         match(MatchCallNumber, CallNumber),
         match(MatchDepthNumber, DepthNumber),
         match(MatchPort, Port),
-        (
+        ( if
             UserPredMatch = match_user_pred(MatchPredOrFunc,
                 MatchDeclModuleName)
-        ->
+        then
             match(MatchPredOrFunc, PredOrFunc),
             match(MatchDeclModuleName, DeclModuleName)
-        ;
+        else
             UserPredMatch = match_any_pred
         ),
         match(MatchDefModuleName, DefModuleName),
@@ -479,8 +482,8 @@ found_match_user(EventNumber, CallNumber, DepthNumber, Port, PredOrFunc,
         match(MatchDeterminism, Determinism),
         match(MatchArgs, Args),
         match(MatchPath, Path)
-    ;
-        error("found_match: forward_move expected")
+    else
+        unexpected($module, $pred, "forward_move expected")
     ).
 
     % match(MatchPattern, Value) is true iff Value matches the specified
@@ -514,25 +517,25 @@ found_match_comp(EventNumber, CallNumber, DepthNumber, Port, NameType,
         ModuleType, DefModuleName, PredName, Arity, ModeNum,
         Determinism, Args, Path, DebuggerRequest) :-
     % XXX We could provide better ways of matching on arguments.
-    (
+    ( if
         DebuggerRequest = forward_move(MatchEventNumber,
             MatchCallNumber, MatchDepthNumber, MatchPort,
             CompilerGeneratedPredMatch,
             MatchDefModuleName, MatchPredName, MatchArity,
             MatchModeNum, MatchDeterminism, MatchArgs, MatchPath)
-    ->
+    then
         match(MatchEventNumber, EventNumber),
         match(MatchCallNumber, CallNumber),
         match(MatchDepthNumber, DepthNumber),
         match(MatchPort, Port),
-        (
+        ( if
             CompilerGeneratedPredMatch =
                 match_compiler_generated_pred(MatchNameType,
             MatchModuleType)
-        ->
+        then
             match(MatchNameType, NameType),
             match(MatchModuleType, ModuleType)
-        ;
+        else
             CompilerGeneratedPredMatch = match_any_pred
         ),
         match(MatchDefModuleName, DefModuleName),
@@ -542,11 +545,11 @@ found_match_comp(EventNumber, CallNumber, DepthNumber, Port, NameType,
         match(MatchDeterminism, Determinism),
         match(MatchArgs, Args),
         match(MatchPath, Path)
-    ;
-        error("found_match: forward_move expected")
+    else
+        unexpected($module, $pred, "forward_move expected")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred read_request_from_socket(io.input_stream::in, debugger_request::out,
     int::out, io::di, io::uo) is det.
@@ -577,7 +580,7 @@ read_request_from_socket(SocketStream, Request, RequestType, !IO) :-
     % io.print(StdErr, RequestType, !IO),
     % io.print(StdErr, ".\n", !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred get_list_modules_to_import(debugger_request::in, int::out,
     imports::out) is det.
@@ -586,31 +589,31 @@ read_request_from_socket(SocketStream, Request, RequestType, !IO) :-
     "ML_DI_get_list_modules_to_import").
 
 get_list_modules_to_import(DebuggerRequest, ListLength, ModulesList) :-
-    ( DebuggerRequest = query(List) ->
+    ( if DebuggerRequest = query(List) then
         ModulesList = List
-    ; DebuggerRequest = cc_query(List) ->
+    else if DebuggerRequest = cc_query(List) then
         ModulesList = List
-    ; DebuggerRequest = io_query(List) ->
+    else if DebuggerRequest = io_query(List) then
         ModulesList = List
-    ;
-        error("get_list_modules_to_import: not a query request")
+    else
+        unexpected($module, $pred, "not a query request")
     ),
     length(ModulesList, ListLength).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- pred get_mmc_options(debugger_request::in, options::out) is det.
+:- pred get_mmc_options(debugger_request::in, options_string::out) is det.
 :- pragma foreign_export("C", get_mmc_options(in, out),
     "ML_DI_get_mmc_options").
 
 get_mmc_options(DebuggerRequest, Options) :-
-    ( DebuggerRequest = mmc_options(OptionsPrim) ->
+    ( if DebuggerRequest = mmc_options(OptionsPrim) then
         Options = OptionsPrim
-    ;
-        error("get_mmc_options: not a mmc_options request")
+    else
+        unexpected($module, $pred, "not a mmc_options request")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % This predicate allows mercury_trace_external.c to retrieve the name
     % of the object file to link the current execution with from a
@@ -621,13 +624,13 @@ get_mmc_options(DebuggerRequest, Options) :-
     "ML_DI_get_object_file_name").
 
 get_object_file_name(DebuggerRequest, ObjectFileName) :-
-    ( DebuggerRequest = link_collect(ObjectFileNamePrime) ->
+    ( if DebuggerRequest = link_collect(ObjectFileNamePrime) then
         ObjectFileName = ObjectFileNamePrime
-    ;
-        error("get_object_file_name: not a link_collect request")
+    else
+        unexpected($module, $pred, "not a link_collect request")
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred init_mercury_string(string::out) is det.
 :- pragma foreign_export("C", init_mercury_string(out),
@@ -635,7 +638,7 @@ get_object_file_name(DebuggerRequest, ObjectFileName) :-
 
 init_mercury_string("").
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % This predicate allows mercury_trace_external.c to retrieve the name
     % of the variable to browse from a `browse(var_name)' request.
@@ -645,13 +648,13 @@ init_mercury_string("").
     "ML_DI_get_variable_name").
 
 get_variable_name(DebuggerRequest, Options) :-
-    ( DebuggerRequest = browse(OptionsPrime) ->
+    ( if DebuggerRequest = browse(OptionsPrime) then
         Options = OptionsPrime
-    ;
-        error("get_variable_name: not a browse request")
+    else
+        unexpected($module, $pred, "not a browse request")
     ).
 
-%------------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred classify_request(debugger_request::in, int::out) is det.
 
@@ -681,4 +684,4 @@ classify_request(current_grade,20).
 classify_request(collect_arg_on,21).
 classify_request(collect_arg_off,22).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

@@ -10,7 +10,7 @@
 % Authors: fjh, juliensf.
 %
 % This module is an HLDS-to-HLDS transformation that inserts code to
-% handle trailing.  The module implements two ways of doing this:
+% handle trailing. The module implements two ways of doing this:
 %
 % (1) by adding calls to impure predicates defined in
 %     library/private_builtin.m, which in turn call macros defined in
@@ -20,8 +20,8 @@
 %     runtime/mercury_trail.h.
 %
 % There is a space/time tradeoff between these two methods, the second
-% is generally faster but results in larger executables.  The
-% `--generate-trail-ops-inline' option can be used to control which
+% is generally faster but results in larger executables.
+% The `--generate-trail-ops-inline' option can be used to control which
 % of the methods is used.
 %
 % This pass is currently only used for the MLDS back-end.
@@ -36,7 +36,7 @@
 % that use it to implement trailing (see trailing_analysis.m for details).
 %
 % NOTE: it is important that passes following this one do not attempt
-%       to reorder disjunctions.  If trail usage optimization is being
+%       to reorder disjunctions. If trail usage optimization is being
 %       performed and a disjunction is reordered then the trail might
 %       be corrupted.
 %
@@ -53,6 +53,7 @@
 :- module ml_backend.add_trail_ops.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
 
@@ -73,18 +74,23 @@
 :- import_module hlds.goal_util.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.instmap.
+:- import_module hlds.make_goal.
 :- import_module hlds.pred_table.
 :- import_module hlds.quantification.
+:- import_module hlds.vartypes.
+:- import_module libs.
 :- import_module libs.globals.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
+:- import_module parse_tree.
 :- import_module parse_tree.builtin_lib_types.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.prog_mode.
 
 :- import_module list.
-:- import_module map.
 :- import_module maybe.
-:- import_module pair.
 :- import_module require.
 :- import_module term.
 :- import_module varset.
@@ -205,10 +211,10 @@ goal_expr_add_trail_ops(GoalExpr0, GoalInfo0, Goal, !Info) :-
         InnerGoal0 = hlds_goal(_, InnerGoalInfo),
         InnerCodeModel = goal_info_get_code_model(InnerGoalInfo),
         OuterCodeModel = goal_info_get_code_model(OuterGoalInfo),
-        (
+        ( if
             InnerCodeModel = model_non,
             OuterCodeModel \= model_non
-        ->
+        then
             % Handle commits.
 
             % Before executing the goal, we save the ticket counter,
@@ -261,16 +267,16 @@ goal_expr_add_trail_ops(GoalExpr0, GoalInfo0, Goal, !Info) :-
             ),
             GoalExpr =
                 conj(plain_conj, [MarkTicketStackGoal, StoreTicketGoal, Goal3])
-        ;
+        else if
             Reason = from_ground_term(_, FGT),
             ( FGT = from_ground_term_construct
             ; FGT = from_ground_term_deconstruct
             )
-        ->
+        then
             % The scope has no goals that either create choice points
             % or allocate dynamic terms.
             GoalExpr = scope(Reason, InnerGoal0)
-        ;
+        else
             goal_add_trail_ops(InnerGoal0, InnerGoal, !Info),
             GoalExpr = scope(Reason, InnerGoal)
         ),
@@ -286,13 +292,13 @@ goal_expr_add_trail_ops(GoalExpr0, GoalInfo0, Goal, !Info) :-
         OptTrailUsage = !.Info ^ opt_trail_usage,
         Cond = hlds_goal(_, CondGoalInfo),
         CondCodeModel = goal_info_get_code_model(CondGoalInfo),
-        (
+        ( if
             OptTrailUsage = yes,
             CondCodeModel \= model_non,
             goal_cannot_modify_trail(CondGoalInfo) = yes
-        ->
+        then
             GoalExpr = if_then_else(ExistQVars, Cond, Then1, Else1)
-        ;
+        else
             % Allocate a new trail ticket so that we can restore things if the
             % condition fails.
 
@@ -435,8 +441,9 @@ gen_store_ticket(TicketVar, Context, SaveTicketGoal, Info) :-
             Info ^ trail_module_info, Context, SaveTicketGoal)
     ;
         GenerateInline =  yes,
-        Args = [foreign_arg(TicketVar, yes("Ticket" - out_mode),
-            ticket_type, native_if_possible)],
+        Args = [foreign_arg(TicketVar,
+            yes(foreign_arg_name_mode("Ticket", out_mode)),
+            ticket_type, bp_native_if_possible)],
         ForeignCode = "MR_store_ticket(Ticket);",
         trail_generate_foreign_proc("store_ticket", purity_impure,
             instmap_delta_bind_var(TicketVar), Info ^ trail_module_info,
@@ -455,8 +462,9 @@ gen_reset_ticket_undo(TicketVar, Context, ResetTicketGoal, Info) :-
             Context, ResetTicketGoal)
     ;
         GenerateInline = yes,
-        Args = [foreign_arg(TicketVar, yes("Ticket" - in_mode),
-            ticket_type, native_if_possible)],
+        Args = [foreign_arg(TicketVar,
+            yes(foreign_arg_name_mode("Ticket", in_mode)),
+            ticket_type, bp_native_if_possible)],
         ForeignCode = "MR_reset_ticket(Ticket, MR_undo);",
         trail_generate_foreign_proc("reset_ticket_undo", purity_impure,
             instmap_delta_bind_no_var, Info ^ trail_module_info,
@@ -475,8 +483,9 @@ gen_reset_ticket_solve(TicketVar, Context, ResetTicketGoal, Info) :-
             Context, ResetTicketGoal)
     ;
         GenerateInline = yes,
-        Args = [foreign_arg(TicketVar, yes("Ticket" - in_mode),
-            ticket_type, native_if_possible)],
+        Args = [foreign_arg(TicketVar,
+            yes(foreign_arg_name_mode("Ticket", in_mode)),
+            ticket_type, bp_native_if_possible)],
         ForeignCode = "MR_reset_ticket(Ticket, MR_solve);",
         trail_generate_foreign_proc("reset_ticket_solve", purity_impure,
             instmap_delta_bind_no_var, Info ^ trail_module_info,
@@ -495,8 +504,9 @@ gen_reset_ticket_commit(TicketVar, Context, ResetTicketGoal, Info) :-
             Context, ResetTicketGoal)
     ;
         GenerateInline = yes,
-        Args = [foreign_arg(TicketVar, yes("Ticket" - in_mode),
-            ticket_type, native_if_possible)],
+        Args = [foreign_arg(TicketVar,
+            yes(foreign_arg_name_mode("Ticket", in_mode)),
+            ticket_type, bp_native_if_possible)],
         ForeignCode = "MR_reset_ticket(Ticket, MR_commit);",
         trail_generate_foreign_proc("reset_ticket_commit", purity_impure,
             instmap_delta_bind_no_var, Info ^ trail_module_info,
@@ -556,8 +566,8 @@ gen_mark_ticket_stack(SavedTicketCounterVar, Context, MarkTicketStackGoal,
     ;
         GenerateInline = yes,
         Args = [foreign_arg(SavedTicketCounterVar,
-            yes("TicketCounter" - out_mode), ticket_counter_type,
-            native_if_possible)],
+            yes(foreign_arg_name_mode("TicketCounter", out_mode)),
+            ticket_counter_type, bp_native_if_possible)],
         ForeignCode = "MR_mark_ticket_stack(TicketCounter);",
         trail_generate_foreign_proc("mark_ticket_stack", purity_impure,
             instmap_delta_bind_no_var, Info ^ trail_module_info,
@@ -578,17 +588,13 @@ gen_prune_tickets_to(SavedTicketCounterVar, Context, PruneTicketsToGoal,
     ;
         GenerateInline = yes,
         Args = [foreign_arg(SavedTicketCounterVar,
-            yes("TicketCounter" - in_mode), ticket_counter_type,
-            native_if_possible)],
+            yes(foreign_arg_name_mode("TicketCounter", in_mode)),
+            ticket_counter_type, bp_native_if_possible)],
         ForeignCode = "MR_prune_tickets_to(TicketCounter);",
         trail_generate_foreign_proc("prune_tickets_to", purity_impure,
             instmap_delta_bind_no_var, Info ^ trail_module_info,
             Context, Args, ForeignCode, PruneTicketsToGoal)
     ).
-
-:- func trail_ground_inst = mer_inst.
-
-trail_ground_inst = ground(unique, none).
 
 %-----------------------------------------------------------------------------%
 

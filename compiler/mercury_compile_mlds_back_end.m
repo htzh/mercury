@@ -1,17 +1,17 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2009-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: mercury_compile_mlds_back_end.m.
 %
 % This module implements the MLDS backend for the top level of the Mercury
 % compiler. It invokes the different passes of this backend as appropriate.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module top_level.mercury_compile_mlds_back_end.
 :- interface.
@@ -21,42 +21,47 @@
 :- import_module hlds.passes_aux.
 :- import_module libs.
 :- import_module libs.globals.
+:- import_module ml_backend.
 :- import_module ml_backend.mlds.
 :- import_module parse_tree.
+:- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
 
 :- import_module bool.
 :- import_module io.
+:- import_module list.
 
     % Return `yes' iff this module defines the main/2 entry point.
     %
 :- func mlds_has_main(mlds) = has_main.
 
 :- pred mlds_backend(module_info::in, module_info::out, mlds::out,
-    dump_info::in, dump_info::out, io::di, io::uo) is det.
+    list(error_spec)::out, dump_info::in, dump_info::out, io::di, io::uo)
+    is det.
 
 :- pred maybe_mark_static_terms(bool::in, bool::in,
     module_info::in, module_info::out, io::di, io::uo) is det.
 
-:- pred mlds_to_high_level_c(globals::in, mlds::in, io::di, io::uo) is det.
+:- pred mlds_to_high_level_c(globals::in, mlds::in, bool::out,
+    io::di, io::uo) is det.
 
-:- pred mlds_to_java(module_info::in, mlds::in, io::di, io::uo) is det.
+:- pred mlds_to_java(module_info::in, mlds::in, bool::out,
+    io::di, io::uo) is det.
 
-:- pred mlds_to_csharp(module_info::in, mlds::in, io::di, io::uo) is det.
+:- pred mlds_to_csharp(module_info::in, mlds::in, bool::out,
+    io::di, io::uo) is det.
 
-:- pred mlds_to_il_assembler(globals::in, mlds::in, io::di, io::uo) is det.
-
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.base_typeclass_info.
 :- import_module backend_libs.type_class_info.
 :- import_module backend_libs.type_ctor_info.
 :- import_module hlds.mark_static_terms.            % HLDS -> HLDS
 :- import_module libs.file_util.
-:- import_module libs.globals.
 :- import_module libs.options.
 :- import_module ml_backend.add_trail_ops.          % HLDS -> HLDS
 :- import_module ml_backend.add_heap_ops.           % HLDS -> HLDS
@@ -68,36 +73,31 @@
 :- import_module ml_backend.mlds_to_c.              % MLDS -> C
 :- import_module ml_backend.mlds_to_java.           % MLDS -> Java
 :- import_module ml_backend.mlds_to_cs.             % MLDS -> C#
-:- import_module ml_backend.mlds_to_ilasm.          % MLDS -> IL assembler
 :- import_module ml_backend.ml_util.                % MLDS utility predicates
-:- import_module parse_tree.
-:- import_module parse_tree.error_util.
 :- import_module parse_tree.file_names.
 :- import_module top_level.mercury_compile_front_end.
 :- import_module top_level.mercury_compile_llds_back_end.
 
-:- import_module bool.
 :- import_module getopt_io.
-:- import_module list.
 :- import_module pprint.
 :- import_module require.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 mlds_has_main(MLDS) =
-    (
-        Defns = MLDS ^ mlds_defns,
+    ( if
+        Defns = MLDS ^ mlds_proc_defns,
         defns_contain_main(Defns)
-    ->
+    then
         has_main
-    ;
+    else
         no_main
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-mlds_backend(!HLDS, !:MLDS, !DumpInfo, !IO) :-
+mlds_backend(!HLDS, !:MLDS, Specs, !DumpInfo, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_bool_option(Globals, statistics, Stats),
@@ -148,29 +148,14 @@ mlds_backend(!HLDS, !:MLDS, !DumpInfo, !IO) :-
     (
         OptimizeTailCalls = yes,
         maybe_write_string(Verbose, "% Detecting tail calls...\n", !IO),
-        ml_mark_tailcalls(!MLDS, !IO),
+        ml_mark_tailcalls(Globals, !.HLDS, Specs, !MLDS),
         maybe_write_string(Verbose, "% done.\n", !IO)
     ;
-        OptimizeTailCalls = no
+        OptimizeTailCalls = no,
+        Specs = []
     ),
     maybe_report_stats(Stats, !IO),
     maybe_dump_mlds(Globals, !.MLDS, 20, "tailcalls", !IO),
-
-    % Warning about non-tail calls must come after detection of tail calls.
-    globals.lookup_bool_option(Globals, warn_non_tail_recursion,
-        WarnTailCalls),
-    (
-        OptimizeTailCalls = yes,
-        WarnTailCalls = yes
-    ->
-        maybe_write_string(Verbose,
-            "% Warning about non-tail recursive calls...\n", !IO),
-        ml_warn_tailcalls(Globals, !.MLDS, !IO),
-        maybe_write_string(Verbose, "% done.\n", !IO)
-    ;
-        true
-    ),
-    maybe_report_stats(Stats, !IO),
 
     % Run the ml_optimize pass before ml_elim_nested, so that we eliminate
     % as many local variables as possible before the ml_elim_nested
@@ -214,7 +199,6 @@ mlds_backend(!HLDS, !:MLDS, !DumpInfo, !IO) :-
         ; GC = gc_boehm
         ; GC = gc_boehm_debug
         ; GC = gc_hgc
-        ; GC = gc_mps
         )
     ),
     maybe_report_stats(Stats, !IO),
@@ -248,7 +232,7 @@ mlds_backend(!HLDS, !:MLDS, !DumpInfo, !IO) :-
 
     maybe_dump_mlds(Globals, !.MLDS, 99, "final", !IO).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 maybe_mark_static_terms(Verbose, Stats, !HLDS, !IO) :-
     module_info_get_globals(!.HLDS, Globals),
@@ -297,10 +281,8 @@ maybe_add_trail_ops(Verbose, Stats, !HLDS, !IO) :-
             % XXX Currently, we can only generate trail ops inline for
             % the C backends.
             %
-            ( Target = target_il
-            ; Target = target_csharp
+            ( Target = target_csharp
             ; Target = target_java
-            ; Target = target_x86_64
             ; Target = target_erlang
             ),
             GenerateInline = no
@@ -325,27 +307,27 @@ maybe_add_heap_ops(Verbose, Stats, !HLDS, !IO) :-
         SemidetReclaim),
     globals.lookup_bool_option(Globals, reclaim_heap_on_nondet_failure,
         NondetReclaim),
-    (
+    ( if
         gc_is_conservative(GC) = yes
-    ->
+    then
         % We can't do heap reclamation with conservative GC.
         true
-    ;
+    else if
         SemidetReclaim = no,
         NondetReclaim = no
-    ->
+    then
         true
-    ;
+    else if
         SemidetReclaim = yes,
         NondetReclaim = yes
-    ->
+    then
         maybe_write_string(Verbose,
             "% Adding heap reclamation operations...\n", !IO),
         maybe_flush_output(Verbose, !IO),
         process_all_nonimported_procs(update_proc(add_heap_ops), !HLDS),
         maybe_write_string(Verbose, "% done.\n", !IO),
         maybe_report_stats(Stats, !IO)
-    ;
+    else
         Msg = "Sorry, not implemented: `--high-level-code' and just one of " ++
             "`--reclaim-heap-on-semidet-failure' and " ++
             "`--reclaim-heap-on-nondet-failure'. " ++
@@ -365,57 +347,46 @@ mlds_gen_rtti_data(HLDS, !MLDS) :-
     generate_type_class_info_rtti(HLDS, NewTypeClassRtti,
         NewTypeClassInfoRttiData),
     RttiDatas = TypeCtorRtti ++ TypeClassInfoRtti ++ NewTypeClassInfoRttiData,
-    !.MLDS = mlds(ModuleName, ForeignCode, Imports, GlobalData0, Defns,
-        InitPreds, FinalPreds, ExportedEnums),
+    GlobalData0 = !.MLDS ^ mlds_global_defns,
     add_rtti_datas_to_mlds(HLDS, RttiDatas, GlobalData0, GlobalData),
-    !:MLDS = mlds(ModuleName, ForeignCode, Imports, GlobalData, Defns,
-        InitPreds, FinalPreds, ExportedEnums).
+    !MLDS ^ mlds_global_defns := GlobalData.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % The `--high-level-code' MLDS output pass.
 %
 
-mlds_to_high_level_c(Globals, MLDS, !IO) :-
+mlds_to_high_level_c(Globals, MLDS, Succeeded, !IO) :-
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_bool_option(Globals, statistics, Stats),
 
     maybe_write_string(Verbose, "% Converting MLDS to C...\n", !IO),
-    output_c_mlds(MLDS, Globals, "", !IO),
+    output_c_mlds(MLDS, Globals, "", Succeeded, !IO),
     maybe_write_string(Verbose, "% Finished converting MLDS to C.\n", !IO),
     maybe_report_stats(Stats, !IO).
 
-mlds_to_java(HLDS, MLDS, !IO) :-
+mlds_to_java(HLDS, MLDS, Succeeded, !IO) :-
     module_info_get_globals(HLDS, Globals),
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_bool_option(Globals, statistics, Stats),
 
     maybe_write_string(Verbose, "% Converting MLDS to Java...\n", !IO),
-    output_java_mlds(HLDS, MLDS, !IO),
+    output_java_mlds(HLDS, MLDS, Succeeded, !IO),
     maybe_write_string(Verbose, "% Finished converting MLDS to Java.\n", !IO),
     maybe_report_stats(Stats, !IO).
 
-mlds_to_csharp(HLDS, MLDS, !IO) :-
+mlds_to_csharp(HLDS, MLDS, Succeeded, !IO) :-
     module_info_get_globals(HLDS, Globals),
     globals.lookup_bool_option(Globals, verbose, Verbose),
     globals.lookup_bool_option(Globals, statistics, Stats),
 
     maybe_write_string(Verbose, "% Converting MLDS to C#...\n", !IO),
-    output_csharp_mlds(HLDS, MLDS, !IO),
+    output_csharp_mlds(HLDS, MLDS, Succeeded, !IO),
     maybe_write_string(Verbose, "% Finished converting MLDS to C#.\n", !IO),
     maybe_report_stats(Stats, !IO).
 
-mlds_to_il_assembler(Globals, MLDS, !IO) :-
-    globals.lookup_bool_option(Globals, verbose, Verbose),
-    globals.lookup_bool_option(Globals, statistics, Stats),
-
-    maybe_write_string(Verbose, "% Converting MLDS to IL...\n", !IO),
-    output_mlds_via_ilasm(Globals, MLDS, !IO),
-    maybe_write_string(Verbose, "% Finished converting MLDS to IL.\n", !IO),
-    maybe_report_stats(Stats, !IO).
-
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred maybe_dump_mlds(globals::in, mlds::in, int::in, string::in,
     io::di, io::uo) is det.
@@ -426,16 +397,18 @@ maybe_dump_mlds(Globals, MLDS, StageNum, StageName, !IO) :-
     globals.lookup_accumulating_option(Globals, verbose_dump_mlds,
         VerboseDumpStages),
     StageNumStr = stage_num_str(StageNum),
-    ( should_dump_stage(StageNum, StageNumStr, StageName, DumpStages) ->
+    ( if should_dump_stage(StageNum, StageNumStr, StageName, DumpStages) then
         maybe_write_string(Verbose, "% Dumping out MLDS as C...\n", !IO),
         maybe_flush_output(Verbose, !IO),
         DumpSuffix = "_dump." ++ StageNumStr ++ "-" ++ StageName,
-        output_c_mlds(MLDS, Globals, DumpSuffix, !IO),
+        output_c_mlds(MLDS, Globals, DumpSuffix, _Succeeded, !IO),
         maybe_write_string(Verbose, "% done.\n", !IO)
-    ;
+    else
         true
     ),
-    ( should_dump_stage(StageNum, StageNumStr, StageName, VerboseDumpStages) ->
+    ( if
+        should_dump_stage(StageNum, StageNumStr, StageName, VerboseDumpStages)
+    then
         maybe_write_string(Verbose, "% Dumping out raw MLDS...\n", !IO),
         ModuleName = mlds_get_module_name(MLDS),
         module_name_to_file_name(Globals, ModuleName, ".mlds_dump",
@@ -443,7 +416,7 @@ maybe_dump_mlds(Globals, MLDS, StageNum, StageName, !IO) :-
         DumpFile = BaseFileName ++ "." ++ StageNumStr ++ "-" ++ StageName,
         dump_mlds(Globals, DumpFile, MLDS, !IO),
         maybe_write_string(Verbose, "% done.\n", !IO)
-    ;
+    else
         true
     ).
 
@@ -474,6 +447,6 @@ dump_mlds(Globals, DumpFile, MLDS, !IO) :-
         report_error(ErrorMessage, !IO)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module top_level.mercury_compile_mlds_back_end.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

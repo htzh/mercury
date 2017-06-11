@@ -19,7 +19,9 @@
 
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module parse_tree.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
 
@@ -208,10 +210,12 @@
 :- import_module hlds.hlds_out.
 :- import_module hlds.hlds_out.hlds_out_module.
 :- import_module hlds.hlds_out.hlds_out_util.
+:- import_module libs.
 :- import_module libs.file_util.
 :- import_module libs.globals.
 :- import_module libs.options.
-:- import_module parse_tree.mercury_to_mercury.
+:- import_module parse_tree.parse_tree_out_info.
+:- import_module parse_tree.parse_tree_out_inst.
 :- import_module parse_tree.prog_mode.
 :- import_module parse_tree.prog_out.
 :- import_module parse_tree.prog_util.
@@ -230,7 +234,7 @@
 %-----------------------------------------------------------------------------%
 
 process_all_nonimported_preds_errors(Task, !ModuleInfo, !Specs, !IO) :-
-    module_info_get_valid_predids(PredIds, !ModuleInfo),
+    module_info_get_valid_pred_ids(!.ModuleInfo, PredIds),
     list.foldl2(process_nonimported_pred(Task), PredIds, !ModuleInfo, !Specs).
 
 :- pred process_nonimported_pred(update_pred_task::in(update_pred_task),
@@ -239,13 +243,11 @@ process_all_nonimported_preds_errors(Task, !ModuleInfo, !Specs, !IO) :-
 
 process_nonimported_pred(Task, PredId, !ModuleInfo, !Specs) :-
     module_info_pred_info(!.ModuleInfo, PredId, PredInfo0),
-    ( pred_info_is_imported(PredInfo0) ->
+    ( if pred_info_is_imported(PredInfo0) then
         true
-    ;
-        (
-            Task = update_pred_error(Closure),
-            Closure(PredId, !ModuleInfo, PredInfo0, PredInfo, !Specs)
-        ),
+    else
+        Task = update_pred_error(Closure),
+        Closure(PredId, !ModuleInfo, PredInfo0, PredInfo, !Specs),
         module_info_set_pred_info(PredId, PredInfo, !ModuleInfo)
     ).
 
@@ -272,7 +274,7 @@ process_all_nonimported_procs(Task, !ModuleInfo) :-
     process_all_nonimported_procs_update(Task, _, !ModuleInfo).
 
 process_all_nonimported_procs_update(!Task, !ModuleInfo) :-
-    module_info_get_valid_predids(ValidPredIds, !ModuleInfo),
+    module_info_get_valid_pred_ids(!.ModuleInfo, ValidPredIds),
     (
         ( !.Task = update_proc(_)
         ; !.Task = update_proc_ids(_)
@@ -306,18 +308,18 @@ par_process_nonimported_procs_in_preds(_, _, _, [], []).
 par_process_nonimported_procs_in_preds(ModuleInfo, Task, ValidPredIdSet,
         [PredIdInfo0 | PredIdsInfos0], [PredIdInfo | PredIdsInfos]) :-
     PredIdInfo0 = PredId - PredInfo0,
-    (
+    ( if
         set_tree234.contains(ValidPredIdSet, PredId),
         ProcIds = pred_info_non_imported_procids(PredInfo0),
         ProcIds = [_ | _]
-    ->
+    then
         % Potential parallelization site.
         par_process_nonimported_procs(ModuleInfo, Task, PredId, ProcIds,
             PredInfo0, PredInfo),
         PredIdInfo = PredId - PredInfo,
         par_process_nonimported_procs_in_preds(ModuleInfo, Task,
             ValidPredIdSet, PredIdsInfos0, PredIdsInfos)
-    ;
+    else
         PredIdInfo = PredIdInfo0,
         par_process_nonimported_procs_in_preds(ModuleInfo, Task,
             ValidPredIdSet, PredIdsInfos0, PredIdsInfos)
@@ -330,7 +332,7 @@ par_process_nonimported_procs_in_preds(ModuleInfo, Task, ValidPredIdSet,
 par_process_nonimported_procs(_, _, _, [], !PredInfo).
 par_process_nonimported_procs(ModuleInfo, Task, PredId, [ProcId | ProcIds],
         !PredInfo) :-
-    pred_info_get_procedures(!.PredInfo, ProcMap0),
+    pred_info_get_proc_table(!.PredInfo, ProcMap0),
     map.lookup(ProcMap0, ProcId, Proc0),
 
     PredProcId = proc(PredId, ProcId),
@@ -346,7 +348,7 @@ par_process_nonimported_procs(ModuleInfo, Task, PredId, [ProcId | ProcIds],
     ),
 
     map.det_update(ProcId, Proc, ProcMap0, ProcMap),
-    pred_info_set_procedures(ProcMap, !PredInfo),
+    pred_info_set_proc_table(ProcMap, !PredInfo),
 
     par_process_nonimported_procs(ModuleInfo, Task, PredId, ProcIds,
         !PredInfo).
@@ -375,7 +377,7 @@ seq_process_nonimported_procs(PredId, [ProcId | ProcIds], !Task,
         !ModuleInfo) :-
     module_info_get_preds(!.ModuleInfo, Preds0),
     map.lookup(Preds0, PredId, Pred0),
-    pred_info_get_procedures(Pred0, Procs0),
+    pred_info_get_proc_table(Pred0, Procs0),
     map.lookup(Procs0, ProcId, Proc0),
 
     PredProcId = proc(PredId, ProcId),
@@ -400,10 +402,10 @@ seq_process_nonimported_procs(PredId, [ProcId | ProcIds], !Task,
 
     module_info_get_preds(!.ModuleInfo, Preds8),
     map.lookup(Preds8, PredId, Pred8),
-    pred_info_get_procedures(Pred8, Procs8),
+    pred_info_get_proc_table(Pred8, Procs8),
 
     map.det_update(ProcId, Proc, Procs8, Procs),
-    pred_info_set_procedures(Procs, Pred8, Pred),
+    pred_info_set_proc_table(Procs, Pred8, Pred),
     map.det_update(PredId, Pred, Preds8, Preds),
     module_info_set_preds(Preds, !ModuleInfo),
 
@@ -480,9 +482,9 @@ report_pred_proc_id(ModuleInfo, PredId, ProcId, MaybeContext, Context, !IO) :-
     % front by polymorphism.m - we only want the last `PredArity' of them.
     list.length(ArgModes0, NumArgModes),
     NumToDrop = NumArgModes - Arity,
-    ( list.drop(NumToDrop, ArgModes0, ArgModes1) ->
+    ( if list.drop(NumToDrop, ArgModes0, ArgModes1) then
         ArgModes = ArgModes1
-    ;
+    else
         unexpected($module, $pred, "list.drop failed")
     ),
     (
@@ -503,7 +505,8 @@ report_pred_name_mode(pf_predicate, PredName, ArgModes, !IO) :-
         varset.init(InstVarSet),   % XXX inst var names
         io.write_string("(", !IO),
         strip_builtin_qualifiers_from_mode_list(ArgModes, StrippedArgModes),
-        mercury_output_mode_list(StrippedArgModes, InstVarSet, !IO),
+        mercury_output_mode_list(output_debug, InstVarSet, StrippedArgModes,
+            !IO),
         io.write_string(")", !IO)
     ;
         ArgModes = []
@@ -517,13 +520,13 @@ report_pred_name_mode(pf_function, FuncName, ArgModes, !IO) :-
     (
         FuncArgModes = [_ | _],
         io.write_string("(", !IO),
-        mercury_output_mode_list(FuncArgModes, InstVarSet, !IO),
+        mercury_output_mode_list(output_debug, InstVarSet, FuncArgModes, !IO),
         io.write_string(")", !IO)
     ;
         FuncArgModes = []
     ),
     io.write_string(" = ", !IO),
-    mercury_output_mode(FuncRetMode, InstVarSet, !IO).
+    mercury_output_mode(output_debug, InstVarSet, FuncRetMode, !IO).
 
 %-----------------------------------------------------------------------------%
 
@@ -560,14 +563,16 @@ maybe_dump_hlds(HLDS, StageNum, StageName, !DumpInfo, !IO) :-
     globals.lookup_string_option(Globals, dump_hlds_file_suffix,
         UserFileSuffix),
     StageNumStr = stage_num_str(StageNum),
-    ( should_dump_stage(StageNum, StageNumStr, StageName, DumpHLDSStages) ->
+    ( if
+        should_dump_stage(StageNum, StageNumStr, StageName, DumpHLDSStages)
+    then
         module_info_get_dump_hlds_base_file_name(HLDS, BaseFileName),
         DumpFileName = BaseFileName ++ "." ++ StageNumStr ++ "-" ++ StageName
             ++ UserFileSuffix,
-        (
+        ( if
             !.DumpInfo = prev_dumped_hlds(PrevDumpFileName, PrevHLDS),
             HLDS = PrevHLDS
-        ->
+        then
             globals.lookup_bool_option(Globals, dump_same_hlds, DumpSameHLDS),
             (
                 DumpSameHLDS = no,
@@ -601,12 +606,14 @@ maybe_dump_hlds(HLDS, StageNum, StageName, !DumpInfo, !IO) :-
                 ),
                 !:DumpInfo = prev_dumped_hlds(CurDumpFileName, HLDS)
             )
-        ;
+        else
             dump_hlds(DumpFileName, HLDS, !IO),
             CurDumpFileName = DumpFileName,
             !:DumpInfo = prev_dumped_hlds(CurDumpFileName, HLDS)
         )
-    ; should_dump_stage(StageNum, StageNumStr, StageName, DumpTraceStages) ->
+    else if
+        should_dump_stage(StageNum, StageNumStr, StageName, DumpTraceStages)
+    then
         module_info_get_dump_hlds_base_file_name(HLDS, BaseFileName),
         DumpFileName = string.det_remove_suffix(BaseFileName, ".hlds_dump") ++
             ".trace_counts." ++ StageNumStr ++ "-" ++ StageName ++
@@ -625,7 +632,7 @@ maybe_dump_hlds(HLDS, StageNum, StageName, !DumpInfo, !IO) :-
             io.nl(!IO),
             io.flush_output(!IO)
         )
-    ;
+    else
         true
     ).
 

@@ -9,10 +9,12 @@
 % File: lambda.m.
 % Main author: fjh.
 %
-% This module is a pass over the HLDS to deal with lambda expressions.
+% This module does lambda expansion, which means that it replaces each
+% unification with a lambda expression with the construction of a closure
+% whose code address refers to a new predicate that this module creates
+% from that lambda expression.
 %
-% Lambda expressions are converted into separate predicates, so for
-% example we translate
+% For example, we translate
 %
 %   :- pred p(int::in) is det.
 %   p(X) :-
@@ -23,57 +25,62 @@
 %
 % into
 %
+%   :- pred '__LambdaGoal__1'(int::in, int::out) is nondet.
+%   '__LambdaGoal__1'(X, Y) :- q(Y, X).
+%
 %   p(X) :-
 %       V__1 = '__LambdaGoal__1'(X)
 %       solutions(V__1, List),
 %       ...
 %
-%   :- pred '__LambdaGoal__1'(int::in, int::out) is nondet.
-%   '__LambdaGoal__1'(X, Y) :- q(Y, X).
 %
-%
-% Note that the mode checker requires that a lambda expression
-% not bind any of the non-local variables such as `X' in the above
-% example.
+% Note that the mode checker requires that lambda expressions
+% not bind any of their non-local variables, such as `X' in the above example.
 %
 % Similarly, a lambda expression may not bind any of the type_infos for
-% those variables; that is, none of the non-local variables
-% should be existentially typed (from the perspective of the lambda goal).
-% Now that we run the polymorphism.m pass before mode checking, this is
-% also checked by mode analysis.
+% those variables; that is, none of the non-local variables should be
+% existentially typed (from the perspective of the lambda goal).
+% Now that we run the polymorphism.m pass before mode checking,
+% and that this is also checked by mode analysis.
 %
 % It might be OK to allow the parameters of the lambda goal to be
 % existentially typed, but currently that is not supported.
 % One difficulty is that it's hard to determine here which type variables
-% should be existentially quantified.  The information is readily
+% should be existentially quantified. The information is readily
 % available during type inference, and really type inference should save
 % that information in a field in the lambda_goal struct, but currently it
 % doesn't; it saves the head_type_params field in the pred_info, which
-% tells us which type variables where produced by the body, but for
-% any given lambda goal we don't know whether the type variable was
+% tells us which type variables were produced by the body, but for
+% any given lambda goal, we don't know whether the type variable was
 % produced by something outside the lambda goal or by something inside
 % the lambda goal (only in the latter case should it be existentially
 % quantified).
+%
 % The other difficulty is that taking the address of a predicate with an
-% existential type would require second-order polymorphism:  for a predicate
+% existential type would require second-order polymorphism: for a predicate
 % declared as `:- some [T] pred p(int, T)', the expression `p' must have
 % type `some [T] pred(int, T)', which is quite a different thing to saying
 % that there is some type `T' for which `p' has type `pred(int, T)' --
 % we don't know what `T' is until the predicate is called, and it might
 % be different for each call.
-% Currently we don't support second-order polymorphism, so we
-% don't support existentially typed lambda expressions either.
+%
+% Currently we don't support second-order polymorphism, so we can't support
+% existentially typed lambda expressions either.
 %
 %-----------------------------------------------------------------------------%
 
 :- module transform_hlds.lambda.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_rtti.
+:- import_module hlds.vartypes.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module parse_tree.set_of_var.
 
@@ -89,7 +96,7 @@
 
 %-----------------------------------------------------------------------------%
 
-% The following are exported for float_reg.m
+% The following are exported for float_reg.m.
 
 :- type lambda_info.
 
@@ -98,7 +105,7 @@
     ;       not_reg_wrapper_proc.
 
 :- pred init_lambda_info(prog_varset::in, vartypes::in, tvarset::in,
-    inst_varset::in, rtti_varmaps::in, bool::in, pred_info::in,
+    inst_varset::in, rtti_varmaps::in, has_parallel_conj::in, pred_info::in,
     module_info::in, lambda_info::out) is det.
 
 :- pred lambda_info_get_varset(lambda_info::in, prog_varset::out) is det.
@@ -132,15 +139,17 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
+:- import_module check_hlds.type_util.
 :- import_module hlds.code_model.
 :- import_module hlds.goal_util.
-:- import_module hlds.hlds_data.
 :- import_module hlds.pred_table.
 :- import_module hlds.quantification.
+:- import_module hlds.status.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
-:- import_module mdbcomp.prim_data.
 :- import_module parse_tree.prog_mode.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.prog_util.
@@ -165,13 +174,15 @@
                 li_tvarset              :: tvarset,
                 li_inst_varset          :: inst_varset,
                 li_rtti_varmaps         :: rtti_varmaps,
-                li_has_parallel_conj    :: bool,
+                li_has_parallel_conj    :: has_parallel_conj,
                 li_pred_info            :: pred_info,
                 li_module_info          :: module_info,
-                % True iff we need to recompute the nonlocals.
+
                 li_recompute_nonlocals  :: bool,
-                % True if we expanded some lambda expressions.
+                % True iff we need to recompute the nonlocals.
+
                 li_have_expanded_lambda :: bool
+                % True if we expanded some lambda expressions.
             ).
 
 init_lambda_info(VarSet, VarTypes, TypeVarSet, InstVarSet, RttiVarMaps,
@@ -202,11 +213,11 @@ lambda_info_set_recompute_nonlocals(Recompute, !Info) :-
 
 %-----------------------------------------------------------------------------%
 %
-% This whole section just traverses the module structure
+% This whole section just traverses the module structure.
 %
 
 expand_lambdas_in_module(!ModuleInfo) :-
-    module_info_get_valid_predids(PredIds, !ModuleInfo),
+    module_info_get_valid_pred_ids(!.ModuleInfo, PredIds),
     list.foldl(expand_lambdas_in_pred, PredIds, !ModuleInfo),
     % Need update the dependency graph to include the lambda predicates.
     module_info_clobber_dependency_info(!ModuleInfo).
@@ -222,15 +233,15 @@ expand_lambdas_in_pred(PredId, !ModuleInfo) :-
 expand_lambdas_in_proc(PredId, ProcId, !ModuleInfo) :-
     module_info_get_preds(!.ModuleInfo, PredTable0),
     map.lookup(PredTable0, PredId, PredInfo0),
-    pred_info_get_procedures(PredInfo0, ProcTable0),
+    pred_info_get_proc_table(PredInfo0, ProcTable0),
     map.lookup(ProcTable0, ProcId, ProcInfo0),
 
     expand_lambdas_in_proc_2(ProcInfo0, ProcInfo, PredInfo0, PredInfo1,
         !ModuleInfo),
 
-    pred_info_get_procedures(PredInfo1, ProcTable1),
+    pred_info_get_proc_table(PredInfo1, ProcTable1),
     map.det_update(ProcId, ProcInfo, ProcTable1, ProcTable),
-    pred_info_set_procedures(ProcTable, PredInfo1, PredInfo),
+    pred_info_set_proc_table(ProcTable, PredInfo1, PredInfo),
     module_info_get_preds(!.ModuleInfo, PredTable1),
     map.det_update(PredId, PredInfo, PredTable1, PredTable),
     module_info_set_preds(PredTable, !ModuleInfo).
@@ -322,16 +333,16 @@ expand_lambdas_in_goal(Goal0, Goal, !Info) :-
         GoalExpr = negation(SubGoal)
     ;
         GoalExpr0 = scope(Reason, SubGoal0),
-        (
+        ( if
             Reason = from_ground_term(_, FGT),
             ( FGT = from_ground_term_construct
             ; FGT = from_ground_term_deconstruct
             )
-        ->
+        then
             % If the scope had any rhs_lambda_goals, modes.m wouldn't have
             % left its kind field as from_ground_term_(de)construct.
             GoalExpr = GoalExpr0
-        ;
+        else
             expand_lambdas_in_goal(SubGoal0, SubGoal, !Info),
             GoalExpr = scope(Reason, SubGoal)
         )
@@ -409,9 +420,11 @@ expand_lambdas_in_unify_goal(LHS, RHS0, Mode, Unification0, Context, GoalExpr,
         ( RHS0 = rhs_var(_)
         ; RHS0 = rhs_functor(_, _, _)
         ),
-        % Ordinary unifications are left unchanged.
+        % We leave ordinary unifications unchanged.
         GoalExpr = unify(LHS, RHS0, Mode, Unification0, Context)
     ).
+
+%-----------------------------------------------------------------------------%
 
 expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
         Vars, Modes, Detism, OrigNonLocals0, LambdaGoal, Unification0,
@@ -441,9 +454,10 @@ expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
         LambdaNonLocals, ExtraTypeInfos),
 
     (
-        Unification0 = construct(Var, _, OrigNonLocals1, UniModes0, _, _, _),
+        Unification0 = construct(Var, _, OrigNonLocals1, ArgUnifyModes0,
+            _, _, _),
         % We used to use OrigVars = OrigNonLocals0 (from rhs_lambda_goal) but
-        % the order of the variables does not necessarily match UniModes0.
+        % the order of the variables does not necessarily match ArgUnifyModes0.
         OrigVars = OrigNonLocals1,
         trace [compiletime(flag("lambda_var_order"))] (
             list.sort(OrigNonLocals0, SortedOrigNonLocals0),
@@ -467,9 +481,9 @@ expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
     set_of_var.difference(ExtraTypeInfos, NonLocals1, NewTypeInfos),
     set_of_var.union(NonLocals1, NewTypeInfos, NonLocals),
 
-    ( set_of_var.is_empty(NewTypeInfos) ->
+    ( if set_of_var.is_empty(NewTypeInfos) then
         MustRecomputeNonLocals = MustRecomputeNonLocals0
-    ;
+    else
         % If we added variables to the nonlocals of the lambda goal, then
         % we must recompute the nonlocals for the procedure that contains it.
         MustRecomputeNonLocals = yes
@@ -477,7 +491,7 @@ expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
 
     set_of_var.to_sorted_list(NonLocals, ArgVars1),
 
-    (
+    ( if
         % Optimize a special case: replace
         %   `(pred(Y1, Y2, ...) is Detism :-
         %       p(X1, X2, ..., Y1, Y2, ...))'
@@ -497,7 +511,7 @@ expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
 
         % Check that none of the variables that we're trying to use
         % as curried arguments are lambda-bound variables.
-        \+ (
+        not (
             list.member(InitialVar, InitialVars),
             list.member(InitialVar, Vars)
         ),
@@ -515,10 +529,8 @@ expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
         globals.lookup_bool_option(Globals, highlevel_code, HighLevelCode),
         (
             ( Target = target_c
-            ; Target = target_il
             ; Target = target_csharp
             ; Target = target_java
-            ; Target = target_x86_64
             ),
             (
                 HighLevelCode = no,
@@ -548,18 +560,18 @@ expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
         =>
             mode_is_input(ModuleInfo0, Mode)
         )
-    ->
+    then
         ArgVars = InitialVars,
         PredId = PredId0,
         ProcId = ProcId0,
-        mode_util.modes_to_uni_modes(ModuleInfo0,
-            CurriedArgModes, CurriedArgModes, UniModes),
+        modes_to_unify_modes(ModuleInfo0,
+            CurriedArgModes, CurriedArgModes, ArgUnifyModes),
         % We must mark the procedure as having had its address taken.
         proc_info_set_address_taken(address_is_taken,
             Call_ProcInfo, Call_NewProcInfo),
         module_info_set_pred_proc_info(PredId, ProcId,
             Call_PredInfo, Call_NewProcInfo, ModuleInfo0, ModuleInfo)
-    ;
+    else
         % Prepare to create a new predicate for the lambda expression:
         % work out the arguments, module name, predicate name, arity,
         % arg types, determinism, context, status, etc. for the new predicate.
@@ -582,13 +594,14 @@ expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
         % Existentially typed lambda expressions are not yet supported
         % (see the documentation at top of this file).
         ExistQVars = [],
-        uni_modes_to_modes(UniModes0, OrigArgModes),
+        unify_modes_to_modes(ArgUnifyModes0, OrigArgModes),
 
         % We have to jump through hoops to work out the mode of the lambda
         % predicate. For introduced type_info arguments, we use the mode "in".
-        % For the original non-local vars, we use the modes from `UniModes1'.
-        % For the lambda var arguments at the end, we use the mode in the
-        % lambda expression.
+        % For the original non-local vars, we use the modes from
+        % `ArgUnifyModes0'. For the lambda var arguments at the end,
+        % we use the mode in the lambda expression.
+        % XXX The above comment has probably suffered bit-rot.
 
         list.length(ArgVars, NumArgVars),
         in_mode(In),
@@ -599,58 +612,62 @@ expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
         map.overlay(ArgModesMap, OrigArgModesMap, ArgModesMap1),
         map.apply_to_list(ArgVars, ArgModesMap1, ArgModes1),
 
-        % Recompute the uni_modes.
-        modes_to_uni_modes(ModuleInfo1, ArgModes1, ArgModes1, UniModes),
+        % Recompute the unify_modes.
+        modes_to_unify_modes(ModuleInfo1, ArgModes1, ArgModes1, ArgUnifyModes),
 
         list.append(ArgModes1, Modes, AllArgModes),
         lookup_var_types(VarTypes, AllArgVars, ArgTypes),
         list.foldl_corresponding(check_lambda_arg_type_and_mode(ModuleInfo1),
             ArgTypes, AllArgModes, 0, _),
 
-        purity_to_markers(Purity, LambdaMarkers),
+        purity_to_markers(Purity, PurityMarkers),
+        init_markers(LambdaMarkers0),
+        add_markers(PurityMarkers, LambdaMarkers0, LambdaMarkers),
 
         % Now construct the proc_info and pred_info for the new single-mode
         % predicate, using the information computed above.
         map.init(VarNameRemap),
         restrict_var_maps(AllArgVars, LambdaGoal, VarSet, LambdaVarSet,
             VarTypes, LambdaVarTypes, RttiVarMaps, LambdaRttiVarMaps),
-        proc_info_create(LambdaContext, LambdaVarSet, LambdaVarTypes,
-            AllArgVars, InstVarSet, AllArgModes, detism_decl_explicit, Detism,
-            LambdaGoal, LambdaRttiVarMaps, address_is_taken, VarNameRemap,
-            ProcInfo0),
+        some [!ProcInfo] (
+            % If the original procedure contained parallel conjunctions,
+            % then the one we are creating here may have them as well.
+            % If it does not, then the value in the proc_info of the lambda
+            % predicate will be an overconservative estimate.
+            ItemNumber = -1,
+            proc_info_create(LambdaContext, ItemNumber,
+                LambdaVarSet, LambdaVarTypes, AllArgVars,
+                InstVarSet, AllArgModes, detism_decl_explicit, Detism,
+                LambdaGoal, LambdaRttiVarMaps, address_is_taken,
+                HasParallelConj, VarNameRemap, !:ProcInfo),
 
-        % The debugger ignores unnamed variables.
-        ensure_all_headvars_are_named(ProcInfo0, ProcInfo1),
+            % The debugger ignores unnamed variables.
+            ensure_all_headvars_are_named(!ProcInfo),
 
-        % If the original procedure contained parallel conjunctions, then the
-        % one we are creating here may have them as well. If it does not, then
-        % the value in the proc_info of the lambda predicate will be an
-        % overconservative estimate.
-        proc_info_set_has_parallel_conj(HasParallelConj, ProcInfo1, ProcInfo2),
-
-        % If we previously already needed to recompute the nonlocals,
-        % then we had better apply that recomputation for the procedure
-        % that we just created.
-        (
-            MustRecomputeNonLocals0 = yes,
-            requantify_proc_general(ordinary_nonlocals_maybe_lambda,
-                ProcInfo2, ProcInfo3)
-        ;
-            MustRecomputeNonLocals0 = no,
-            ProcInfo3 = ProcInfo2
-        ),
-        (
-            RegWrapperProc = reg_wrapper_proc(RegR_HeadVars),
-            proc_info_set_reg_r_headvars(RegR_HeadVars, ProcInfo3, ProcInfo)
-        ;
-            RegWrapperProc = not_reg_wrapper_proc,
-            ProcInfo = ProcInfo3
+            % If we previously already needed to recompute the nonlocals,
+            % then we had better apply that recomputation for the procedure
+            % that we just created.
+            (
+                MustRecomputeNonLocals0 = yes,
+                requantify_proc_general(ordinary_nonlocals_maybe_lambda,
+                    !ProcInfo)
+            ;
+                MustRecomputeNonLocals0 = no
+            ),
+            (
+                RegWrapperProc = reg_wrapper_proc(RegR_HeadVars),
+                proc_info_set_reg_r_headvars(RegR_HeadVars, !ProcInfo)
+            ;
+                RegWrapperProc = not_reg_wrapper_proc
+            ),
+            ProcInfo = !.ProcInfo
         ),
         set.init(Assertions),
         pred_info_create(ModuleName, PredName, PredOrFunc, LambdaContext,
-            origin_lambda(OrigFile, OrigLine, LambdaCount), status_local,
-            LambdaMarkers, ArgTypes, TVarSet, ExistQVars, Constraints,
-            Assertions, VarNameRemap, ProcInfo, ProcId, PredInfo),
+            origin_lambda(OrigFile, OrigLine, LambdaCount),
+            pred_status(status_local), LambdaMarkers, ArgTypes, TVarSet,
+            ExistQVars, Constraints, Assertions, VarNameRemap,
+            ProcInfo, ProcId, PredInfo),
 
         % Save the new predicate in the predicate table.
         module_info_get_predicate_table(ModuleInfo1, PredicateTable0),
@@ -661,9 +678,9 @@ expand_lambda(Purity, _Groundness, PredOrFunc, EvalMethod, RegWrapperProc,
     ),
     ShroudedPredProcId = shroud_pred_proc_id(proc(PredId, ProcId)),
     ConsId = closure_cons(ShroudedPredProcId, EvalMethod),
-    Functor = rhs_functor(ConsId, no, ArgVars),
+    Functor = rhs_functor(ConsId, is_not_exist_constr, ArgVars),
 
-    Unification = construct(Var, ConsId, ArgVars, UniModes,
+    Unification = construct(Var, ConsId, ArgVars, ArgUnifyModes,
         construct_dynamically, cell_is_unique, no_construct_sub_info),
     HaveExpandedLambdas = yes,
     LambdaInfo = lambda_info(VarSet, VarTypes, TVarSet,
@@ -684,18 +701,18 @@ constraint_contains_vars(LambdaVars, ClassConstraint) :-
     set.subset(ConstraintVarsSet, LambdaVarsSet).
 
     % This predicate works out the modes of the original non-local variables
-    % of a lambda expression based on the list of uni_mode in the unify_info
+    % of a lambda expression based on the list of unify_mode in the unify_info
     % for the lambda unification.
     %
-:- pred uni_modes_to_modes(list(uni_mode)::in, list(mer_mode)::out) is det.
+:- pred unify_modes_to_modes(list(unify_mode)::in, list(mer_mode)::out) is det.
 
-uni_modes_to_modes([], []).
-uni_modes_to_modes([UniMode | UniModes], [Mode | Modes]) :-
-    UniMode = ((_Initial0 - Initial1) -> (_Final0 - _Final1)),
-    Mode = (Initial1 -> Initial1),
-    uni_modes_to_modes(UniModes, Modes).
+unify_modes_to_modes([], []).
+unify_modes_to_modes([UnifyMode | UnifyModes], [Mode | Modes]) :-
+    UnifyMode = unify_modes_lhs_rhs(_, from_to_insts(RHSInit, _RHSFinal)),
+    Mode = from_to_mode(RHSInit, RHSInit),
+    unify_modes_to_modes(UnifyModes, Modes).
 
-    % Make sure the arguments and modes are not misordered.  An obvious
+    % Make sure the arguments and modes are not misordered. An obvious
     % indicator is if a non-higher order argument is paired a higher order
     % inst.
     %
@@ -704,14 +721,14 @@ uni_modes_to_modes([UniMode | UniModes], [Mode | Modes]) :-
 
 check_lambda_arg_type_and_mode(ModuleInfo, Type, Mode, X, X) :-
     Inst = mode_get_initial_inst(ModuleInfo, Mode),
-    ( Inst = ground(_, higher_order(_)) ->
-        ( type_is_higher_order(Type) ->
+    ( if Inst = ground(_, higher_order(_)) then
+        ( if type_is_higher_order(Type) then
             true
-        ;
+        else
             unexpected($module, $pred,
                 "non-higher order argument with higher order inst")
         )
-    ;
+    else
         true
     ).
 
@@ -781,19 +798,17 @@ find_used_vars_in_goal(Goal, !VarUses) :-
         mark_var_as_used(LHSVar, !VarUses),
         (
             Unif = construct(_, _, _, _, CellToReuse, _, _),
-            ( CellToReuse = reuse_cell(cell_to_reuse(ReuseVar, _, _)) ->
+            ( if CellToReuse = reuse_cell(cell_to_reuse(ReuseVar, _, _)) then
                 mark_var_as_used(ReuseVar, !VarUses)
-            ;
+            else
                 true
             )
         ;
-            Unif = deconstruct(_, _, _, _, _, _)
-        ;
-            Unif = assign(_, _)
-        ;
-            Unif = simple_test(_, _)
-        ;
-            Unif = complicated_unify(_, _, _)
+            ( Unif = deconstruct(_, _, _, _, _, _)
+            ; Unif = assign(_, _)
+            ; Unif = simple_test(_, _)
+            ; Unif = complicated_unify(_, _, _)
+            )
         ),
         (
             RHS = rhs_var(RHSVar),
@@ -850,7 +865,8 @@ find_used_vars_in_goal(Goal, !VarUses) :-
             mark_var_as_used(LCVar, !VarUses),
             mark_var_as_used(LCSVar, !VarUses)
         ;
-            ( Reason = promise_purity(_)
+            ( Reason = disable_warnings(_, _)
+            ; Reason = promise_purity(_)
             ; Reason = barrier(_)
             ; Reason = commit(_)
             ; Reason = trace_goal(_, _, _, _, _)
@@ -859,6 +875,7 @@ find_used_vars_in_goal(Goal, !VarUses) :-
         ;
             ( Reason = require_detism(_)
             ; Reason = require_complete_switch(_)
+            ; Reason = require_switch_arms_detism(_, _)
             ),
             % These scopes should have been deleted by now.
             unexpected($module, $pred, "unexpected scope")

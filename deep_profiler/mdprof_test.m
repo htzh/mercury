@@ -1,29 +1,29 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2002-2008, 2010-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: mdprof_test.m.
 % Author: zs.
 %
 % This file contains a tool for testing the behavior of the deep profiler.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdprof_test.
 :- interface.
 
 :- import_module io.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred main(io::di, io::uo) is cc_multi.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -46,7 +46,7 @@
 :- import_module require.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 main(!IO) :-
     io.progname_base("mdprof_test", ProgName, !IO),
@@ -70,10 +70,10 @@ main(!IO) :-
         ;
             Version = no
         ),
-        (
+        ( if
             Help = no,
             Version = no
-        ->
+        then
             (
                 Verify = no,
                 main2(ProgName, Args, Options, !IO)
@@ -81,7 +81,7 @@ main(!IO) :-
                 Verify = yes,
                 verify_profile(ProgName, Args, Options, !IO)
             )
-        ;
+        else
             true
         )
     ;
@@ -91,13 +91,13 @@ main(!IO) :-
             [s(ProgName), s(Msg)], !IO)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred main2(string::in, list(string)::in, option_table::in,
     io::di, io::uo) is cc_multi.
 
 main2(ProgName, Args, Options, !IO) :-
-    ( Args = [FileName] ->
+    ( if Args = [FileName] then
         lookup_bool_option(Options, canonical_clique, Canonical),
         lookup_bool_option(Options, verbose, Verbose),
         lookup_accumulating_option(Options, dump, DumpStages),
@@ -130,13 +130,13 @@ main2(ProgName, Args, Options, !IO) :-
             io.format("%s: error reading %s: %s\n",
                 [s(ProgName), s(FileName), s(Error)], !IO)
         )
-    ;
+    else
         io.set_exit_status(1, !IO),
         write_help_message(ProgName, !IO)
     ).
 
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Verification mode
 %
@@ -177,7 +177,7 @@ verify_profile_2(ProgName, Options, FileName, !IO) :-
             [s(ProgName), s(FileName), s(Error)], !IO)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred write_version_message(string::in, io::di, io::uo) is det.
 
@@ -214,7 +214,7 @@ write_help_message(ProgName) -->
         "\t\t\tRun the recursion types histogram query\n").
     % --canonical-clique is not documented because it is not yet supported
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred test_server(preferences::in, deep::in,
     option_table::in, io::di, io::uo) is cc_multi.
@@ -264,11 +264,11 @@ test_server(Pref, Deep, Options, !IO) :-
     deep::in, io::di, io::uo) is cc_multi.
 
 test_cliques(Cur, Max, Options, Pref, Deep, !IO) :-
-    ( Cur =< Max ->
-        try_exec(deep_cmd_clique(clique_ptr(Cur)), Pref, Deep, HTML, !IO),
+    ( if Cur =< Max then
+        try_exec(deep_cmd_clique(clique_ptr(Cur)), Pref, Deep, HTML),
         write_test_html(Options, "clique", Cur, HTML, !IO),
         test_cliques(Cur + 1, Max, Options, Pref, Deep, !IO)
-    ;
+    else
         true
     ).
 
@@ -276,11 +276,11 @@ test_cliques(Cur, Max, Options, Pref, Deep, !IO) :-
     deep::in, io::di, io::uo) is cc_multi.
 
 test_procs(Cur, Max, Options, Pref, Deep, !IO) :-
-    ( Cur =< Max ->
-        try_exec(deep_cmd_proc(proc_static_ptr(Cur)), Pref, Deep, HTML, !IO),
+    ( if Cur =< Max then
+        try_exec(deep_cmd_proc(proc_static_ptr(Cur)), Pref, Deep, HTML),
         write_test_html(Options, "proc", Cur, HTML, !IO),
         test_procs(Cur + 1, Max, Options, Pref, Deep, !IO)
-    ;
+    else
         true
     ).
 
@@ -288,12 +288,12 @@ test_procs(Cur, Max, Options, Pref, Deep, !IO) :-
     deep::in, option_table::in, io::di, io::uo) is cc_multi.
 
 test_procrep_static_coverages(Cur, Max, Pref, Deep, Options, !IO) :-
-    ( Cur =< Max ->
+    ( if Cur =< Max then
         try_exec(deep_cmd_static_procrep_coverage(proc_static_ptr(Cur)), Pref,
-            Deep, HTML, !IO),
+            Deep, HTML),
         write_test_html(Options, "procrep_dynamic_coverage", Cur, HTML, !IO),
         test_procrep_static_coverages(Cur + 1, Max, Pref, Deep, Options, !IO)
-    ;
+    else
         true
     ).
 
@@ -301,12 +301,12 @@ test_procrep_static_coverages(Cur, Max, Pref, Deep, Options, !IO) :-
     deep::in, option_table::in, io::di, io::uo) is cc_multi.
 
 test_procrep_dynamic_coverages(Cur, Max, Pref, Deep, Options, !IO) :-
-    ( Cur =< Max ->
+    ( if Cur =< Max then
         try_exec(deep_cmd_dynamic_procrep_coverage(proc_dynamic_ptr(Cur)),
-            Pref, Deep, HTML, !IO),
+            Pref, Deep, HTML),
         write_test_html(Options, "procrep_static_coverage", Cur, HTML, !IO),
         test_procrep_dynamic_coverages(Cur + 1, Max, Pref, Deep, Options, !IO)
-    ;
+    else
         true
     ).
 
@@ -315,7 +315,7 @@ test_procrep_dynamic_coverages(Cur, Max, Pref, Deep, Options, !IO) :-
 
 test_recursion_types_histogram(Pref, Deep, Options, !IO) :-
     promise_equivalent_solutions [!:IO] (
-        try_exec(deep_cmd_recursion_types_frequency, Pref, Deep, HTML, !IO),
+        try_exec(deep_cmd_recursion_types_frequency, Pref, Deep, HTML),
         write_test_html(Options, "recursion_types_histogram", 1, HTML, !IO)
     ).
 
@@ -338,11 +338,11 @@ write_test_html(Options, BaseName, Num, HTML, !IO) :-
     lookup_string_option(Options, test_dir, DirName),
     string.format("%s/%s_%04d",
         [s(DirName), s(BaseName), i(Bunch)], BunchName),
-    ( (Num - 1) rem 1000 = 0 ->
+    ( if (Num - 1) rem 1000 = 0 then
         string.format("test -d %s || mkdir -p %s",
             [s(BunchName), s(BunchName)], Cmd),
         io.call_system(Cmd, _, !IO)
-    ;
+    else
         true
     ),
     string.format("%s/%s_%06d.html",
@@ -366,7 +366,7 @@ write_test_html(Options, BaseName, Num, HTML, !IO) :-
         error(ErrMsg)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type option
     --->    canonical_clique
@@ -426,6 +426,6 @@ defaults(static_procrep_coverage,   bool(no)).
 defaults(dynamic_procrep_coverage,  bool(no)).
 defaults(recursion_types_histogram, bool(no)).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module mdprof_test.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

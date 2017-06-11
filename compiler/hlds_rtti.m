@@ -19,7 +19,11 @@
 
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
+:- import_module hlds.vartypes.
+:- import_module mdbcomp.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module parse_tree.set_of_var.
 
@@ -48,7 +52,7 @@
                 rpl_proc_id                 ::  proc_id,
                 rpl_proc_headvars           ::  assoc_list(prog_var,
                                                 prog_var_name),
-                rpl_proc_arg_modes          ::  list(arg_mode),
+                rpl_proc_top_modes          ::  list(top_functor_mode),
                 rpl_proc_interface_detism   ::  determinism,
 
                 % The following booleans hold values computed from the
@@ -112,7 +116,7 @@
                 % The universal constraints on the instance declaration.
                 list(prog_constraint),
 
-                % The contraints on the method's type declaration in the
+                % The constraints on the method's type declaration in the
                 % `:- typeclass' declaration.
                 prog_constraints
             ).
@@ -331,6 +335,7 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module parse_tree.prog_type.
 :- import_module parse_tree.prog_type_subst.
@@ -357,30 +362,34 @@ make_rtti_proc_label(ModuleInfo, PredId, ProcId) = ProcLabel :-
     proc_info_get_headvars(ProcInfo, ProcHeadVars),
     proc_info_get_argmodes(ProcInfo, ProcModes),
     proc_info_interface_determinism(ProcInfo, ProcDetism),
-    modes_to_arg_modes(ModuleInfo, ProcModes, ArgTypes, ProcArgModes),
-    PredIsImported = (pred_info_is_imported(PredInfo) -> yes ; no),
-    PredIsPseudoImp = (pred_info_is_pseudo_imported(PredInfo) -> yes ; no),
-    ProcIsExported = (procedure_is_exported(ModuleInfo, PredInfo, ProcId)
-        -> yes ; no),
+    modes_to_top_functor_modes(ModuleInfo, ProcModes, ArgTypes, ProcTopModes),
+    PredIsImported =
+        (if pred_info_is_imported(PredInfo) then yes else no),
+    PredIsPseudoImp =
+        (if pred_info_is_pseudo_imported(PredInfo) then yes else no),
+    ProcIsExported =
+        (if procedure_is_exported(ModuleInfo, PredInfo, ProcId)
+            then yes else no),
     pred_info_get_origin(PredInfo, Origin),
-    ProcHeadVarsWithNames = list.map((func(Var) = Var - Name :-
+    ProcHeadVarsWithNames = list.map(
+        (func(Var) = Var - Name :-
             Name = varset.lookup_name(ProcVarSet, Var)
         ), ProcHeadVars),
-    (
+    ( if
         (
             PredIsImported = yes
         ;
             PredIsPseudoImp = yes,
             hlds_pred.in_in_unification_proc_id(ProcId)
         )
-    ->
+    then
         ProcIsImported = yes
-    ;
+    else
         ProcIsImported = no
     ),
     ProcLabel = rtti_proc_label(PredOrFunc, ThisModule, PredModule,
         PredName, Arity, ArgTypes, PredId, ProcId,
-        ProcHeadVarsWithNames, ProcArgModes, ProcDetism,
+        ProcHeadVarsWithNames, ProcTopModes, ProcDetism,
         PredIsImported, PredIsPseudoImp, Origin,
         ProcIsExported, ProcIsImported).
 
@@ -577,11 +586,15 @@ rtti_search_typeclass_info_var(RttiVarMaps, Constraint, ProgVar) :-
     map.search(RttiVarMaps ^ rv_tci_varmap, Constraint, ProgVar).
 
 rtti_varmaps_var_info(RttiVarMaps, Var, VarInfo) :-
-    ( map.search(RttiVarMaps ^ rv_ti_type_map, Var, Type) ->
+    ( if
+        map.search(RttiVarMaps ^ rv_ti_type_map, Var, Type)
+    then
         VarInfo = type_info_var(Type)
-    ; map.search(RttiVarMaps ^ rv_tci_constraint_map, Var, Constraint) ->
+    else if
+        map.search(RttiVarMaps ^ rv_tci_constraint_map, Var, Constraint)
+    then
         VarInfo = typeclass_info_var(Constraint)
-    ;
+    else
         VarInfo = non_rtti_var
     ).
 
@@ -602,9 +615,9 @@ rtti_set_type_info_locn(TVar, Locn, !RttiVarMaps) :-
 
 maybe_check_type_info_var(type_info(Var), TVar, !RttiVarMaps) :-
     map.lookup(!.RttiVarMaps ^ rv_ti_type_map, Var, Type),
-    ( Type = type_variable(TVar, _) ->
+    ( if Type = type_variable(TVar, _) then
         true
-    ;
+    else
         unexpected($module, $pred, "inconsistent info in rtti_varmaps")
     ).
 maybe_check_type_info_var(typeclass_info(_, _), _, !RttiVarMaps).
@@ -687,14 +700,14 @@ rtti_varmaps_rtti_prog_vars(RttiVarMaps, Vars) :-
     list.append(TIVars, TCIVars, Vars).
 
 apply_substitutions_to_rtti_varmaps(TRenaming, TSubst, Subst, !RttiVarMaps) :-
-    (
+    ( if
         % Optimize the simple case.
         map.is_empty(Subst),
         map.is_empty(TSubst),
         map.is_empty(TRenaming)
-    ->
+    then
         true
-    ;
+    else
         !.RttiVarMaps = rtti_varmaps(TCIMap0, TIMap0, TypeMap0,
             ConstraintMap0),
         map.foldl(apply_substs_to_tci_map(TRenaming, TSubst, Subst),
@@ -712,9 +725,9 @@ apply_substitutions_to_rtti_varmaps(TRenaming, TSubst, Subst, !RttiVarMaps) :-
     prog_var::in, prog_var::out) is det.
 
 apply_subst_to_prog_var(Subst, Var0, Var) :-
-    ( map.search(Subst, Var0, Var1) ->
+    ( if map.search(Subst, Var0, Var1) then
         Var = Var1
-    ;
+    else
         Var = Var0
     ).
 
@@ -759,11 +772,10 @@ apply_substs_to_ti_map(TRenaming, TSubst, Subst, TVar, Locn, !Map) :-
         ( NewType = builtin_type(_)
         ; NewType = defined_type(_, _, _)
         ; NewType = tuple_type(_, _)
-        ; NewType = higher_order_type(_, _, _, _)
+        ; NewType = higher_order_type(_, _, _, _, _)
         ; NewType = apply_n_type(_, _, _)
         ; NewType = kinded_type(_, _)
-        ),
-        true
+        )
     ).
 
 :- pred apply_substs_to_type_map(tvar_renaming::in, tsubst::in,
@@ -774,16 +786,16 @@ apply_substs_to_type_map(TRenaming, TSubst, Subst, Var0, Type0, !Map) :-
     apply_variable_renaming_to_type(TRenaming, Type0, Type1),
     apply_rec_subst_to_type(TSubst, Type1, Type),
     apply_subst_to_prog_var(Subst, Var0, Var),
-    ( map.search(!.Map, Var, ExistingType) ->
-        ( Type = ExistingType ->
+    ( if map.search(!.Map, Var, ExistingType) then
+        ( if Type = ExistingType then
             true
-        ;
+        else
             unexpected($module, $pred,
                 string.format("inconsistent type_infos: "
                     ++ " Type: %s ExistingType: %s",
                     [s(string(Type)), s(string(ExistingType))]))
         )
-    ;
+    else
         map.det_insert(Var, Type, !Map)
     ).
 
@@ -798,13 +810,13 @@ apply_substs_to_constraint_map(TRenaming, TSubst, Subst, Var0, Constraint0,
         Constraint1),
     apply_rec_subst_to_prog_constraint(TSubst, Constraint1, Constraint),
     apply_subst_to_prog_var(Subst, Var0, Var),
-    ( map.search(!.Map, Var, ExistingConstraint) ->
-        ( Constraint = ExistingConstraint ->
+    ( if map.search(!.Map, Var, ExistingConstraint) then
+        ( if Constraint = ExistingConstraint then
             true
-        ;
+        else
             unexpected($module, $pred, "inconsistent typeclass_infos")
         )
-    ;
+    else
         map.det_insert(Var, Constraint, !Map)
     ).
 
@@ -860,23 +872,23 @@ rtti_varmaps_overlay(VarMapsA, VarMapsB, VarMaps) :-
 get_typeinfo_vars(Vars, VarTypes, RttiVarMaps, TypeInfoVars) :-
     TVarMap = RttiVarMaps ^ rv_ti_varmap,
     VarList = set_of_var.to_sorted_list(Vars),
-    get_typeinfo_vars_2(VarList, VarTypes, TVarMap, TypeInfoVarList),
-    TypeInfoVars = set_of_var.list_to_set(TypeInfoVarList).
+    get_typeinfo_vars_acc(VarList, VarTypes, TVarMap,
+        set_of_var.init, TypeInfoVars).
 
     % Auxiliary predicate - traverses variables and builds a list of
     % variables that store typeinfos for these variables.
     %
-:- pred get_typeinfo_vars_2(list(prog_var)::in,
-    vartypes::in, type_info_varmap::in, list(prog_var)::out) is det.
+:- pred get_typeinfo_vars_acc(list(prog_var)::in, vartypes::in,
+    type_info_varmap::in, set_of_progvar::in, set_of_progvar::out) is det.
 
-get_typeinfo_vars_2([], _, _, []).
-get_typeinfo_vars_2([Var | Vars], VarTypes, TVarMap, TypeInfoVars) :-
+get_typeinfo_vars_acc([], _, _, !TypeInfoVars).
+get_typeinfo_vars_acc([Var | Vars], VarTypes, TVarMap, !TypeInfoVars) :-
     lookup_var_type(VarTypes, Var, Type),
     type_vars(Type, TypeVars),
     (
         TypeVars = [],
         % Optimize common case,
-        get_typeinfo_vars_2(Vars, VarTypes, TVarMap, TypeInfoVars)
+        get_typeinfo_vars_acc(Vars, VarTypes, TVarMap, !TypeInfoVars)
     ;
         TypeVars = [_ | _],
         % XXX It is possible there are some complications with higher order
@@ -891,8 +903,8 @@ get_typeinfo_vars_2([Var | Vars], VarTypes, TVarMap, TypeInfoVars) :-
         ),
         list.map(LookupVar, TypeVars, TypeInfoVarsHead),
 
-        get_typeinfo_vars_2(Vars, VarTypes, TVarMap, TypeInfoVarsTail),
-        TypeInfoVars = TypeInfoVarsHead ++ TypeInfoVarsTail
+        set_of_var.insert_list(TypeInfoVarsHead, !TypeInfoVars),
+        get_typeinfo_vars_acc(Vars, VarTypes, TVarMap, !TypeInfoVars)
     ).
 
 maybe_complete_with_typeinfo_vars(Vars0, TypeInfoLiveness, VarTypes,

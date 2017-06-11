@@ -1,17 +1,17 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et wm=0 tw=0
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 1994-2007 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: solutions.m.
 % Main author: fjh.
 % Stability: medium.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module solutions.
 :- interface.
@@ -20,12 +20,12 @@
 :- import_module list.
 :- import_module set.
 
-%-----------------------------------------------------------------------------%
-    
+%---------------------------------------------------------------------------%
+
     % solutions/2 collects all the solutions to a predicate and returns
     % them as a list in sorted order, with duplicates removed.
-    % solutions_set/2 returns them as a set.  unsorted_solutions/2 returns
-    % them as an unsorted list with possible duplicates; since there are 
+    % solutions_set/2 returns them as a set. unsorted_solutions/2 returns
+    % them as an unsorted list with possible duplicates; since there are
     % an infinite number of such lists, this must be called from a context
     % in which only a single solution is required.
     %
@@ -48,7 +48,8 @@
 :- pred unsorted_solutions(pred(T), list(T)).
 :- mode unsorted_solutions(pred(out) is multi, out(non_empty_list))
     is cc_multi.
-:- mode unsorted_solutions(pred(out) is nondet, out) is cc_multi.
+:- mode unsorted_solutions(pred(out) is nondet, out)
+    is cc_multi.
 
 :- func aggregate(pred(T), func(T, U) = U, U) = U.
 :- mode aggregate(pred(out) is multi, func(in, in) = out is det, in)
@@ -60,9 +61,9 @@
     % sorts them and removes duplicates, then applies an accumulator
     % predicate to each solution in turn:
     %
-    % aggregate(Generator, Accumulator, Acc0, Acc) <=>
+    % aggregate(Generator, AccumulatorPred, Acc0, Acc) <=>
     %   solutions(Generator, Solutions),
-    %   list.foldl(Accumulator, Solutions, Acc0, Acc).
+    %   list.foldl(AccumulatorPred, Solutions, Acc0, Acc).
     %
 :- pred aggregate(pred(T), pred(T, U, U), U, U).
 :- mode aggregate(pred(out) is multi, pred(in, in, out) is det,
@@ -78,9 +79,9 @@
     % sorts them and removes duplicates, then applies an accumulator
     % predicate to each solution in turn:
     %
-    % aggregate2(Generator, Accumulator, AccA0, AccA, AccB0, AccB) <=>
+    % aggregate2(Generator, AccumulatorPred, AccA0, AccA, AccB0, AccB) <=>
     %   solutions(Generator, Solutions),
-    %   list.foldl2(Accumulator, Solutions, AccA0, AccA, AccB0, AccB).
+    %   list.foldl2(AccumulatorPred, Solutions, AccA0, AccA, AccB0, AccB).
     %
 :- pred aggregate2(pred(T), pred(T, U, U, V, V), U, U, V, V).
 :- mode aggregate2(pred(out) is multi, pred(in, in, out, in, out) is det,
@@ -96,12 +97,12 @@
     % and applies an accumulator predicate to each solution in turn.
     % Declaratively, the specification is as follows:
     %
-    % unsorted_aggregate(Generator, Accumulator, Acc0, Acc) <=>
+    % unsorted_aggregate(Generator, AccumulatorPred, Acc0, Acc) <=>
     %   unsorted_solutions(Generator, Solutions),
-    %   list.foldl(Accumulator, Solutions, Acc0, Acc).
+    %   list.foldl(AccumulatorPred, Solutions, Acc0, Acc).
     %
     % Operationally, however, unsorted_aggregate/4 will call the
-    % Accumulator for each solution as it is obtained, rather than
+    % AccumulatorPred for each solution as it is obtained, rather than
     % first building a list of all the solutions.
     %
 :- pred unsorted_aggregate(pred(T), pred(T, U, U), U, U).
@@ -130,12 +131,12 @@
     % and applies an accumulator predicate to each solution in turn.
     % Declaratively, the specification is as follows:
     %
-    % unsorted_aggregate2(Generator, Accumulator, !Acc1, !Acc2) <=>
+    % unsorted_aggregate2(Generator, AccumulatorPred, !Acc1, !Acc2) <=>
     %   unsorted_solutions(Generator, Solutions),
-    %   list.foldl2(Accumulator, Solutions, !Acc1, !Acc2).
+    %   list.foldl2(AccumulatorPred, Solutions, !Acc1, !Acc2).
     %
     % Operationally, however, unsorted_aggregate2/6 will call the
-    % Accumulator for each solution as it is obtained, rather than
+    % AccumulatorPred for each solution as it is obtained, rather than
     % first building a list of all the solutions.
     %
 :- pred unsorted_aggregate2(pred(T), pred(T, U, U, V, V), U, U, V, V).
@@ -167,10 +168,11 @@
     %   do_while_2([], _, !Acc).
     %   do_while_2([X | Xs], Filter, !Acc) :-
     %       Filter(X, More, !Acc),
-    %       ( More = yes ->
+    %       (
+    %           More = yes,
     %           do_while_2(Xs, Filter, !Acc)
     %       ;
-    %           true
+    %           More = no
     %       ).
     %
     % Operationally, however, do_while/4 will call the Filter
@@ -191,24 +193,28 @@
 :- mode do_while(pred(out) is nondet, pred(in, out, di, uo) is cc_multi, di, uo)
     is cc_multi.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module mutvar.
+:- import_module require.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 % NOTE: the all-solutions predicates are handled specially in
-%       browser/declarative_tree.m.  Any changes here may need to be reflected
+%       browser/declarative_tree.m. Any changes here may need to be reflected
 %       there.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 solutions(Pred, List) :-
-    builtin_solutions(Pred, UnsortedList),
-    list.sort_and_remove_dups(UnsortedList, List).
+    promise_equivalent_solutions [List0] (
+        builtin_solutions(Pred, UnsortedList),
+        list.sort_and_remove_dups(UnsortedList, List0)
+    ),
+    assert_num_solutions(Pred, List0, List).
 
 solutions(P) = S :-
     solutions(P, S).
@@ -217,105 +223,125 @@ solutions_set(P) = S :-
     solutions_set(P, S).
 
 solutions_set(Pred, Set) :-
-    builtin_solutions(Pred, List),
-    set.list_to_set(List, Set).
+    promise_equivalent_solutions [Set] (
+        builtin_solutions(Pred, List),
+        set.list_to_set(List, Set)
+    ).
 
 unsorted_solutions(Pred, List) :-
-    builtin_solutions(Pred, UnsortedList),
-    cc_multi_equal(UnsortedList, List).
+    builtin_solutions(Pred, List).
 
 aggregate(P, F, Acc0) = Acc :-
     aggregate(P, (pred(X::in, A0::in, A::out) is det :- A = F(X, A0)),
         Acc0, Acc).
 
-aggregate(Generator, Accumulator, !Acc) :-
+aggregate(Generator, AccumulatorPred, !Acc) :-
     solutions(Generator, Solutions),
-    list.foldl(Accumulator, Solutions, !Acc).
+    list.foldl(AccumulatorPred, Solutions, !Acc).
 
-aggregate2(Generator, Accumulator, !Acc1, !Acc2) :-
+aggregate2(Generator, AccumulatorPred, !Acc1, !Acc2) :-
     solutions(Generator, Solutions),
-    list.foldl2(Accumulator, Solutions, !Acc1, !Acc2).
+    list.foldl2(AccumulatorPred, Solutions, !Acc1, !Acc2).
 
-unsorted_aggregate(Generator, Accumulator, !Acc) :-
-    builtin_aggregate(Generator, Accumulator, !Acc),
-    cc_multi_equal(!Acc).
+unsorted_aggregate(Generator, AccumulatorPred, !Acc) :-
+    builtin_aggregate(Generator, AccumulatorPred, !Acc).
 
-unsorted_aggregate2(Generator, Accumulator, !Acc1, !Acc2) :-
-    builtin_aggregate2(Generator, Accumulator, !Acc1, !Acc2),
-    cc_multi_equal(!Acc1),
-    cc_multi_equal(!Acc2).
+unsorted_aggregate2(Generator, AccumulatorPred, !Acc1, !Acc2) :-
+    builtin_aggregate2(Generator, AccumulatorPred, !Acc1, !Acc2).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred builtin_solutions(pred(T), list(T)).
-:- mode builtin_solutions(pred(out) is multi, out) is det.  % really cc_multi
-:- mode builtin_solutions(pred(out) is nondet, out) is det. % really cc_multi
+:- mode builtin_solutions(pred(out) is multi, out(non_empty_list))
+     is cc_multi.
+:- mode builtin_solutions(pred(out) is nondet, out)
+     is cc_multi.
 
 builtin_solutions(Generator, UnsortedList) :-
-    builtin_aggregate(Generator, list.cons, [], UnsortedList).
+    builtin_aggregate(Generator, list.cons, [], UnsortedList0),
+    assert_num_solutions(Generator, UnsortedList0, UnsortedList).
 
-%-----------------------------------------------------------------------------%
+:- pred assert_num_solutions(pred(T), list(T), list(T)).
+:- mode assert_num_solutions(pred(out) is multi,
+     in, out(non_empty_list)) is det.
+:- mode assert_num_solutions(pred(out) is nondet,
+     in, out) is det.
+
+:- pragma promise_equivalent_clauses(assert_num_solutions/3).
+
+assert_num_solutions(_Pred::pred(out) is multi,
+        List0::in, List::out(non_empty_list)) :-
+    (
+        List0 = [],
+        unexpected($module, $pred, "no solutions")
+    ;
+        List0 = [_ | _],
+        List = List0
+    ).
+assert_num_solutions(_Pred::pred(out) is nondet, List::in, List::out).
+
+%---------------------------------------------------------------------------%
 %
 % This section defines builtin_aggregate/4 which takes a closure of type
 % pred(T) in which the remaining argument is output, and backtracks over
 % solutions for this, using the second argument to aggregate them however the
-% user wishes.  This is basically a generalization of solutions/2.
+% user wishes. This is basically a generalization of solutions/2.
 
 :- pred builtin_aggregate(pred(T), pred(T, U, U), U, U).
 :- mode builtin_aggregate(pred(out) is multi, pred(in, in, out) is det,
-    in, out) is det. % really cc_multi
+    in, out) is cc_multi.
 :- mode builtin_aggregate(pred(out) is multi, pred(in, di, uo) is det,
-    di, uo) is det.  % really cc_multi
+    di, uo) is cc_multi.
 :- mode builtin_aggregate(pred(out) is multi, pred(in, in, out) is cc_multi,
-    in, out) is det. % really cc_multi
+    in, out) is cc_multi.
 :- mode builtin_aggregate(pred(out) is multi, pred(in, di, uo) is cc_multi,
-    di, uo) is det.  % really cc_multi
+    di, uo) is cc_multi.
 :- mode builtin_aggregate(pred(muo) is multi, pred(mdi, di, uo) is det,
-    di, uo) is det.  % really cc_multi
+    di, uo) is cc_multi.
 :- mode builtin_aggregate(pred(out) is nondet, pred(in, di, uo) is det,
-    di, uo) is det.  % really cc_multi
+    di, uo) is cc_multi.
 :- mode builtin_aggregate(pred(out) is nondet, pred(in, di, uo) is cc_multi,
-    di, uo) is det.  % really cc_multi
+    di, uo) is cc_multi.
 :- mode builtin_aggregate(pred(out) is nondet, pred(in, in, out) is det,
-    in, out) is det. % really cc_multi
+    in, out) is cc_multi.
 :- mode builtin_aggregate(pred(out) is nondet, pred(in, in, out) is cc_multi,
-    in, out) is det. % really cc_multi
+    in, out) is cc_multi.
 :- mode builtin_aggregate(pred(muo) is nondet, pred(mdi, di, uo) is det,
-    di, uo) is det.  % really cc_multi
+    di, uo) is cc_multi.
 
 % If we're doing heap reclamation on failure, then in order to implement any
 % sort of code that requires terms to survive backtracking, we need to
 % (deeply) copy them out of the heap and into some other area before
-% backtracking.  The obvious thing to do then is just call the generator
+% backtracking. The obvious thing to do then is just call the generator
 % predicate, let it run to completion, and copy its result into another memory
-% area (call it the solutions heap) before forcing backtracking.  When we get
+% area (call it the solutions heap) before forcing backtracking. When we get
 % the next solution, we do the same, this time passing the previous collection
-% (which is still on the solutions heap) to the collector predicate.  If the
+% (which is still on the solutions heap) to the collector predicate. If the
 % result of this operation contains the old collection as a part, then the
-% deep copy operation is smart enough not to copy again.  So this could be
+% deep copy operation is smart enough not to copy again. So this could be
 % pretty efficient.
 %
 % But what if the collector predicate does something that copies the previous
 % collection?  Then on each solution, we'll copy the previous collection to
-% the heap, and then deep copy it back to the solution heap.  This means
-% copying solutions order N**2 times, where N is the number of solutions.  So
-% this isn't as efficient as we hoped.
+% the heap, and then deep copy it back to the solution heap. This means
+% copying solutions order N**2 times, where N is the number of solutions.
+% So this isn't as efficient as we hoped.
 %
-% So we use a slightly different approach.  When we find a solution, we deep
-% copy it to the solution heap.  Then, before calling the collector code, we
+% So we use a slightly different approach. When we find a solution, we deep
+% copy it to the solution heap. Then, before calling the collector code, we
 % sneakily swap the runtime system's notion of which is the heap and which is
-% the solutions heap.  This ensures that any terms are constructed on the
-% solutions heap.  When this is complete, we swap them back, and force the
-% engine to backtrack to get the next solution.  And so on.  After we've
+% the solutions heap. This ensures that any terms are constructed on the
+% solutions heap. When this is complete, we swap them back, and force the
+% engine to backtrack to get the next solution. And so on. After we've
 % gotten the last solution, we do another deep copy to move the solution back
 % to the 'real' heap, and reset the solutions heap pointer (which of course
 % reclaims all the garbage of the collection process).
 %
 % Note that this will work with recursive calls to builtin_aggregate as
-% well.  If the recursive invocation occurs in the generator pred, there can
+% well. If the recursive invocation occurs in the generator pred, there can
 % be no problem because by the time the generator succeeds, the inner
 % do_ call will have completed, copied its result from the solutions heap,
-% and reset the solutions heap pointer.  If the recursive invocation happens
+% and reset the solutions heap pointer. If the recursive invocation happens
 % in the collector pred, then it will happen when the heap and solutions heap
 % are 'swapped.'  This will work out fine, because the real heap isn't needed
 % while the collector pred is executing, and by the time the nested do_ is
@@ -335,14 +361,14 @@ builtin_solutions(Generator, UnsortedList) :-
 
 :- pragma promise_pure(builtin_aggregate/4).
 
-builtin_aggregate(GeneratorPred, CollectorPred, !Accumulator) :-
+builtin_aggregate(GeneratorPred, CollectorPred, !Acc) :-
     % Save some of the Mercury virtual machine registers
     impure get_registers(HeapPtr, SolutionsHeapPtr, TrailPtr),
     impure start_all_soln_neg_context,
 
     % Initialize the accumulator
-    % /* Mutvar := !.Accumulator */
-    impure new_mutvar(!.Accumulator, Mutvar),
+    % /* Mutvar := !.Acc */
+    impure new_mutvar(!.Acc, Mutvar),
 
     (
         % Get a solution.
@@ -356,7 +382,11 @@ builtin_aggregate(GeneratorPred, CollectorPred, !Accumulator) :-
         impure swap_heap_and_solutions_heap,
         impure partial_deep_copy(HeapPtr, Answer0, Answer),
         impure get_mutvar(Mutvar, Acc0),
-        impure non_cc_call(CollectorPred, Answer, Acc0, Acc1),
+        % This is a lie: CollectorPred may choose from multiple possible
+        % solutions which are not all equivalent.
+        promise_equivalent_solutions [Acc1] (
+            call(CollectorPred, Answer, Acc0, Acc1)
+        ),
         impure set_mutvar(Mutvar, Acc1),
         impure swap_heap_and_solutions_heap,
 
@@ -371,51 +401,56 @@ builtin_aggregate(GeneratorPred, CollectorPred, !Accumulator) :-
         % from the solutions heap back onto the ordinary heap, and then we can
         % reset the solutions heap pointer. We also need to discard the trail
         % ticket created by get_registers/3.
-        % /* !:Accumulator := Mutvar */
-        impure get_mutvar(Mutvar, !:Accumulator),
-        impure partial_deep_copy(SolutionsHeapPtr, !Accumulator),
+        % /* !:Acc := Mutvar */
+        impure get_mutvar(Mutvar, !:Acc),
+        impure partial_deep_copy(SolutionsHeapPtr, !Acc),
         impure reset_solutions_heap(SolutionsHeapPtr),
         impure discard_trail_ticket
-    ).
+    ),
 
-%-----------------------------------------------------------------------------%
+    % The solution is not unique because it may depend on the order that
+    % GeneratorPred returned its solutions and the choice made by
+    % CollectorPred.
+    cc_multi_equal(!Acc).
+
+%---------------------------------------------------------------------------%
 
 :- pragma promise_pure(builtin_aggregate2/6).
 
 :- pred builtin_aggregate2(pred(T), pred(T, U, U, V, V), U, U, V, V).
 :- mode builtin_aggregate2(pred(out) is multi,
     pred(in, in, out, in, out) is det,
-    in, out, in, out) is det. % really cc_multi
+    in, out, in, out) is cc_multi.
 :- mode builtin_aggregate2(pred(out) is multi,
     pred(in, in, out, in, out) is cc_multi,
-    in, out, in, out) is det. % really cc_multi
+    in, out, in, out) is cc_multi.
 :- mode builtin_aggregate2(pred(out) is multi,
     pred(in, in, out, di, uo) is det,
-    in, out, di, uo) is det. % really cc_multi
+    in, out, di, uo) is cc_multi.
 :- mode builtin_aggregate2(pred(out) is multi,
     pred(in, in, out, di, uo) is cc_multi,
-    in, out, di, uo) is det. % really cc_multi
+    in, out, di, uo) is cc_multi.
 :- mode builtin_aggregate2(pred(out) is nondet,
     pred(in, in, out, in, out) is det,
-    in, out, in, out) is det. % really cc_multi
+    in, out, in, out) is cc_multi.
 :- mode builtin_aggregate2(pred(out) is nondet,
     pred(in, in, out, in, out) is cc_multi,
-    in, out, in, out) is det. % really cc_multi
+    in, out, in, out) is cc_multi.
 :- mode builtin_aggregate2(pred(out) is nondet,
     pred(in, in, out, di, uo) is det,
-    in, out, di, uo) is det. % really cc_multi
+    in, out, di, uo) is cc_multi.
 :- mode builtin_aggregate2(pred(out) is nondet,
     pred(in, in, out, di, uo) is cc_multi,
-    in, out, di, uo) is det. % really cc_multi
+    in, out, di, uo) is cc_multi.
 
-builtin_aggregate2(GeneratorPred, CollectorPred, !Accumulator1, !Accumulator2) :-
+builtin_aggregate2(GeneratorPred, CollectorPred, !Acc1, !Acc2) :-
     % Save some of the Mercury virtual machine registers
     impure get_registers(HeapPtr, SolutionsHeapPtr, TrailPtr),
     impure start_all_soln_neg_context,
 
     % Initialize the accumulator
-    impure new_mutvar(!.Accumulator1, Mutvar1),
-    impure new_mutvar(!.Accumulator2, Mutvar2),
+    impure new_mutvar(!.Acc1, Mutvar1),
+    impure new_mutvar(!.Acc2, Mutvar2),
 
     (
         % Get a solution.
@@ -427,13 +462,15 @@ builtin_aggregate2(GeneratorPred, CollectorPred, !Accumulator1, !Accumulator2) :
         % Update the accumulators.
         impure swap_heap_and_solutions_heap,
         impure partial_deep_copy(HeapPtr, Answer0, Answer),
-        some [!Acc1, !Acc2] (
-            impure get_mutvar(Mutvar1, !:Acc1),
-            impure get_mutvar(Mutvar2, !:Acc2),
-            impure non_cc_call(CollectorPred, Answer, !Acc1, !Acc2),
-            impure set_mutvar(Mutvar1, !.Acc1),
-            impure set_mutvar(Mutvar2, !.Acc2)
+        impure get_mutvar(Mutvar1, SubAccA0),
+        impure get_mutvar(Mutvar2, SubAccB0),
+        % This is a lie: CollectorPred may choose from multiple possible
+        % solutions which are not all equivalent.
+        promise_equivalent_solutions [SubAccA, SubAccB] (
+            call(CollectorPred, Answer, SubAccA0, SubAccA, SubAccB0, SubAccB)
         ),
+        impure set_mutvar(Mutvar1, SubAccA),
+        impure set_mutvar(Mutvar2, SubAccB),
         impure swap_heap_and_solutions_heap,
 
         % Force backtracking, so that we get the next solution.
@@ -447,30 +484,36 @@ builtin_aggregate2(GeneratorPred, CollectorPred, !Accumulator1, !Accumulator2) :
         % from the solutions heap back onto the ordinary heap, and then we can
         % reset the solutions heap pointer. We also need to discard the trail
         % ticket created by get_registers/3.
-        impure get_mutvar(Mutvar1, !:Accumulator1),
-        impure get_mutvar(Mutvar2, !:Accumulator2),
-        impure partial_deep_copy(SolutionsHeapPtr, !Accumulator1),
-        impure partial_deep_copy(SolutionsHeapPtr, !Accumulator2),
+        impure get_mutvar(Mutvar1, !:Acc1),
+        impure get_mutvar(Mutvar2, !:Acc2),
+        impure partial_deep_copy(SolutionsHeapPtr, !Acc1),
+        impure partial_deep_copy(SolutionsHeapPtr, !Acc2),
         impure reset_solutions_heap(SolutionsHeapPtr),
         impure discard_trail_ticket
-    ).
+    ),
 
-%-----------------------------------------------------------------------------%
+    % The solution is not unique because it may depend on the order that
+    % GeneratorPred returned its solutions and the choice made by
+    % CollectorPred.
+    cc_multi_equal(!Acc1),
+    cc_multi_equal(!Acc2).
+
+%---------------------------------------------------------------------------%
 
 % The code for do_while/4 is essentially the same as the code for
-% builtin_aggregate (above).  See the detailed comments above.
+% builtin_aggregate (above). See the detailed comments above.
 %
 % XXX It would be nice to avoid the code duplication here,
 % but it is a bit tricky -- we can't just use a lambda expression,
 % because we'd need to specify the mode, but we want it to work
-% for multiple modes.  An alternative would be to use a typeclass,
+% for multiple modes. An alternative would be to use a typeclass,
 % but typeclasses still don't work in `jump' or `fast' grades.
 
 :- pragma promise_pure(do_while/4).
 
-do_while(GeneratorPred, CollectorPred, !Accumulator) :-
+do_while(GeneratorPred, CollectorPred, !Acc) :-
     impure get_registers(HeapPtr, SolutionsHeapPtr, TrailPtr),
-    impure new_mutvar(!.Accumulator, Mutvar),
+    impure new_mutvar(!.Acc, Mutvar),
     impure start_all_soln_neg_context,
     (
         GeneratorPred(Answer0),
@@ -480,7 +523,9 @@ do_while(GeneratorPred, CollectorPred, !Accumulator) :-
         impure swap_heap_and_solutions_heap,
         impure partial_deep_copy(HeapPtr, Answer0, Answer),
         impure get_mutvar(Mutvar, Acc0),
-        impure non_cc_call(CollectorPred, Answer, More, Acc0, Acc1),
+        promise_equivalent_solutions [More, Acc1] (
+            call(CollectorPred, Answer, More, Acc0, Acc1)
+        ),
         impure set_mutvar(Mutvar, Acc1),
         impure swap_heap_and_solutions_heap,
 
@@ -491,82 +536,11 @@ do_while(GeneratorPred, CollectorPred, !Accumulator) :-
     ;
         impure end_all_soln_neg_context_no_more
     ),
-    impure get_mutvar(Mutvar, !:Accumulator),
-    impure partial_deep_copy(SolutionsHeapPtr, !Accumulator),
+    impure get_mutvar(Mutvar, !:Acc),
+    impure partial_deep_copy(SolutionsHeapPtr, !Acc),
     impure reset_solutions_heap(SolutionsHeapPtr),
-    impure discard_trail_ticket.
-
-    % This is the same as call/4, except that it is not cc_multi
-    % even when the called predicate is cc_multi.
-:- impure pred non_cc_call(pred(T, Acc, Acc), T, Acc, Acc).
-:- mode non_cc_call(pred(in, in, out) is det, in, in, out) is det.
-:- mode non_cc_call(pred(in, in, out) is cc_multi, in, in, out) is det.
-:- mode non_cc_call(pred(in, di, uo) is det, in, di, uo) is det.
-:- mode non_cc_call(pred(in, di, uo) is cc_multi, in, di, uo) is det.
-:- mode non_cc_call(pred(mdi, di, uo) is det, mdi, di, uo) is det.
-
-non_cc_call(P::pred(in, in, out) is det, X::in, !.Acc::in, !:Acc::out) :-
-    P(X, !Acc).
-non_cc_call(P::pred(in, in, out) is cc_multi, X::in, !.Acc::in, !:Acc::out) :-
-    promise_equivalent_solutions [!:Acc] (
-        P(X, !Acc),
-        impure impure_true
-    ).
-non_cc_call(P::pred(in, di, uo) is cc_multi, X::in, !.Acc::di, !:Acc::uo) :-
-    promise_equivalent_solutions [!:Acc] (
-        P(X, !Acc),
-        impure impure_true
-    ).
-non_cc_call(P::pred(in, di, uo) is det, X::in, !.Acc::di, !:Acc::uo) :-
-    P(X, !Acc).
-non_cc_call(P::pred(mdi, di, uo) is det, X::mdi, !.Acc::di, !:Acc::uo) :-
-    P(X, !Acc).
-
-    % This is the same as call/5, except that it is not cc_multi
-    % even when the called predicate is cc_multi.
-:- impure pred non_cc_call(pred(T1, T2, Acc, Acc), T1, T2, Acc, Acc).
-:- mode non_cc_call(pred(in, out, in, out) is det, in, out, in, out) is det.
-:- mode non_cc_call(pred(in, out, di, uo) is det, in, out, di, uo) is det.
-:- mode non_cc_call(pred(in, out, di, uo) is cc_multi, in, out, di, uo) is det.
-
-non_cc_call(P::pred(in, out, di, uo) is det, X::in, More::out,
-        !.Acc::di, !:Acc::uo) :-
-    P(X, More, !Acc).
-non_cc_call(P::pred(in, out, in, out) is det, X::in, More::out,
-        !.Acc::in, !:Acc::out) :-
-    P(X, More, !Acc).
-non_cc_call(P::pred(in, out, di, uo) is cc_multi, X::in, More::out,
-        !.Acc::di, !:Acc::uo) :-
-    promise_equivalent_solutions [More, !:Acc] (
-        P(X, More, !Acc),
-        impure impure_true
-    ).
-
-:- impure pred non_cc_call(pred(T1, Acc1, Acc1, Acc2, Acc2), T1,
-    Acc1, Acc1, Acc2, Acc2).
-:- mode non_cc_call(pred(in, in, out, in, out) is det, in, in, out, in, out) is det.
-:- mode non_cc_call(pred(in, in, out, in, out) is cc_multi, in, in, out, in, out) is det.
-:- mode non_cc_call(pred(in, in, out, di, uo) is det, in, in, out, di, uo) is det.
-:- mode non_cc_call(pred(in, in, out, di, uo) is cc_multi, in, in, out, di, uo) is det.
-
-non_cc_call(P::pred(in, in, out, in, out) is det, X::in,
-        !.Acc1::in, !:Acc1::out, !.Acc2::in, !:Acc2::out) :-
-    P(X, !Acc1, !Acc2).
-non_cc_call(P::pred(in, in, out, in, out) is cc_multi, X::in,
-        !.Acc1::in, !:Acc1::out, !.Acc2::in, !:Acc2::out) :-
-    promise_equivalent_solutions [!:Acc1, !:Acc2] (
-        P(X, !Acc1, !Acc2),
-        impure impure_true
-    ).
-non_cc_call(P::pred(in, in, out, di, uo) is det, X::in,
-        !.Acc1::in, !:Acc1::out, !.Acc2::di, !:Acc2::uo) :-
-    P(X, !Acc1, !Acc2).
-non_cc_call(P::pred(in, in, out, di, uo) is cc_multi, X::in,
-        !.Acc1::in, !:Acc1::out, !.Acc2::di, !:Acc2::uo) :-
-    promise_equivalent_solutions [!:Acc1, !:Acc2] (
-        P(X, !Acc1, !Acc2),
-        impure impure_true
-    ).
+    impure discard_trail_ticket,
+    cc_multi_equal(!Acc).
 
 :- type heap_ptr == private_builtin.heap_pointer.
 :- type trail_ptr ---> trail_ptr(c_pointer).
@@ -744,8 +718,8 @@ non_cc_call(P::pred(in, in, out, di, uo) is cc_multi, X::in,
 "
     //
     // For the .NET back-end, we use the system heap, rather
-    // than defining our own heaps.  So we don't need to
-    // worry about swapping them.  Hence do nothing here.
+    // than defining our own heaps. So we don't need to
+    // worry about swapping them. Hence do nothing here.
     //
 ").
 
@@ -755,7 +729,7 @@ non_cc_call(P::pred(in, in, out, di, uo) is cc_multi, X::in,
 "
     /*
     ** For the Java back-end, as for the .NET back-end, we don't define
-    ** our own heaps.  So take no action here.
+    ** our own heaps. So take no action here.
     */
 ").
 
@@ -764,15 +738,16 @@ non_cc_call(P::pred(in, in, out, di, uo) is cc_multi, X::in,
     [will_not_call_mercury, thread_safe],
 "
     % For the Erlang back-end, as for the .NET back-end, we don't define
-    % our own heaps.  So take no action here.
+    % our own heaps. So take no action here.
     void
 ").
 
     % partial_deep_copy(SolutionsHeapPtr, OldVal, NewVal):
-    %   Make a copy of all of the parts of OldVar that occur between
-    %   SolutionsHeapPtr and the top of the current solutions heap.
     %
-:- impure pred partial_deep_copy(heap_ptr, T, T) is det.
+    % Make a copy of all of the parts of OldVar that occur between
+    % SolutionsHeapPtr and the top of the current solutions heap.
+    %
+:- impure pred partial_deep_copy(heap_ptr, T, T).
 :-        mode partial_deep_copy(in, di, uo) is det.
 :-        mode partial_deep_copy(in, mdi, muo) is det.
 :-        mode partial_deep_copy(in, in, out) is det.
@@ -830,7 +805,7 @@ non_cc_call(P::pred(in, in, out, di, uo) is cc_multi, X::in,
     [will_not_call_mercury, thread_safe],
 "
     //
-    // For the IL back-end, we don't do heap reclamation on failure,
+    // For the C# back-end, we don't do heap reclamation on failure,
     // so we don't need to worry about making deep copies here.
     // Shallow copies will suffice.
     //
@@ -854,7 +829,7 @@ non_cc_call(P::pred(in, in, out, di, uo) is cc_multi, X::in,
     [will_not_call_mercury, thread_safe],
 "
     /*
-    ** For the Java back-end, as for the .NET implementation,
+    ** For the Java back-end, as for the C# back-end,
     ** we don't do heap reclamation on failure,
     ** so we don't need to worry about making deep copies here.
     ** Shallow copies will suffice.
@@ -918,7 +893,7 @@ non_cc_call(P::pred(in, in, out, di, uo) is cc_multi, X::in,
     reset_solutions_heap(_SolutionsHeapPtr::in),
     [will_not_call_mercury, thread_safe],
 "
-    // For the IL back-end, we don't have a separate `solutions heap'.
+    // For the C# back-end, we don't have a separate `solutions heap'.
     // Hence this operation is a NOP.
 ").
 
@@ -982,6 +957,6 @@ end_all_soln_neg_context_more.
 
 end_all_soln_neg_context_no_more.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module solutions.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

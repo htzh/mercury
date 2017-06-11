@@ -2,6 +2,7 @@
 % vim: ft=mercury ts=4 sw=4 et
 %-----------------------------------------------------------------------------%
 % Copyright (C) 2004-2012 The University of Melbourne.
+% Copyright (C) 2017 The Mercury Team.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
 %-----------------------------------------------------------------------------%
@@ -9,7 +10,7 @@
 % File: exception_analysis.m.
 % Author: juliensf.
 %
-% This module performs an exception tracing analysis.  The aim is to annotate
+% This module performs an exception tracing analysis. The aim is to annotate
 % the HLDS with information about whether each procedure might or will not
 % throw an exception.
 %
@@ -29,12 +30,12 @@
 % (2) means that a call to that procedure might result in an exception
 %     being thrown for at least some inputs.
 %
-%     We distinguish between two kinds of exception.  Those that
+%     We distinguish between two kinds of exception. Those that
 %     are ultimately a result of a call to exception.throw/1, which
 %     we refer to as "user exceptions" and those that result from a
 %     unification or comparison where one of the types involved has
 %     a user-defined equality/comparison predicate that throws
-%     an exception.  We refer to the latter kind, as "type exceptions".
+%     an exception. We refer to the latter kind, as "type exceptions".
 %
 %     This means that for some polymorphic procedures we cannot
 %     say what will happen until we know the values of the type variables.
@@ -42,7 +43,7 @@
 %
 % (3) means that the exception status of the procedure is dependent upon the
 %     values of some higher-order variables, or the values of some type
-%     variables or both.  This means that we cannot say anything definite
+%     variables or both. This means that we cannot say anything definite
 %     about the procedure but for calls to the procedure where have the
 %     necessary information we can say what will happen.
 %
@@ -81,25 +82,19 @@
 :- interface.
 
 :- import_module analysis.
+:- import_module hlds.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
-:- import_module parse_tree.prog_data.
-
-:- import_module io.
+:- import_module parse_tree.
+:- import_module parse_tree.prog_data_pragma.
 
 %----------------------------------------------------------------------------%
 
     % Perform the exception analysis on a module.
     %
-:- pred analyse_exceptions_in_module(module_info::in, module_info::out,
-    io::di, io::uo) is det.
+:- pred analyse_exceptions_in_module(module_info::in, module_info::out) is det.
 
-    % Write out the exception pragmas for this module.
-    %
-:- pred write_pragma_exceptions(module_info::in, exception_info::in,
-    pred_id::in, io::di, io::uo) is det.
-
-    % Look the exception status of the given procedure.  This predicate
+    % Look the exception status of the given procedure. This predicate
     % is intended to be used by optimisations that use exception analysis
     % information, *not* for use within the exception analysis itself.
     % This predicate abstracts away differences between
@@ -127,101 +122,87 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.type_util.
+:- import_module hlds.hlds_dependency_graph.
 :- import_module hlds.hlds_goal.
-:- import_module hlds.hlds_pred.
-:- import_module libs.file_util.
+:- import_module hlds.vartypes.
+:- import_module libs.
+:- import_module libs.dependency_graph.
 :- import_module libs.globals.
+:- import_module libs.op_mode.
 :- import_module libs.options.
+:- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
-:- import_module parse_tree.mercury_to_mercury.
-:- import_module parse_tree.file_names.
-:- import_module parse_tree.prog_item.
+:- import_module mdbcomp.sym_name.
+:- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_data_foreign.
 :- import_module parse_tree.prog_type.
-:- import_module transform_hlds.dependency_graph.
+:- import_module transform_hlds.intermod.
 :- import_module transform_hlds.mmc_analysis.
 
 :- import_module bool.
 :- import_module list.
 :- import_module map.
 :- import_module maybe.
-:- import_module pair.
 :- import_module require.
 :- import_module set.
 :- import_module term.
 
 %----------------------------------------------------------------------------%
 %
-% Perform exception analysis on a module
+% Perform exception analysis on a module.
 %
 
-analyse_exceptions_in_module(!ModuleInfo, !IO) :-
-    module_info_ensure_dependency_info(!ModuleInfo),
-    module_info_dependency_info(!.ModuleInfo, DepInfo),
-    hlds_dependency_info_get_dependency_ordering(DepInfo, SCCs),
+analyse_exceptions_in_module(!ModuleInfo) :-
+    module_info_ensure_dependency_info(!ModuleInfo, DepInfo),
+    SCCs = dependency_info_get_bottom_up_sccs(DepInfo),
     list.foldl(check_scc_for_exceptions, SCCs, !ModuleInfo),
 
+    module_info_get_proc_analysis_kinds(!.ModuleInfo, ProcAnalysisKinds0),
+    set.insert(pak_exception, ProcAnalysisKinds0, ProcAnalysisKinds),
+    module_info_set_proc_analysis_kinds(ProcAnalysisKinds, !ModuleInfo),
+
     module_info_get_globals(!.ModuleInfo, Globals),
-    globals.lookup_bool_option(Globals, make_optimization_interface,
-        MakeOptInt),
-    globals.lookup_bool_option(Globals, intermodule_analysis,
-        IntermodAnalysis),
-    globals.lookup_bool_option(Globals, make_analysis_registry,
-        MakeAnalysisReg),
-
-    % Only write exception analysis pragmas to `.opt' files for
-    % `--intermodule-optimization', not `--intermodule-analysis'.
-    (
-        MakeOptInt = yes,
-        IntermodAnalysis = no
-    ->
-        make_optimization_interface(!.ModuleInfo, !IO)
-    ;
-        true
-    ),
-
-    % Record results if making the analysis registry.  We do this in a
-    % separate pass so that we record results for exported `:- external'
-    % procedures, which don't get analysed because we don't have clauses
-    % for them.
-    (
-        MakeAnalysisReg = yes,
+    globals.get_op_mode(Globals, OpMode),
+    ( if OpMode = opm_top_args(opma_augment(opmau_make_analysis_registry)) then
+        % Record results if making the analysis registry. We do this in a
+        % separate pass so that we record results for exported
+        % `:- pragma external_{pred/func}' procedures, which don't get
+        % analysed because we don't have clauses for them.
         module_info_get_analysis_info(!.ModuleInfo, AnalysisInfo0),
-        module_info_get_valid_predids(PredIds, !ModuleInfo),
-        list.foldl(maybe_record_exception_result(!.ModuleInfo),
-            PredIds, AnalysisInfo0, AnalysisInfo),
+        module_info_get_valid_pred_ids(!.ModuleInfo, PredIds),
+        list.foldl(maybe_record_exception_result(!.ModuleInfo), PredIds,
+            AnalysisInfo0, AnalysisInfo),
         module_info_set_analysis_info(AnalysisInfo, !ModuleInfo)
-    ;
-        MakeAnalysisReg = no
+    else
+        true
     ).
 
 %----------------------------------------------------------------------------%
 %
-% Perform exception analysis on a SCC
+% Perform exception analysis on a SCC.
 %
 
-:- type scc == list(pred_proc_id).
-
-:- type proc_results == list(proc_result).
-
-:- type proc_result
-    --->    proc_result(
-                ppid   :: pred_proc_id,
+:- type excp_proc_result
+    --->    excp_proc_result(
                 % The ppid of the procedure whose analysis results are
                 % stored in this structure.
+                epr_ppid                        :: pred_proc_id,
 
-                status :: exception_status,
                 % Exception status of this procedure not counting any input
                 % from (mutually-)recursive inputs.
+                epr_status                      :: exception_status,
 
-                rec_calls :: type_status,
                 % The collective type status of the types of the terms that
                 % are arguments of (mutually-)recursive calls.
+                epr_rec_calls                   :: type_excp_status,
 
-                maybe_analysis_status :: maybe(analysis_status)
-                % The analysis status used for intermodule-analysis.  This
-                % should be `no' if we are not compiling with
-                % intermodule-analysis enabled.
+                % The analysis status used for intermodule-analysis.
+                % This should be `no' if we are not compiling with
+                % intermodule analysis enabled.
+                epr_maybe_analysis_status       :: maybe(analysis_status)
             ).
 
 :- pred check_scc_for_exceptions(scc::in,
@@ -229,49 +210,52 @@ analyse_exceptions_in_module(!ModuleInfo, !IO) :-
 
 check_scc_for_exceptions(SCC, !ModuleInfo) :-
     check_procs_for_exceptions(SCC, ProcResults, !ModuleInfo),
-    %
+
     % The `Results' above are the results of analysing each individual
     % procedure in the SCC - we now have to combine them in a meaningful way.
-    %
-    combine_individual_proc_results(ProcResults, Status, MaybeAnalysisStatus),
-    %
-    % Update the exception_info table with information about this SCC.
-    %
-    module_info_get_exception_info(!.ModuleInfo, ExceptionInfo0),
-    Update = (pred(PPId::in, Info0::in, Info::out) is det :-
-        Info = Info0 ^ elem(PPId) :=
-            proc_exception_info(Status, MaybeAnalysisStatus)
-    ),
-    list.foldl(Update, SCC, ExceptionInfo0, ExceptionInfo),
-    module_info_set_exception_info(ExceptionInfo, !ModuleInfo).
+    excp_combine_individual_proc_results(ProcResults, Status,
+        MaybeAnalysisStatus),
+
+    ProcExceptionInfo = proc_exception_info(Status, MaybeAnalysisStatus),
+    set.foldl(set_exception_info(ProcExceptionInfo), SCC, !ModuleInfo).
+
+:- pred set_exception_info(proc_exception_info::in, pred_proc_id::in,
+    module_info::in, module_info::out) is det.
+
+set_exception_info(ProcExceptionInfo, PPId, !ModuleInfo) :-
+    module_info_pred_proc_info(!.ModuleInfo, PPId, PredInfo0, ProcInfo0),
+    proc_info_set_exception_info(yes(ProcExceptionInfo), ProcInfo0, ProcInfo),
+    module_info_set_pred_proc_info(PPId, PredInfo0, ProcInfo, !ModuleInfo).
 
     % Check each procedure in the SCC individually.
     %
-:- pred check_procs_for_exceptions(scc::in, proc_results::out,
+:- pred check_procs_for_exceptions(scc::in, list(excp_proc_result)::out,
     module_info::in, module_info::out) is det.
 
 check_procs_for_exceptions(SCC, Result, !ModuleInfo) :-
-    list.foldl2(check_proc_for_exceptions(SCC), SCC, [], Result,
-        !ModuleInfo).
+    set.foldl2(check_proc_for_exceptions(SCC), SCC, [], Result, !ModuleInfo).
 
     % Examine how procedures interact with other procedures that are
     % mutually-recursive to them.
     %
-:- pred combine_individual_proc_results(proc_results::in,
+:- pred excp_combine_individual_proc_results(list(excp_proc_result)::in,
     exception_status::out, maybe(analysis_status)::out) is det.
 
-combine_individual_proc_results([], _, _) :-
+excp_combine_individual_proc_results([], _, _) :-
     unexpected($module, $pred, "Empty SCC during exception analysis.").
-combine_individual_proc_results(ProcResults @ [_|_], SCC_Result,
+excp_combine_individual_proc_results(ProcResults @ [_ | _], SCC_Result,
         MaybeAnalysisStatus) :-
-    (
+    ( if
         % If none of the procedures may throw an exception or are conditional
         % then the SCC cannot throw an exception either.
-        all [ProcResult] list.member(ProcResult, ProcResults) =>
-            ProcResult ^ status = will_not_throw
-    ->
+        all [ProcResult] (
+            list.member(ProcResult, ProcResults)
+        =>
+            ProcResult ^ epr_status = will_not_throw
+        )
+    then
         SCC_Result = will_not_throw
-    ;
+    else if
         % If none of the procedures may throw an exception but at least one of
         % them is conditional then somewhere in the SCC there is a call to
         % unify or compare that may rely on the types of the polymorphically
@@ -284,15 +268,15 @@ combine_individual_proc_results(ProcResults @ [_|_], SCC_Result,
         all [EResult] (
             list.member(EResult, ProcResults)
         =>
-            EResult ^ status \= may_throw(_)
+            EResult ^ epr_status \= may_throw(_)
         ),
         some [CResult] (
             list.member(CResult, ProcResults),
-            CResult ^ status = throw_conditional
+            CResult ^ epr_status = throw_conditional
         )
-    ->
+    then
         SCC_Result = handle_mixed_conditional_scc(ProcResults)
-    ;
+    else if
         % If none of the procedures can throw a user_exception but one or more
         % can throw a type_exception then mark the SCC as maybe throwing a
         % type_exception.
@@ -300,46 +284,46 @@ combine_individual_proc_results(ProcResults @ [_|_], SCC_Result,
         all [EResult] (
             list.member(EResult, ProcResults)
         =>
-            EResult ^ status \= may_throw(user_exception)
+            EResult ^ epr_status \= may_throw(user_exception)
         ),
         some [TResult] (
             list.member(TResult, ProcResults),
-            TResult ^ status = may_throw(type_exception)
+            TResult ^ epr_status = may_throw(type_exception)
         )
-    ->
+    then
         SCC_Result = may_throw(type_exception)
-    ;
+    else
         SCC_Result = may_throw(user_exception)
     ),
-    combine_proc_result_maybe_analysis_statuses(ProcResults,
+    excp_combine_proc_result_maybe_analysis_statuses(ProcResults,
         MaybeAnalysisStatus).
 
-    % XXX There is some code duplication with trailing_analysis.m
-    % here ... we should factor out this code into a utility module
-    % for intermodule-analysis at some point.
+    % XXX There is some code duplication with trailing_analysis.m here ...
+    % we should factor out this code into a utility module for
+    % intermodule-analysis at some point.
     %
-:- pred combine_proc_result_maybe_analysis_statuses(proc_results::in,
-    maybe(analysis_status)::out) is det.
+:- pred excp_combine_proc_result_maybe_analysis_statuses(
+    list(excp_proc_result)::in, maybe(analysis_status)::out) is det.
 
-combine_proc_result_maybe_analysis_statuses(ProcResults,
+excp_combine_proc_result_maybe_analysis_statuses(ProcResults,
         MaybeAnalysisStatus) :-
     list.map(maybe_analysis_status, ProcResults, MaybeAnalysisStatuses),
     list.foldl(combine_maybe_analysis_status, MaybeAnalysisStatuses,
         yes(optimal), MaybeAnalysisStatus).
 
-:- pred maybe_analysis_status(proc_result::in, maybe(analysis_status)::out)
-    is det.
+:- pred maybe_analysis_status(excp_proc_result::in,
+    maybe(analysis_status)::out) is det.
 
-maybe_analysis_status(ProcResult, ProcResult ^ maybe_analysis_status).
+maybe_analysis_status(ProcResult, ProcResult ^ epr_maybe_analysis_status).
 
 %----------------------------------------------------------------------------%
 %
-% Process individual procedures
+% Process individual procedures.
 %
 
 :- pred check_proc_for_exceptions(scc::in, pred_proc_id::in,
-    proc_results::in, proc_results::out, module_info::in, module_info::out)
-    is det.
+    list(excp_proc_result)::in, list(excp_proc_result)::out,
+    module_info::in, module_info::out) is det.
 
 check_proc_for_exceptions(SCC, PPId, !Results, !ModuleInfo) :-
     module_info_pred_proc_info(!.ModuleInfo, PPId, _, ProcInfo),
@@ -349,27 +333,28 @@ check_proc_for_exceptions(SCC, PPId, !Results, !ModuleInfo) :-
     globals.lookup_bool_option(Globals, intermodule_analysis,
         IntermodAnalysis),
     MaybeAnalysisStatus0 = maybe_optimal(IntermodAnalysis),
-    Result0 = proc_result(PPId, will_not_throw, type_will_not_throw,
+    Result0 = excp_proc_result(PPId, will_not_throw, type_will_not_throw,
         MaybeAnalysisStatus0),
     check_goal_for_exceptions(SCC, VarTypes, Body, Result0, Result,
         !ModuleInfo),
     list.cons(Result, !Results).
 
 :- pred check_goal_for_exceptions(scc::in, vartypes::in, hlds_goal::in,
-    proc_result::in, proc_result::out, module_info::in, module_info::out)
-    is det.
+    excp_proc_result::in, excp_proc_result::out,
+    module_info::in, module_info::out) is det.
 
 check_goal_for_exceptions(SCC, VarTypes, hlds_goal(GoalExpr, GoalInfo),
         !Result, !ModuleInfo) :-
-    ( goal_info_get_determinism(GoalInfo) = detism_erroneous ->
-        !Result ^ status := may_throw(user_exception)
-    ;
+    ( if goal_info_get_determinism(GoalInfo) = detism_erroneous then
+        !Result ^ epr_status := may_throw(user_exception)
+    else
         check_goal_for_exceptions_2(SCC, VarTypes, GoalExpr, GoalInfo,
             !Result, !ModuleInfo)
     ).
 
 :- pred check_goal_for_exceptions_2(scc::in, vartypes::in,
-    hlds_goal_expr::in, hlds_goal_info::in, proc_result::in, proc_result::out,
+    hlds_goal_expr::in, hlds_goal_info::in,
+    excp_proc_result::in, excp_proc_result::out,
     module_info::in, module_info::out) is det.
 
 check_goal_for_exceptions_2(SCC, VarTypes, GoalExpr, GoalInfo,
@@ -409,7 +394,7 @@ check_goal_for_exceptions_2(SCC, VarTypes, GoalExpr, GoalInfo,
             % they will have already been processed.
             (
                 MayThrowException = default_exception_behaviour,
-                !Result ^ status := may_throw(user_exception)
+                !Result ^ epr_status := may_throw(user_exception)
             ;
                 MayThrowException = proc_will_not_throw_exception
             )
@@ -435,14 +420,14 @@ check_goal_for_exceptions_2(SCC, VarTypes, GoalExpr, GoalInfo,
         check_goal_for_exceptions(SCC, VarTypes, SubGoal, !Result, !ModuleInfo)
     ;
         GoalExpr = scope(Reason, SubGoal),
-        (
+        ( if
             Reason = from_ground_term(_, FGT),
             ( FGT = from_ground_term_construct
             ; FGT = from_ground_term_deconstruct
             )
-        ->
+        then
             true
-        ;
+        else
             check_goal_for_exceptions(SCC, VarTypes, SubGoal, !Result,
                 !ModuleInfo)
         )
@@ -455,27 +440,28 @@ check_goal_for_exceptions_2(SCC, VarTypes, GoalExpr, GoalInfo,
 
 :- pred check_goal_for_exceptions_plain_call(scc::in, vartypes::in,
     pred_id::in, proc_id::in, list(prog_var)::in,
-    proc_result::in, proc_result::out, module_info::in, module_info::out)
-    is det.
+    excp_proc_result::in, excp_proc_result::out,
+    module_info::in, module_info::out) is det.
 
 check_goal_for_exceptions_plain_call(SCC, VarTypes, CallPredId, CallProcId,
         CallArgs, !Result, !ModuleInfo) :-
     CallPPId = proc(CallPredId, CallProcId),
     module_info_pred_info(!.ModuleInfo, CallPredId, CallPredInfo),
-    (
+    ( if
         % Handle (mutually-)recursive calls.
-        list.member(CallPPId, SCC)
-    ->
+        set.member(CallPPId, SCC)
+    then
         lookup_var_types(VarTypes, CallArgs, Types),
-        TypeStatus = check_types(!.ModuleInfo, Types),
-        combine_type_status(TypeStatus, !.Result ^ rec_calls, NewTypeStatus),
-        !Result ^ rec_calls := NewTypeStatus
-    ;
+        TypeStatus = excp_check_types(!.ModuleInfo, Types),
+        excp_combine_type_status(TypeStatus, !.Result ^ epr_rec_calls,
+            NewTypeStatus),
+        !Result ^ epr_rec_calls := NewTypeStatus
+    else if
         pred_info_is_builtin(CallPredInfo)
-    ->
+    then
         % Builtins won't throw exceptions.
         true
-    ;
+    else if
         % Handle unify and compare.
         (
             ModuleName = pred_info_module(CallPredInfo),
@@ -488,31 +474,31 @@ check_goal_for_exceptions_plain_call(SCC, VarTypes, CallPredId, CallProcId,
             special_pred_name_arity(SpecialPredId, Name, _, Arity)
         ;
             pred_info_get_origin(CallPredInfo, Origin),
-            Origin = origin_special_pred(SpecialPredId - _),
+            Origin = origin_special_pred(SpecialPredId, _),
             ( SpecialPredId = spec_pred_compare
             ; SpecialPredId = spec_pred_unify
             )
         )
-    ->
-        % For unification/comparison the exception status depends upon the the
-        % types of the arguments.  In particular whether some component of
+    then
+        % For unification/comparison the exception status depends upon the
+        % types of the arguments. In particular whether some component of
         % that type has a user-defined equality/comparison predicate that
         % throws an exception.
         module_info_get_globals(!.ModuleInfo, Globals),
         globals.lookup_bool_option(Globals, intermodule_analysis,
             IntermodAnalysis),
         MaybeAnalysisStatus = maybe_optimal(IntermodAnalysis),
-        check_vars(!.ModuleInfo, VarTypes, CallArgs, MaybeAnalysisStatus,
+        excp_check_vars(!.ModuleInfo, VarTypes, CallArgs, MaybeAnalysisStatus,
             !Result)
-    ;
-        check_nonrecursive_call(VarTypes, CallPPId, CallArgs, CallPredInfo,
-            !Result, !ModuleInfo)
+    else
+        excp_check_nonrecursive_call(VarTypes, CallPPId, CallArgs,
+            CallPredInfo, !Result, !ModuleInfo)
     ).
 
 :- pred check_goal_for_exceptions_generic_call(vartypes::in,
     generic_call::in, list(prog_var)::in, hlds_goal_info::in,
-    proc_result::in, proc_result::out, module_info::in, module_info::out)
-    is det.
+    excp_proc_result::in, excp_proc_result::out,
+    module_info::in, module_info::out) is det.
 
 check_goal_for_exceptions_generic_call(VarTypes, Details, Args, GoalInfo,
         !Result, !ModuleInfo) :-
@@ -522,7 +508,7 @@ check_goal_for_exceptions_generic_call(VarTypes, Details, Args, GoalInfo,
     (
         Details = higher_order(Var, _, _,  _),
         ClosureValueMap = goal_info_get_ho_values(GoalInfo),
-        ( ClosureValues = ClosureValueMap ^ elem(Var) ->
+        ( if map.search(ClosureValueMap, Var, ClosureValues) then
             get_closures_exception_status(IntermodAnalysis, ClosureValues,
                 MaybeWillNotThrow, MaybeAnalysisStatus, !ModuleInfo),
             (
@@ -555,20 +541,20 @@ check_goal_for_exceptions_generic_call(VarTypes, Details, Args, GoalInfo,
                     % out-of-line unifications/comparisons occur to be able to
                     % do better.
 
-                    check_vars(!.ModuleInfo, VarTypes, Args,
+                    excp_check_vars(!.ModuleInfo, VarTypes, Args,
                         MaybeAnalysisStatus, !Result)
                 )
             ;
                 MaybeWillNotThrow = may_throw,
-                !Result ^ status := may_throw(user_exception)
+                !Result ^ epr_status := may_throw(user_exception)
             )
-        ;
-            !Result ^ status := may_throw(user_exception)
+        else
+            !Result ^ epr_status := may_throw(user_exception)
         )
     ;
         % XXX We could do better with class methods.
         Details = class_method(_, _, _, _),
-        !Result ^ status := may_throw(user_exception)
+        !Result ^ epr_status := may_throw(user_exception)
     ;
         Details = event_call(_)
     ;
@@ -576,7 +562,7 @@ check_goal_for_exceptions_generic_call(VarTypes, Details, Args, GoalInfo,
     ).
 
 :- pred check_goals_for_exceptions(scc::in, vartypes::in,
-    hlds_goals::in, proc_result::in, proc_result::out,
+    list(hlds_goal)::in, excp_proc_result::in, excp_proc_result::out,
     module_info::in, module_info::out) is det.
 
 check_goals_for_exceptions(_, _, [], !Result, !ModuleInfo).
@@ -584,11 +570,11 @@ check_goals_for_exceptions(SCC, VarTypes, [Goal | Goals], !Result,
         !ModuleInfo) :-
     check_goal_for_exceptions(SCC, VarTypes, Goal, !Result, !ModuleInfo),
 
-    % We can stop searching if we find a user exception.  However if we find
+    % We can stop searching if we find a user exception. However if we find
     % a type exception then we still need to check that there is not a user
     % exception somewhere in the rest of the SCC.
 
-    CurrentStatus = !.Result ^ status,
+    CurrentStatus = !.Result ^ epr_status,
     (
         CurrentStatus = may_throw(user_exception)
     ;
@@ -601,7 +587,7 @@ check_goals_for_exceptions(SCC, VarTypes, [Goal | Goals], !Result,
 
 %----------------------------------------------------------------------------%
 %
-% Further code to handle higher-order variables
+% Further code to handle higher-order variables.
 %
 
     % The exception status of a collection of procedures that can be called
@@ -613,8 +599,8 @@ check_goals_for_exceptions(SCC, VarTypes, [Goal | Goals], !Result,
 
     ;       maybe_will_not_throw(list(pred_proc_id)).
             % None of the procedures throws a user exception, but the ones in
-            % the list are conditional.  Any polymorphic/higher-order
-            % args needed to either be checked at the generic_call site or
+            % the list are conditional. Any polymorphic/higher-order args
+            % needed to either be checked at the generic_call site or
             % the conditional status needs to be propagated up the call-graph
             % to a point where it can be resolved.
 
@@ -629,34 +615,35 @@ check_goals_for_exceptions(SCC, VarTypes, [Goal | Goals], !Result,
 
 get_closures_exception_status(IntermodAnalysis, Closures,
         Conditionals, AnalysisStatus, !ModuleInfo) :-
-    module_info_get_exception_info(!.ModuleInfo, ExceptionInfo),
     AnalysisStatus0 = maybe_optimal(IntermodAnalysis),
     set.fold3(
-        get_closure_exception_status(IntermodAnalysis, ExceptionInfo),
+        get_closure_exception_status(IntermodAnalysis),
         Closures, maybe_will_not_throw([]), Conditionals,
         AnalysisStatus0, AnalysisStatus, !ModuleInfo).
 
-:- pred get_closure_exception_status(
-    bool::in, exception_info::in, pred_proc_id::in,
+:- pred get_closure_exception_status(bool::in, pred_proc_id::in,
     closures_exception_status::in, closures_exception_status::out,
     maybe(analysis_status)::in, maybe(analysis_status)::out,
     module_info::in, module_info::out) is det.
 
-get_closure_exception_status(IntermodAnalysis, ExceptionInfo, PPId,
+get_closure_exception_status(IntermodAnalysis, PPId,
         !MaybeWillNotThrow, !AS, !ModuleInfo) :-
-    module_info_pred_proc_info(!.ModuleInfo, PPId, PredInfo, _),
-    (
+    module_info_pred_proc_info(!.ModuleInfo, PPId, PredInfo, ProcInfo),
+    ( if
         IntermodAnalysis = yes,
         pred_info_is_imported_not_external(PredInfo)
-    ->
-        search_analysis_status(PPId, ExceptionStatus, AnalysisStatus,
+    then
+        search_excp_analysis_status(PPId, ExceptionStatus, AnalysisStatus,
             !ModuleInfo),
         MaybeAnalysisStatus = yes(AnalysisStatus)
-    ;
-        ( ProcExceptionInfo = ExceptionInfo ^ elem(PPId) ->
+    else
+        proc_info_get_exception_info(ProcInfo, MaybeExceptionInfo),
+        (
+            MaybeExceptionInfo = yes(ProcExceptionInfo),
             ProcExceptionInfo = proc_exception_info(ExceptionStatus,
                 MaybeAnalysisStatus)
         ;
+            MaybeExceptionInfo = no,
             ExceptionStatus = may_throw(user_exception),
             MaybeAnalysisStatus = maybe_optimal(IntermodAnalysis)
         )
@@ -679,17 +666,18 @@ get_closure_exception_status(IntermodAnalysis, ExceptionInfo, PPId,
 
 %----------------------------------------------------------------------------%
 
-:- pred update_proc_result(exception_status::in, maybe(analysis_status)::in,
-    proc_result::in, proc_result::out) is det.
+:- pred update_excp_proc_result(exception_status::in,
+    maybe(analysis_status)::in,
+    excp_proc_result::in, excp_proc_result::out) is det.
 
-update_proc_result(CurrentStatus, CurrentAnalysisStatus, !Result) :-
-    OldStatus = !.Result ^ status,
-    OldAnalysisStatus = !.Result ^ maybe_analysis_status,
+update_excp_proc_result(CurrentStatus, CurrentAnalysisStatus, !Result) :-
+    OldStatus = !.Result ^ epr_status,
+    OldAnalysisStatus = !.Result ^ epr_maybe_analysis_status,
     NewStatus = combine_exception_status(CurrentStatus, OldStatus),
     combine_maybe_analysis_status(CurrentAnalysisStatus, OldAnalysisStatus,
         NewAnalysisStatus),
-    !Result ^ status := NewStatus,
-    !Result ^ maybe_analysis_status := NewAnalysisStatus.
+    !Result ^ epr_status := NewStatus,
+    !Result ^ epr_maybe_analysis_status := NewAnalysisStatus.
 
 :- func combine_exception_status(exception_status, exception_status)
     = exception_status.
@@ -709,12 +697,12 @@ combine_exception_status(throw_conditional, Y @ may_throw(_)) = Y.
     maybe(analysis_status)::in, maybe(analysis_status)::out) is det.
 
 combine_maybe_analysis_status(MaybeStatusA, MaybeStatusB, MaybeStatus) :-
-    (
+    ( if
         MaybeStatusA = yes(StatusA),
         MaybeStatusB = yes(StatusB)
-    ->
+    then
         MaybeStatus = yes(analysis.lub(StatusA, StatusB))
-    ;
+    else
         MaybeStatus = no
     ).
 
@@ -723,82 +711,88 @@ combine_maybe_analysis_status(MaybeStatusA, MaybeStatusB, MaybeStatus) :-
 % Extra procedures for handling calls.
 %
 
-:- pred check_nonrecursive_call(vartypes::in,
+:- pred excp_check_nonrecursive_call(vartypes::in,
     pred_proc_id::in, prog_vars::in, pred_info::in,
-    proc_result::in, proc_result::out,
+    excp_proc_result::in, excp_proc_result::out,
     module_info::in, module_info::out) is det.
 
-check_nonrecursive_call(VarTypes, PPId, Args, PredInfo, !Result,
+excp_check_nonrecursive_call(VarTypes, PPId, Args, PredInfo, !Result,
         !ModuleInfo) :-
     module_info_get_globals(!.ModuleInfo, Globals),
     globals.lookup_bool_option(Globals, intermodule_analysis,
         IntermodAnalysis),
-    (
+    ( if
         % If we are using `--intermodule-analysis' then use the analysis
         % framework for imported procedures.
         IntermodAnalysis = yes,
         pred_info_is_imported_not_external(PredInfo)
-    ->
-        search_analysis_status(PPId, CalleeResult, AnalysisStatus,
+    then
+        search_excp_analysis_status(PPId, CalleeResult, AnalysisStatus,
             !ModuleInfo),
         MaybeAnalysisStatus = yes(AnalysisStatus),
-        update_proc_result(CalleeResult, MaybeAnalysisStatus, !Result)
-    ;
-        module_info_get_exception_info(!.ModuleInfo, ExceptionInfo),
-        ( map.search(ExceptionInfo, PPId, CalleeExceptionInfo) ->
+        update_excp_proc_result(CalleeResult, MaybeAnalysisStatus, !Result)
+    else
+        PPId = proc(_, ProcId),
+        pred_info_proc_info(PredInfo, ProcId, ProcInfo),
+        proc_info_get_exception_info(ProcInfo, MaybeCalleeExceptionInfo),
+        (
+            MaybeCalleeExceptionInfo = yes(CalleeExceptionInfo),
             CalleeExceptionInfo = proc_exception_info(CalleeExceptionStatus,
                 MaybeAnalysisStatus),
             (
                 CalleeExceptionStatus = will_not_throw,
-                update_proc_result(will_not_throw, MaybeAnalysisStatus,
+                update_excp_proc_result(will_not_throw, MaybeAnalysisStatus,
                     !Result)
             ;
                 CalleeExceptionStatus = may_throw(ExceptionType),
-                update_proc_result(may_throw(ExceptionType),
+                update_excp_proc_result(may_throw(ExceptionType),
                     MaybeAnalysisStatus, !Result)
             ;
                 CalleeExceptionStatus = throw_conditional,
-                check_vars(!.ModuleInfo, VarTypes, Args, MaybeAnalysisStatus,
-                    !Result)
+                excp_check_vars(!.ModuleInfo, VarTypes, Args,
+                    MaybeAnalysisStatus, !Result)
             )
         ;
+            MaybeCalleeExceptionInfo = no,
             % If we do not have any information about the callee procedure
             % then assume that it might throw an exception.
             % Analysis statuses on individual results are meaningless now.
             MaybeAnalysisStatus = maybe_optimal(IntermodAnalysis),
-            update_proc_result(may_throw(user_exception), MaybeAnalysisStatus,
-                !Result)
+            update_excp_proc_result(may_throw(user_exception),
+                MaybeAnalysisStatus, !Result)
         )
     ).
 
-:- pred check_vars(module_info::in, vartypes::in, prog_vars::in,
-    maybe(analysis_status)::in, proc_result::in, proc_result::out) is det.
+:- pred excp_check_vars(module_info::in, vartypes::in, prog_vars::in,
+    maybe(analysis_status)::in, excp_proc_result::in, excp_proc_result::out)
+    is det.
 
-check_vars(ModuleInfo, VarTypes, Vars, MaybeAnalysisStatus, !Result) :-
+excp_check_vars(ModuleInfo, VarTypes, Vars, MaybeAnalysisStatus, !Result) :-
     lookup_var_types(VarTypes, Vars, Types),
-    TypeStatus = check_types(ModuleInfo, Types),
+    TypeStatus = excp_check_types(ModuleInfo, Types),
     (
         TypeStatus = type_will_not_throw
     ;
         TypeStatus = type_may_throw,
-        update_proc_result(may_throw(type_exception), MaybeAnalysisStatus,
+        update_excp_proc_result(may_throw(type_exception), MaybeAnalysisStatus,
             !Result)
     ;
         TypeStatus = type_conditional,
-        update_proc_result(throw_conditional, MaybeAnalysisStatus, !Result)
+        update_excp_proc_result(throw_conditional, MaybeAnalysisStatus,
+            !Result)
     ).
 
 %----------------------------------------------------------------------------%
 %
-% Predicates for checking mixed SCCs
+% Predicates for checking mixed SCCs.
 %
 
 % A "mixed SCC" is one where at least one of the procedures in the SCC is
 % known not to throw an exception, at least one of them is conditional and
 % none of them may throw an exception (of either sort).
 %
-% In order to determine the status of such a SCC we also need to take the
-% effect of the recursive calls into account.  This is because calls to a
+% In order to determine the status of such a SCC, we also need to take the
+% effect of the recursive calls into account. This is because calls to a
 % conditional procedure from a procedure that is mutually recursive to it may
 % introduce types that could cause a type_exception to be thrown.
 %
@@ -810,21 +804,21 @@ check_vars(ModuleInfo, VarTypes, Vars, MaybeAnalysisStatus, !Result) :-
 % NOTE: it is possible to write rather contrived programs that can exhibit
 % rather strange behaviour which is why all this is necessary.
 
-:- func handle_mixed_conditional_scc(proc_results) = exception_status.
+:- func handle_mixed_conditional_scc(list(excp_proc_result))
+    = exception_status.
 
 handle_mixed_conditional_scc(Results) =
-    (
+    ( if
         all [TypeStatus] (
             list.member(Result, Results)
         =>
-            Result ^ rec_calls \= type_may_throw
+            Result ^ epr_rec_calls \= type_may_throw
         )
-    ->
+    then
         throw_conditional
-    ;
-        % Somewhere a type that causes an exception is being
-        % passed around the SCC via one or more of the recursive
-        % calls.
+    else
+        % Somewhere a type that causes an exception is being passed around
+        % the SCC via one or more of the recursive calls.
         may_throw(type_exception)
     ).
 
@@ -841,77 +835,80 @@ handle_mixed_conditional_scc(Results) =
 % exception.
 %
 % XXX We don't actually need to examine all the types, just those that are
-% potentially going to be involved in unification/comparisons.  At the moment
+% potentially going to be involved in unification/comparisons. At the moment
 % we don't keep track of that information so the current procedure is as
 % follows:
 %
 % Examine the functor and then recursively examine the arguments.
 % * If everything will not throw then the type will not throw
 % * If at least one of the types may_throw then the type will throw
-% * If at least one of the types is conditional  and none of them throw then
+% * If at least one of the types is conditional and none of them throw then
 %   the type is conditional.
 
-:- type type_status
+:- type type_excp_status
     --->    type_will_not_throw
             % This type does not have user-defined equality
             % or comparison predicates.
-            % XXX (Or it has ones that are known not to throw
-            %      exceptions).
+            % XXX (Or it has ones that are known not to throw exceptions).
 
     ;       type_may_throw
-            % This type has a user-defined equality or comparison
-            % predicate that is known to throw an exception.
+            % This type has a user-defined equality or comparison predicate
+            % that is known to throw an exception.
 
     ;       type_conditional.
-            % This type is polymorphic.  We cannot say anything about
-            % it until we know the values of the type-variables.
+            % This type is polymorphic. We cannot say anything about it
+            % until we know the values of the type-variables.
 
     % Return the collective type status of a list of types.
     %
-:- func check_types(module_info, list(mer_type)) = type_status.
+:- func excp_check_types(module_info, list(mer_type)) = type_excp_status.
 
-check_types(ModuleInfo, Types) = Status :-
-    list.foldl(check_type(ModuleInfo), Types, type_will_not_throw, Status).
+excp_check_types(ModuleInfo, Types) = Status :-
+    list.foldl(excp_check_type(ModuleInfo), Types,
+        type_will_not_throw, Status).
 
-:- pred check_type(module_info::in, mer_type::in, type_status::in,
-    type_status::out) is det.
+:- pred excp_check_type(module_info::in, mer_type::in, type_excp_status::in,
+    type_excp_status::out) is det.
 
-check_type(ModuleInfo, Type, !Status) :-
-    combine_type_status(check_type(ModuleInfo, Type), !Status).
+excp_check_type(ModuleInfo, Type, !Status) :-
+    excp_combine_type_status(excp_check_type(ModuleInfo, Type), !Status).
 
-:- pred combine_type_status(type_status::in, type_status::in,
-    type_status::out) is det.
+:- pred excp_combine_type_status(type_excp_status::in, type_excp_status::in,
+    type_excp_status::out) is det.
 
-combine_type_status(type_will_not_throw, type_will_not_throw,
+excp_combine_type_status(type_will_not_throw, type_will_not_throw,
         type_will_not_throw).
-combine_type_status(type_will_not_throw, type_conditional, type_conditional).
-combine_type_status(type_will_not_throw, type_may_throw, type_may_throw).
-combine_type_status(type_conditional, type_will_not_throw, type_conditional).
-combine_type_status(type_conditional, type_conditional, type_conditional).
-combine_type_status(type_conditional, type_may_throw, type_may_throw).
-combine_type_status(type_may_throw, _, type_may_throw).
+excp_combine_type_status(type_will_not_throw, type_conditional,
+    type_conditional).
+excp_combine_type_status(type_will_not_throw, type_may_throw, type_may_throw).
+excp_combine_type_status(type_conditional, type_will_not_throw,
+    type_conditional).
+excp_combine_type_status(type_conditional, type_conditional, type_conditional).
+excp_combine_type_status(type_conditional, type_may_throw, type_may_throw).
+excp_combine_type_status(type_may_throw, _, type_may_throw).
 
     % Return the type status of an individual type.
     %
-:- func check_type(module_info, mer_type) = type_status.
+:- func excp_check_type(module_info, mer_type) = type_excp_status.
 
-check_type(ModuleInfo, Type) = Status :-
-    (
+excp_check_type(ModuleInfo, Type) = Status :-
+    ( if
         ( type_is_solver_type(ModuleInfo, Type)
         ; type_is_existq_type(ModuleInfo, Type)
         )
-     ->
+    then
         % XXX At the moment we just assume that existential types and
         % solver types result in a type exception being thrown.
         Status = type_may_throw
-    ;
+    else
         TypeCategory = classify_type(ModuleInfo, Type),
-        Status = check_type_2(ModuleInfo, Type, TypeCategory)
+        Status = excp_check_type_2(ModuleInfo, Type, TypeCategory)
     ).
 
-:- func check_type_2(module_info, mer_type, type_ctor_category) = type_status.
+:- func excp_check_type_2(module_info, mer_type, type_ctor_category)
+    = type_excp_status.
 
-check_type_2(ModuleInfo, Type, CtorCat) = WillThrow :-
+excp_check_type_2(ModuleInfo, Type, CtorCat) = WillThrow :-
     (
         ( CtorCat = ctor_cat_builtin(_)
         ; CtorCat = ctor_cat_higher_order
@@ -925,33 +922,28 @@ check_type_2(ModuleInfo, Type, CtorCat) = WillThrow :-
         WillThrow = type_conditional
     ;
         CtorCat = ctor_cat_tuple,
-        ( type_to_ctor_and_args(Type, _TypeCtor, Args) ->
-            WillThrow = check_types(ModuleInfo, Args)
-        ;
-            unexpected($module, $pred, "expected tuple type")
-        )
+        type_to_ctor_and_args_det(Type, _TypeCtor, Args),
+        WillThrow = excp_check_types(ModuleInfo, Args)
     ;
         CtorCat = ctor_cat_enum(_),
-        ( type_has_user_defined_equality_pred(ModuleInfo, Type, _UC) ->
+        ( if type_has_user_defined_equality_pred(ModuleInfo, Type, _UC) then
             % XXX This is very conservative.
             WillThrow = type_may_throw
-        ;
+        else
             WillThrow = type_will_not_throw
         )
     ;
         CtorCat = ctor_cat_user(_),
         type_to_ctor_and_args_det(Type, TypeCtor, Args),
-        ( type_has_user_defined_equality_pred(ModuleInfo, Type, _UC) ->
+        ( if type_has_user_defined_equality_pred(ModuleInfo, Type, _UC) then
             % XXX We can do better than this by examining what these preds
             % actually do. Something similar needs to be sorted out for
             % termination analysis as well, so we'll wait until that is done.
             WillThrow = type_may_throw
-        ;
-            ( type_ctor_is_safe(TypeCtor) ->
-                WillThrow = check_types(ModuleInfo, Args)
-            ;
-                WillThrow = type_may_throw
-            )
+        else if excp_type_ctor_is_safe(TypeCtor) then
+            WillThrow = excp_check_types(ModuleInfo, Args)
+        else
+            WillThrow = type_may_throw
         )
     ).
 
@@ -959,79 +951,79 @@ check_type_2(ModuleInfo, Type, CtorCat) = WillThrow :-
     % type_ctor can be determined by examining the exception status of the
     % arguments, if any.
     %
-    % NOTE: This list does not need to include enumerations since they
-    % are already handled above. Also, this list does not need to include
+    % NOTE: This list does not need to include enumerations since they are
+    % already handled above. Also, this list does not need to include
     % non-abstract equivalence types.
     %
-:- pred type_ctor_is_safe(type_ctor::in) is semidet.
+:- pred excp_type_ctor_is_safe(type_ctor::in) is semidet.
 
-type_ctor_is_safe(TypeCtor) :-
+excp_type_ctor_is_safe(TypeCtor) :-
     TypeCtor = type_ctor(qualified(unqualified(ModuleName), CtorName), Arity),
-    type_ctor_is_safe_2(ModuleName, CtorName, Arity).
+    excp_type_ctor_is_safe_2(ModuleName, CtorName, Arity).
 
-:- pred type_ctor_is_safe_2(string::in, string::in, arity::in) is semidet.
+:- pred excp_type_ctor_is_safe_2(string::in, string::in, arity::in) is semidet.
 
-type_ctor_is_safe_2("assoc_list",    "assoc_list",    1).
-type_ctor_is_safe_2("bag",           "bag",           1).
-type_ctor_is_safe_2("bimap",         "bimap",         2).
-type_ctor_is_safe_2("builtin",       "c_pointer",     0).
-type_ctor_is_safe_2("cord",          "cord",          1).
-type_ctor_is_safe_2("eqvclass",      "eqvclass",      1).
-type_ctor_is_safe_2("injection",     "injection",     2).
-type_ctor_is_safe_2("integer",       "integer",       0).
-type_ctor_is_safe_2("io",            "input_stream",  0).
-type_ctor_is_safe_2("io",            "output_stream", 0).
-type_ctor_is_safe_2("io",            "binary_stream", 0).
-type_ctor_is_safe_2("io",            "stream_id",     0).
-type_ctor_is_safe_2("io",            "res",           0).
-type_ctor_is_safe_2("io",            "res",           1).
-type_ctor_is_safe_2("io",            "maybe_partial_res", 1).
-type_ctor_is_safe_2("io",            "result",            0).
-type_ctor_is_safe_2("io",            "result",            1).
-type_ctor_is_safe_2("io",            "read_result",       1).
-type_ctor_is_safe_2("io",            "error",         0).
-type_ctor_is_safe_2("list",          "list",          1).
-type_ctor_is_safe_2("map",           "map",           2).
-type_ctor_is_safe_2("maybe",         "maybe",         1).
-type_ctor_is_safe_2("maybe_error",   "maybe_error",   1).
-type_ctor_is_safe_2("multi_map",     "multi_map",     2).
-type_ctor_is_safe_2("pair",          "pair",          2).
-type_ctor_is_safe_2("pqueue",        "pqueue",        2).
-type_ctor_is_safe_2("queue",         "queue",         1).
-type_ctor_is_safe_2("rational",      "rational",      0).
-type_ctor_is_safe_2("rbtree",        "rbtree",        2).
-type_ctor_is_safe_2("rtree",         "rtree",         2).
-type_ctor_is_safe_2("set",           "set",           1).
-type_ctor_is_safe_2("set_bbbtree",   "set_bbbtree",   1).
-type_ctor_is_safe_2("set_ctree234",  "set_ctree234",  1).
-type_ctor_is_safe_2("set_ordlist",   "set_ordlist",   1).
-type_ctor_is_safe_2("set_tree234",   "set_tree234",   1).
-type_ctor_is_safe_2("set_unordlist", "set_unordlist", 1).
-type_ctor_is_safe_2("stack",         "stack",         1).
-type_ctor_is_safe_2("string",        "poly_type",     0).
-type_ctor_is_safe_2("string",        "justified_column", 0).
-type_ctor_is_safe_2("term",          "term",          1).
-type_ctor_is_safe_2("term",          "const",         0).
-type_ctor_is_safe_2("term",          "context",       0).
-type_ctor_is_safe_2("term",          "var",           1).
-type_ctor_is_safe_2("term",          "var_supply",    1).
-type_ctor_is_safe_2("varset",        "varset",        1).
+excp_type_ctor_is_safe_2("assoc_list",    "assoc_list",        1).
+excp_type_ctor_is_safe_2("bag",           "bag",               1).
+excp_type_ctor_is_safe_2("bimap",         "bimap",             2).
+excp_type_ctor_is_safe_2("builtin",       "c_pointer",         0).
+excp_type_ctor_is_safe_2("cord",          "cord",              1).
+excp_type_ctor_is_safe_2("eqvclass",      "eqvclass",          1).
+excp_type_ctor_is_safe_2("injection",     "injection",         2).
+excp_type_ctor_is_safe_2("integer",       "integer",           0).
+excp_type_ctor_is_safe_2("io",            "input_stream",      0).
+excp_type_ctor_is_safe_2("io",            "output_stream",     0).
+excp_type_ctor_is_safe_2("io",            "binary_stream",     0).
+excp_type_ctor_is_safe_2("io",            "stream_id",         0).
+excp_type_ctor_is_safe_2("io",            "res",               0).
+excp_type_ctor_is_safe_2("io",            "res",               1).
+excp_type_ctor_is_safe_2("io",            "maybe_partial_res", 1).
+excp_type_ctor_is_safe_2("io",            "result",            0).
+excp_type_ctor_is_safe_2("io",            "result",            1).
+excp_type_ctor_is_safe_2("io",            "read_result",       1).
+excp_type_ctor_is_safe_2("io",            "error",             0).
+excp_type_ctor_is_safe_2("list",          "list",              1).
+excp_type_ctor_is_safe_2("map",           "map",               2).
+excp_type_ctor_is_safe_2("maybe",         "maybe",             1).
+excp_type_ctor_is_safe_2("maybe_error",   "maybe_error",       1).
+excp_type_ctor_is_safe_2("multi_map",     "multi_map",         2).
+excp_type_ctor_is_safe_2("pair",          "pair",              2).
+excp_type_ctor_is_safe_2("pqueue",        "pqueue",            2).
+excp_type_ctor_is_safe_2("queue",         "queue",             1).
+excp_type_ctor_is_safe_2("rational",      "rational",          0).
+excp_type_ctor_is_safe_2("rbtree",        "rbtree",            2).
+excp_type_ctor_is_safe_2("rtree",         "rtree",             2).
+excp_type_ctor_is_safe_2("set",           "set",               1).
+excp_type_ctor_is_safe_2("set_bbbtree",   "set_bbbtree",       1).
+excp_type_ctor_is_safe_2("set_ctree234",  "set_ctree234",      1).
+excp_type_ctor_is_safe_2("set_ordlist",   "set_ordlist",       1).
+excp_type_ctor_is_safe_2("set_tree234",   "set_tree234",       1).
+excp_type_ctor_is_safe_2("set_unordlist", "set_unordlist",     1).
+excp_type_ctor_is_safe_2("stack",         "stack",             1).
+excp_type_ctor_is_safe_2("string",        "poly_type",         0).
+excp_type_ctor_is_safe_2("string",        "justified_column",  0).
+excp_type_ctor_is_safe_2("term",          "term",              1).
+excp_type_ctor_is_safe_2("term",          "const",             0).
+excp_type_ctor_is_safe_2("term",          "context",           0).
+excp_type_ctor_is_safe_2("term",          "var",               1).
+excp_type_ctor_is_safe_2("term",          "var_supply",        1).
+excp_type_ctor_is_safe_2("varset",        "varset",            1).
 
 %----------------------------------------------------------------------------%
 %
-% Types and instances for the intermodule analysis framework
+% Types and instances for the intermodule analysis framework.
 %
 
 :- type exception_analysis_answer
     --->    exception_analysis_answer(exception_status).
 
-:- func analysis_name = string.
+:- func excp_analysis_name = string.
 
-analysis_name = "exception_analysis".
+excp_analysis_name = "exception_analysis".
 
 :- instance analysis(no_func_info, any_call, exception_analysis_answer)
         where [
-    analysis_name(_, _) = analysis_name,
+    analysis_name(_, _) = excp_analysis_name,
     analysis_version_number(_, _) = 1,
     preferred_fixpoint_type(_, _) = least_fixpoint,
     bottom(_, _) = exception_analysis_answer(will_not_throw),
@@ -1053,27 +1045,77 @@ analysis_name = "exception_analysis".
 :- pred exception_status_more_precise_than(exception_status::in,
     exception_status::in) is semidet.
 
-exception_status_more_precise_than(will_not_throw, throw_conditional).
-exception_status_more_precise_than(will_not_throw, may_throw(_)).
-exception_status_more_precise_than(throw_conditional, may_throw(_)).
-exception_status_more_precise_than(may_throw(type_exception),
-    may_throw(user_exception)).
+exception_status_more_precise_than(StatusA, StatusB) :-
+    require_complete_switch [StatusA]
+    (
+        StatusA = will_not_throw,
+        require_complete_switch [StatusB]
+        (
+            StatusB = will_not_throw,
+            AMorePreciseThanB = no
+        ;
+            ( StatusB = throw_conditional
+            ; StatusB = may_throw(_)
+            ),
+            AMorePreciseThanB = yes
+        ),
+        AMorePreciseThanB = yes
+    ;
+        StatusA = throw_conditional,
+        require_complete_switch [StatusB]
+        (
+            ( StatusB = will_not_throw
+            ; StatusB = throw_conditional
+            ),
+            AMorePreciseThanB = no
+        ;
+            StatusB = may_throw(_),
+            AMorePreciseThanB = yes
+        ),
+        AMorePreciseThanB = yes
+    ;
+        StatusA = may_throw(ExceptionTypeA),
+        require_complete_switch [StatusB]
+        (
+            ( StatusB = will_not_throw
+            ; StatusB = throw_conditional
+            ),
+            AMorePreciseThanB = no
+        ;
+            StatusB = may_throw(ExceptionTypeB),
+            (
+                ExceptionTypeA = type_exception,
+                (
+                    ExceptionTypeB = type_exception,
+                    AMorePreciseThanB = no
+                ;
+                    ExceptionTypeB = user_exception,
+                    AMorePreciseThanB = yes
+                )
+            ;
+                ExceptionTypeA = user_exception,
+                AMorePreciseThanB = no
+            )
+        ),
+        AMorePreciseThanB = yes
+    ).
 
 :- instance to_term(exception_analysis_answer) where [
-    func(to_term/1) is answer_to_term,
-    pred(from_term/2) is answer_from_term
+    func(to_term/1) is excp_answer_to_term,
+    pred(from_term/2) is excp_answer_from_term
 ].
 
-:- func answer_to_term(exception_analysis_answer) = term.
+:- func excp_answer_to_term(exception_analysis_answer) = term.
 
-answer_to_term(Answer) = Term :-
+excp_answer_to_term(Answer) = Term :-
     Answer = exception_analysis_answer(Status),
     exception_status_to_string(Status, String),
     Term = term.functor(atom(String), [], context_init).
 
-:- pred answer_from_term(term::in, exception_analysis_answer::out) is semidet.
+:- pred excp_answer_from_term(term::in, exception_analysis_answer::out)
+    is semidet.
 
-answer_from_term(Term, exception_analysis_answer(Status)) :-
+excp_answer_from_term(Term, exception_analysis_answer(Status)) :-
     Term = term.functor(atom(String), [], _),
     exception_status_to_string(Status, String).
 
@@ -1090,24 +1132,24 @@ exception_status_to_string(may_throw(user_exception),
 
 %----------------------------------------------------------------------------%
 %
-% Additional predicates used for intermodule analysis
+% Additional predicates used for intermodule analysis.
 %
 
-:- pred search_analysis_status(pred_proc_id::in,
+:- pred search_excp_analysis_status(pred_proc_id::in,
     exception_status::out, analysis_status::out,
     module_info::in, module_info::out) is det.
 
-search_analysis_status(PPId, Result, AnalysisStatus, !ModuleInfo) :-
+search_excp_analysis_status(PPId, Result, AnalysisStatus, !ModuleInfo) :-
     module_info_get_analysis_info(!.ModuleInfo, AnalysisInfo0),
-    search_analysis_status_2(!.ModuleInfo, PPId, Result, AnalysisStatus,
+    search_excp_analysis_status_2(!.ModuleInfo, PPId, Result, AnalysisStatus,
         AnalysisInfo0, AnalysisInfo),
     module_info_set_analysis_info(AnalysisInfo, !ModuleInfo).
 
-:- pred search_analysis_status_2(module_info::in, pred_proc_id::in,
+:- pred search_excp_analysis_status_2(module_info::in, pred_proc_id::in,
     exception_status::out, analysis_status::out,
     analysis_info::in, analysis_info::out) is det.
 
-search_analysis_status_2(ModuleInfo, PPId, Result, AnalysisStatus,
+search_excp_analysis_status_2(ModuleInfo, PPId, Result, AnalysisStatus,
         !AnalysisInfo) :-
     module_name_func_id(ModuleInfo, PPId, ModuleName, FuncId),
     Call = any_call,
@@ -1126,7 +1168,8 @@ search_analysis_status_2(ModuleInfo, PPId, Result, AnalysisStatus,
         top(no_func_info, Call) = Answer,
         Answer = exception_analysis_answer(Result),
         AnalysisStatus = optimal,
-        record_request(analysis_name, ModuleName,  FuncId, Call, !AnalysisInfo)
+        record_request(excp_analysis_name, ModuleName,  FuncId, Call,
+            !AnalysisInfo)
     ).
 
 :- pred maybe_record_exception_result(module_info::in, pred_id::in,
@@ -1146,22 +1189,24 @@ maybe_record_exception_result_2(ModuleInfo, PredId, PredInfo, ProcId,
     should_write_exception_info(ModuleInfo, PredId, ProcId, PredInfo,
         for_analysis_framework, ShouldWrite),
     (
-        ShouldWrite = yes,
+        ShouldWrite = should_write,
         PPId = proc(PredId, ProcId),
-        module_info_get_exception_info(ModuleInfo, ExceptionInfo),
-        lookup_proc_exception_info(ExceptionInfo, PPId, Status, ResultStatus),
+        lookup_proc_exception_info(ModuleInfo, PPId, Status, ResultStatus),
         module_name_func_id(ModuleInfo, PPId, ModuleName, FuncId),
         record_result(ModuleName, FuncId, any_call,
             exception_analysis_answer(Status), ResultStatus, !AnalysisInfo)
     ;
-        ShouldWrite = no
+        ShouldWrite = should_not_write
     ).
 
-:- pred lookup_proc_exception_info(exception_info::in, pred_proc_id::in,
+:- pred lookup_proc_exception_info(module_info::in, pred_proc_id::in,
     exception_status::out, analysis_status::out) is det.
 
-lookup_proc_exception_info(ExceptionInfo, PPId, Status, ResultStatus) :-
-    ( map.search(ExceptionInfo, PPId, ProcExceptionInfo) ->
+lookup_proc_exception_info(ModuleName, PPId, Status, ResultStatus) :-
+    module_info_pred_proc_info(ModuleName, PPId, _PredInfo, ProcInfo),
+    proc_info_get_exception_info(ProcInfo, MaybeExceptionInfo),
+    (
+        MaybeExceptionInfo = yes(ProcExceptionInfo),
         ProcExceptionInfo = proc_exception_info(Status, MaybeResultStatus),
         (
             MaybeResultStatus = yes(ResultStatus)
@@ -1170,43 +1215,10 @@ lookup_proc_exception_info(ExceptionInfo, PPId, Status, ResultStatus) :-
             unexpected($module, $pred, "no result status")
         )
     ;
-        % Probably an exported `:- external' procedure.
+        MaybeExceptionInfo = no,
+        % Probably an exported `:- pragma external_{pred/func}' procedure.
         Status = may_throw(user_exception),
         ResultStatus = optimal
-    ).
-
-:- type should_write_for
-    --->    for_analysis_framework
-    ;       for_pragma.
-
-:- pred should_write_exception_info(module_info::in, pred_id::in, proc_id::in,
-    pred_info::in, should_write_for::in, bool::out) is det.
-
-should_write_exception_info(ModuleInfo, PredId, ProcId, PredInfo,
-        WhatFor, ShouldWrite) :-
-    (
-        procedure_is_exported(ModuleInfo, PredInfo, ProcId),
-        not is_unify_or_compare_pred(PredInfo),
-        (
-            WhatFor = for_analysis_framework
-        ;
-            WhatFor = for_pragma,
-            module_info_get_type_spec_info(ModuleInfo, TypeSpecInfo),
-            TypeSpecInfo = type_spec_info(_, TypeSpecForcePreds, _, _),
-            not set.member(PredId, TypeSpecForcePreds),
-            %
-            % XXX Writing out pragmas for the automatically generated class
-            % instance methods causes the compiler to abort when it reads them
-            % back in.
-            %
-            pred_info_get_markers(PredInfo, Markers),
-            not check_marker(Markers, marker_class_instance_method),
-            not check_marker(Markers, marker_named_class_instance_method)
-        )
-    ->
-        ShouldWrite = yes
-    ;
-        ShouldWrite = no
     ).
 
 :- func maybe_optimal(bool) = maybe(analysis_status).
@@ -1216,85 +1228,13 @@ maybe_optimal(yes) = yes(optimal).
 
 %----------------------------------------------------------------------------%
 %
-% Stuff for intermodule optimization.
-%
-
-:- pred make_optimization_interface(module_info::in, io::di, io::uo)
-    is det.
-
-make_optimization_interface(ModuleInfo, !IO) :-
-    module_info_get_globals(ModuleInfo, Globals),
-    module_info_get_name(ModuleInfo, ModuleName),
-    module_name_to_file_name(Globals, ModuleName, ".opt.tmp",
-        do_not_create_dirs, OptFileName, !IO),
-    globals.lookup_bool_option(Globals, verbose, Verbose),
-    maybe_write_string(Verbose, "% Appending exceptions pragmas to `", !IO),
-    maybe_write_string(Verbose, OptFileName, !IO),
-    maybe_write_string(Verbose, "'...", !IO),
-    maybe_flush_output(Verbose, !IO),
-    io.open_append(OptFileName, OptFileRes, !IO),
-    (
-        OptFileRes = ok(OptFile),
-        io.set_output_stream(OptFile, OldStream, !IO),
-        module_info_get_exception_info(ModuleInfo, ExceptionInfo),
-        module_info_get_valid_predids(PredIds, ModuleInfo, _ModuleInfo),
-        list.foldl(write_pragma_exceptions(ModuleInfo, ExceptionInfo),
-            PredIds, !IO),
-        io.set_output_stream(OldStream, _, !IO),
-        io.close_output(OptFile, !IO),
-        maybe_write_string(Verbose, " done.\n", !IO)
-    ;
-        OptFileRes = error(IOError),
-        maybe_write_string(Verbose, " failed!\n", !IO),
-        io.error_message(IOError, IOErrorMessage),
-        io.write_strings(["Error opening file `",
-            OptFileName, "' for output: ", IOErrorMessage], !IO),
-        io.set_exit_status(1, !IO)
-    ).
-
-write_pragma_exceptions(ModuleInfo, ExceptionInfo, PredId, !IO) :-
-    module_info_pred_info(ModuleInfo, PredId, PredInfo),
-    ProcIds = pred_info_procids(PredInfo),
-    list.foldl(
-        write_pragma_exceptions_2(ModuleInfo, ExceptionInfo, PredId, PredInfo),
-        ProcIds, !IO).
-
-:- pred write_pragma_exceptions_2(module_info::in, exception_info::in,
-    pred_id::in, pred_info::in, proc_id::in, io::di, io::uo) is det.
-
-write_pragma_exceptions_2(ModuleInfo, ExceptionMap, PredId, PredInfo, ProcId,
-        !IO) :-
-    should_write_exception_info(ModuleInfo, PredId, ProcId, PredInfo,
-        for_pragma, ShouldWrite),
-    (
-        ShouldWrite = yes,
-        ModuleName = pred_info_module(PredInfo),
-        Name       = pred_info_name(PredInfo),
-        Arity      = pred_info_orig_arity(PredInfo),
-        PredOrFunc = pred_info_is_pred_or_func(PredInfo),
-        proc_id_to_int(ProcId, ModeNum),
-        ( map.search(ExceptionMap, proc(PredId, ProcId), ProcExceptionInfo) ->
-            ProcExceptionInfo = proc_exception_info(Status, _),
-            PredSymName = qualified(ModuleName, Name),
-            PredNameArityPFMn = pred_name_arity_pf_mn(PredSymName, Arity,
-                PredOrFunc, ModeNum),
-            ExceptionInfo = pragma_info_exceptions(PredNameArityPFMn, Status),
-            mercury_output_pragma_exceptions(ExceptionInfo, !IO)
-        ;
-            true
-        )
-    ;
-        ShouldWrite = no
-    ).
-
-%----------------------------------------------------------------------------%
-%
-% External interface to exception analysis information
+% External interface to exception analysis information.
 %
 
 lookup_exception_analysis_result(PPId, ExceptionStatus, !ModuleInfo) :-
-    PPId = proc(PredId, _),
-    module_info_pred_info(!.ModuleInfo, PredId, PredInfo),
+    PPId = proc(PredId, ProcId),
+    module_info_pred_proc_info(!.ModuleInfo, PredId, ProcId,
+        PredInfo, ProcInfo),
     IsImported = pred_to_bool(pred_info_is_imported_not_external(PredInfo)),
     module_info_get_globals(!.ModuleInfo, Globals),
     globals.lookup_bool_option(Globals, intermodule_analysis,
@@ -1304,21 +1244,20 @@ lookup_exception_analysis_result(PPId, ExceptionStatus, !ModuleInfo) :-
 
     % If we the procedure we are calling is imported and we are using
     % intermodule-analysis then we need to look up the exception status in the
-    % analysis registry; otherwise we look it up in the the exception_info
-    % table.
+    % analysis registry; otherwise we look it up in the exception_info table.
 
     UseAnalysisRegistry = IsImported `bool.and` IntermodAnalysis
         `bool.and` ExceptionAnalysis,
     (
-        % If the procedure is not imported then it's exception_status
+        % If the procedure is not imported then its exception_status
         % will be in the exception_info table.
         UseAnalysisRegistry = no,
-        module_info_get_exception_info(!.ModuleInfo, ExceptionInfo),
+        proc_info_get_exception_info(ProcInfo, MaybeProcExceptionInfo),
         (
-            map.search(ExceptionInfo, PPId, ProcExceptionInfo)
-        ->
+            MaybeProcExceptionInfo = yes(ProcExceptionInfo),
             ProcExceptionInfo = proc_exception_info(ExceptionStatus, _)
         ;
+            MaybeProcExceptionInfo = no,
             ExceptionStatus = may_throw(user_exception)
         )
     ;
@@ -1329,8 +1268,8 @@ lookup_exception_analysis_result(PPId, ExceptionStatus, !ModuleInfo) :-
             lookup_best_result(!.AnalysisInfo, ModuleName, FuncId,
                 no_func_info, any_call, MaybeBestResult),
             (
-                MaybeBestResult = yes(analysis_result(_Call, Answer,
-                    AnalysisStatus)),
+                MaybeBestResult = yes(BestResult),
+                BestResult = analysis_result(_Call, Answer, AnalysisStatus),
                 (
                     AnalysisStatus = invalid,
                     unexpected($module, $pred,

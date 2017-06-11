@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ts=4 sw=4 et tw=0 wm=0 ft=mercury
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2007, 2010-2011 The University of Melbourne
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % File: bit_buffer.read.m.
 % Main author: stayl.
 % Stability: low.
@@ -29,8 +29,8 @@
 % a small burden on the programmer to ensure the correctness of his
 % code that would otherwise be assured by the compiler.)
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module bit_buffer.read.
 :- interface.
@@ -158,7 +158,7 @@
     <= stream.bulk_reader(Stream, byte_index, bitmap, State, Error).
 :- mode finalize(read_buffer_di, out, uo, bitmap_uo, out, out) is det.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- implementation.
 
 /*
@@ -196,7 +196,7 @@
     <= stream.bulk_reader(Stream, bit_index, bitmap, State, Error).
 */
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- implementation.
 
 :- import_module require.
@@ -216,11 +216,10 @@ new(NumBytes, Stream, State) = Buffer :-
     % of the buffer contains the bits that were in the buffer when it
     % was last refilled.
     %
-    % We require the buffer size to be at least bits_per_int so
-    % that a call to `get_bits' can always be satisfied with a
-    % single buffer refill.  Allowing smaller buffer sizes would
-    % complicate the code for a case that shouldn't occur in practice
-    % anyway.
+    % We require the buffer size to be at least bits_per_int so that
+    % a call to `get_bits' can always be satisfied with a single buffer refill.
+    % Allowing smaller buffer sizes would complicate the code for a case
+    % that shouldn't occur in practice anyway.
     %
     SizeInBits = NumBytes * bits_per_byte,
     ChunkSize = int.max(SizeInBits, bits_per_int),
@@ -238,16 +237,16 @@ new_bitmap_reader(BM, StartIndex, NumBits) = Buffer :-
 
 new_bitmap_reader(BM) = new_bitmap_reader(BM, 0, BM ^ num_bits).
 
-    % The computed number of bits may be negative if there has been an error.
 num_buffered_bits(Buffer) =
-        int.max(Buffer ^ bit_buffer ^ size - Buffer ^ bit_buffer ^ pos, 0).
+    % The computed number of bits may be negative if there has been an error.
+    int.max(Buffer ^ bit_buffer ^ size - Buffer ^ bit_buffer ^ pos, 0).
 
 num_bits_to_byte_boundary(Buffer) = NumBits :-
     Pos = Buffer ^ bit_buffer ^ pos,
     PosInByte = Pos `unchecked_rem` bits_per_byte,
-    ( PosInByte = 0 ->
+    ( if PosInByte = 0 then
         NumBits = 0
-    ;
+    else
         NumBits = bits_per_byte - PosInByte
     ).
 
@@ -256,16 +255,16 @@ buffer_status(Result, !Buffer) :-
     (
         Status = ok,
         NumBufferedBits = !.Buffer ^ num_buffered_bits,
-        ( NumBufferedBits > 0 ->
+        ( if NumBufferedBits > 0 then
             Result = ok
-        ;
+        else
             refill_read_buffer(RefillResult, !Buffer),
             (
                 RefillResult = ok,
                 NewNumBufferedBits = !.Buffer ^ num_buffered_bits,
-                ( NewNumBufferedBits > 0 ->
+                ( if NewNumBufferedBits > 0 then
                     Result = ok
-                ;
+                else
                     Result = eof
                 )
             ;
@@ -282,9 +281,9 @@ get_bit(BitResult, !Buffer) :-
     get_bits(0, 1, 0, Word, NumBitsRead, BitsResult, !Buffer),
     (
         BitsResult = ok,
-        ( NumBitsRead = 1 ->
-            BitResult = ok(Word = 0 -> no ; yes)
-        ;
+        ( if NumBitsRead = 1 then
+            BitResult = ok(if Word = 0 then no else yes)
+        else
             BitResult = eof
         )
     ;
@@ -297,16 +296,16 @@ get_bits(Index, NumBits, !.Word, unsafe_promise_unique(!:Word),
     Status = !.Buffer ^ bit_buffer ^ read_status,
     (
         Status = ok,
-        ( NumBits > 0 ->
-            ( NumBits > bits_per_int ->
-                error("bit_buffer.read.get_bits: invalid number of bits")
-            ;
+        ( if NumBits > 0 then
+            ( if NumBits > bits_per_int then
+                unexpected($pred, "invalid number of bits")
+            else
                 true
             ),
-            ( !.Buffer ^ num_buffered_bits >= NumBits ->
+            ( if !.Buffer ^ num_buffered_bits >= NumBits then
                 BitsResult = ok,
                 do_get_bits(Index, NumBits, !Word, NumBitsRead, !Buffer)
-            ;
+            else
                 refill_read_buffer(RefillResult, !Buffer),
                 (
                     RefillResult = ok,
@@ -318,11 +317,11 @@ get_bits(Index, NumBits, !.Word, unsafe_promise_unique(!:Word),
                     BitsResult = error(Err)
                 )
             )
-        ; NumBits = 0 ->
+        else if NumBits = 0 then
             NumBitsRead = 0,
             BitsResult = ok
-        ;
-            error("bit_buffer.read.get_bits: negative number of bits")
+        else
+            unexpected($pred, "negative number of bits")
         )
     ;
         Status = error(Err),
@@ -360,11 +359,11 @@ get_bitmap(Index, NumBits, !BM, NumBitsRead, Result,
     Status = !.Buffer ^ read_status,
     (
         Status = ok,
-        (
+        ( if
             NumBits > 0,
             in_range(!.BM, Index),
             in_range(!.BM, Index + NumBits - 1)
-        ->
+        then
             UseStream = !.Buffer ^ use_stream,
             (
                 UseStream = yes,
@@ -380,15 +379,15 @@ get_bitmap(Index, NumBits, !BM, NumBitsRead, Result,
                 set_bitmap(!.Buffer ^ bitmap, Pos + NumBits, !Buffer),
                 Result = ok
             )
-        ;
+        else if
             NumBits = 0,
             ( in_range(!.BM, Index)
             ; Index = 0
             )
-        ->
+        then
             NumBitsRead = 0,
             Result = ok
-        ;
+        else
             bitmap.throw_bounds_error(!.BM, "bit_buffer.read.get_bitmap",
                 Index, NumBits)
         )
@@ -407,29 +406,25 @@ get_bitmap(Index, NumBits, !BM, NumBitsRead, Result,
 
 recursively_get_bitmap(!.Index, !.NumBits, !BM, !NumBitsRead,
         Result, !Buffer) :-
-    ( !.NumBits = 0 ->
+    ( if !.NumBits = 0 then
         Result = ok
-    ;
-        %
+    else
         % Take the bits that are already in the buffer.
-        %
         copy_buffered_bits_to_bitmap(!Index, !NumBits, !BM,
             !NumBitsRead, !Buffer),
-        (
+        ( if
             !.NumBits = 0
-        ->
+        then
             Result = ok
-        ;
+        else if
             !.Index `unchecked_rem` bits_per_byte = 0
-        ->
-            %
+        then
             % We can do a bulk_get straight into the result bitmap.
-            %
             bulk_get_into_result_bitmap(!Index, !NumBits, !BM, !NumBitsRead,
                 BulkGetResult, !Buffer),
             (
                 BulkGetResult = ok,
-                ( !.NumBits > 0 ->
+                ( if !.NumBits > 0 then
                     !:Buffer = read_buffer(!.Buffer),
                     get_bits(bits_per_int - !.NumBits, !.NumBits,
                         0, LastBits, NumLastBitsRead, LastBitsResult, !Buffer),
@@ -440,7 +435,6 @@ recursively_get_bitmap(!.Index, !.NumBits, !BM, !NumBitsRead,
                         % !.NumBits is correct here, if we didn't read
                         % enough bits this will just fill the rest of the
                         % range with zero bits.
-                        %
                         !:BM = !.BM ^ bits(!.Index, !.NumBits) := LastBits,
                         Result = ok
                     ;
@@ -448,21 +442,21 @@ recursively_get_bitmap(!.Index, !.NumBits, !BM, !NumBitsRead,
                         Result = error(Err)
                     ),
                     !:NumBitsRead = !.NumBitsRead + NumLastBitsRead
-                ;
+                else
                     Result = ok
                 )
             ;
                 BulkGetResult = error(Err),
                 Result = error(Err)
             )
-        ;
+        else
             do_refill_read_buffer(RefillRes, !Buffer),
             (
                 RefillRes = ok,
-                ( read_buffer(!.Buffer) ^ num_buffered_bits > 0 ->
+                ( if read_buffer(!.Buffer) ^ num_buffered_bits > 0 then
                     recursively_get_bitmap(!.Index, !.NumBits, !BM,
                         !NumBitsRead, Result, !Buffer)
-                ;
+                else
                     Result = ok
                 )
             ;
@@ -535,11 +529,10 @@ do_refill_read_buffer(Result, !.Buffer, !:Buffer) :-
     UseStream = !.Buffer ^ use_stream,
     (
         UseStream = yes,
-        ( read_buffer(!.Buffer) ^ num_buffered_bits =< bits_per_int ->
+        ( if read_buffer(!.Buffer) ^ num_buffered_bits =< bits_per_int then
             true
-        ;
-            error(
-              "bit_buffer.read.refill_read_buffer: too many bits in buffer")
+        else
+            unexpected($pred, "too many bits in buffer")
         ),
         some [!BM, !State, !Pos, !Size] (
 
@@ -553,10 +546,10 @@ do_refill_read_buffer(Result, !.Buffer, !:Buffer) :-
             Remain = !.Size - !.Pos,
             OldPos = !.Pos,
             !:Pos = bits_per_int - Remain,
-            ( Remain > 0 ->
+            ( if Remain > 0 then
                 !:BM = !.BM ^ bits(!.Pos,  Remain) :=
                     !.BM ^ bits(OldPos, Remain)
-            ;
+            else
                 true
             ),
 
@@ -575,9 +568,9 @@ do_refill_read_buffer(Result, !.Buffer, !:Buffer) :-
             % or an error.  Further attempts to refill the buffer will
             % do nothing.
             %
-            ( NumBytesRead = NumBytesToRead ->
+            ( if NumBytesRead = NumBytesToRead then
                 true
-            ;
+            else
                 % XXX We should probably allow the user to attempt to reset
                 % the error flag and try again if an error was transient, but
                 % the current stream interface doesn't allow for that.
@@ -606,14 +599,6 @@ finalize(ReadBuffer @ read_buffer(Buffer), Buffer ^ stream, Buffer ^ state,
     % We didn't have enough bits to satisfy a request, so move the position
     % to the end of the buffer.
     %
-:- pred set_buffer_error(stream.res(Error)::in,
-    read_buffer(Stream, State, Error)::read_buffer_di,
-    read_buffer(Stream, State, Error)::read_buffer_uo) is det
-    <= stream.bulk_reader(Stream, byte_index, bitmap, State, Error).
-
-set_buffer_error(Error, read_buffer(!.Buffer), read_buffer(!:Buffer)) :-
-    do_set_buffer_error(Error, !Buffer).
-
 :- pred do_set_buffer_error(stream.res(Error)::in,
     bit_buffer(Stream, State, Error)::bit_buffer_di,
     bit_buffer(Stream, State, Error)::bit_buffer_uo) is det.
@@ -621,7 +606,7 @@ set_buffer_error(Error, read_buffer(!.Buffer), read_buffer(!:Buffer)) :-
 do_set_buffer_error(Error, !Buffer) :-
     set_read_status(Error, !Buffer).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 % None of these instances work because of limitations in the type and
 % RTTI system.

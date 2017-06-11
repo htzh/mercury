@@ -16,38 +16,32 @@
 :- interface.
 
 :- import_module hlds.hlds_data.
-:- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_module.
-:- import_module hlds.make_hlds.make_hlds_passes.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.prog_data.
 
-:- import_module bool.
 :- import_module list.
 
 %-----------------------------------------------------------------------------%
 
-    % We allow more than one "definition" for a given type so
-    % long all of them except one are actually just declarations,
-    % e.g. `:- type t.', which is parsed as an type definition for
-    % t which defines t as an abstract_type.
+    % We allow more than one "definition" for a given type, as long as
+    % only one of them is actually a definition for the current back end.
+    % The others may be declarations, which just declare the type name,
+    % such as the abstract type "definition" `:- type t.', or they may be
+    % definitions for other backends.
     %
 :- pred module_add_type_defn(tvarset::in, sym_name::in, list(type_param)::in,
-    type_defn::in, condition::in, prog_context::in, item_status::in,
+    type_defn::in, prog_context::in, type_status::in, need_qualifier::in,
     module_info::in, module_info::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
     % Add the constructors and special preds for a type to the HLDS.
     %
 :- pred process_type_defn(type_ctor::in, hlds_type_defn::in,
-    bool::in, bool::out, module_info::in, module_info::out,
+    found_invalid_type::in, found_invalid_type::out,
+    module_info::in, module_info::out,
     list(error_spec)::in, list(error_spec)::out) is det.
-
-:- pred make_status_abstract(import_status::in, import_status::out) is det.
-
-:- pred combine_status(import_status::in, import_status::in,
-    import_status::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -60,30 +54,29 @@
 :- import_module hlds.make_hlds.make_hlds_error.
 :- import_module hlds.make_hlds.make_hlds_passes.
 :- import_module hlds.make_tags.
-:- import_module hlds.hlds_out.
-:- import_module hlds.hlds_out.hlds_out_util.
 :- import_module libs.globals.
-:- import_module libs.options.
+:- import_module libs.op_mode.
 :- import_module parse_tree.module_qual.
+:- import_module parse_tree.prog_out.
 :- import_module parse_tree.prog_type.
 
+:- import_module bool.
 :- import_module int.
 :- import_module map.
 :- import_module multi_map.
-:- import_module pair.
 :- import_module require.
 :- import_module string.
 :- import_module term.
 
 %-----------------------------------------------------------------------------%
 
-module_add_type_defn(TVarSet, Name, Args, TypeDefn, _Cond, Context,
-        item_status(Status0, NeedQual), !ModuleInfo, !Specs) :-
+module_add_type_defn(TVarSet, Name, Args, TypeDefn, Context,
+        TypeStatus0, NeedQual, !ModuleInfo, !Specs) :-
     module_info_get_globals(!.ModuleInfo, Globals),
     list.length(Args, Arity),
     TypeCtor = type_ctor(Name, Arity),
     convert_type_defn(TypeDefn, TypeCtor, Globals, Body0),
-    (
+    ( if
         (
             Body0 = hlds_abstract_type(_)
         ;
@@ -92,13 +85,16 @@ module_add_type_defn(TVarSet, Name, Args, TypeDefn, _Cond, Context,
             % If the type definition comes from a .int2 file then we must
             % treat it as abstract. The constructors may only be used
             % by the mode system for comparing `bound' insts to `ground'.
+            % XXX This is NOT a robust record of the source; the context
+            % could be lost for any number of reasons.
+            % XXX STATUS The status should tell us.
         )
-    ->
-        make_status_abstract(Status0, Status1)
-    ;
-        Status1 = Status0
+    then
+        type_make_status_abstract(TypeStatus0, TypeStatus1)
+    else
+        TypeStatus1 = TypeStatus0
     ),
-    (
+    ( if
         % Discriminated unions whose definition consists of a single
         % zero-arity constructor are dummy types. Dummy types are not allowed
         % to have user-defined equality or comparison.
@@ -108,181 +104,192 @@ module_add_type_defn(TVarSet, Name, Args, TypeDefn, _Cond, Context,
         list.length(Constructor ^ cons_args, 0),
         MaybeUserUC = yes(_),
         % Only report errors for types defined in this module.
-        status_defined_in_this_module(Status0) = yes
-    ->
+        type_status_defined_in_this_module(TypeStatus0) = yes
+    then
         DummyMainPieces = [words("Error: the type"),
-            sym_name_and_arity(Name / Arity),
+            qual_sym_name_and_arity(sym_name_arity(Name, Arity)),
             words("is not allowed to have user-defined equality"),
-            words("or comparison.")],
+            words("or comparison."), nl],
         DummyVerbosePieces = [words("Discriminated unions whose body"),
             words("consists of a single zero-arity constructor"),
-            words("cannot have user-defined equality or comparison.")],
+            words("cannot have user-defined equality or comparison."), nl],
         DummyMsg = simple_msg(Context,
-            [always(DummyMainPieces), verbose_only(DummyVerbosePieces)]),
+            [always(DummyMainPieces),
+            verbose_only(verbose_once, DummyVerbosePieces)]),
         DummySpec = error_spec(severity_error, phase_parse_tree_to_hlds,
             [DummyMsg]),
         !:Specs = [DummySpec | !.Specs]
-    ;
+    else
         true
     ),
     module_info_get_type_table(!.ModuleInfo, TypeTable0),
-    (
+    ( if search_type_ctor_defn(TypeTable0, TypeCtor, OldDefn0) then
+        hlds_data.get_type_defn_status(OldDefn0, OldTypeStatus),
         % The type is exported if *any* occurrence is exported,
         % even a previous abstract occurrence.
-        search_type_ctor_defn(TypeTable0, TypeCtor, OldDefn0)
-    ->
-        hlds_data.get_type_defn_status(OldDefn0, OldStatus),
-        combine_status(Status1, OldStatus, Status),
+        type_combine_status(TypeStatus1, OldTypeStatus, TypeStatus),
         hlds_data.get_type_defn_body(OldDefn0, OldBody0),
         combine_is_solver_type(OldBody0, OldBody, Body0, Body),
-        ( is_solver_type_is_inconsistent(OldBody, Body) ->
+        ( if is_solver_type_is_inconsistent(OldBody, Body) then
             % The existing definition has an is_solver_type annotation
             % which is different to the current definition.
             SolverPieces = [words("In definition of type"),
-                sym_name_and_arity(Name / Arity), suffix(":"), nl,
+                qual_sym_name_and_arity(sym_name_arity(Name, Arity)),
+                suffix(":"), nl,
                 words("error: all definitions of a type must have"),
-                words("consistent `solver' annotations")],
+                words("consistent"), quote("solver"), words("annotations."),
+                nl],
             SolverMsg = simple_msg(Context, [always(SolverPieces)]),
             SolverSpec = error_spec(severity_error, phase_parse_tree_to_hlds,
                 [SolverMsg]),
             !:Specs = [SolverSpec | !.Specs],
             MaybeOldDefn = no
-        ;
+        else
             hlds_data.set_type_defn_body(OldBody, OldDefn0, OldDefn),
             MaybeOldDefn = yes(OldDefn)
         )
-    ;
+    else
         MaybeOldDefn = no,
-        Status = Status1,
+        TypeStatus = TypeStatus1,
         Body = Body0
     ),
     % XXX kind inference:
-    % We set the kinds to `star'.  This will be different when we have a
+    % We set the kinds to `star'. This will be different when we have a
     % kind system.
     map.init(KindMap),
-    hlds_data.set_type_defn(TVarSet, Args, KindMap, Body, Status, no,
-        NeedQual, Context, TypeDefn1),
-    (
+    hlds_data.set_type_defn(TVarSet, Args, KindMap, Body, no,
+        TypeStatus, NeedQual, type_defn_no_prev_errors, Context, TypeDefn1),
+    ( if
         MaybeOldDefn = no,
         Body = hlds_foreign_type(_)
-    ->
+    then
         ForeignDeclPieces = [words("Error: type "),
-            sym_name_and_arity(Name / Arity),
-            words("defined as foreign_type without being declared.")],
+            qual_sym_name_and_arity(sym_name_arity(Name, Arity)),
+            words("defined as foreign_type without being declared."), nl],
         ForeignDeclMsg = simple_msg(Context, [always(ForeignDeclPieces)]),
         ForeignDeclSpec = error_spec(severity_error, phase_parse_tree_to_hlds,
             [ForeignDeclMsg]),
         !:Specs = [ForeignDeclSpec | !.Specs]
-    ;
+    else if
         MaybeOldDefn = yes(OldDefn1),
         Body = hlds_foreign_type(_),
-        hlds_data.get_type_defn_status(OldDefn1, OldStatus1),
+        hlds_data.get_type_defn_status(OldDefn1, OldTypeStatus1),
         hlds_data.get_type_defn_body(OldDefn1, OldBody1),
         OldBody1 = hlds_abstract_type(_),
-        status_is_exported_to_non_submodules(OldStatus1) = no,
-        status_is_exported_to_non_submodules(Status0) = yes
-    ->
-        ForeignVisPieces = [words("Error: pragma foreign_type "),
-            sym_name_and_arity(Name / Arity),
-            words("must have the same visibility as the type declaration.")],
+        type_status_is_exported_to_non_submodules(OldTypeStatus1) = no,
+        type_status_is_exported_to_non_submodules(TypeStatus0) = yes
+    then
+        ForeignVisPieces = [words("Error: the"),
+            pragma_decl("foreign_type"), words("for"),
+            unqual_sym_name_and_arity(sym_name_arity(Name, Arity)),
+            words("must have the same visibility"),
+            words("as its type declaration."), nl],
         ForeignVisMsg = simple_msg(Context, [always(ForeignVisPieces)]),
         ForeignVisSpec = error_spec(severity_error, phase_parse_tree_to_hlds,
             [ForeignVisMsg]),
-        !:Specs = [ForeignVisSpec | !.Specs]
-    ;
+        !:Specs = [ForeignVisSpec | !.Specs],
+        % We don't want check_for_missing_type_defns to later report
+        % that this type has no non-abstract definition.
+        set_type_defn_prev_errors(type_defn_prev_errors,
+            TypeDefn1, ErrTypeDefn),
+        replace_type_ctor_defn(TypeCtor, ErrTypeDefn,
+            TypeTable0, TypeTable),
+        module_info_set_type_table(TypeTable, !ModuleInfo)
+    else if
         % If there was an existing non-abstract definition for the type, ...
         MaybeOldDefn = yes(OldDefn2),
-        hlds_data.get_type_defn_tvarset(OldDefn2, TVarSet_2),
-        hlds_data.get_type_defn_tparams(OldDefn2, Params_2),
-        hlds_data.get_type_defn_kind_map(OldDefn2, KindMap_2),
-        hlds_data.get_type_defn_body(OldDefn2, Body_2),
+        hlds_data.get_type_defn_tvarset(OldDefn2, TVarSet2),
+        hlds_data.get_type_defn_tparams(OldDefn2, Params2),
+        hlds_data.get_type_defn_kind_map(OldDefn2, KindMap2),
+        hlds_data.get_type_defn_body(OldDefn2, OldDefnBody2),
         hlds_data.get_type_defn_context(OldDefn2, OrigContext),
-        hlds_data.get_type_defn_status(OldDefn2, OrigStatus),
+        hlds_data.get_type_defn_status(OldDefn2, OrigTypeStatus),
         hlds_data.get_type_defn_in_exported_eqv(OldDefn2, OrigInExportedEqv),
-        hlds_data.get_type_defn_need_qualifier(OldDefn2, OrigNeedQual),
-        Body_2 \= hlds_abstract_type(_)
-    ->
-        globals.get_target(Globals, Target),
-        globals.lookup_bool_option(Globals, make_optimization_interface,
-            MakeOptInt),
-        ( Body = hlds_foreign_type(_) ->
-            module_info_set_contains_foreign_type(!ModuleInfo)
-        ;
-            true
-        ),
-        (
-            % ... then if this definition was abstract, ignore it
+        hlds_data.get_type_defn_ctors_need_qualifier(OldDefn2, OrigNeedQual),
+        OldDefnBody2 \= hlds_abstract_type(_)
+    then
+        ( if
+            % ... then if this definition is abstract, ignore it
             % (but update the status of the old defn if necessary).
             Body = hlds_abstract_type(_)
-        ->
-            ( Status = OrigStatus ->
+        then
+            ( if TypeStatus = OrigTypeStatus then
                 true
-            ;
-                hlds_data.set_type_defn(TVarSet_2, Params_2, KindMap_2,
-                    Body_2, Status, OrigInExportedEqv, OrigNeedQual,
-                    OrigContext, TypeDefn3),
+            else
+                hlds_data.set_type_defn(TVarSet2, Params2, KindMap2,
+                    OldDefnBody2, OrigInExportedEqv, TypeStatus, OrigNeedQual,
+                    type_defn_no_prev_errors, OrigContext, TypeDefn3),
                 replace_type_ctor_defn(TypeCtor, TypeDefn3,
                     TypeTable0, TypeTable),
                 module_info_set_type_table(TypeTable, !ModuleInfo)
             )
-        ;
-            merge_foreign_type_bodies(Target, MakeOptInt, Body, Body_2,
+        else if
+            merge_maybe_foreign_type_bodies(Globals, OldDefnBody2, Body,
                 NewBody)
-        ->
-            ( check_foreign_type_visibility(OrigStatus, Status1) ->
-                hlds_data.set_type_defn(TVarSet_2, Params_2, KindMap_2,
-                    NewBody, Status, OrigInExportedEqv, NeedQual, Context,
-                    TypeDefn3),
+        then
+            ( if
+                check_foreign_type_visibility(OrigTypeStatus, TypeStatus1)
+            then
+                hlds_data.set_type_defn(TVarSet2, Params2, KindMap2, NewBody,
+                    OrigInExportedEqv, TypeStatus, NeedQual,
+                    type_defn_no_prev_errors, Context, TypeDefn3),
                 replace_type_ctor_defn(TypeCtor, TypeDefn3,
                     TypeTable0, TypeTable),
                 module_info_set_type_table(TypeTable, !ModuleInfo)
-            ;
+            else
                 module_info_incr_errors(!ModuleInfo),
                 DiffVisPieces = [words("In definition of type"),
-                    sym_name_and_arity(Name / Arity), suffix(":"), nl,
+                    qual_sym_name_and_arity(sym_name_arity(Name, Arity)),
+                    suffix(":"), nl,
                     words("error: all definitions of a type"),
-                    words("must have the same visibility")],
+                    words("must have the same visibility."), nl],
                 DiffVisMsg = simple_msg(Context, [always(DiffVisPieces)]),
                 DiffVisSpec = error_spec(severity_error,
                     phase_parse_tree_to_hlds, [DiffVisMsg]),
-                !:Specs = [DiffVisSpec | !.Specs]
+                !:Specs = [DiffVisSpec | !.Specs],
+                set_type_defn_prev_errors(type_defn_prev_errors,
+                    TypeDefn1, ErrTypeDefn),
+                replace_type_ctor_defn(TypeCtor, ErrTypeDefn,
+                    TypeTable0, TypeTable),
+                module_info_set_type_table(TypeTable, !ModuleInfo)
             )
-        ;
+        else if
             % ..., otherwise issue an error message if the second
             % definition wasn't read while reading .opt files.
-            Status = status_opt_imported
-        ->
+            TypeStatus = type_status(status_opt_imported)
+        then
             true
-        ;
+        else
+            % XXX STATUS
             module_info_incr_errors(!ModuleInfo),
-            multiple_def_error(Status, Name, Arity, "type", Context,
-                OrigContext, [], !Specs)
+            multiple_def_error(is_not_opt_imported, Name, Arity,
+                "type", Context, OrigContext, [], !Specs)
         )
-    ;
+    else
         add_or_replace_type_ctor_defn(TypeCtor, TypeDefn1,
             TypeTable0, TypeTable),
         module_info_set_type_table(TypeTable, !ModuleInfo),
-        (
+        ( if
             % XXX We can't handle abstract exported polymorphic equivalence
             % types with monomorphic bodies, because the compiler stuffs up
             % the type_info handling -- the caller passes type_infos,
             % but the callee expects no type_infos.
             Body = hlds_eqv_type(EqvType),
-            Status = status_abstract_exported,
+            TypeStatus = type_status(status_abstract_exported),
             list.member(Var, Args),
-            \+ type_contains_var(EqvType, Var)
-        ->
+            not type_contains_var(EqvType, Var)
+        then
             PolyEqvPieces = [words("Sorry, not implemented:"),
                 words("polymorphic equivalence type,"),
                 words("with monomorphic definition,"),
                 words("exported as abstract type.")],
             PolyEqvMsg = simple_msg(Context,
                 [always(PolyEqvPieces),
-                verbose_only(abstract_monotype_workaround)]),
+                verbose_only(verbose_once, abstract_monotype_workaround)]),
             PolyEqvSpec = error_spec(severity_error, phase_parse_tree_to_hlds,
                 [PolyEqvMsg]),
             !:Specs = [PolyEqvSpec | !.Specs]
-        ;
+        else
             true
         )
     ).
@@ -342,32 +349,33 @@ maybe_get_body_is_solver_type(hlds_abstract_type(Details), IsSolverType) :-
 
     % check_foreign_type_visibility(OldStatus, NewDefnStatus).
     %
-    % Check that the visibility of the new definition for
-    % a foreign type matches that of previous definitions.
+    % Check that the visibility of the new definition for a foreign type
+    % matches that of previous definitions.
     %
-:- pred check_foreign_type_visibility(import_status::in, import_status::in)
+:- pred check_foreign_type_visibility(type_status::in, type_status::in)
     is semidet.
 
 check_foreign_type_visibility(OldStatus, NewDefnStatus) :-
-    ( OldStatus = status_abstract_exported  ->
-        % If OldStatus is abstract_exported, the previous
-        % definitions were local.
-        status_is_exported_to_non_submodules(NewDefnStatus) = no
-    ; OldStatus = status_exported ->
-        NewDefnStatus = status_exported
-    ;
-        status_is_exported_to_non_submodules(OldStatus) = no,
-        status_is_exported_to_non_submodules(NewDefnStatus) = no
+    ( if OldStatus = type_status(status_abstract_exported)  then
+        % If OldStatus is abstract_exported, the previous definitions
+        % were local.
+        type_status_is_exported_to_non_submodules(NewDefnStatus) = no
+    else if OldStatus = type_status(status_exported) then
+        NewDefnStatus = type_status(status_exported)
+    else
+        type_status_is_exported_to_non_submodules(OldStatus) = no,
+        type_status_is_exported_to_non_submodules(NewDefnStatus) = no
     ).
 
-process_type_defn(TypeCtor, TypeDefn, !FoundError, !ModuleInfo, !Specs) :-
+process_type_defn(TypeCtor, TypeDefn, !FoundInvalidType, !ModuleInfo,
+        !Specs) :-
     get_type_defn_context(TypeDefn, Context),
     get_type_defn_tvarset(TypeDefn, TVarSet),
     get_type_defn_tparams(TypeDefn, Args),
     get_type_defn_kind_map(TypeDefn, KindMap),
     get_type_defn_body(TypeDefn, Body),
     get_type_defn_status(TypeDefn, Status),
-    get_type_defn_need_qualifier(TypeDefn, NeedQual),
+    get_type_defn_ctors_need_qualifier(TypeDefn, NeedQual),
     module_info_get_globals(!.ModuleInfo, Globals),
     (
         Body = hlds_du_type(ConsList, _, _, _, UserEqCmp, _DirectArgCtors,
@@ -382,50 +390,65 @@ process_type_defn(TypeCtor, TypeDefn, !FoundError, !ModuleInfo, !Specs) :-
         ;
             TypeCtorSymName = qualified(TypeCtorModuleName, _)
         ),
-        ctors_add(ConsList, TypeCtor, TypeCtorModuleName, TVarSet, Args,
-            KindMap, NeedQual, PQInfo, Context, Status,
+        add_type_defn_ctors(ConsList, TypeCtor, TypeCtorModuleName, TVarSet,
+            Args, KindMap, NeedQual, PQInfo, Status,
             CtorFields0, CtorFields, Ctors0, Ctors, [], CtorAddSpecs),
         module_info_set_cons_table(Ctors, !ModuleInfo),
         module_info_set_ctor_field_table(CtorFields, !ModuleInfo),
 
         (
-            CtorAddSpecs = [],
-            NewFoundError = no
+            CtorAddSpecs = []
         ;
             CtorAddSpecs = [_ | _],
-            NewFoundError = yes,
+            !:FoundInvalidType = found_invalid_type,
             !:Specs = CtorAddSpecs ++ !.Specs
         ),
 
-        % XXX Why is this being done now, rather than *after* all the types
-        % have been added into the HLDS?
-        (
+        % Note that process_type_defn is invoked only *after* all the types
+        % have been added into the HLDS.
+        ( if
             type_ctor_should_be_notag(Globals, TypeCtor,
                 ReservedTag, ConsList, UserEqCmp, CtorName, CtorArgType, _)
-        ->
+        then
             NoTagType = no_tag_type(Args, CtorName, CtorArgType),
             module_info_get_no_tag_types(!.ModuleInfo, NoTagTypes0),
             map.set(TypeCtor, NoTagType, NoTagTypes0, NoTagTypes),
             module_info_set_no_tag_types(NoTagTypes, !ModuleInfo)
-        ;
+        else
             true
+        )
+    ;
+        Body = hlds_foreign_type(ForeignTypeBody),
+        get_type_defn_prev_errors(TypeDefn, PrevErrors),
+        check_foreign_type(TypeCtor, ForeignTypeBody, PrevErrors, Context,
+            FoundInvalidTypeInForeignBody, !ModuleInfo, !Specs),
+        (
+            FoundInvalidTypeInForeignBody = found_invalid_type,
+            !:FoundInvalidType = found_invalid_type
+        ;
+            FoundInvalidTypeInForeignBody = did_not_find_invalid_type
         )
     ;
         ( Body = hlds_abstract_type(_)
         ; Body = hlds_solver_type(_, _)
         ; Body = hlds_eqv_type(_)
-        ),
-        NewFoundError = no
-    ;
-        Body = hlds_foreign_type(ForeignTypeBody),
-        check_foreign_type(TypeCtor, ForeignTypeBody, Context,
-            NewFoundError, !ModuleInfo, !Specs)
+        )
     ),
-    !:FoundError = !.FoundError `or` NewFoundError,
     (
-        !.FoundError = yes
+        !.FoundInvalidType = found_invalid_type
+        % If there is an error in this type definition, we may not
+        % be able to add the special preds for it correctly.
+        % Even if the errors occurred only in other types, adding the special
+        % predicates for this error-free type wouldn't help us, because
+        % the presence of an invalid type anywhere will prevent the compiler
+        % from going on to process those special predicates. It won't even
+        % look at them to find errors, such as user-defined unify and compare
+        % predicates being not found or having the wrong signature.
+        % XXX If this ever changes, we *should* add the special preds
+        % for error-free type definitions regardless of the presence
+        % of any previous type errors.
     ;
-        !.FoundError = no,
+        !.FoundInvalidType = did_not_find_invalid_type,
         % XXX kind inference:
         % We set the kinds to `star'. This will be different when we have
         % a kind system.
@@ -439,36 +462,40 @@ process_type_defn(TypeCtor, TypeDefn, !FoundError, !ModuleInfo, !Specs) :-
     % backend that the foreign type has a representation on that backend.
     %
 :- pred check_foreign_type(type_ctor::in, foreign_type_body::in,
-    prog_context::in, bool::out, module_info::in, module_info::out,
+    type_defn_prev_errors::in, prog_context::in, found_invalid_type::out,
+    module_info::in, module_info::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
-check_foreign_type(TypeCtor, ForeignTypeBody, Context, FoundError, !ModuleInfo,
-        !Specs) :-
+check_foreign_type(TypeCtor, ForeignTypeBody, PrevErrors, Context,
+        FoundInvalidType, !ModuleInfo, !Specs) :-
     TypeCtor = type_ctor(Name, Arity),
     module_info_get_globals(!.ModuleInfo, Globals),
     globals.get_target(Globals, Target),
-    ( have_foreign_type_for_backend(Target, ForeignTypeBody, yes) ->
-        FoundError = no
-    ;
+    ( if have_foreign_type_for_backend(Target, ForeignTypeBody, yes) then
+        FoundInvalidType = did_not_find_invalid_type
+    else if PrevErrors = type_defn_prev_errors then
+        % The error message being generated below may be misleading,
+        % since the relevant foreign language definition of this type
+        % may have been present, but in error.
+        FoundInvalidType = found_invalid_type
+    else
         ( Target = target_c, LangStr = "C"
-        ; Target = target_il, LangStr = "IL"
         ; Target = target_csharp, LangStr = "C#"
         ; Target = target_java, LangStr = "Java"
-        ; Target = target_x86_64, LangStr = "C"
         ; Target = target_erlang, LangStr = "Erlang"
         ),
         MainPieces = [words("Error: no"), fixed(LangStr),
-            fixed("`pragma foreign_type'"), words("declaration for"),
-            sym_name_and_arity(Name/Arity), nl],
+            pragma_decl("foreign_type"), words("declaration for"),
+            unqual_sym_name_and_arity(sym_name_arity(Name, Arity)),
+            suffix("."), nl],
         VerbosePieces = [words("There are representations for this type"),
             words("on other back-ends, but none for this back-end."), nl],
         Msg = simple_msg(Context,
-            [always(MainPieces),
-            option_is_set(very_verbose, yes, [always(VerbosePieces)])]),
+            [always(MainPieces), verbose_only(verbose_always, VerbosePieces)]),
         Spec = error_spec(severity_error, phase_parse_tree_to_hlds,
             [Msg]),
         !:Specs = [Spec | !.Specs],
-        FoundError = yes
+        FoundInvalidType = found_invalid_type
     ).
 
     % Ignore Mercury definitions if we've got a foreign type
@@ -477,51 +504,73 @@ check_foreign_type(TypeCtor, ForeignTypeBody, Context, FoundError, !ModuleInfo,
     % if we are making the optimization interface so that it gets
     % output in the .opt file.
     %
-:- pred merge_foreign_type_bodies(compilation_target::in, bool::in,
-    hlds_type_body::in, hlds_type_body::in, hlds_type_body::out)
-    is semidet.
+:- pred merge_maybe_foreign_type_bodies(globals::in,
+    hlds_type_body::in, hlds_type_body::in, hlds_type_body::out) is semidet.
 
-merge_foreign_type_bodies(Target, MakeOptInterface,
-        hlds_foreign_type(ForeignTypeBody0), Body1, Body) :-
-    MaybeForeignTypeBody1 = Body1 ^ du_type_is_foreign_type,
+merge_maybe_foreign_type_bodies(Globals, BodyA, BodyB, Body) :-
     (
-        MaybeForeignTypeBody1 = yes(ForeignTypeBody1)
+        BodyA = hlds_foreign_type(ForeignTypeBodyA),
+        BodyB = hlds_du_type(_, _, _, _, _, _, _, _, _),
+        merge_foreign_and_du_type_bodies(Globals, ForeignTypeBodyA, BodyB,
+            Body)
     ;
-        MaybeForeignTypeBody1 = no,
-        ForeignTypeBody1 = foreign_type_body(no, no, no, no, no)
-    ),
-    merge_foreign_type_bodies_2(ForeignTypeBody0, ForeignTypeBody1,
-        ForeignTypeBody),
-    (
-        have_foreign_type_for_backend(Target, ForeignTypeBody, yes),
-        MakeOptInterface = no
-    ->
+        BodyA = hlds_du_type(_, _, _, _, _, _, _, _, _),
+        BodyB = hlds_foreign_type(ForeignTypeBodyB),
+        merge_foreign_and_du_type_bodies(Globals, ForeignTypeBodyB, BodyA,
+            Body)
+    ;
+        BodyA = hlds_foreign_type(ForeignTypeBodyA),
+        BodyB = hlds_foreign_type(ForeignTypeBodyB),
+        merge_foreign_type_bodies(ForeignTypeBodyA, ForeignTypeBodyB,
+            ForeignTypeBody),
         Body = hlds_foreign_type(ForeignTypeBody)
-    ;
-        Body = Body1 ^ du_type_is_foreign_type := yes(ForeignTypeBody)
     ).
-merge_foreign_type_bodies(Target, MakeOptInterface,
-        Body0 @ hlds_du_type(_, _, _, _, _, _, _, _, _),
-        Body1 @ hlds_foreign_type(_), Body) :-
-    merge_foreign_type_bodies(Target, MakeOptInterface, Body1, Body0, Body).
-merge_foreign_type_bodies(_, _, hlds_foreign_type(Body0),
-        hlds_foreign_type(Body1), hlds_foreign_type(Body)) :-
-    merge_foreign_type_bodies_2(Body0, Body1, Body).
 
-:- pred merge_foreign_type_bodies_2(foreign_type_body::in,
+:- inst hlds_type_body_du
+    --->    hlds_du_type(ground, ground, ground, ground, ground,
+                ground, ground, ground, ground).
+
+:- pred merge_foreign_and_du_type_bodies(globals::in,
+    foreign_type_body::in, hlds_type_body::in(hlds_type_body_du),
+    hlds_type_body::out) is semidet.
+
+merge_foreign_and_du_type_bodies(Globals, ForeignTypeBodyA, DuTypeBodyB,
+        Body) :-
+    DuTypeBodyB = hlds_du_type(_Ctors, _TagValues, _CheaperTagTest,
+        _DuTypeKind, _UserEq, _DirectArgCtors, _ReservedTag, _ReservedAddr,
+        MaybeForeignTypeBodyB),
+    (
+        MaybeForeignTypeBodyB = yes(ForeignTypeBodyB)
+    ;
+        MaybeForeignTypeBodyB = no,
+        ForeignTypeBodyB = foreign_type_body(no, no, no, no)
+    ),
+    merge_foreign_type_bodies(ForeignTypeBodyA, ForeignTypeBodyB,
+        ForeignTypeBody),
+    globals.get_target(Globals, Target),
+    globals.get_op_mode(Globals, OpMode),
+    ( if
+        have_foreign_type_for_backend(Target, ForeignTypeBody, yes),
+        OpMode \= opm_top_args(opma_augment(opmau_make_opt_int))
+    then
+        Body = hlds_foreign_type(ForeignTypeBody)
+    else
+        Body = DuTypeBodyB ^ du_type_is_foreign_type := yes(ForeignTypeBody)
+    ).
+
+:- pred merge_foreign_type_bodies(foreign_type_body::in,
     foreign_type_body::in, foreign_type_body::out) is semidet.
 
-merge_foreign_type_bodies_2(TypeBodyA, TypeBodyB, TypeBody) :-
-    TypeBodyA = foreign_type_body(MaybeILA, MaybeCA, MaybeJavaA, MaybeCSharpA,
+merge_foreign_type_bodies(TypeBodyA, TypeBodyB, TypeBody) :-
+    TypeBodyA = foreign_type_body(MaybeCA, MaybeJavaA, MaybeCSharpA,
         MaybeErlangA),
-    TypeBodyB = foreign_type_body(MaybeILB, MaybeCB, MaybeJavaB, MaybeCSharpB,
+    TypeBodyB = foreign_type_body(MaybeCB, MaybeJavaB, MaybeCSharpB,
         MaybeErlangB),
-    merge_maybe(MaybeILA, MaybeILB, MaybeIL),
     merge_maybe(MaybeCA, MaybeCB, MaybeC),
     merge_maybe(MaybeJavaA, MaybeJavaB, MaybeJava),
     merge_maybe(MaybeCSharpA, MaybeCSharpB, MaybeCSharp),
     merge_maybe(MaybeErlangA, MaybeErlangB, MaybeErlang),
-    TypeBody = foreign_type_body(MaybeIL, MaybeC, MaybeJava, MaybeCSharp,
+    TypeBody = foreign_type_body(MaybeC, MaybeJava, MaybeCSharp,
         MaybeErlang).
 
 :- pred merge_maybe(maybe(T)::in, maybe(T)::in, maybe(T)::out) is semidet.
@@ -529,109 +578,6 @@ merge_foreign_type_bodies_2(TypeBodyA, TypeBodyB, TypeBody) :-
 merge_maybe(no, no, no).
 merge_maybe(yes(T), no, yes(T)).
 merge_maybe(no, yes(T), yes(T)).
-
-make_status_abstract(Status, AbstractStatus) :-
-    ( Status = status_exported ->
-        AbstractStatus = status_abstract_exported
-    ; Status = status_imported(_) ->
-        AbstractStatus = status_abstract_imported
-    ;
-        AbstractStatus = Status
-    ).
-
-combine_status(StatusA, StatusB, Status) :-
-    ( combine_status_2(StatusA, StatusB, CombinedStatus) ->
-        Status = CombinedStatus
-    ;
-        unexpected($module, $pred, "unexpected status for type definition")
-    ).
-
-:- pred combine_status_2(import_status::in, import_status::in,
-    import_status::out) is semidet.
-
-combine_status_2(status_imported(ImportLocn), Status2, Status) :-
-    require_complete_switch [ImportLocn]
-    (
-        ( ImportLocn = import_locn_implementation
-        ; ImportLocn = import_locn_interface
-        ; ImportLocn = import_locn_ancestor
-        ),
-        combine_status_imported_non_private(Status2, Status)
-    ;
-        ImportLocn = import_locn_ancestor_private_interface_proper,
-        % If it's private, it's private.
-        Status = status_imported(import_locn_ancestor_private_interface_proper)
-    ).
-combine_status_2(status_local, Status2, Status) :-
-    combine_status_local(Status2, Status).
-combine_status_2(status_exported, _Status2, status_exported).
-combine_status_2(status_exported_to_submodules, Status2, Status) :-
-    combine_status_local(Status2, Status3),
-    ( Status3 = status_local ->
-        Status = status_exported_to_submodules
-    ;
-        Status = Status3
-    ).
-combine_status_2(status_opt_imported, _Status2, status_opt_imported).
-combine_status_2(status_abstract_imported, Status2, Status) :-
-    combine_status_abstract_imported(Status2, Status).
-combine_status_2(status_abstract_exported, Status2, Status) :-
-    combine_status_abstract_exported(Status2, Status).
-
-:- pred combine_status_imported_non_private(import_status::in,
-    import_status::out) is semidet.
-
-combine_status_imported_non_private(Status2, Status) :-
-    (
-        Status2 = status_imported(Section),
-        Status = status_imported(Section)
-    ;
-        Status2 = status_local,
-        Status = status_imported(import_locn_implementation)
-    ;
-        Status2 = status_exported,
-        Status = status_exported
-    ;
-        Status2 = status_opt_imported,
-        Status = status_opt_imported
-    ;
-        Status2 = status_abstract_imported,
-        Status = status_imported(import_locn_interface)
-    ;
-        Status2 = status_abstract_exported,
-        Status = status_abstract_exported
-    ).
-
-:- pred combine_status_local(import_status::in, import_status::out) is semidet.
-
-combine_status_local(status_exported_to_submodules,
-    status_exported_to_submodules).
-combine_status_local(status_imported(_),            status_local).
-combine_status_local(status_local,                  status_local).
-combine_status_local(status_exported,               status_exported).
-combine_status_local(status_opt_imported,           status_local).
-combine_status_local(status_abstract_imported,      status_local).
-combine_status_local(status_abstract_exported,      status_abstract_exported).
-
-:- pred combine_status_abstract_exported(import_status::in, import_status::out)
-    is det.
-
-combine_status_abstract_exported(Status2, Status) :-
-    ( Status2 = status_exported ->
-        Status = status_exported
-    ;
-        Status = status_abstract_exported
-    ).
-
-:- pred combine_status_abstract_imported(import_status::in, import_status::out)
-    is det.
-
-combine_status_abstract_imported(Status2, Status) :-
-    ( Status2 = status_imported(Section) ->
-        Status = status_imported(Section)
-    ;
-        Status = status_abstract_imported
-    ).
 
 :- pred convert_type_defn(type_defn::in, type_ctor::in, globals::in,
     hlds_type_body::out) is det.
@@ -648,9 +594,9 @@ convert_type_defn(parse_tree_du_type(Body, MaybeUserEqComp,
     assign_constructor_tags(Body, MaybeUserEqComp, TypeCtor, ReservedTagPragma,
         Globals, CtorTagMap, ReservedAddr, IsEnum),
     IsForeign = no,
-    ( ReservedAddr = does_not_use_reserved_address ->
+    ( if ReservedAddr = does_not_use_reserved_address then
         compute_cheaper_tag_test(CtorTagMap, CheaperTagTest)
-    ;
+    else
         CheaperTagTest = no_cheaper_tag_test
     ),
     HLDSBody = hlds_du_type(Body, CtorTagMap, CheaperTagTest, IsEnum,
@@ -664,45 +610,57 @@ convert_type_defn(parse_tree_abstract_type(Details), _, _,
 convert_type_defn(parse_tree_foreign_type(ForeignType, MaybeUserEqComp,
         Assertions), _, _, hlds_foreign_type(Body)) :-
     (
-        ForeignType = il(ILForeignType),
-        Data = foreign_type_lang_data(ILForeignType, MaybeUserEqComp,
-            Assertions),
-        Body = foreign_type_body(yes(Data), no, no, no, no)
-    ;
         ForeignType = c(CForeignType),
         Data = foreign_type_lang_data(CForeignType, MaybeUserEqComp,
             Assertions),
-        Body = foreign_type_body(no, yes(Data), no, no, no)
+        Body = foreign_type_body(yes(Data), no, no, no)
     ;
         ForeignType = java(JavaForeignType),
         Data = foreign_type_lang_data(JavaForeignType, MaybeUserEqComp,
             Assertions),
-        Body = foreign_type_body(no, no, yes(Data), no, no)
+        Body = foreign_type_body(no, yes(Data), no, no)
     ;
         ForeignType = csharp(CSharpForeignType),
         Data = foreign_type_lang_data(CSharpForeignType, MaybeUserEqComp,
             Assertions),
-        Body = foreign_type_body(no, no, no, yes(Data), no)
+        Body = foreign_type_body(no, no, yes(Data), no)
     ;
         ForeignType = erlang(ErlangForeignType),
         Data = foreign_type_lang_data(ErlangForeignType, MaybeUserEqComp,
             Assertions),
-        Body = foreign_type_body(no, no, no, no, yes(Data))
+        Body = foreign_type_body(no, no, no, yes(Data))
     ).
 
-:- pred ctors_add(list(constructor)::in, type_ctor::in, module_name::in,
-    tvarset::in, list(type_param)::in, tvar_kind_map::in, need_qualifier::in,
-    partial_qualifier_info::in, prog_context::in,
-    import_status::in, ctor_field_table::in, ctor_field_table::out,
+:- pred add_type_defn_ctors(list(constructor)::in, type_ctor::in,
+    module_name::in, tvarset::in, list(type_param)::in, tvar_kind_map::in,
+    need_qualifier::in, partial_qualifier_info::in, type_status::in,
+    ctor_field_table::in, ctor_field_table::out,
     cons_table::in, cons_table::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
-ctors_add([], _, _, _, _, _, _, _, _, _, !FieldNameTable, !Ctors, !Specs).
-ctors_add([Ctor | Rest], TypeCtor, TypeCtorModuleName, TVarSet, TypeParams,
-        KindMap, NeedQual, PQInfo, _Context, ImportStatus, !FieldNameTable,
-        !Ctors, !Specs) :-
-    Ctor = ctor(ExistQVars, Constraints, Name, Args, Context),
-    list.length(Args, Arity),
+add_type_defn_ctors([], _, _, _, _, _, _, _, _,
+        !FieldNameTable, !ConsTable, !Specs).
+add_type_defn_ctors([Ctor | Ctors], TypeCtor, TypeCtorModuleName, TVarSet,
+        TypeParams, KindMap, NeedQual, PQInfo, TypeStatus,
+        !FieldNameTable, !ConsTable, !Specs) :-
+    add_type_defn_ctor(Ctor, TypeCtor, TypeCtorModuleName, TVarSet,
+        TypeParams, KindMap, NeedQual, PQInfo, TypeStatus,
+        !FieldNameTable, !ConsTable, !Specs),
+    add_type_defn_ctors(Ctors, TypeCtor, TypeCtorModuleName, TVarSet,
+        TypeParams, KindMap, NeedQual, PQInfo, TypeStatus,
+        !FieldNameTable, !ConsTable, !Specs).
+
+:- pred add_type_defn_ctor(constructor::in, type_ctor::in,
+    module_name::in, tvarset::in, list(type_param)::in, tvar_kind_map::in,
+    need_qualifier::in, partial_qualifier_info::in, type_status::in,
+    ctor_field_table::in, ctor_field_table::out,
+    cons_table::in, cons_table::out,
+    list(error_spec)::in, list(error_spec)::out) is det.
+
+add_type_defn_ctor(Ctor, TypeCtor, TypeCtorModuleName, TVarSet,
+        TypeParams, KindMap, NeedQual, PQInfo, TypeStatus,
+        !FieldNameTable, !ConsTable, !Specs) :-
+    Ctor = ctor(ExistQVars, Constraints, Name, Args, Arity, Context),
     BaseName = unqualify_name(Name),
     QualifiedName = qualified(TypeCtorModuleName, BaseName),
     UnqualifiedName = unqualified(BaseName),
@@ -713,17 +671,18 @@ ctors_add([Ctor | Rest], TypeCtor, TypeCtorModuleName, TVarSet, TypeParams,
 
     ConsDefn = hlds_cons_defn(TypeCtor, TVarSet, TypeParams, KindMap,
         ExistQVars, Constraints, Args, Context),
-    get_partial_qualifiers(TypeCtorModuleName, PQInfo, PartialQuals),
+    get_partial_qualifiers(mq_not_used_in_interface, TypeCtorModuleName,
+        PQInfo, PartialQuals),
 
     % Check that there is at most one definition of a given cons_id
     % in each type.
-    (
-        search_cons_table(!.Ctors, QualifiedConsIdA, QualifiedConsDefnsA),
+    ( if
+        search_cons_table(!.ConsTable, QualifiedConsIdA, QualifiedConsDefnsA),
         some [OtherConsDefn] (
             list.member(OtherConsDefn, QualifiedConsDefnsA),
             OtherConsDefn ^ cons_type_ctor = TypeCtor
         )
-    ->
+    then
         QualifiedConsIdStr = cons_id_and_arity_to_string(QualifiedConsIdA),
         TypeCtorStr = type_ctor_to_string(TypeCtor),
         Pieces = [words("Error: constructor"), quote(QualifiedConsIdStr),
@@ -732,7 +691,7 @@ ctors_add([Ctor | Rest], TypeCtor, TypeCtorModuleName, TVarSet, TypeParams,
         Msg = simple_msg(Context, [always(Pieces)]),
         Spec = error_spec(severity_error, phase_parse_tree_to_hlds, [Msg]),
         !:Specs = [Spec | !.Specs]
-    ;
+    else
         some [!OtherConsIds] (
             % Schedule the addition of the fully-qualified cons_id
             % into the cons_table.
@@ -755,19 +714,14 @@ ctors_add([Ctor | Rest], TypeCtor, TypeCtorModuleName, TVarSet, TypeParams,
 
             % Do the scheduled additions.
             insert_into_cons_table(MainConsId, !.OtherConsIds, ConsDefn,
-                !Ctors)
+                !ConsTable)
         )
     ),
 
     FieldNames = list.map(func(C) = C ^ arg_field_name, Args),
     FirstField = 1,
     add_ctor_field_names(FieldNames, NeedQual, PartialQuals, TypeCtor,
-        QualifiedConsIdA, Context, ImportStatus, FirstField,
-        !FieldNameTable, !Specs),
-
-    ctors_add(Rest, TypeCtor, TypeCtorModuleName, TVarSet, TypeParams,
-        KindMap, NeedQual, PQInfo, Context, ImportStatus, !FieldNameTable,
-        !Ctors, !Specs).
+        QualifiedConsIdA, TypeStatus, FirstField, !FieldNameTable, !Specs).
 
 :- pred add_ctor_to_list(type_ctor::in, string::in, int::in, module_name::in,
     list(cons_id)::in, list(cons_id)::out) is det.
@@ -780,28 +734,27 @@ add_ctor_to_list(TypeCtor, ConsName, Arity, ModuleQual, !ConsIds) :-
 
 :- pred add_ctor_field_names(list(maybe(ctor_field_name))::in,
     need_qualifier::in, list(module_name)::in, type_ctor::in, cons_id::in,
-    prog_context::in, import_status::in, int::in,
+    type_status::in, int::in,
     ctor_field_table::in, ctor_field_table::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
-add_ctor_field_names([], _, _, _, _, _, _, _, !FieldNameTable, !Specs).
-add_ctor_field_names([MaybeFieldName | FieldNames], NeedQual,
-        PartialQuals, TypeCtor, ConsId, Context, ImportStatus,
+add_ctor_field_names([], _, _, _, _, _, _, !FieldNameTable, !Specs).
+add_ctor_field_names([MaybeCtorFieldName | MaybeCtorFieldNames], NeedQual,
+        PartialQuals, TypeCtor, ConsId, TypeStatus,
         FieldNumber, !FieldNameTable, !Specs) :-
     (
-        MaybeFieldName = yes(FieldName),
-        FieldDefn = hlds_ctor_field_defn(Context, ImportStatus, TypeCtor,
-            ConsId, FieldNumber),
+        MaybeCtorFieldName = yes(ctor_field_name(FieldName, FieldNameContext)),
+        FieldDefn = hlds_ctor_field_defn(FieldNameContext, TypeStatus,
+            TypeCtor, ConsId, FieldNumber),
         add_ctor_field_name(FieldName, FieldDefn, NeedQual, PartialQuals,
             !FieldNameTable, !Specs)
     ;
-        MaybeFieldName = no
+        MaybeCtorFieldName = no
     ),
-    add_ctor_field_names(FieldNames, NeedQual, PartialQuals, TypeCtor,
-        ConsId, Context, ImportStatus, FieldNumber + 1,
-        !FieldNameTable, !Specs).
+    add_ctor_field_names(MaybeCtorFieldNames, NeedQual, PartialQuals, TypeCtor,
+        ConsId, TypeStatus, FieldNumber + 1, !FieldNameTable, !Specs).
 
-:- pred add_ctor_field_name(ctor_field_name::in, hlds_ctor_field_defn::in,
+:- pred add_ctor_field_name(sym_name::in, hlds_ctor_field_defn::in,
     need_qualifier::in, list(module_name)::in,
     ctor_field_table::in, ctor_field_table::out,
     list(error_spec)::in, list(error_spec)::out) is det.
@@ -815,17 +768,14 @@ add_ctor_field_name(FieldName, FieldDefn, NeedQual, PartialQuals,
         FieldName = unqualified(_),
         unexpected($module, $pred, "unqualified field name")
     ),
-    (
-        % Field names must be unique within a module, not just within
-        % a type because the function names for user-defined override functions
-        % for the builtin field access functions must be unique within a
-        % module.
-        %
-        map.search(!.FieldNameTable, FieldName, ConflictingDefns)
-    ->
-        ( ConflictingDefns = [ConflictingDefn] ->
+    % Field names must be unique within a module, not just within a type,
+    % because the function names for user-defined override functions
+    % for the builtin field access functions must be unique within a
+    % module.
+    ( if map.search(!.FieldNameTable, FieldName, ConflictingDefns) then
+        ( if ConflictingDefns = [ConflictingDefn] then
             ConflictingDefn = hlds_ctor_field_defn(OrigContext, _, _, _, _)
-        ;
+        else
             unexpected($module, $pred, "multiple conflicting fields")
         ),
 
@@ -834,15 +784,15 @@ add_ctor_field_name(FieldName, FieldDefn, NeedQual, PartialQuals,
         FieldDefn = hlds_ctor_field_defn(Context, _, _, _, _),
         FieldString = sym_name_to_string(FieldName),
         Pieces = [words("Error: field"), quote(FieldString),
-            words("multiply defined.")],
-        Msg1 = simple_msg(Context, [always(Pieces)]),
+            words("multiply defined."), nl],
+        HereMsg = simple_msg(Context, [always(Pieces)]),
         PrevPieces = [words("Here is the previous definition of field"),
-            quote(FieldString), suffix(".")],
-        Msg2 = simple_msg(OrigContext, [always(PrevPieces)]),
+            quote(FieldString), suffix("."), nl],
+        PrevMsg = simple_msg(OrigContext, [always(PrevPieces)]),
         Spec = error_spec(severity_error, phase_parse_tree_to_hlds,
-            [Msg1, Msg2]),
+            [HereMsg, PrevMsg]),
         !:Specs = [Spec | !.Specs]
-    ;
+    else
         UnqualFieldName = unqualify_name(FieldName),
 
         % Add an unqualified version of the field name to the table,

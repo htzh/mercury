@@ -100,6 +100,8 @@ AC_SUBST(RECONFIGURE_ARGS)
 #-----------------------------------------------------------------------------#
 
 AC_CONFIG_HEADER(runtime/mercury_conf.h)
+AC_CONFIG_HEADER(robdd/robdd_conf.h)
+DEFAULT_PREFIX="/usr/local/mercury-`. ./VERSION; echo $VERSION`"
 AC_PREFIX_DEFAULT(/usr/local/mercury-`. ./VERSION; echo $VERSION`)
 
 #-----------------------------------------------------------------------------#
@@ -156,7 +158,6 @@ MERCURY_CC_TYPE
 MERCURY_HAVE_CLANG=no
 MERCURY_HAVE_GCC=no
 MERCURY_HAVE_MSVC=no
-MERCURY_HAVE_LCC=no
 
 case "$mercury_cv_cc_type" in
     clang)
@@ -174,23 +175,11 @@ case "$mercury_cv_cc_type" in
     msvc)
         MERCURY_HAVE_MSVC=yes
         MERCURY_MSVC_VERSION
-        # XXX For historical reasons msvc is identified as "cl".
-        C_COMPILER_TYPE="cl_${mercury_cv_msvc_version}"
+        C_COMPILER_TYPE="msvc_${mercury_cv_msvc_version}"
     ;;
 
     *)
-        # XXX is there a better way to test for lcc other than
-        # to pattern match on its name?
-        case "$CC" in
-            *lcc*)
-                MERCURY_HAVE_LCC=yes
-                C_COMPILER_TYPE="lcc"
-            ;;
-
-            *)
-                C_COMPILER_TYPE="unknown"
-            ;;
-        esac
+        C_COMPILER_TYPE="unknown"
     ;;
 esac
 
@@ -287,15 +276,9 @@ DEFAULT_MERCURY_DEBUGGER_INIT_DIR=$LIBDIR/mdb
 AC_SUBST(DEFAULT_MERCURY_DEBUGGER_INIT_DIR)
 DEFAULT_MERCURY_DEBUGGER_DOC=$DEFAULT_MERCURY_DEBUGGER_INIT_DIR/mdb_doc
 AC_SUBST(DEFAULT_MERCURY_DEBUGGER_DOC)
+
 #-----------------------------------------------------------------------------#
-case "$host" in
-    mips-sgi-irix5.*)
-        AC_MSG_WARN(*** Read README.IRIX-5 before proceeding!)
-        ;;
-esac
-#-----------------------------------------------------------------------------#
-# MMC_INVOKE_CMD is the the command used to invoke mercury_compile in
-# scripts/mmc.
+# MMC_INVOKE_CMD is the command used to invoke mercury_compile in scripts/mmc.
 # On MSYS (MinGW) we cannot use exec, since exec will not find the file because
 # it will expect a path relative to the MSYS home directory and will not work
 # with a full Windows path.  A full Windows path, however must be used for the
@@ -367,7 +350,7 @@ if test "$BOOTSTRAP_MC" != ""
 then
     AC_MSG_CHECKING(whether the above mmc works and is sufficiently recent)
     cat > conftest.m << EOF
-        % This module contains features which didn't work in
+        % This module contains features which did not work in
         % previous versions of the Mercury compiler.
         % We may also test to see if the installed compiler is
         % recent enough by checking what flags mmc takes.
@@ -397,17 +380,24 @@ then
             q(T, _),
             get_global_var(Global, !IO),
             (
+                % If you change the minimum RTTI version, you also
+                % need to update the Mercury clause for return_rtti_version
+                % below.
                 Version >= 8,
                 ac(2) ^ elem(3, 5) = 17,
                 (1 .. 2) = [[1, 2]],
                 Global = 561
             ->
                 trace [[io(!S)]] (
-                    io.print("Hello, world\n", !S)
+                    io.print("Hello, ", !S)
+                ),
+                promise_pure (
+                    semipure io.unsafe_get_io_state(UIO0),
+                    io.print("world\n", UIO0, UIO),
+                    impure io.unsafe_set_io_state(UIO)
                 )
             ;
-                Words = string.words_separator(char.is_alpha,
-                    "xx yy"),
+                Words = string.words_separator(char.is_alpha, "xx yy"),
                 io.write(Words, !IO)
             ).
 
@@ -416,7 +406,7 @@ then
         :- type bear ---> brown ; black ; teddy.
         :- pragma foreign_export_enum("Java", bear/0).
 
-        :- pragma foreign_export("IL", p(out), "IL_EXPORT").
+        :- type my_uint ---> my_uint(uint).
 
         :- pred p(t::out) is det.
 
@@ -450,7 +440,7 @@ then
 
         :- type c_enum
             --->    c_enum_1
-            ;   c_enum_2.
+            ;       c_enum_2.
 
         :- pragma foreign_enum("C", c_enum/0, [[
             c_enum_1 - "enum1",
@@ -470,15 +460,19 @@ then
             Version = MR_RTTI_VERSION;
         ").
 
+        % XXX the non-C backends do not currently define an equivalent
+        % to MR_RTTI_VERSION.
+        return_rtti_version(8).
+
         % The code below is the hard_coded/disjs_in_switch test case.
         % The compiler now depends on the installed compiler handling
         % code like this test case correctly.
 
         :- type tp
             --->    f(int)
-            ;   g(int, int)
-            ;   h(float)
-            ;   i(string).
+            ;       g(int, int)
+            ;       h(float)
+            ;       i(string).
 
         :- pred p(tp::in, string::out) is det.
 
@@ -493,6 +487,46 @@ then
                 ; T = i(_)
                 ),
                 U = "h or i"
+            ).
+
+        :- pred ext(int::out) is det.
+        :- pragma external_pred(ext/1).
+
+        :- type psv_t
+            --->    psv_t1
+            ;       psv_t2
+            ;       psv_t3
+            ;       psv_t4
+            ;       psv_t5
+            ;       psv_t6
+            ;       psv_t7
+            ;       psv_t8.
+
+        :- type psv_u
+            --->    psv_u1
+            ;       psv_u2.
+
+        :- pred preferred_switch_var(psv_t::in, psv_u::in, int::out)
+            is semidet.
+
+        preferred_switch_var(T, U, N) :-
+            require_switch_arms_semidet [[T]]
+            (
+                T = psv_t1,
+                U = psv_u1,
+                N = 11
+            ;
+                T = psv_t2,
+                U = psv_u2,
+                N = 22
+            ;
+                T = psv_t3,
+                U = psv_u1,
+                N = 31
+            ;
+                T = psv_t4,
+                U = psv_u2,
+                N = 42
             ).
 EOF
 
@@ -515,14 +549,10 @@ EOF
         $BOOTSTRAP_MC \
             --verbose \
             --halt-at-warn \
-            --trace-io-builtins-2006-08-14 \
             $link_static_opt conftest \
-            --compound-compare-builtins-2007-07-09 \
             --erlang-native-code \
-            --no-no-det-warning-compound-compare-2007-07-17 \
-            --foreign-enum-switch-fix \
+            --strip-executable-2014-05-05 \
             --no-ssdb \
-            --store-at-ref-impure-2008-09-11 \
             </dev/null >&AC_FD_CC 2>&1 &&
         test "`./conftest 2>&1 | tr -d '\015'`" = "Hello, world" &&
         # Test for the --record-term-sizes-as-words option.
@@ -551,16 +581,17 @@ EOF
         # distribution which includes the pre-generated .C files.
         # So do a quick check now to ensure that we fail early with a
         # reasonable error message if they are not present.
-        if  test -f compiler/top_level.c ||
-            test -f compiler/Mercury/cs/top_level.c
+        if  test -f compiler/mercury_compile.c ||
+            test -f compiler/Mercury/cs/mercury_compile.c
         then
             true
         elif
             test -f $PREFIX/bin/mercury_compile ||
             test -f $PREFIX/bin/mercury_compile.exe
         then
-            # This variable is used to let the tests in the following section know
-            # that we are going to attempt to bootstrap with the compiler $PREFIX/bin.
+            # This variable is used to let the tests in the following section
+            # know that we are going to attempt to bootstrap with the compiler
+            # $PREFIX/bin.
             bootstrap_from_prefix="yes"
             AC_MSG_WARN(
 [using $PREFIX/bin/mercury_compile to bootstrap])
@@ -587,13 +618,13 @@ then
     # any other pre-generated .c files as part of the call to
     # mercury_check_c_files() later on.
     #
-    if test -f compiler/top_level.c
+    if test -f compiler/mercury_compile.c
     then
-        highlevel_code=`grep "HIGHLEVEL_CODE=.*" compiler/top_level.c`
+        highlevel_code=`grep "HIGHLEVEL_CODE=.*" compiler/mercury_compile.c`
     else
-        if test -f compiler/Mercury/cs/top_level.c
+        if test -f compiler/Mercury/cs/mercury_compile.c
         then
-            highlevel_code=`grep "HIGHLEVEL_CODE=.*" compiler/Mercury/cs/top_level.c`
+            highlevel_code=`grep "HIGHLEVEL_CODE=.*" compiler/Mercury/cs/mercury_compile.c`
         else
             # If we are going to attempt to bootstrap from a compiler in
             # $PREFIX/bin (see the above section), then it is ok if we do not
@@ -661,8 +692,13 @@ AC_SUBST(ENABLE_BOEHM_LARGE_CONFIG)
 
 #-----------------------------------------------------------------------------#
 #
-# Determine whether to define USE_MUNMAP when compiling boehm_gc.
+# Determine whether to define USE_MMAP, USE_MUNMAP when compiling boehm_gc.
 #
+
+AC_ARG_ENABLE(gc-mmap,
+    AC_HELP_STRING([--enable-gc-mmap],
+                   [use mmap instead of sbrk when using Boehm GC]),
+    enable_gc_mmap="$enableval",enable_gc_mmap=no)
 
 AC_ARG_ENABLE(gc-munmap,
     AC_HELP_STRING([--enable-gc-munmap],
@@ -672,20 +708,39 @@ AC_ARG_ENABLE(gc-munmap,
 AC_MSG_CHECKING(whether to enable unmapping of unused pages when using Boehm GC)
 case "$enable_gc_munmap" in
     yes)
+        # --enable-gc-munmap implies --enable-gc-mmap
+        enable_gc_mmap=yes
         AC_MSG_RESULT(yes)
-        # USE_MUNMAP requires USE_MMAP.
-        ENABLE_BOEHM_USE_MUNMAP="-DUSE_MMAP -DUSE_MUNMAP"
         ;;
     no)
         AC_MSG_RESULT(no)
-        ENABLE_BOEHM_USE_MUNMAP=
         ;;
     *)
-        AC_MSG_RESULT(no)
-        AC_MSG_WARN([unexpected argument to --enable-gc-munmap])
-        ENABLE_BOEHM_USE_MUNMAP=
+        AC_MSG_ERROR([unexpected argument to --enable-gc-munmap])
         ;;
 esac
+
+AC_MSG_CHECKING(whether to use mmap for Boehm GC)
+case "$enable_gc_mmap" in
+    yes|no)
+        AC_MSG_RESULT($enable_gc_mmap)
+        ;;
+    *)
+        AC_MSG_ERROR([unexpected argument to --enable-gc-mmap])
+        ;;
+esac
+
+if test "$enable_gc_mmap" = yes; then
+    ENABLE_BOEHM_USE_MMAP="-DUSE_MMAP"
+else
+    ENABLE_BOEHM_USE_MMAP=
+fi
+if test "$enable_gc_munmap" = yes; then
+    ENABLE_BOEHM_USE_MUNMAP="-DUSE_MUNMAP"
+else
+    ENABLE_BOEHM_USE_MUNMAP=
+fi
+AC_SUBST(ENABLE_BOEHM_USE_MMAP)
 AC_SUBST(ENABLE_BOEHM_USE_MUNMAP)
 
 #-----------------------------------------------------------------------------#
@@ -898,6 +953,7 @@ then
     CFLAGS_FOR_ERRMSG_FILTER=""
     CFLAGS_FOR_NO_MOVE_LOOP_INVARIANTS=
     CFLAGS_FOR_NO_REORDER_FUNCTIONS=""
+    CFLAGS_FOR_NO_TREE_DOMINATOR_OPTS=
 
 else
 
@@ -964,8 +1020,20 @@ EOF
         CFLAGS_FOR_NO_REORDER_FUNCTIONS=""
     fi
 
+    AC_MSG_CHECKING(whether we can use -fno-tree-dominator-opts)
+    if $CC -fno-tree-dominator-opts -c conftest.c \
+        </dev/null >&AC_FD_CC 2>&1
+    then
+        AC_MSG_RESULT(yes)
+        CFLAGS_FOR_NO_TREE_DOMINATOR_OPTS="-fno-tree-dominator-opts"
+    else
+        AC_MSG_RESULT(no)
+        CFLAGS_FOR_NO_TREE_DOMINATOR_OPTS=
+    fi
+
     rm -f conftest*
 fi
+AC_SUBST(CFLAGS_FOR_ERRMSG_FILTER)
 
 #-----------------------------------------------------------------------------#
 # Make sure we search /usr/local/include and /usr/local/lib for
@@ -1045,6 +1113,9 @@ if test "$ac_microsoft" = "yes" ; then
     LDFLAGS_FOR_DEBUG="-DEBUG"
     LD_LIBFLAGS_FOR_DEBUG="-DEBUG"
     LD_STRIP_FLAG=
+    STRIP_EXE=
+    STRIP_EXE_SHARED_FLAGS=
+    STRIP_EXE_STATIC_FLAGS=
 
     USING_MICROSOFT_CL_COMPILER="yes"
     FIX_PATH_FOR_CC="$CYGPATH"
@@ -1070,13 +1141,19 @@ else
     AR_LIBFILE_OPT=""
 
     LD_STRIP_FLAG="-s"
+    STRIP_EXE=""
+    STRIP_EXE_SHARED_FLAGS=""
+    STRIP_EXE_STATIC_FLAGS=""
 
-    # Suppress a warning from the linker on Darwin 9+.  `-s' is deprecated on
-    # it and has no effect other than causing the linker to emit a warning.
+    # The `-s' linker option is deprecated on Darwin 9+ and has no effect other
+    # than causing the linker to emit a warning. Call the strip tool directly.
     #
     case "$host" in
         *apple*darwin*)
             LD_STRIP_FLAG=""
+            STRIP_EXE="strip"
+            STRIP_EXE_SHARED_FLAGS="-x"
+            STRIP_EXE_STATIC_FLAGS=""
             ;;
     esac
 
@@ -1088,21 +1165,11 @@ else
     # which is used for interactive queries in the
     # Mercury debugger.  For gcc, this linker option can be enabled by
     # passing either `-rdynamic' or `-Wl,-export-dynamic' to gcc;
-    # we use the former.  For lcc 4.2, we need to use `-Wl-export-dynamic'.
+    # we use the former.
     #
     case $FULLARCH in
-        *-linux*aout)
-            # no special options needed
-            ;;
         *-linux*)
-            case "$CC" in
-                lcc*)
-                    LDFLAGS_FOR_TRACE="-Wl-export-dynamic"
-                    ;;
-                *)
-                    LDFLAGS_FOR_TRACE="-rdynamic"
-                    ;;
-            esac
+            LDFLAGS_FOR_TRACE="-rdynamic"
             ;;
     esac
 
@@ -1137,6 +1204,9 @@ AC_SUBST(AR_LIBFILE_OPT)
 AC_SUBST(LDFLAGS_FOR_DEBUG)
 AC_SUBST(LD_LIBFLAGS_FOR_DEBUG)
 AC_SUBST(LD_STRIP_FLAG)
+AC_SUBST(STRIP_EXE)
+AC_SUBST(STRIP_EXE_SHARED_FLAGS)
+AC_SUBST(STRIP_EXE_STATIC_FLAGS)
 AC_SUBST(LDFLAGS_FOR_TRACE)
 AC_SUBST(LD_LIBFLAGS_FOR_TRACE)
 AC_SUBST(USING_MICROSOFT_CL_COMPILER)
@@ -1226,13 +1296,16 @@ AC_ARG_ENABLE(javac-flags-for-heap-size,
 case "$enable_javac_flags_for_heap_size" in
     yes)
         MERCURY_CHECK_JAVAC_HEAP_SIZE
-        JAVAC_FLAGS_FOR_HEAP_SIZE=$mercury_cv_javac_flags_for_heap_size
+        JAVAC_FLAGS_FOR_HEAP_SIZE_MMAKE=$mercury_cv_javac_flags_for_heap_size_mmake
+        JAVAC_FLAGS_FOR_HEAP_SIZE_CONFIG=$mercury_cv_javac_flags_for_heap_size_config
         ;;
     no)
-        JAVAC_FLAGS_FOR_HEAP_SIZE=
+        JAVAC_FLAGS_FOR_HEAP_SIZE_MMAKE=
+        JAVAC_FLAGS_FOR_HEAP_SIZE_CONFIG=
         ;;
 esac
-AC_SUBST(JAVAC_FLAGS_FOR_HEAP_SIZE)
+AC_SUBST(JAVAC_FLAGS_FOR_HEAP_SIZE_MMAKE)
+AC_SUBST(JAVAC_FLAGS_FOR_HEAP_SIZE_CONFIG)
 
 #-----------------------------------------------------------------------------#
 # Erlang configuration
@@ -1253,6 +1326,17 @@ mercury_check_for_functions () {
     done
 }
 
+mercury_check_for_stdio_functions () {
+    for mercury_cv_stdio_func in "$@"
+    do
+        mercury_cv_stdio_func_define="MR_HAVE_`echo $mercury_cv_stdio_func | \
+            tr abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ`"
+        AC_CHECK_DECL($mercury_cv_stdio_func, [
+            AC_DEFINE_UNQUOTED($mercury_cv_stdio_func_define)
+        ], [], [#include <stdio.h>])
+    done
+}
+
 # Don't try to use mprotect() on gnu-win32, since it is broken
 # (at least for version b18, anyway) and trying it can crash Win95.
 case "$host" in
@@ -1267,23 +1351,31 @@ esac
 # Do not try to use sleep() on MinGW or MinGW64 as it isn't available
 # *despite* what the standard autoconf tests report.
 #
+# The MinGW64 implementation of mkstemp is broken; it isn't supported on
+# MinGW32.
+#
 case "$host" in
     *mingw*)
         ac_cv_func_sleep=no
+        ac_cv_func_mkstemp=no
         ;;
 esac
 
 mercury_check_for_functions \
         sysconf getpagesize gethostname \
-        mprotect memalign posix_memalign memmove \
+        mmap mprotect memalign posix_memalign sbrk memmove \
         sigaction siginterrupt setitimer \
-        snprintf _snprintf vsnprintf _vsnprintf strerror \
+        strerror strerror_r strerror_s \
         open close dup dup2 fdopen fileno fstat stat lstat isatty \
         getpid setpgid fork execlp wait kill \
         grantpt unlockpt ptsname tcgetattr tcsetattr ioctl \
         access sleep opendir readdir closedir mkdir symlink readlink \
         gettimeofday setenv putenv _putenv posix_spawn sched_setaffinity \
-        sched_getaffinity sched_getcpu sched_yield mkstemp setrlimit
+        sched_getaffinity sched_getcpu sched_yield mkstemp mkdtemp \
+        setrlimit fma
+
+mercury_check_for_stdio_functions \
+        snprintf _snprintf vsnprintf _vsnprintf
 
 #-----------------------------------------------------------------------------#
 
@@ -1293,7 +1385,7 @@ MERCURY_CHECK_FOR_HEADERS( \
         sys/types.h sys/stat.h fcntl.h termios.h sys/ioctl.h \
         sys/resource.h sys/stropts.h windows.h dirent.h getopt.h malloc.h \
         semaphore.h pthread.h time.h spawn.h fenv.h sys/mman.h sys/sem.h \
-        sched.h utmpx.h)
+        sched.h utmpx.h dispatch/dispatch.h)
 
 if test "$MR_HAVE_GETOPT_H" = 1; then
     GETOPT_H_AVAILABLE=yes
@@ -1714,19 +1806,24 @@ AC_CACHE_VAL(mercury_cv_word_type,
         if (fp == NULL)
             exit(1);
 
+        /*
+        ** Note that we do not output newline characters as these programs
+        ** might write out a CRLF pair and a shell that does not recognize
+        ** this will interpret the CR as part of the type name.
+        */
         if (sizeof(int) == sizeof(void *))
         {
-            fprintf(fp, "int\n");
+            fprintf(fp, "int");
             exit(0);
         }
 
         if (sizeof(long) == sizeof(void *))
         {
-            fprintf(fp, "long\n");
+            fprintf(fp, "long");
             exit(0);
         }
 
-        fprintf(fp, "unknown\n");
+        fprintf(fp, "unknown");
         exit(1);
     }],
     [mercury_cv_word_type=`cat conftest.tags`],
@@ -1746,11 +1843,11 @@ if test "$mercury_cv_word_type" = unknown; then
 
         if (sizeof(long long) == sizeof(void *))
         {
-            fprintf(fp, "long long\n");
+            fprintf(fp, "long long");
             exit(0);
         }
 
-        fprintf(fp, "unknown\n");
+        fprintf(fp, "unknown");
         exit(1);
     }],
     [mercury_cv_word_type=`cat conftest.tags`],
@@ -1763,16 +1860,25 @@ AC_DEFINE_UNQUOTED(MR_WORD_TYPE, $mercury_cv_word_type)
 MR_WORD_TYPE=$mercury_cv_word_type
 AC_SUBST(MR_WORD_TYPE)
 
+AC_DEFINE_UNQUOTED(MR_ROBDD_int, $mercury_cv_word_type)
+AC_SUBST(MR_ROBDD_int)
+AC_DEFINE_UNQUOTED(MR_ROBDD_uint, unsigned $mercury_cv_word_type)
+AC_SUBST(MR_ROBDD_uint)
+
 if test "$mercury_cv_word_type" = int; then
     AC_DEFINE_UNQUOTED(MR_INTEGER_LENGTH_MODIFIER, "")
+    AC_DEFINE_UNQUOTED(MR_ROBDD_int_max, INT_MAX)
 elif test "$mercury_cv_word_type" = long; then
     AC_DEFINE_UNQUOTED(MR_INTEGER_LENGTH_MODIFIER, "l")
+    AC_DEFINE_UNQUOTED(MR_ROBDD_int_max, LONG_MAX)
 elif test "$mercury_cv_word_type" = "long long"; then
     AC_DEFINE_UNQUOTED(MR_INTEGER_LENGTH_MODIFIER, "ll")
+    AC_DEFINE_UNQUOTED(MR_ROBDD_int_max, LLONG_MAX)
 else
     AC_MSG_ERROR(Cannot determine the length modifier for the MR_Integer type.)
 fi
 AC_SUBST(MR_INTEGER_LENGTH_MODIFIER)
+AC_SUBST(MR_ROBDD_int_max)
 
 #-----------------------------------------------------------------------------#
 
@@ -1788,15 +1894,20 @@ AC_CACHE_VAL(mercury_cv_int_least64_type,
         if (fp == NULL)
             exit(1);
 
+        /*
+        ** Note that we do not output newline characters as these programs
+        ** might write out a CRLF pair and a shell that does not recognize
+        ** this will interpret the CR as part of the type name.
+        */
         if (sizeof(int) * CHAR_BIT >= 64)
         {
-            fprintf(fp, "int\n");
+            fprintf(fp, "int");
             exit(0);
         }
 
         if (sizeof(long) * CHAR_BIT >= 64)
         {
-            fprintf(fp, "long\n");
+            fprintf(fp, "long");
             exit(0);
         }
 
@@ -1804,12 +1915,12 @@ AC_CACHE_VAL(mercury_cv_int_least64_type,
     #ifdef _MSC_VER
         if (sizeof(__int64) * CHAR_BIT >= 64)
         {
-            fprintf(fp, "__int64\n");
+            fprintf(fp, "__int64");
             exit(0);
         }
     #endif
 
-        fprintf(fp, "unknown\n");
+        fprintf(fp, "unknown");
         exit(1);
     }],
     [mercury_cv_int_least64_type=`cat conftest.tags`],
@@ -1830,11 +1941,11 @@ if test "$mercury_cv_int_least64_type" = unknown; then
 
         if (sizeof(long long) * CHAR_BIT >= 64)
         {
-            fprintf(fp, "long long\n");
+            fprintf(fp, "long long");
             exit(0);
         }
 
-        fprintf(fp, "unknown\n");
+        fprintf(fp, "unknown");
         exit(1);
     }],
     [mercury_cv_int_least64_type=`cat conftest.tags`],
@@ -1879,19 +1990,24 @@ AC_CACHE_VAL(mercury_cv_int_least32_type,
         if (fp == NULL)
             exit(1);
 
+        /*
+        ** Note that we do not output newline characters as these programs
+        ** might write out a CRLF pair and a shell that does not recognize
+        ** this will interpret the CR as part of the type name.
+        */
         if (sizeof(int) * CHAR_BIT >= 32)
         {
-            fprintf(fp, "int\n");
+            fprintf(fp, "int");
             exit(0);
         }
 
         if (sizeof(long) * CHAR_BIT >= 32)
         {
-            fprintf(fp, "long\n");
+            fprintf(fp, "long");
             exit(0);
         }
 
-        fprintf(fp, "unknown\n");
+        fprintf(fp, "unknown");
         exit(1);
     }],
     [mercury_cv_int_least32_type=`cat conftest.tags`],
@@ -1947,19 +2063,24 @@ AC_CACHE_VAL(mercury_cv_int_least16_type,
         if (fp == NULL)
             exit(1);
 
+        /*
+        ** Note that we do not output newline characters as these programs
+        ** might write out a CRLF pair and a shell that does not recognize
+        ** this will interpret the CR as part of the type name.
+        */
         if (sizeof(short) * CHAR_BIT >= 16)
         {
-            fprintf(fp, "short\n");
+            fprintf(fp, "short");
             exit(0);
         }
 
         if (sizeof(int) * CHAR_BIT >= 16)
         {
-            fprintf(fp, "int\n");
+            fprintf(fp, "int");
             exit(0);
         }
 
-        fprintf(fp, "unknown\n");
+        fprintf(fp, "unknown");
         exit(1);
     }],
     [mercury_cv_int_least16_type=`cat conftest.tags`],
@@ -1998,22 +2119,27 @@ AC_CACHE_VAL(mercury_cv_low_tag_bits,
         if (fp == NULL)
             exit(1);
 
+        /*
+        ** Note that we do not output newline characters as these programs
+        ** might write out a CRLF pair and a shell that does not recognize
+        ** this will interpret the CR as part of the type name.
+        */
         if (sizeof(void *) == 4)
         {
-            fprintf(fp, "2\n");
+            fprintf(fp, "2");
             exit(0);
         }
         if (sizeof(void *) == 8)
         {
-            fprintf(fp, "3\n");
+            fprintf(fp, "3");
             exit(0);
         }
         if (sizeof(void *) == 16)
         {
-            fprintf(fp, "4\n");
+            fprintf(fp, "4");
             exit(0);
         }
-        fprintf(fp, "0\n");
+        fprintf(fp, "0");
         exit(1);
     }],
     [mercury_cv_low_tag_bits=`cat conftest.tags`],
@@ -2045,7 +2171,7 @@ AC_CACHE_VAL(mercury_cv_bytes_per_word,
         fp = fopen("conftest.wordbytes", "w");
         if (fp == NULL)
             exit(1);
-        fprintf(fp, "%d\n", sizeof(void *));
+        fprintf(fp, "%d", sizeof(void *));
 
         exit(0);
     }],
@@ -2061,40 +2187,6 @@ AC_SUBST(BYTES_PER_WORD)
 
 #-----------------------------------------------------------------------------#
 
-AC_MSG_CHECKING(the number of words in a synchronization term)
-AC_CACHE_VAL(mercury_cv_sync_term_size,
-    AC_TRY_RUN([
-    #include <stdio.h>
-    #include <stdlib.h>
-    #include <pthread.h>
-    int main() {
-        struct {
-            void        *orig_context;
-            void                    *parent_sp;
-            $mercury_cv_word_type   count;
-        } x;
-        FILE *fp;
-
-        fp = fopen("conftest.syncsize", "w");
-        if (fp == NULL)
-            exit(1);
-        fprintf(fp, "%d\n", (sizeof(void *) - 1 + sizeof(x))/
-                sizeof(void *));
-
-        exit(0);
-    }],
-    [mercury_cv_sync_term_size=`cat conftest.syncsize`],
-    [mercury_cv_sync_term_size=0],
-    [mercury_cv_sync_term_size=0])
-)
-mercury_cv_sync_term_size=`echo $mercury_cv_sync_term_size | tr -d '\r'`
-AC_MSG_RESULT($mercury_cv_sync_term_size)
-AC_DEFINE_UNQUOTED(MR_SYNC_TERM_SIZE, $mercury_cv_sync_term_size)
-SYNC_TERM_SIZE=$mercury_cv_sync_term_size
-AC_SUBST(SYNC_TERM_SIZE)
-
-#-----------------------------------------------------------------------------#
-
 AC_MSG_CHECKING(the number of bits per word)
 AC_CACHE_VAL(mercury_cv_bits_per_word,
     AC_TRY_RUN([
@@ -2107,7 +2199,7 @@ AC_CACHE_VAL(mercury_cv_bits_per_word,
         fp = fopen("conftest.wordbits", "w");
         if (fp == NULL)
             exit(1);
-        fprintf(fp, "%d\n", CHAR_BIT * sizeof(void *));
+        fprintf(fp, "%d", CHAR_BIT * sizeof(void *));
 
         exit(0);
     }],
@@ -2120,6 +2212,25 @@ AC_MSG_RESULT($mercury_cv_bits_per_word)
 AC_DEFINE_UNQUOTED(MR_BITS_PER_WORD, $mercury_cv_bits_per_word)
 BITS_PER_WORD=$mercury_cv_bits_per_word
 AC_SUBST(BITS_PER_WORD)
+
+AC_DEFINE_UNQUOTED(MR_ROBDD_BITS_PER_WORD, $mercury_cv_bits_per_word)
+AC_SUBST(MR_ROBDD_BITS_PER_WORD)
+case "$mercury_cv_bits_per_word" in
+    16)
+        mercury_cv_log_bits_per_word=4
+        ;;
+    32)
+        mercury_cv_log_bits_per_word=5
+        ;;
+    64)
+        mercury_cv_log_bits_per_word=6
+        ;;
+    *)
+        AC_MSG_ERROR([unexpected number of bits per word: expected 16, 32 or 64])
+        ;;
+esac
+AC_DEFINE_UNQUOTED(MR_ROBDD_LOG_BITS_PER_WORD, $mercury_cv_log_bits_per_word)
+AC_SUBST(MR_ROBDD_LOG_BITS_PER_WORD)
 
 #-----------------------------------------------------------------------------#
 
@@ -2210,6 +2321,13 @@ if test "$mercury_cv_long_double_is_64_bit" = yes; then
     AC_DEFINE(MR_LONG_DOUBLE_IS_64_BIT)
 fi
 AC_SUBST(MR_LONG_DOUBLE_IS_64_BIT)
+
+#-----------------------------------------------------------------------------#
+
+# The number of detstack slots (words) that a MR_SyncTerm occupies.
+SYNC_TERM_SIZE=3
+AC_SUBST(SYNC_TERM_SIZE)
+AC_DEFINE_UNQUOTED(MR_SYNC_TERM_SIZE, $SYNC_TERM_SIZE)
 
 #-----------------------------------------------------------------------------#
 
@@ -2481,11 +2599,6 @@ AC_SUBST(MR_DARWIN_SETJMP_WORKAROUND)
 # doesn't work with non-local gotos, since we jump directly into the
 # middle of a function.
 #
-# For Irix 5, gcc labels don't work with shared libraries,
-# so if we're using gcc labels, we need to use non-shared libraries,
-# which means passing -non_shared and -mno-abicalls and also setting
-# LIBRARY_PATH.
-#
 # For x86, gcc global registers only work with -fno-builtin
 # and -fno-omit-frame-pointer.
 #
@@ -2505,31 +2618,13 @@ case "$ac_cv_prog_gcc" in yes)
     esac
     CFLAGS_FOR_GOTOS="$CFLAGS_FOR_GOTOS $CFLAGS_FOR_NO_MOVE_LOOP_INVARIANTS"
     case "$host" in
-        mips-sgi-irix5.*)
-            # Non-local gotos don't work with shared libraries on Irix 5,
-            # which causes lots of complications.
-            # Now that we have the hlc back-end, it's not worth
-            # supporting them.
-            MERCURY_MSG("Mercury no longer supports gcc non-local on Irix 5")
-            mercury_cv_asm_labels=no
-            mercury_cv_gcc_labels=no
-            CFLAGS_FOR_GOTOS="$CFLAGS_FOR_GOTOS -non_shared -mno-abicalls"
-            LIBRARY_PATH_FOR_GOTOS="$NONSHARED_LIB_DIR:/usr/lib/nonshared"
-            ;;
-    esac
-    case "$host" in
         mips-*)
             CFLAGS_FOR_GOTOS="$CFLAGS_FOR_GOTOS -fomit-frame-pointer"
             ;;
         i*86-*|x86_64*)
-            # On x86-64 with GCC 4.8, gcc labels do not work correctly with
-            # -ftree-dominator-opts -- we disable it for x86 in this case too.
-            #
-            case "$C_COMPILER_TYPE" in
-                gcc_4_8_*)
-                  CFLAGS_FOR_GOTOS="$CFLAGS_FOR_GOTOS -fno-tree-dominator-opts"
-                ;;
-            esac
+            # On x86-64 and x86, GCC labels do not work correctly with
+            # -ftree-dominator-opts.
+            CFLAGS_FOR_GOTOS="$CFLAGS_FOR_GOTOS $CFLAGS_FOR_NO_TREE_DOMINATOR_OPTS"
             CFLAGS_FOR_REGS="-fno-builtin -fno-omit-frame-pointer"
             ;;
         # We need a special-case hack here, because the auto-config
@@ -2580,15 +2675,6 @@ case "$ac_cv_prog_gcc" in yes)
             MERCURY_MSG("gcc labels do not work on S/390")
             mercury_cv_asm_labels=no
             mercury_cv_gcc_labels=no
-            ;;
-        sparc*)
-            case "`$CC --version < /dev/null`" in
-                2.8*)
-                    AC_MSG_WARN(
-[Mercury might not work with gcc 2.8 on sparc!
-****    We advise using gcc 2.95.x.])
-                    ;;
-            esac
             ;;
     esac
     ;;
@@ -2851,12 +2937,12 @@ CC="$save_CC"
 
 #-----------------------------------------------------------------------------#
 
-AC_MSG_CHECKING(whether we can support profiling on this system)
+AC_MSG_CHECKING(whether we can support time profiling on this system)
 AC_CACHE_VAL(mercury_cv_profiling,
 AC_TRY_CPP([
-/* The following code comes from runtime/prof.c */
-#include    <unistd.h>
+/* The following code comes from runtime/mercury_timing.h */
 #include    <errno.h>
+#include    <limits.h>
 #include    <string.h>
 #include    <signal.h>
 
@@ -2864,35 +2950,31 @@ AC_TRY_CPP([
 #include    <sys/param.h>
 #endif
 
+#ifdef MR_HAVE_UNISTD_H
+  #include  <unistd.h>
+#endif
+
 #ifdef MR_HAVE_SYS_TIME_H
 #include    <sys/time.h>
 #endif
 
-/*
-** if HZ is not defined, we may be able to use sysconf(_SC_CLK_TCK) instead
-*/
-#if !defined(HZ) && defined(MR_HAVE_SYSCONF) && defined(_SC_CLK_TCK)
-#define HZ ((int)sysconf(_SC_CLK_TCK))
+#ifdef HZ
+  #define MR_CLOCK_TICKS_PER_SECOND	HZ
+#elif defined(MR_HAVE_SYSCONF) && defined(_SC_CLK_TCK)
+  #define MR_CLOCK_TICKS_PER_SECOND	((int) sysconf(_SC_CLK_TCK))
+#elif defined(CLOCKS_PER_SEC)
+  #define MR_CLOCK_TICKS_PER_SECOND	CLOCKS_PER_SEC
+#elif defined(CLK_TCK)
+  #define MR_CLOCK_TICKS_PER_SECOND	CLK_TCK
+#else
+  /* just leave it undefined */
 #endif
 
-#if !defined(HZ) || !defined(SIGPROF) || !defined(MR_HAVE_SETITIMER)
+#if !defined(MR_CLOCK_TICKS_PER_SECOND) || !defined(SIGPROF) || !defined(MR_HAVE_SETITIMER)
 #error "Time profiling not supported on this system"
 #endif
 ], [mercury_cv_profiling=yes], [mercury_cv_profiling=no]))
 AC_MSG_RESULT($mercury_cv_profiling)
-
-#-----------------------------------------------------------------------------#
-
-AC_MSG_CHECKING(if C compiler is egcs)
-case "`$CC --version < /dev/null 2>&1`" in
-    egcs-*)
-        mercury_cv_egcs=yes
-        ;;
-    *)
-        mercury_cv_egcs=no
-        ;;
-esac
-AC_MSG_RESULT($mercury_cv_egcs)
 
 #-----------------------------------------------------------------------------#
 #
@@ -2900,7 +2982,7 @@ AC_MSG_RESULT($mercury_cv_egcs)
 #
 
 AC_ARG_ENABLE(deep-profiler,
-   AC_HELP_STRING([--enable-deep-profiler=<directory>]
+   AC_HELP_STRING([--enable-deep-profiler=<directory>],
                   [install deep profiler CGI script in <directory>]),
    enable_deep_profiler="$enableval",enable_deep_profiler=default)
 
@@ -2924,20 +3006,6 @@ then
 else
     mercury_cv_can_enable_deep_profiler=no
 fi
-
-# On x86, gcc version egcs-1.1.2 has a bug which causes it to get
-# an internal compiler error when compiling library/random.c
-# (when that file was build with mmc --intermodule-optimization -O4)
-# So if we're using an egcs version of gcc, disable deep profiling.
-case "$host" in
-    i*86-*-*)
-        case "$mercury_cv_egcs" in
-            yes)
-            mercury_cv_can_enable_deep_profiler=no
-            ;;
-        esac
-        ;;
-esac
 
 case "$host" in
     *apple*darwin*)
@@ -2999,8 +3067,8 @@ AC_SUBST(CGIDIR)
 
 #-----------------------------------------------------------------------------#
 
-# Check if we are using the pthreads-win32 library.
-# NOTE: we currently only support this on MinGW.
+# Check if we are using a pthreads implementation on Win32.
+# NOTE: we currently only support this on MinGW or MinGW-w64.
 
 if test "$MR_HAVE_PTHREAD_H" = 1
 then
@@ -3010,70 +3078,52 @@ then
             if test $mercury_cv_have_pthreads_win32 = "yes"
             then
                 AC_DEFINE([MR_PTHREADS_WIN32])
-                WIN32_GC_THREADLIB="-DGC_WIN32_PTHREADS"
-            else
-                WIN32_GC_THREADLIB="-DGC_WIN32_THREADS"
             fi
-        ;;
-
+            WIN32_GC_THREADLIB="-DGC_WIN32_PTHREADS"
+            ;;
         *)
+            # XXX Building with GC_WIN32_THREADS instead of GC_WIN32_PTHREADS
+            # can lead to trouble if the Mercury implementation makes pthread
+            # calls which are not intercepted by Boehm GC.
             WIN32_GC_THREADLIB="-DGC_WIN32_THREADS"
-        ;;
+            ;;
     esac
 else
     WIN32_GC_THREADLIB="-DGC_WIN32_THREADS"
 fi
 
-AC_ARG_WITH([gc-pthreads-win32],
-   AC_HELP_STRING([--with-gc-pthreads-win32]
-                          [Force the use of the pthreads-win32 library with
-                          the Boehm GC.  This is the default for MinGW]),
-   [with_gc_pthreads_win32="$withval"],[with_gc_pthreads_win32="no"])
+AC_ARG_WITH([gc-win32-pthreads],
+   AC_HELP_STRING([--with-gc-win32-pthreads],
+            [Force the use of pthreads-win32 or winpthreads with Boehm GC.
+             This is the default for MinGW if detected.]),
+   [with_gc_win32_pthreads="$withval"],
+   [with_gc_win32_pthreads="no"])
 
-case "$with_gc_pthreads_win32" in
-
+case "$with_gc_win32_pthreads" in
     yes)
-        # Force the use of the pthreads-win32 library with the Boehm GC.
+        # Force the use of a MinGW* pthreads library with the Boehm GC.
         WIN32_GC_THREADLIB="-DGC_WIN32_PTHREADS"
-    ;;
-
+        ;;
     no)
-    ;;
-
+        ;;
     *)
-        AC_MSG_ERROR([unexpected argument to --with-gc-pthreads-win32])
-    ;;
+        AC_MSG_ERROR([unexpected argument to --with-gc-win32-pthreads])
+        ;;
 esac
 
 #-----------------------------------------------------------------------------#
-
-# Figure out which flavour of pthreads to use, since none of the
-# implementations seem to be exactly the same
-case "$host" in
-    alpha*-dec-osf*)
-        mercury_cv_use_digital_unix_threads=yes
-        ;;
-
-    *)
-        mercury_cv_use_digital_unix_threads=no
-        ;;
-esac
-
-if test $mercury_cv_use_digital_unix_threads = yes; then
-    AC_DEFINE(MR_DIGITAL_UNIX_PTHREADS)
-fi
 
 # Figure out what options we need to pass to the C compiler for multithreading.
 # We may need to pass different options to tell (a) the Mercury runtime and
 # library (b) the Boehm collector and (c) the C library that they need to be
 # thread-safe.
 #
-# For Linux, Irix, Solaris, and HPUX,
+# For Linux, Solaris, and HPUX,
 # the thread-enabled version of the Boehm
 # collector contains a reference to dlopen(), so
 # if threads are enabled, we need to link with the
 # appropriate extra library for that (-ldl on Linux
-# and Solaris, -lrt on HPUX, and nothing on Irix).
+# and Solaris and -lrt on HPUX).
 # XXX That should only be done if conservative GC
 #     is enabled.
 #
@@ -3087,20 +3137,25 @@ ENABLE_BOEHM_PARALLEL_MARK=
 # This following variable is used for passing any other C compiler
 # flags to the version of the Boehm GC built in parallel grades.
 #
-BOEHM_MISC_CFLAGS_FOR_THREADS=
+BOEHM_CFLAGS_FOR_THREADS="-DGC_THREADS"
+
+# This should be set if both the system malloc and Boehm GC (in the default
+# configuration) may both call sbrk.
+avoid_sbrk=
 
 case "$host" in
     *solaris*)
-        CFLAGS_FOR_THREADS="-DGC_SOLARIS_PTHREADS -D_REENTRANT"
+        CFLAGS_FOR_THREADS="-DGC_THREADS -D_REENTRANT"
         THREAD_LIBS="-lpthread -lrt -ldl"
         ENABLE_BOEHM_THREAD_LOCAL_ALLOC="-DTHREAD_LOCAL_ALLOC"
+        ENABLE_BOEHM_PARALLEL_MARK="-DPARALLEL_MARK"
         ;;
 
     *linux*)
         # Note that for old versions of Linux / glibc,
         # you may also need to make sure that you don't
         # pass -ansi to gcc.
-        CFLAGS_FOR_THREADS="-DGC_LINUX_THREADS -D_THREAD_SAFE -D_REENTRANT"
+        CFLAGS_FOR_THREADS="-DGC_THREADS -D_THREAD_SAFE -D_REENTRANT"
         THREAD_LIBS="-lpthread -ldl"
         ENABLE_BOEHM_THREAD_LOCAL_ALLOC="-DTHREAD_LOCAL_ALLOC"
         ENABLE_BOEHM_PARALLEL_MARK="-DPARALLEL_MARK"
@@ -3111,60 +3166,83 @@ case "$host" in
         # (With the current collector these settings only appear to work
         # correctly on Linux.)
         # XXX disabled as it aborts on GC_free when --enable-gc-munmap is used
-        # BOEHM_MISC_CFLAGS_FOR_THREADS="-DHBLKSIZE=32768 -DCPP_LOG_HBLKSIZE=15"
+        # BOEHM_CFLAGS_FOR_THREADS="-DGC_THREADS -DHBLKSIZE=32768 \
+        # -DCPP_LOG_HBLKSIZE=15"
+        avoid_sbrk=yes
         ;;
 
     *cygwin*)
         THREAD_LIBS=""
         case "$mercury_cv_cc_type" in
             msvc)
-                CFLAGS_FOR_THREADS="-DGC_WIN32_THREADS -MD"
+                CFLAGS_FOR_THREADS="-DGC_THREADS -MD"
                 LDFLAGS_FOR_THREADS="-MD"
                 LD_LIBFLAGS_FOR_THREADS="-MD"
                 ;;
             *)
-                CFLAGS_FOR_THREADS="$WIN32_GC_THREADLIB" ;;
+                CFLAGS_FOR_THREADS="$WIN32_GC_THREADLIB"
+                BOEHM_CFLAGS_FOR_THREADS="-DGC_THREADS $WIN32_GC_THREADLIB"
+                ENABLE_BOEHM_THREAD_LOCAL_ALLOC="-DTHREAD_LOCAL_ALLOC"
+                ENABLE_BOEHM_PARALLEL_MARK="-DPARALLEL_MARK"
+                ;;
         esac
+        # avoid_sbrk?
         ;;
 
     i*86-pc-mingw*)
         THREAD_LIBS=""
         case "$mercury_cv_cc_type" in
             msvc)
-                CFLAGS_FOR_THREADS="-DGC_WIN32_THREADS -MD"
+                CFLAGS_FOR_THREADS="-DGC_THREADS -MD"
                 LDFLAGS_FOR_THREADS="-MD"
                 LD_LIBFLAGS_FOR_THREADS="-MD"
                 ;;
             *)
-                # By default the MinGW port of GCC targets the i386
-                # architecture.  We need to tell it to target a later
-                # architecture for the GCC built-in atomic ops to be available.
-                CFLAGS_FOR_THREADS="$WIN32_GC_THREADLIB -march=i686"
-                THREAD_LIBS="-lpthread"
+                if test "$MR_HAVE_PTHREAD_H" = 1
+                then
+                    # By default the MinGW port of GCC targets the i386
+                    # architecture.  We need to tell it to target a later
+                    # architecture for the GCC built-in atomic ops to be
+                    # available.
+                    CFLAGS_FOR_THREADS="$WIN32_GC_THREADLIB -march=i686"
+                    BOEHM_CFLAGS_FOR_THREADS="-DGC_THREADS $WIN32_GC_THREADLIB"
+                    THREAD_LIBS="-lpthread"
+                else
+                    # The compiler is unconditionally linked against the thread
+                    # libraries so if pthreads is not present then we need to
+                    # set THREAD_LIBS to empty in order to avoid linker errors.
+                    CFLAGS_FOR_THREADS="$WIN32_GC_THREADLIB"
+                    BOEHM_CFLAGS_FOR_THREADS="-DGC_THREADS $WIN32_GC_THREADLIB"
+                    THREAD_LIBS=
+                fi
+                ENABLE_BOEHM_THREAD_LOCAL_ALLOC="-DTHREAD_LOCAL_ALLOC"
+                ENABLE_BOEHM_PARALLEL_MARK="-DPARALLEL_MARK"
                 ;;
         esac
         ;;
 
-    x86_64*w64*mingw32)
-        THREAD_LIBS=""
+    *-w64-mingw*)
         CFLAGS_FOR_THREADS="$WIN32_GC_THREADLIB"
+        BOEHM_CFLAGS_FOR_THREADS="-DGC_THREADS $WIN32_GC_THREADLIB"
         THREAD_LIBS="-lpthread"
+        ENABLE_BOEHM_THREAD_LOCAL_ALLOC="-DTHREAD_LOCAL_ALLOC"
+        ENABLE_BOEHM_PARALLEL_MARK="-DPARALLEL_MARK"
         ;;
 
     *apple*darwin*)
-        CFLAGS_FOR_THREADS="-DGC_DARWIN_THREADS"
+        CFLAGS_FOR_THREADS="-DGC_THREADS"
         THREAD_LIBS=""
+        ENABLE_BOEHM_THREAD_LOCAL_ALLOC="-DTHREAD_LOCAL_ALLOC"
+        ENABLE_BOEHM_PARALLEL_MARK="-DPARALLEL_MARK"
         ;;
 
-### # The threads stuff on Digital Unix (OSF) is not yet enabled because
-### # the Boehm garbage collector doesn't support threads on that platform
-### # XXX probably we should enable it but report an error if you try to
-### #     use an *.par.gc* grade
-### # XXX is this fixed in the Boehm collector now?
-### *-osf*)
-###     CFLAGS_FOR_THREADS=""
-###     THREAD_LIBS="-lpthreads -lmach -lc_r"
-###     ;;
+    *freebsd*)
+        CFLAGS_FOR_THREADS="-DGC_THREADS"
+        THREAD_LIBS="-lpthread"
+        ENABLE_BOEHM_THREAD_LOCAL_ALLOC="-DTHREAD_LOCAL_ALLOC"
+        ENABLE_BOEHM_PARALLEL_MARK="-DPARALLEL_MARK"
+        avoid_sbrk=yes
+        ;;
 
 ### # The threads stuff on HPUX is not yet enabled because
 ### # we don't have an HPUX box to test it on.
@@ -3172,29 +3250,34 @@ case "$host" in
 ###     CFLAGS_FOR_THREADS="" # XXX incomplete
 ###     THREAD_LIBS="-lpthread -lrt" ;;
 
-### # The threads stuff on IRIX is not yet enabled because
-### # we don't have an IRIX box to test it on.
-### # (XXX perhaps we should enable it anyway, so it is easier to test?)
-### *irix*)
-###     CFLAGS_FOR_THREADS="-DIRIX_THREADS"
-###     THREAD_LIBS="-lpthread"
-###     ;;
-
     *)
         # Multithreading not (yet) supported on other architectures.
         # For multithreading, we need (1) Posix threads and
         # (2) a port of the Boehm gc for that architecture
         # that works with threads.
         CFLAGS_FOR_THREADS=""
+        BOEHM_CFLAGS_FOR_THREADS=""
         ;;
 esac
+
+if test "$avoid_sbrk" = yes; then
+    if test "$ac_cv_func_mmap" = yes; then
+        BOEHM_CFLAGS_FOR_THREADS="$BOEHM_CFLAGS_FOR_THREADS -DUSE_MMAP"
+        if test "$enable_gc_mmap" = no; then
+            AC_MSG_NOTICE([using mmap for Boehm GC in threaded grades])
+        fi
+    else
+        AC_MSG_WARN([malloc and Boehm GC both use sbrk; probably unsafe!])
+    fi
+fi
+
 AC_SUBST(CFLAGS_FOR_THREADS)
 AC_SUBST(THREAD_LIBS)
 AC_SUBST(LDFLAGS_FOR_THREADS)
 AC_SUBST(LD_LIBFLAGS_FOR_THREADS)
 AC_SUBST(ENABLE_BOEHM_THREAD_LOCAL_ALLOC)
 AC_SUBST(ENABLE_BOEHM_PARALLEL_MARK)
-AC_SUBST(BOEHM_MISC_CFLAGS_FOR_THREADS)
+AC_SUBST(BOEHM_CFLAGS_FOR_THREADS)
 
 save_LIBS="$LIBS"
 LIBS="$THREAD_LIBS"
@@ -3261,15 +3344,15 @@ AC_SUBST([SYMPREFIX])
 # BEST_LLDS_BASE_GRADE is the most efficient of the LLDS->C base grades
 # that can be supported.  If the user explicitly chooses a base grade
 # using --with-llds-base-grade then we use that instead.
+#
+# NOTE: the base grade can also be one of asm_jump, fast and jump.
+# However, we do not publicly document those grades or encourage their
+# use by non-developers.
 
 AC_ARG_WITH([llds-base-grade],
    AC_HELP_STRING([--with-llds-base-grade=<base_grade>],
           [Force the use of <base_grade> as the base LLDS grade.
-                   This is mainly useful for forcing the source distribution to
-                   compile in a grade other than the one which is chosen
-           automatically.
-                   <base_grade> must be one of asm_fast, asm_jump, fast, jump,
-                   reg or none]),
+          <base_grade> must be one of asm_fast, reg or none]),
    [user_llds_base_grade="$withval";mercury_cv_user_base_grade=yes],
    [mercury_cv_user_base_grade=no]
 )
@@ -3297,24 +3380,14 @@ case "$mercury_cv_user_base_grade" in
             esac
             ;;
     no)
-        if test $mercury_cv_asm_labels = yes; then
-            if test $mercury_cv_gcc_model_fast = yes; then
-                BEST_LLDS_BASE_GRADE=asm_fast
-            else
-                BEST_LLDS_BASE_GRADE=asm_jump
-            fi
-        elif test $mercury_cv_gcc_labels = yes; then
-            if test $mercury_cv_gcc_model_fast = yes; then
-                BEST_LLDS_BASE_GRADE=fast
-            else
-                BEST_LLDS_BASE_GRADE=jump
-            fi
+        if test $mercury_cv_asm_labels = yes -a \
+                $mercury_cv_gcc_model_fast = yes
+        then
+            BEST_LLDS_BASE_GRADE=asm_fast
+        elif test $mercury_cv_gcc_model_reg = yes; then
+            BEST_LLDS_BASE_GRADE=reg
         else
-            if test $mercury_cv_gcc_model_reg = yes; then
-                BEST_LLDS_BASE_GRADE=reg
-            else
-                BEST_LLDS_BASE_GRADE=none
-            fi
+            BEST_LLDS_BASE_GRADE=none
         fi
 
         # We used to force the use of the none base grade if the C compiler
@@ -3329,16 +3402,22 @@ case "$mercury_cv_user_base_grade" in
      ;;
 esac
 
-# Force the use of the none grade on Apple x86/Darwin systems,
-# since the default gcc supplied with that system doesn't
-# work with either the reg or asm_fast grades.
-# XXX provide a workaround for the former; the latter is a problem
-# with gcc's Darwin support.
+# Force the use of the none grade on Apple x86_64 systems when using
+# GCC 4.1 or 4.2.  The asm_fast and reg grades do not work with those versions.
+# They do work properly on x86_64 systems with GCC version 4.3 onwards.
 #
+case "$C_COMPILER_TYPE" in
+    gcc_4_1_*|gcc_4_2_*)
+        case "$host" in x86_64*apple*darwin*) BEST_LLDS_BASE_GRADE=none ;;
+    esac
+esac
+
+# Force the use of the none grade on x86/Darwin systems.
+# XXX we should check whether asm_fast or reg work with recent GCCs.
 # The asm_fast and reg grades also do not currently work on Linux/PPC.
 #
 case "$host" in
-    i*86*apple*darwin*|x86_64*apple*darwin*|powerpc*-linux-gnu)
+    i*86*apple*darwin*|powerpc*-linux-gnu)
         BEST_LLDS_BASE_GRADE=none
         ;;
 esac
@@ -3417,16 +3496,16 @@ esac
 # with the C files that we ship in the source distribution.  The C files in the
 # source distribution are generated in hlc.gc.pregen or asm_fast.gc.pregen.
 # In the former case, we _must_ use the grade hlc.gc.pregen, in the latter case
-# we can use any of the base LLDS grades (it's the same C code), except that a
-# couple of them (fast and jump) don't support code addresses in static
-# initalizers.
+# we can, in principle, use any of the base LLDS grades (it's the same C code).
+# We don't use fast and jump as they don't support code addresses in static
+# initializers and we don't use asm_jump as it isn't regularly tested.
 
 if test "$BOOTSTRAP_HLC" = "yes"
 then
     BOOTSTRAP_GRADE=hlc.gc.pregen
 else
     case $BEST_LLDS_BASE_GRADE in
-        jump|fast)
+        asm_jump|jump|fast)
             if test $mercury_cv_gcc_model_reg = yes; then
                 BOOTSTRAP_GRADE=reg.gc.pregen
             else
@@ -3480,9 +3559,10 @@ AC_ARG_ENABLE(nogc-grades,
                    [install no-gc versions of the library]),
     enable_nogc_grades="$enableval",enable_nogc_grades=no)
 
-AC_ARG_ENABLE(agc-grades,
-    AC_HELP_STRING([--enable-agc-grades],
-                   [install accurate GC versions of the library]),
+# Not publicly documented since the agc grades are currently broken.
+#
+#  --enable-agc-grades     install accurate GC versions of the library
+AC_ARG_ENABLE(agc-grades, [],
     enable_agc_grades="$enableval",enable_agc_grades=no)
 
 AC_ARG_ENABLE(debug-grades,
@@ -3561,28 +3641,13 @@ AC_ARG_ENABLE(minimal-install,
         [install the minimal system required to bootstrap Mercury]),
     [enable_min_install="$enableval"],[enable_min_install="no"])
 
-AC_ARG_ENABLE(minimal-hlc-trail-install,
-    AC_HELP_STRING([--enable-minimal-hlc-trail-install],
-        [install the minimal system that supports trailing in a high level C grade]),
-    [enable_min_hlc_trail="$enableval"],[enable_min_hlc_trail="no"])
-
-# We don't enable the .NET grades by default because that may lead to
-# installation process breaking on Linux systems that have DotGNU or Mono
-# installed.
-#
-AC_ARG_ENABLE(dotnet-grades,
-    AC_HELP_STRING([--enable-dotnet-grades], [install the .NET grades]),
-    enable_dotnet_grades="$enableval",enable_dotnet_grades=no)
-
-# We don't enable the csharp grade by default.
 AC_ARG_ENABLE(csharp-grade,
-   AC_HELP_STRING([--enable-csharp-grade], [install the C# grade]),
-   enable_csharp_grade="$enableval",enable_csharp_grade=no)
+   AC_HELP_STRING([--disable-csharp-grade], [do not install the C# grade]),
+   enable_csharp_grade="$enableval",enable_csharp_grade=yes)
 
-# We don't enable the java grade by default.
 AC_ARG_ENABLE(java-grade,
-   AC_HELP_STRING([--enable-java-grade], [install the Java grade]),
-   enable_java_grade="$enableval",enable_java_grade=no)
+   AC_HELP_STRING([--disable-java-grade], [do not install the Java grade]),
+   enable_java_grade="$enableval",enable_java_grade=yes)
 
 # We don't enable the Erlang grades by default because it is still
 # experimental.
@@ -3619,7 +3684,6 @@ if test "$enable_most_grades" = no; then
     enable_rbmm_grades=no
     enable_par_grades=no
     enable_stseg_grades=no
-    enable_dotnet_grades=no
     enable_csharp_grade=no
     enable_java_grade=no
     enable_erlang_grade=no
@@ -3735,10 +3799,10 @@ if test "$enable_prof_grades" = yes; then
         LIBGRADES="$LIBGRADES $DEFAULT_BASE_GRADE.gc.memprof"
     fi
 
-    # Add a `.profdeep' (--deep-profiling) grade,
-    # if deep profiling is enabled.
+    # Add a `.profdeep' (--deep-profiling) grade, if deep profiling is enabled.
+    # By default, we also use stack segments with deep profiling.
     if test $mercury_cv_enable_deep_profiler = yes; then
-        LIBGRADES="$LIBGRADES $BEST_LLDS_BASE_GRADE.gc.profdeep"
+        LIBGRADES="$LIBGRADES $BEST_LLDS_BASE_GRADE.gc.profdeep.stseg"
     fi
 fi
 
@@ -3833,17 +3897,6 @@ then
     then
         LIBGRADES="$LIBGRADES $BEST_LLDS_BASE_GRADE.gc.trseg.stseg"
     fi
-
-    if test "$mercury_cv_enable_deep_profiler" = "yes"
-    then
-        LIBGRADES="$LIBGRADES $BEST_LLDS_BASE_GRADE.gc.profdeep.stseg"
-    fi
-fi
-
-# Add .NET back-end grades.
-if test $mercury_cv_microsoft_dotnet = yes -a "$enable_dotnet_grades" = yes
-then
-    LIBGRADES="$LIBGRADES il"
 fi
 
 # Add C# back-end grade, if a C# compiler is installed.
@@ -3876,13 +3929,6 @@ if test "$enable_ssdebug_grades" = yes; then
     case "$LIBGRADES" in
         *java*) LIBGRADES="$LIBGRADES java.ssdebug" ;;
     esac
-fi
-
-# If this option is enabled then install a minimal system that supports
-# trailing in a high-level C grade.
-if test "$enable_min_hlc_trail" = yes
-then
-    LIBGRADES="$DEFAULT_BASE_GRADE.gc hlc.gc.trseg"
 fi
 
 # If this option is enabled then install only the grade that is being
@@ -4276,11 +4322,6 @@ SHLIB_INSTALL_NAME_FLAG="-install_name "
 
 CFLAGS_FOR_PIC="-fpic -DMR_PIC"
 EXT_FOR_PIC_OBJECTS=pic_o
-# Object files with extension $EXT_FOR_LINK_WITH_PIC_OBJECTS are used
-# in executables which are linked with shared Mercury libraries.
-# EXT_FOR_LINK_WITH_PIC_OBJECTS should be `lpic_o' if `-DMR_PIC_REG'
-# has any effect (currently nowhere.)
-EXT_FOR_LINK_WITH_PIC_OBJECTS=lpic_o
 EXT_FOR_SHARED_LIB=$LIB_SUFFIX
 USE_DLLS=no
 # The following variables specify options to $LINK_SHARED_OBJ to
@@ -4334,22 +4375,9 @@ case "$host" in
                 rm -f conftest*
                 ;;
             *)
-                case "$C_COMPILER_TYPE" in
-                    lcc)
-                        AC_MSG_RESULT(yes)
-                        EXT_FOR_SHARED_LIB=so
-                        EXE_RPATH_OPT="-Wl-rpath -Wl"
-                        EXE_RPATH_SEP=" -Wl-rpath -Wl"
-                        SHLIB_RPATH_OPT="-Wl-rpath -Wl"
-                        SHLIB_RPATH_SEP=" -Wl-rpath -Wl"
-                        ;;
-                    *)
-                        AC_MSG_RESULT(no)
-                        ;;
-                esac
+                AC_MSG_RESULT(no)
+                ;;
         esac
-
-        EXT_FOR_LINK_WITH_PIC_OBJECTS=o
 
         # On x86_64 machines we use -fPIC rather than -fpic
         # in order to avoid limits on the size of the global
@@ -4363,20 +4391,11 @@ case "$host" in
     m68*-linux|m68*-linux-gnu)
         AC_MSG_RESULT(yes)
         EXT_FOR_SHARED_LIB=so
-        EXT_FOR_LINK_WITH_PIC_OBJECTS=o
         ;;
-    i*86-*-freebsd*)
-        # From Cornelis van der Laan <nils@ims.uni-stuttgart.de>
+    *-freebsd*)
+        # Tested on FreeBSD 10.1 i386/amd64.
         AC_MSG_RESULT(yes)
-        LINK_SHARED_OBJ="ld -Bshareable"
-        LINK_SHARED_OBJ_SH="ld -Bshareable"
         EXT_FOR_SHARED_LIB=so
-        # From Kevet Duncombe <dunc@acm.org> tested on FreeBSD 2.2.5
-        EXE_RPATH_OPT="-R"
-        EXE_RPATH_SEP=" -R"
-        SHLIB_RPATH_OPT="-R"
-        SHLIB_RPATH_SEP=" -R"
-        DEFAULT_LINKAGE=static
         ;;
     i*86-*-solaris2.*)
         AC_MSG_RESULT(yes)
@@ -4419,7 +4438,6 @@ case "$host" in
         SHLIB_RPATH_SEP=" -R"
         CFLAGS_FOR_PIC="-fpic -DMR_PIC" # used only for libgc.{a,so}
         EXT_FOR_PIC_OBJECTS=o
-        EXT_FOR_LINK_WITH_PIC_OBJECTS=o
 
         # Note that despite the above definition of CFLAGS_FOR_PIC,
         # we don't use `-fpic' for shared libraries on Solaris
@@ -4427,10 +4445,9 @@ case "$host" in
         # CFLAGS_FOR_PIC will be used only for building libgc.a
         # and libgc.so.)
         #
-        # The reason for this is that shared libraries work without
-        # it (well, at least they are shared on disk -- although the
-        # code is not shared at runtime), and using `-fpic' would
-        # reduce efficiency.
+        # The reason for this is that shared libraries work without it
+        # (well, at least they are shared on disk -- although the code is
+        # not shared at runtime), and using `-fpic' would reduce efficiency.
         #
         # It works because the Solaris dynamic linker will
         # actually do the fixups at runtime for non-PIC code.
@@ -4446,69 +4463,9 @@ case "$host" in
         #
         # See runtime/mercury_goto.h for the code that handles PIC
         # on SPARCs.
-        # Note that mixing PIC and non-PIC code is fine on SPARCs
-        # (though it doesn't work on x86s, due to the use of `ebx'
-        # in runtime/machdeps/i386_regs.h).
+        # Note that mixing PIC and non-PIC code is fine on SPARCs.
 
         EXT_FOR_SHARED_LIB=so
-        ;;
-    alpha*-dec-osf*)
-        AC_MSG_RESULT(yes)
-        if test "$GCC_PROG" != ""; then
-            # use gcc to link shared objects
-            LINK_SHARED_OBJ="$GCC_PROG -shared \
-                -Wl,-O3,-update_registry,\$(SO_LOCATIONS_DIR)so_locations"
-            LINK_SHARED_OBJ_SH="gcc -shared \
-                -Wl,-O3,-update_registry,\${SO_LOCATIONS_DIR}so_locations"
-            ERROR_UNDEFINED="-Wl,-error_unresolved"
-            EXE_RPATH_OPT="-Wl,-rpath,"
-            SHLIB_RPATH_OPT="-Wl,-rpath,"
-        else
-            # use cc to link shared objects
-            LINK_SHARED_OBJ="cc -shared \
-                -update_registry \$(SO_LOCATIONS_DIR)so_locations"
-            LINK_SHARED_OBJ_SH="cc -shared \
-                -update_registry \${SO_LOCATIONS_DIR}so_locations"
-            ERROR_UNDEFINED="-error_unresolved"
-            EXE_RPATH_OPT="-rpath "
-            SHLIB_RPATH_OPT="-rpath "
-        fi
-        EXE_RPATH_SEP=":"
-        SHLIB_RPATH_SEP=":"
-        EXT_FOR_SHARED_LIB=so
-        # -fpic not needed on Alpha/OSF, since it is the default
-        CFLAGS_FOR_PIC=
-        EXT_FOR_PIC_OBJECTS=o
-        EXT_FOR_LINK_WITH_PIC_OBJECTS=o
-        ;;
-    mips-sgi-irix5.*)
-        LINK_SHARED_OBJ="ld -shared \
-            -update_registry \$(SO_LOCATIONS_DIR)so_locations \
-            -quickstart_info -rdata_shared"
-        LINK_SHARED_OBJ_SH="ld -shared \
-            -update_registry \${SO_LOCATIONS_DIR}so_locations \
-            -quickstart_info -rdata_shared"
-        ERROR_UNDEFINED="-no_unresolved"
-        EXE_RPATH_OPT="-Wl,-rpath,"
-        EXE_RPATH_SEP=":"
-        SHLIB_RPATH_OPT="-rpath "
-        SHLIB_RPATH_SEP=":"
-        # -fpic not needed on IRIX, since it is the default
-        CFLAGS_FOR_PIC=
-        EXT_FOR_PIC_OBJECTS=o
-        EXT_FOR_LINK_WITH_PIC_OBJECTS=o
-        # shared libraries are incompatible with gcc non-local gotos,
-        case "$GRADE" in
-            reg.gc | none.gc | hlc.gc)
-                AC_MSG_RESULT(yes)
-                EXT_FOR_SHARED_LIB=so
-                ;;
-            *)
-                EXT_FOR_SHARED_LIB=a
-                AC_MSG_RESULT(no)
-                AC_MSG_RESULT(Read README.IRIX-5)
-                ;;
-        esac
         ;;
     *-cygwin*)
         # disabled for now, since it hasn't been tested
@@ -4519,7 +4476,6 @@ case "$host" in
 
         CFLAGS_FOR_PIC=
         EXT_FOR_PIC_OBJECTS=o
-        EXT_FOR_LINK_WITH_PIC_OBJECTS=o
         DEFAULT_LINKAGE=static
         ;;
     *mingw*)
@@ -4531,7 +4487,6 @@ case "$host" in
 
         CFLAGS_FOR_PIC=
         EXT_FOR_PIC_OBJECTS=o
-        EXT_FOR_LINK_WITH_PIC_OBJECTS=o
         DEFAULT_LINKAGE=static
         ;;
     *apple*darwin*)
@@ -4543,7 +4498,6 @@ case "$host" in
                 SHLIB_USE_INSTALL_NAME="--shlib-linker-use-install-name"
                 SHLIB_INSTALL_NAME_FLAG="-install_name "
                 EXT_FOR_SHARED_LIB=dylib
-                EXT_FOR_LINK_WITH_PIC_OBJECTS=o
                 CFLAGS_FOR_PIC="-fPIC -DMR_PIC"
                 ERROR_UNDEFINED="-undefined error"
                 # The MACOSX_DEPLOYMENT_TARGET environment variable needs to be
@@ -4562,7 +4516,6 @@ case "$host" in
             *)
                 CFLAGS_FOR_PIC=
                 EXT_FOR_PIC_OBJECTS=o
-                EXT_FOR_LINK_WITH_PIC_OBJECTS=o
                 DEFAULT_LINKAGE=static
                 AC_MSG_RESULT(no)
             ;;
@@ -4571,19 +4524,17 @@ case "$host" in
     arm*-linux|arm*-linux-gnu)
         AC_MSG_RESULT(yes)
         EXT_FOR_SHARED_LIB=so
-        EXT_FOR_LINK_WITH_PIC_OBJECTS=o
         # One can build gcc with a default PIC register other than sl
         # so let's force it. If you change this,
         # update MR_ARM_PIC_REG in runtime/mercury_goto.h as well.
         CFLAGS_FOR_PIC="-mpic-register=sl $CFLAGS_FOR_PIC"
         ;;
     *)
-        # CFLAGS_FOR_PIC is used by boehm_gc/Makefile when creating
-        # libgc.a.  If the system doesn't support shared libraries,
+        # CFLAGS_FOR_PIC is used by boehm_gc/Makefile when creating libgc.a.
+        # If the system doesn't support shared libraries,
         # then we should set it to empty, not `-fpic'.
         CFLAGS_FOR_PIC=
         EXT_FOR_PIC_OBJECTS=o
-        EXT_FOR_LINK_WITH_PIC_OBJECTS=o
         DEFAULT_LINKAGE=static
         AC_MSG_RESULT(no)
         ;;
@@ -4602,7 +4553,23 @@ OPT_FLAGS_FOR_CLANG="-O0"
 case "$mercury_cv_cc_type" in
 
     gcc*)
-        CFLAGS_FOR_ANSI="-ansi"
+        # We no longer pass -ansi to GCC on any system for the following
+        # reasons:
+        # * It restricts the dialect of C used to C90 and that prevents us
+        #   from using various C99 library features.  Every version of GCC we
+        #   support provides those features so there is no point in doing
+        #   this.  
+        # * It causes complications with the header files on some systems.
+        #   Notably with the definitions of the types off_t and off64_t on MinGW
+        #   systems.
+        # * This setting also affects the compilation of user written C code in
+        #   foreign_proc and foreign code pragmas.
+        #
+        # NOTE: the --no-ansi option supported by the mgnuc script does more than
+        # simply pass the value of CFLAGS_FOR_ANSI to the C compiler.
+        # (See that script for details.)
+        # 
+        CFLAGS_FOR_ANSI=
 
         # For a full list of the other gcc warnings that we don't
         # enable, and why, see scripts/mgnuc.in.
@@ -4632,19 +4599,12 @@ case "$mercury_cv_cc_type" in
         MCFLAGS_FOR_CC=
         ;;
 
-    lcc)
+    clang*)
+
+        # We do not compile with -ansi when using clang because that (currently) puts
+        # clang into C89 mode and we want to use C99's inline keyword with clang.
         CFLAGS_FOR_ANSI=
 
-        # Turn off all warnings due to spurious warnings.
-        CFLAGS_FOR_WARNINGS="-w"
-
-        CFLAGS_FOR_OPT=
-        CFLAGS_FOR_DEBUG="-g"
-        CFLAGS_FOR_NO_STRICT_ALIASING=
-        MCFLAGS_FOR_CC=
-        ;;
-
-    clang*)
         # XXX we need go through the warning and optimization options for clang
         # more carefully.
         CFLAGS_FOR_WARNINGS="-w"
@@ -4672,7 +4632,7 @@ case "$mercury_cv_cc_type" in
         CFLAGS_FOR_OPT=
         # XXX See README.MS-Visual C for details of why we disable this.
         #CFLAGS_FOR_DEBUG="-Zi"
-        CFLAGS_FOR_DEBUG
+        CFLAGS_FOR_DEBUG=
         CFLAGS_FOR_NO_STRICT_ALIASING=
 
         # Using the MSVC compiler implies that we must use
@@ -4711,7 +4671,7 @@ AC_SUBST([C_COMPILER_TYPE])
 
 LD_STATIC_FLAGS=
 case "$C_COMPILER_TYPE" in
-    gcc*|clang*|lcc)
+    gcc*|clang*)
         LD_STATIC_FLAGS=-static
         ;;
 esac
@@ -4727,32 +4687,6 @@ case "$FULLARCH" in
                 ;;
             clang*)
                 LD_STATIC_FLAGS="-static -Wl,-defsym -Wl,_DYNAMIC=0"
-                ;;
-            lcc)
-                # for lcc 4.1, we need to use "-Wl,".
-                # for lcc 4.2, we need to use "-Wl" without the comma,
-                # like we do for gcc.
-                AC_MSG_CHECKING([whether lcc requires comma after -Wl])
-                LD_STATIC_FLAGS="-static -Wl-defsym -Wl_DYNAMIC=0"
-                rm -f conftest*
-                echo "int main() { return 0; }" > conftest.c
-                if
-                    echo $CC $LD_STATIC_FLAGS conftest.c >&AC_FD_CC 2>&1 &&
-                    $CC $LD_STATIC_FLAGS conftest.c >&AC_FD_CC 2>&1
-                then
-                    AC_MSG_RESULT(no)
-                else
-                    AC_MSG_RESULT(yes)
-                    LD_STATIC_FLAGS="-static -Wl,-defsym -Wl,_DYNAMIC=0"
-                fi
-                rm -f conftest*
-                ;;
-        esac
-        ;;
-    alpha*-dec-osf*)
-        case "$COMPILER" in
-            cc)
-                LD_STATIC_FLAGS=-non_shared
                 ;;
         esac
         ;;
@@ -4814,7 +4748,6 @@ AC_SUBST(SHLIB_USE_INSTALL_NAME)
 AC_SUBST(SHLIB_INSTALL_NAME_FLAG)
 AC_SUBST(CFLAGS_FOR_PIC)
 AC_SUBST(EXT_FOR_PIC_OBJECTS)
-AC_SUBST(EXT_FOR_LINK_WITH_PIC_OBJECTS)
 AC_SUBST(EXT_FOR_SHARED_LIB)
 AC_SUBST(EXT_FOR_EXE)
 AC_SUBST(HOST_ENV_TYPE)
@@ -4826,6 +4759,33 @@ AC_SUBST(DEFAULT_LINKAGE)
 if test "$USE_DLLS" = "yes"; then
     AC_DEFINE(MR_USE_DLLS)
 fi
+
+#-----------------------------------------------------------------------------#
+#
+# Sanitizers
+#
+
+AC_ARG_ENABLE([sanitizers],
+    AC_HELP_STRING([--enable-sanitizers],
+        [enable AddressSanitizer and UndefinedBehaviorSanitizer]),
+    [ac_sanitizers="$enableval"], [ac_sanitizers=no])
+
+case "$C_COMPILER_TYPE" in
+    gcc*)
+        if test "$ac_sanitizers" = yes
+        then
+            CFLAGS_FOR_SANITIZERS="-fsanitize=address,undefined"
+            LDFLAGS_FOR_SANITIZERS="-fsanitize=address,undefined -pthread"
+        fi
+        ;;
+    *)
+        CFLAGS_FOR_SANITIZERS=
+        LDFLAGS_FOR_SANITIZERS=
+        ;;
+esac
+
+AC_SUBST(CFLAGS_FOR_SANITIZERS)
+AC_SUBST(LDFLAGS_FOR_SANITIZERS)
 
 #-----------------------------------------------------------------------------#
 
@@ -4964,6 +4924,7 @@ MERCURY_CHECK_FOR_IEEE_FUNC(isnanf)
 MERCURY_CHECK_FOR_IEEE_FUNC(isinf)
 MERCURY_CHECK_FOR_IEEE_FUNC(isinff)
 MERCURY_CHECK_FOR_IEEE_FUNC(finite)
+MERCURY_CHECK_FOR_IEEE_FUNC(isfinite)
 
 #-----------------------------------------------------------------------------#
 #
@@ -5106,37 +5067,17 @@ AC_TRY_LINK([
         */
 
         fd = socket(addr_family, SOCK_STREAM, 0);
-        if (fd < 0) {
-            fprintf(stderr, "Mercury runtime: socket() failed: %s\n",
-                strerror(errno));
-            fatal_error("cannot open socket for debugger");
-        } else if (MR_debug_socket) {
-            fprintf(stderr,"Mercury runtime: creation of socket ok\n");
-        }
 
         /*
         ** Connect to the socket
         */
-        if (connect(fd, addr, len) < 0) {
-            fprintf(stderr, "Mercury runtime: connect() failed: %s\n",
-                strerror(errno));
-            fatal_error("can't connect to debugger socket");
-        } else if (MR_debug_socket) {
-            fprintf(stderr, "Mercury runtime: connection to socket: ok\n");
-        }
+        connect(fd, addr, len);
 
         /*
         ** Convert the socket fd to a Mercury stream
         */
         file_in = fdopen(fd, "r");
         file_out = fdopen(fd, "w");
-        if ((file_in == NULL)||(file_out == NULL)) {
-            fprintf(stderr, "Mercury runtime: fdopen() failed: %s\n",
-                strerror(errno));
-            fatal_error("cannot open debugger socket");
-        } else if (MR_debug_socket) {
-            fprintf(stderr, "Mercury runtime: fdopen(): ok\n");
-        }
     }
     changequote([,])
 ],[mercury_cv_sockets_work=yes],[mercury_cv_sockets_work=no]))
@@ -5292,8 +5233,7 @@ PKG_PROG_PKG_CONFIG
 
 AC_ARG_WITH([hwloc],
     [AS_HELP_STRING([--without-hwloc],
-        [Do not use libhwloc to detect the processors available in low-level C
-         parallel grades.])],
+        [Do not use libhwloc to detect the processors available.])],
     [],
     [with_hwloc=check])
 
@@ -5317,7 +5257,7 @@ if test "$with_hwloc" != "no"; then
 else
     libhwloc_LIBS=""
     libhwloc_CFLAGS=""
-    libhwloc_static_libs=""
+    hwloc_static_libs=""
 fi
 
 HWLOC_LIBS="$libhwloc_LIBS"
@@ -5575,6 +5515,7 @@ slice/SLICE_FLAGS
 profiler/PROF_FLAGS
 deep_profiler/DEEP_FLAGS
 tests/TESTS_FLAGS
+tests/DEFNS_FOR_TESTS
 mfilterjavac/MFILTERJAVAC_FLAGS
 '
 
@@ -5645,8 +5586,23 @@ do
 done
 
 MERCURY_MSG("")
-num_installed_grades=0
+MERCURY_MSG("using ${DEFAULT_GRADE} as the default grade for applications")
+MERCURY_MSG("using ${BEST_GRADE_FOR_COMPILER} to compile the compiler")
+
+if test "${BOOTSTRAP_MC_COMPILER}" != ""
+then
+    MERCURY_MSG("")
+    MERCURY_MSG("using ${BOOTSTRAP_MC_COMPILER} as the installed compiler")
+fi
+if test "${PREFIX}" != "" -a "${PREFIX}" != "${DEFAULT_PREFIX}"
+then
+    MERCURY_MSG("")
+    MERCURY_MSG("using ${PREFIX} as the install prefix")
+fi
+
+MERCURY_MSG("")
 MERCURY_MSG("the set of library grades to install will be")
+num_installed_grades=0
 > .configured_library_grades
 for grade in $LIBGRADES
 do
@@ -5675,11 +5631,12 @@ then
 else
     MERCURY_MSG("This will likely take $min_minutes to $max_minutes minutes.")
 fi
-# This message would be easier to read with some parentheses or commas,
-# but getting m4 to accept either seems to be impossible.
-MERCURY_MSG("You can make the install faster by installing fewer grades")
-MERCURY_MSG("as shown by the fine-tuning section of the INSTALL file or by")
-MERCURY_MSG("compiling the files of each grade in parallel which you can do")
-MERCURY_MSG("via a command such as make PARALLEL=-j2 install.")
+MERCURY_MSG("")
+# Putting commas directly into the message confuses m4, even if escaped.
+COMMA=","
+MERCURY_MSG("You can make the install faster by installing fewer grades${COMMA}")
+MERCURY_MSG("as shown by the fine-tuning section of the INSTALL file${COMMA}")
+MERCURY_MSG("or by compiling the files of each grade in parallel${COMMA}")
+MERCURY_MSG("which you can do via a command such as make PARALLEL=-j2 install.")
 
 #-----------------------------------------------------------------------------#

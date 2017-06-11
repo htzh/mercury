@@ -36,12 +36,16 @@
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.pred_table.
+:- import_module hlds.status.
 :- import_module mdbcomp.
+:- import_module mdbcomp.builtin_modules.
 :- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.
 :- import_module parse_tree.error_util.
 :- import_module parse_tree.file_names.
 :- import_module parse_tree.prog_data.
+:- import_module parse_tree.prog_item.
 :- import_module parse_tree.source_file_map.
 
 :- import_module bool.
@@ -144,8 +148,8 @@ build_comments(S, comments(!.C), comments(!:C), !IO) :-
 :- func line_type(list(character)) = line_type.
 
 line_type(Line) = LineType :-
-    list.takewhile(char.is_whitespace, Line, _WhiteSpace, Rest),
-    list.takewhile(is_not_comment_char, Rest, Decl, Comment),
+    list.drop_while(char.is_whitespace, Line, Rest),
+    list.take_while(is_not_comment_char, Rest, Decl, Comment),
     (
         Rest = [],
         LineType = blank
@@ -182,13 +186,13 @@ is_not_comment_char(C) :-
 :- func maybe_add_comment(comments, prog_context, xml) = xml.
 
 maybe_add_comment(Comments, Context, Xml) =
-    ( Xml = elem(N, As, Cs) ->
-        ( Comment = get_comment(Comments, Context), Comment \= "" ->
+    ( if Xml = elem(N, As, Cs) then
+        ( if Comment = get_comment(Comments, Context), Comment \= "" then
             elem(N, As, [elem("comment", [], [data(Comment)]) | Cs])
-        ;
+        else
             Xml
         )
-    ;
+    else
         unexpected($module, $pred, "not an element")
     ).
 
@@ -200,11 +204,11 @@ get_comment(Comments, context(_, Line)) =
     % XXX At a later date this hard-coded strategy should be made
     % more flexible. What I imagine is that the user would pass a string
     % saying in what order they wish to search for comments.
-    ( comment_on_current_line(Comments, Line, C) ->
+    ( if comment_on_current_line(Comments, Line, C) then
         C
-    ; comment_directly_above(Comments, Line, C) ->
+    else if comment_directly_above(Comments, Line, C) then
         C
-    ;
+    else
         ""
     ).
 
@@ -238,7 +242,7 @@ comment_directly_above(Comments, Line, Comment) :-
 :- func get_comment_forwards(comments, int) = string.
 
 get_comment_forwards(Comments, Line) = Comment :-
-    ( map.search(Comments ^ line_types, Line, LineType) ->
+    ( if map.search(Comments ^ line_types, Line, LineType) then
         (
             LineType = comment(CurrentComment),
             CommentBelow = get_comment_forwards(Comments, Line + 1),
@@ -250,18 +254,18 @@ get_comment_forwards(Comments, Line) = Comment :-
             ),
             Comment = ""
         )
-    ;
+    else
         Comment = ""
     ).
 
     % Return the string which represents the comment ending at the given line.
-    % The comment extends backwards until the the line above the given
-    % line is not a comment only line.
+    % The comment extends backwards until the line above the given line is not
+    % a comment only line.
     %
 :- func get_comment_backwards(comments, int) = string.
 
 get_comment_backwards(Comments, Line) = Comment :-
-    ( map.search(Comments ^ line_types, Line, LineType) ->
+    ( if map.search(Comments ^ line_types, Line, LineType) then
         (
             LineType = comment(CurrentComment),
             CommentAbove = get_comment_backwards(Comments, Line - 1),
@@ -273,7 +277,7 @@ get_comment_backwards(Comments, Line) = Comment :-
             ),
             Comment = ""
         )
-    ;
+    else
         Comment = ""
     ).
 
@@ -287,14 +291,10 @@ get_comment_backwards(Comments, Line) = Comment :-
     (to_xml(module_info_xml_doc(Comments, ModuleComment, ModuleInfo)) = Xml :-
         CommentXml = elem("comment", [], [data(ModuleComment)]),
 
-        module_info_get_interface_module_specifiers(ModuleInfo,
-            InterfaceImports),
-        module_info_get_imported_module_specifiers(ModuleInfo,
-            ImportedModules0),
-        ImportedModules =
-            ImportedModules0 `difference` set(all_builtin_modules),
-        set.fold(import_documentation(InterfaceImports),
-            ImportedModules, [], ImportsXml),
+        module_info_get_avail_module_map(ModuleInfo, AvailModuleMap),
+        BuiltinModuleNames = set.list_to_set(all_builtin_modules),
+        map.foldl(maybe_add_import_documentation(BuiltinModuleNames),
+            AvailModuleMap, [], ImportsXml),
         ImportXml = elem("imports", [], ImportsXml),
 
         module_info_get_type_table(ModuleInfo, TypeTable),
@@ -319,20 +319,36 @@ get_comment_backwards(Comments, Line) = Comment :-
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
-    % Output the documentation for one import
+    % Output the documentation for one import_module or use_module declaration.
     %
-:- pred import_documentation(set(module_specifier)::in, module_specifier::in,
-    list(xml)::in, list(xml)::out) is det.
+:- pred maybe_add_import_documentation(set(module_name)::in,
+    module_name::in, avail_module_entry::in, list(xml)::in, list(xml)::out)
+    is det.
 
-import_documentation(InterfaceImportedModules, ImportedModule, !Xmls) :-
-    XmlName = name_to_xml(ImportedModule),
-    ( ImportedModule `set.member` InterfaceImportedModules ->
-        XmlVisibility = visibility_to_xml(status_exported)
-    ;
-        XmlVisibility = visibility_to_xml(status_local)
-    ),
-    Xml = elem("import", [], [XmlName, XmlVisibility]),
-    !:Xmls = [Xml | !.Xmls].
+maybe_add_import_documentation(BuiltinModuleNames, ModuleName, AvailEntry,
+        !Xmls) :-
+    ( if set.member(ModuleName, BuiltinModuleNames) then
+        true
+    else
+        XmlName = name_to_xml(ModuleName),
+        AvailEntry = avail_module_entry(Section, ImportOrUse, _Avails),
+        (
+            Section = ms_interface,
+            XmlVisibility = tagged_string("visibility", "interface")
+        ;
+            Section = ms_implementation,
+            XmlVisibility = tagged_string("visibility", "implementation")
+        ),
+        (
+            ImportOrUse = import_decl,
+            ImportOrUseWord = "import"
+        ;
+            ImportOrUse = use_decl,
+            ImportOrUseWord = "use"
+        ),
+        Xml = elem(ImportOrUseWord, [], [XmlName, XmlVisibility]),
+        !:Xmls = [Xml | !.Xmls]
+    ).
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -343,8 +359,8 @@ import_documentation(InterfaceImportedModules, ImportedModule, !Xmls) :-
     list(xml)::in, list(xml)::out) is det.
 
 type_documentation(C, type_ctor(TypeName, TypeArity), TypeDefn, !Xmls) :-
-    get_type_defn_status(TypeDefn, ImportStatus),
-    DefinedInThisModule = status_defined_in_this_module(ImportStatus),
+    get_type_defn_status(TypeDefn, TypeStatus),
+    DefinedInThisModule = type_status_defined_in_this_module(TypeStatus),
     (
         DefinedInThisModule = yes,
         get_type_defn_body(TypeDefn, TypeBody),
@@ -355,7 +371,7 @@ type_documentation(C, type_ctor(TypeName, TypeArity), TypeDefn, !Xmls) :-
         XmlName = name_to_xml(TypeName),
         XmlTypeParams = xml_list("type_params", type_param_to_xml(TVarset),
             TParams),
-        XmlVisibility = visibility_to_xml(ImportStatus),
+        XmlVisibility = type_visibility_to_xml(TypeStatus),
 
         Tag = type_xml_tag(TypeBody),
         Id = attr("id", sym_name_and_arity_to_id("type", TypeName, TypeArity)),
@@ -397,9 +413,9 @@ type_body_to_xml(_, _, hlds_abstract_type(_)) = [nyi("hlds_abstract_type")].
 
 :- func constructor_to_xml(comments, tvarset, constructor) = xml.
 
-constructor_to_xml(C, TVarset,
-        ctor(Exists, Constraints, Name, Args, Context)) = Xml :-
-    Id = attr("id", sym_name_and_arity_to_id("ctor", Name, length(Args))),
+constructor_to_xml(C, TVarset, Ctor) = Xml :-
+    Ctor = ctor(Exists, Constraints, Name, Args, Arity, Context),
+    Id = attr("id", sym_name_and_arity_to_id("ctor", Name, Arity)),
     XmlName = name_to_xml(Name),
     XmlContext = prog_context_to_xml(Context),
     XmlArgs = xml_list("ctor_args", constructor_arg_to_xml(C, TVarset), Args),
@@ -415,15 +431,15 @@ constructor_to_xml(C, TVarset,
 :- func constructor_arg_to_xml(comments, tvarset, constructor_arg) = xml.
 
 constructor_arg_to_xml(C, TVarset, CtorArg) = Xml :-
-    CtorArg = ctor_arg(MaybeFieldName, Type, _Width, Context),
+    CtorArg = ctor_arg(MaybeCtorFieldName, Type, _Width, Context),
     XmlType = elem("arg_type", [], [mer_type_to_xml(TVarset, Type)]),
     XmlContext = prog_context_to_xml(Context),
     (
-        MaybeFieldName = yes(FieldName),
+        MaybeCtorFieldName = yes(ctor_field_name(FieldName, _FieldNameCtxt)),
         Id = attr("id", sym_name_to_id("field", FieldName)),
         XmlMaybeFieldName = [elem("field", [Id], [name_to_xml(FieldName)])]
     ;
-        MaybeFieldName = no,
+        MaybeCtorFieldName = no,
         XmlMaybeFieldName = []
     ),
     Xml0 = elem("ctor_arg", [], [XmlType, XmlContext | XmlMaybeFieldName]),
@@ -440,21 +456,25 @@ mer_type_to_xml(TVarset, defined_type(TypeName, Args, _)) = Xml :-
     XmlArgs = xml_list("type_args", mer_type_to_xml(TVarset), Args),
     Xml = elem("type", [Ref], [XmlName, XmlArgs]).
 mer_type_to_xml(_, builtin_type(builtin_type_int)) = elem("int", [], []).
+mer_type_to_xml(_, builtin_type(builtin_type_uint)) = elem("uint", [], []).
 mer_type_to_xml(_, builtin_type(builtin_type_float)) = elem("float", [], []).
 mer_type_to_xml(_, builtin_type(builtin_type_string)) = elem("string", [], []).
 mer_type_to_xml(_, builtin_type(builtin_type_char)) =
     elem("character", [], []).
-mer_type_to_xml(TVarset, higher_order_type(Types, MaybeResult, _, _)) = Xml :-
-    XmlTypes = xml_list("higher_order_type_args", mer_type_to_xml(TVarset),
-        Types),
+mer_type_to_xml(TVarset, higher_order_type(PorF, Types, _, _, _)) = Xml :-
     (
-        MaybeResult = yes(ResultType),
+        PorF = pf_predicate,
+        XmlTypes = xml_list("higher_order_type_args", mer_type_to_xml(TVarset),
+            Types),
+        XmlChildren = [XmlTypes]
+    ;
+        PorF = pf_function,
+        list.det_split_last(Types, ArgTypes, ResultType),
+        XmlTypes = xml_list("higher_order_type_args", mer_type_to_xml(TVarset),
+            ArgTypes),
         XmlReturn = elem("return_type", [],
             [mer_type_to_xml(TVarset, ResultType)]),
         XmlChildren = [XmlTypes, XmlReturn]
-    ;
-        MaybeResult = no,
-        XmlChildren = [XmlTypes]
     ),
     Xml = elem("higher_order_type", [], XmlChildren).
 mer_type_to_xml(TVarset, tuple_type(Types, _)) = Xml :-
@@ -470,18 +490,18 @@ mer_type_to_xml(_, kinded_type(_, _)) = nyi("kinded_type").
     list(xml)::in, list(xml)::out) is det.
 
 pred_documentation(C, _PredId, PredInfo, !Xml) :-
-    pred_info_get_import_status(PredInfo, ImportStatus),
+    pred_info_get_status(PredInfo, PredStatus),
     pred_info_get_origin(PredInfo, Origin),
     pred_info_get_markers(PredInfo, Markers),
 
-    (
-        status_defined_in_this_module(ImportStatus) = yes,
+    ( if
+        pred_status_defined_in_this_module(PredStatus) = yes,
         Origin = origin_user(_),
         not check_marker(Markers, marker_class_method)
-    ->
+    then
         Xml = predicate_documentation(C, PredInfo),
         !:Xml = [Xml | !.Xml]
-    ;
+    else
         true
     ).
 
@@ -496,7 +516,7 @@ predicate_documentation(C, PredInfo) = Xml :-
     Name = pred_info_name(PredInfo),
     PredName = qualified(Module, Name),
     Arity = pred_info_orig_arity(PredInfo),
-    pred_info_get_import_status(PredInfo, ImportStatus),
+    pred_info_get_status(PredInfo, PredStatus),
 
     Types = get_orig_arg_types(PredInfo),
     pred_info_get_class_context(PredInfo, Constraints),
@@ -516,9 +536,9 @@ predicate_documentation(C, PredInfo) = Xml :-
     XmlExistVars = xml_list("pred_exist_vars", type_param_to_xml(TVarset),
         Exists),
     XmlConstraints = prog_constraints_to_xml(TVarset, Constraints),
-    XmlVisibility = visibility_to_xml(ImportStatus),
+    XmlVisibility = pred_visibility_to_xml(PredStatus),
 
-    pred_info_get_procedures(PredInfo, ProcTable),
+    pred_info_get_proc_table(PredInfo, ProcTable),
     map.foldl(pred_mode_documentation(C), ProcTable, [], XmlProcs),
     XmlModes = elem("pred_modes", [], XmlProcs),
 
@@ -539,9 +559,9 @@ get_orig_arg_types(PredInfo) = Types :-
 :- func keep_last_n(int, list(T)) = list(T).
 
 keep_last_n(N, L0) =
-    ( list.drop(list.length(L0) - N, L0, L) ->
+    ( if list.drop(list.length(L0) - N, L0, L) then
         L
-    ;
+    else
         func_error("keep_last_n")
     ).
 
@@ -576,7 +596,7 @@ pred_mode_documentation(_C, _ProcId, ProcInfo, !Xml) :-
 
 mer_mode_to_xml(InstVarSet, Mode) = Xml :-
     (
-        Mode = (A -> B),
+        Mode = from_to_mode(A, B),
         XmlFrom = xml_list("from", mer_inst_to_xml(InstVarSet), [A]),
         XmlTo = xml_list("to", mer_inst_to_xml(InstVarSet), [B]),
         Xml = elem("inst_to_inst", [], [XmlFrom, XmlTo])
@@ -637,8 +657,8 @@ inst_name_to_xml(InstVarSet, user_inst(Name, Insts)) = Xml :-
     XmlName = name_to_xml(Name),
     XmlInsts = xml_list("inst_args", mer_inst_to_xml(InstVarSet), Insts),
     Xml = elem("user_inst", [Ref], [XmlName, XmlInsts]).
-inst_name_to_xml(_, merge_inst(_, _)) = nyi("merge_inst").
 inst_name_to_xml(_, unify_inst(_, _, _, _)) = nyi("unify_inst").
+inst_name_to_xml(_, merge_inst(_, _)) = nyi("merge_inst").
 inst_name_to_xml(_, ground_inst(_, _, _, _)) = nyi("ground_inst").
 inst_name_to_xml(_, any_inst(_, _, _, _)) = nyi("any_inst").
 inst_name_to_xml(_, shared_inst(_)) = nyi("shared_inst").
@@ -666,6 +686,8 @@ cons_id_to_xml(cons(Name, Arity, _)) =
 cons_id_to_xml(tuple_cons(Arity)) =
     elem("cons", [], [name_to_xml(unqualified("{}")), arity_to_xml(Arity)]).
 cons_id_to_xml(int_const(I)) = tagged_int("int", I).
+cons_id_to_xml(uint_const(_)) = _ :-
+    unexpected($file, $pred, "NYI uint").
 cons_id_to_xml(float_const(F)) = tagged_float("float", F).
 cons_id_to_xml(char_const(C)) = tagged_char("char", C).
 cons_id_to_xml(string_const(S)) = tagged_string("string", S).
@@ -682,7 +704,7 @@ cons_id_to_xml(type_info_const(_)) = nyi("type_info_const").
 cons_id_to_xml(typeclass_info_const(_)) = nyi("typeclass_info_const").
 cons_id_to_xml(ground_term_const(_, _)) = nyi("ground_term_const").
 cons_id_to_xml(tabling_info_const(_)) = nyi("tabling_info_const").
-cons_id_to_xml(table_io_decl(_)) = nyi("table_io_decl").
+cons_id_to_xml(table_io_entry_desc(_)) = nyi("table_io_entry_desc").
 cons_id_to_xml(deep_profiling_proc_layout(_)) =
     nyi("deep_profiling_proc_layout").
 
@@ -710,26 +732,27 @@ determinism_to_xml(detism_failure) = tagged_string("determinism", "failure").
     list(xml)::in, list(xml)::out) is det.
 
 class_documentation(C, PredTable, class_id(Name, Arity), ClassDefn, !Xml) :-
-    ImportStatus = ClassDefn ^ class_status,
-    DefinedInThisModule = status_defined_in_this_module(ImportStatus),
+    TypeClassStatus = ClassDefn ^ classdefn_status,
+    DefinedInThisModule =
+        typeclass_status_defined_in_this_module(TypeClassStatus),
     (
         DefinedInThisModule = yes,
         Id = sym_name_and_arity_to_id("class", Name, Arity),
 
-        Context = ClassDefn ^ class_context,
-        TVarset = ClassDefn ^ class_tvarset,
-        Vars = ClassDefn ^ class_vars,
+        Context = ClassDefn ^ classdefn_context,
+        TVarset = ClassDefn ^ classdefn_tvarset,
+        Vars = ClassDefn ^ classdefn_vars,
 
         XmlName = name_to_xml(Name),
         XmlClassVars = xml_list("class_vars",
             type_param_to_xml(TVarset), Vars),
         XmlSupers = xml_list("superclasses",
-            prog_constraint_to_xml(TVarset), ClassDefn ^ class_supers),
+            prog_constraint_to_xml(TVarset), ClassDefn ^ classdefn_supers),
         XmlFundeps = xml_list("fundeps",
-            fundep_to_xml(TVarset, Vars), ClassDefn ^ class_fundeps),
+            fundep_to_xml(TVarset, Vars), ClassDefn ^ classdefn_fundeps),
         XmlMethods = class_methods_to_xml(C, PredTable,
-            ClassDefn ^ class_hlds_interface),
-        XmlVisibility = visibility_to_xml(ImportStatus),
+            ClassDefn ^ classdefn_hlds_interface),
+        XmlVisibility = typeclass_visibility_to_xml(TypeClassStatus),
         XmlContext = prog_context_to_xml(Context),
 
         Xml0 = elem("typeclass", [attr("id", Id)],
@@ -760,7 +783,7 @@ fundep_to_xml_2(Tag, TVarset, Vars, Set) =
 :- func class_methods_to_xml(comments, pred_table, hlds_class_interface) = xml.
 
 class_methods_to_xml(C, PredTable, Methods) = Xml :-
-    AllPredIds = list.map(func(hlds_class_proc(PredId, _)) = PredId, Methods),
+    AllPredIds = list.map(pred_proc_id_project_pred_id, Methods),
     PredIds = list.sort_and_remove_dups(AllPredIds),
     PredInfos = list.map(func(Id) = map.lookup(PredTable, Id), PredIds),
     Xml = xml_list("methods", predicate_documentation(C), PredInfos).
@@ -789,25 +812,89 @@ prog_context_to_xml(context(FileName, LineNumber)) =
 
 :- func prog_constraint_to_xml(tvarset, prog_constraint) = xml.
 
-prog_constraint_to_xml(TVarset, constraint(ClassName, Types)) = Xml :-
-    Id = sym_name_and_arity_to_id("constraint", ClassName, list.length(Types)),
+prog_constraint_to_xml(TVarset, Constraint) = Xml :-
+    Constraint = constraint(ClassName, ArgTypes),
+    Id = sym_name_and_arity_to_id("constraint", ClassName,
+        list.length(ArgTypes)),
     XmlName = name_to_xml(ClassName),
-    XmlTypes = xml_list("constraint_types", mer_type_to_xml(TVarset), Types),
+    XmlTypes = xml_list("constraint_types", mer_type_to_xml(TVarset),
+        ArgTypes),
     Xml = elem("constraint", [attr("ref", Id)], [XmlName, XmlTypes]).
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
-:- func visibility_to_xml(import_status) = xml.
+:- func type_visibility_to_xml(type_status) = xml.
 
-visibility_to_xml(Status) = tagged_string("visibility", Visibility) :-
-    ( status_defined_in_impl_section(Status) = yes ->
-        ( Status = status_abstract_exported ->
+type_visibility_to_xml(Status) = tagged_string("visibility", Visibility) :-
+    ( if type_status_defined_in_impl_section(Status) = yes then
+        ( if Status = type_status(status_abstract_exported) then
             Visibility = "abstract"
-        ;
+        else
             Visibility = "implementation"
         )
-    ;
+    else
+        Visibility = "interface"
+    ).
+
+:- func inst_visibility_to_xml(inst_status) = xml.
+:- pragma consider_used(inst_visibility_to_xml/1).
+
+inst_visibility_to_xml(Status) = tagged_string("visibility", Visibility) :-
+    ( if inst_status_defined_in_impl_section(Status) = yes then
+        Visibility = "implementation"
+    else
+        Visibility = "interface"
+    ).
+
+:- func mode_visibility_to_xml(mode_status) = xml.
+:- pragma consider_used(mode_visibility_to_xml/1).
+
+mode_visibility_to_xml(Status) = tagged_string("visibility", Visibility) :-
+    ( if mode_status_defined_in_impl_section(Status) = yes then
+        Visibility = "implementation"
+    else
+        Visibility = "interface"
+    ).
+
+:- func typeclass_visibility_to_xml(typeclass_status) = xml.
+
+typeclass_visibility_to_xml(Status) =
+        tagged_string("visibility", Visibility) :-
+    ( if typeclass_status_defined_in_impl_section(Status) = yes then
+        ( if Status = typeclass_status(status_abstract_exported) then
+            Visibility = "abstract"
+        else
+            Visibility = "implementation"
+        )
+    else
+        Visibility = "interface"
+    ).
+
+:- func instance_visibility_to_xml(instance_status) = xml.
+:- pragma consider_used(instance_visibility_to_xml/1).
+
+instance_visibility_to_xml(Status) = tagged_string("visibility", Visibility) :-
+    ( if instance_status_defined_in_impl_section(Status) = yes then
+        ( if Status = instance_status(status_abstract_exported) then
+            Visibility = "abstract"
+        else
+            Visibility = "implementation"
+        )
+    else
+        Visibility = "interface"
+    ).
+
+:- func pred_visibility_to_xml(pred_status) = xml.
+
+pred_visibility_to_xml(Status) = tagged_string("visibility", Visibility) :-
+    ( if pred_status_defined_in_impl_section(Status) = yes then
+        ( if Status = pred_status(status_abstract_exported) then
+            Visibility = "abstract"
+        else
+            Visibility = "implementation"
+        )
+    else
         Visibility = "interface"
     ).
 

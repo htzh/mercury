@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2011-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: autopar_calc_overlap.m
 % Author: pbone.
@@ -12,7 +12,7 @@
 % This module contains the code that calculates the likely overlap
 % between conjuncts in a parallelized conjunction.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdprof_fb.automatic_parallelism.autopar_calc_overlap.
 :- interface.
@@ -30,8 +30,8 @@
     incomplete_parallelisation::in, incomplete_parallelisation::out,
     parallelisation_cost_data::out) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -56,7 +56,7 @@
 :- import_module set.
 :- import_module string.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 calculate_parallel_cost(Info, !Parallelisation, CostData) :-
     ParConj = ip_get_par_conjs(!.Parallelisation),
@@ -121,9 +121,9 @@ calculate_parallel_cost_step(Info, NumMiddleGoals, Conjunct, !ConjNum,
     !.CostData = parallelisation_cost_data(SharedVars, Overlap0, Metrics0,
         PM0),
     !:NumGoals = !.NumGoals + length(Conjuncts),
-    ( !.NumGoals = NumMiddleGoals ->
+    ( if !.NumGoals = NumMiddleGoals then
         IsLastConjunct = is_last_par_conjunct
-    ;
+    else
         IsLastConjunct = not_last_par_conjunct
     ),
     Conjunct = seq_conj(Conjuncts),
@@ -189,7 +189,7 @@ calculate_parallel_cost_step(Info, AllSharedVars, IsLastConjunct, Conjunct,
             [], RevExecution0, map.init, ConsumptionsMap),
 
         % Calculate the point at which this conjunct finishes execution
-        % and complete the RevExecutions structure..
+        % and complete the RevExecutions structure.
         list.reverse(RevExecution, Execution),
         CostBParElapsed = LastParConsumeTime + (CostB - LastSeqConsumeTime),
         RevExecution = [ (LastResumeTime - CostBParElapsed) | RevExecution0 ],
@@ -202,7 +202,6 @@ calculate_parallel_cost_step(Info, AllSharedVars, IsLastConjunct, Conjunct,
     ;
         ( Algorithm = do_not_parallelise_dep_conjs
         ; Algorithm = parallelise_dep_conjs(estimate_speedup_naively)
-        ; Algorithm = parallelise_dep_conjs(estimate_speedup_by_num_vars)
         ),
 
         CostBPar = CostB + SparkCost,
@@ -213,10 +212,10 @@ calculate_parallel_cost_step(Info, AllSharedVars, IsLastConjunct, Conjunct,
         DeadTime = 0.0
     ),
 
-    % CostB    - the cost of B if it where to be executed in sequence.
-    % CostBPar - CostB plus the overheads of parallel exection (not including
+    % CostB    - the cost of B if it were to be executed in sequence.
+    % CostBPar - CostB plus the overheads of parallel execution (not including
     %            the dead time).
-    % DeadTime - The time that B spends blocked on other computations.
+    % DeadTime - The time that B spends blocked, waiting on other computations.
     % XXX: Need to account for SparkDelay here,
     !:Metrics = init_parallel_exec_metrics_incomplete(!.Metrics, CostSignals,
         CostWaits, CostB, CostBPar, DeadTime),
@@ -264,7 +263,7 @@ calculate_parallel_cost_step(Info, AllSharedVars, IsLastConjunct, Conjunct,
     %   is used by our caller to calculate the production times of this
     %   conjunct for later ones.
     %
-    % * !ConsumptionsMap: Accumuates a map of variable consumptions.
+    % * !ConsumptionsMap: Accumulates a map of variable consumptions.
     %
 :- pred calculate_dependent_parallel_cost_2(implicit_parallelism_info::in,
     map(var_rep, float)::in, pair(var_rep, production_or_consumption)::in,
@@ -315,19 +314,19 @@ calculate_dependent_parallel_cost_consumption(Info, ProductionsMap,
     ParConsTime0 = max(ParConsTimeBlocked, ParConsTimeNotBlocked) +
         float(Info ^ ipi_opts ^ cpcp_future_wait_cost),
 
-    (
+    ( if
         % True if Q had to suspend waiting for P. Note that we don't include
         % FutureSyncTime here. This is true if Q has to block at all even if
-        % it can be made runable before the context switch is complete.
+        % it can be made runnable before the context switch is complete.
         ProdTime > ParConsTimeNotBlocked
-    ->
+    then
         % Include the time that it may take to resume this thread.
         ParConsTime = ParConsTime0 +
             float(Info ^ ipi_opts ^ cpcp_context_wakeup_delay),
         !:RevExecution =
             [(!.ResumeTime - ParConsTimeNotBlocked) | !.RevExecution],
         !:ResumeTime = ParConsTime
-    ;
+    else
         ParConsTime = ParConsTime0
     ),
 
@@ -391,21 +390,21 @@ adjust_time_for_waits(!Time, !Executions) :-
     (
         !.Executions = [Execution | NextExecution],
         ( Start - End ) = Execution,
-        ( (!.Time + adjust_time_for_waits_epsilon) < Start ->
-            error("adjust_time_for_waits: " ++
+        ( if (!.Time + adjust_time_for_waits_epsilon) < Start then
+            unexpected($module, $pred,
                 "Time occurs before the current execution")
-        ; !.Time =< (End + adjust_time_for_waits_epsilon) ->
+        else if !.Time =< (End + adjust_time_for_waits_epsilon) then
             % The production is within the current execution, no adjustment is
             % necessary.
             true
-        ;
+        else
             % The time is after this execution.
             !:Executions = NextExecution,
             adjust_time_for_waits_2(End, !Time, !Executions)
         )
     ;
         !.Executions = [],
-        error("adjust_time_for_waits: Time occurs after all executions")
+        unexpected($module, $pred, "Time occurs after all executions")
     ).
 
 :- pred adjust_time_for_waits_2(float::in, float::in, float::out,
@@ -419,14 +418,15 @@ adjust_time_for_waits_2(LastEnd, !Time, !Executions) :-
         % Do the adjustment.
         !:Time = !.Time + (Start - LastEnd),
 
-        ( (!.Time + adjust_time_for_waits_epsilon) < Start ->
-            error(format("adjust_time_for_waits: Adjustment didn't work, " ++
+        ( if (!.Time + adjust_time_for_waits_epsilon) < Start then
+            unexpected($module, $pred,
+                string.format("Adjustment didn't work, " ++
                 "time occurs before the current execution. " ++
                 "Time: %f, Start: %f.", [f(!.Time), f(Start)]))
-        ; !.Time =< (End + adjust_time_for_waits_epsilon) ->
+        else if !.Time =< (End + adjust_time_for_waits_epsilon) then
             % The adjustment worked.
             true
-        ;
+        else
             % Further adjustment is needed.
             !:Executions = NextExecution,
             adjust_time_for_waits_2(End, !Time, !Executions)
@@ -540,11 +540,11 @@ merge_consumptions_and_productions([Var - Time | Cons0], [],
     merge_consumptions_and_productions(Cons0, [], Cons).
 merge_consumptions_and_productions(Cons@[ConsVar - ConsTime | Cons0],
         Prods@[ProdVar - ProdTime | Prods0], [ProdOrCons | ProdsAndCons]) :-
-    ( ProdTime < ConsTime ->
+    ( if ProdTime < ConsTime then
         % Order earlier events first,
         ProdOrCons = ProdVar - production(ProdTime),
         merge_consumptions_and_productions(Cons, Prods0, ProdsAndCons)
-    ;
+    else
         % In this branch either the consumption occurs first or the events
         % occur at the same time in which case we order consumptions first.
         ProdOrCons = ConsVar - consumption(ConsTime),
@@ -569,9 +569,9 @@ var_productions(TimeBefore, Goal, Var, Var - Time) :-
 
     % var_first_use_time(FindProdOrCons, Time0, Goal, Var, Time).
     %
-    % if FindProdOrCons = find_production
+    % if FindProdOrCons = find_production:
     %   Time is Time0 + the time that Goal produces Var.
-    % elif FindProdOrCons = find_consumption
+    % if FindProdOrCons = find_consumption:
     %   Time is Time0 + the time that Goal first consumes Var.
     %
 :- pred var_first_use_time(find_production_or_consumption::in,
@@ -624,4 +624,4 @@ var_first_use_time(FindProdOrCons, TimeBefore, Goal, Var, Time) :-
     ),
     Time = TimeBefore + UseTime.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

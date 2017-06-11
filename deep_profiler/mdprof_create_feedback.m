@@ -1,10 +1,10 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2006-2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: mdprof_create_feedback.m.
 % Author: tannier, pbone.
@@ -12,23 +12,22 @@
 % This module contains code for generating feedback files that tell the
 % compiler things such as which conjunctions can be profitably parallelised.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdprof_create_feedback.
 :- interface.
 
 :- import_module io.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred main(io::di, io::uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
-:- import_module conf.
 :- import_module mdbcomp.
 :- import_module mdbcomp.feedback.
 :- import_module mdbcomp.feedback.automatic_parallelism.
@@ -53,7 +52,7 @@
 :- import_module parsing_utils.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % This section contains the main predicate as well as code to read the deep
 % profiling data and display usage and version messages to the user.
@@ -70,11 +69,11 @@ main(!IO) :-
         post_process_options(ProgName, Options0, Options, !IO),
         lookup_bool_option(Options, help, Help),
         lookup_bool_option(Options, version, Version),
-        ( Version = yes ->
+        ( if Version = yes then
             write_version_message(ProgName, !IO)
-        ; Help = yes ->
+        else if Help = yes then
             write_help_message(ProgName, !IO)
-        ;
+        else
             (
                 Args = [InputFileName, OutputFileName],
                 get_feedback_requests(ProgName, Options, FoundError,
@@ -123,26 +122,26 @@ generate_requested_feedback(ProgName, Options, InputFileName, OutputFileName,
             deep_get_maybe_progrep(Deep, MaybeProgRep),
             (
                 MaybeProgRep = ok(_),
-                ProfileProgName = Deep ^ profile_stats ^ prs_program_name,
-                feedback.read_or_create(OutputFileName, ProfileProgName,
-                    FeedbackReadResult, !IO),
+                ProfiledProgramName = Deep ^ profile_stats ^ prs_program_name,
+                read_or_create_feedback_file(OutputFileName,
+                    ProfiledProgramName, FeedbackReadResult, !IO),
                 (
                     FeedbackReadResult = ok(Feedback0),
                     process_deep_to_feedback(RequestedFeedbackInfo,
                         Deep, Messages, Feedback0, Feedback),
                     (
                         Report = yes,
-                        print_feedback_report(ProfileProgName, Feedback, !IO)
+                        print_feedback_report(Feedback, !IO)
                     ;
                         Report = no
                     ),
-                    write_feedback_file(OutputFileName, ProfileProgName,
-                        Feedback, WriteResult, !IO),
+                    write_feedback_file(OutputFileName, Feedback,
+                        WriteResult, !IO),
                     (
-                        WriteResult = ok
+                        WriteResult = fwr_ok
                     ;
-                        ( WriteResult = open_error(Error)
-                        ; WriteResult = write_error(Error)
+                        ( WriteResult = fwr_open_error(Error)
+                        ; WriteResult = fwr_write_error(Error)
                         ),
                         io.error_message(Error, ErrorMessage),
                         io.format(Stderr, "%s: %s: %s\n",
@@ -150,12 +149,10 @@ generate_requested_feedback(ProgName, Options, InputFileName, OutputFileName,
                             !IO),
                         io.set_exit_status(1, !IO)
                     ),
-                    lookup_int_option(Options, verbosity, VerbosityLevel),
-                    set_verbosity_level(VerbosityLevel, !IO),
                     write_out_messages(Stderr, Messages, !IO)
                 ;
                     FeedbackReadResult = error(FeedbackReadError),
-                    feedback.read_error_message_string(OutputFileName,
+                    feedback_read_error_message_string(OutputFileName,
                         FeedbackReadError, Message),
                     io.write_string(Stderr, Message, !IO),
                     io.set_exit_status(1, !IO)
@@ -322,11 +319,11 @@ read_deep_file(Input, Debug, MaybeDeep, !IO) :-
     read_and_startup_default_deep_options(Machine, ScriptName, Input, no,
         MaybeOutput, [], MaybeDeep, !IO).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % This section describes and processes command line options. Individual
 % feedback information can be requested by the user, as well as options named
-% after optimizations that may imply one or more feedback inforemation types,
+% after optimizations that may imply one or more feedback information types,
 % which that optimization uses.
 %
 
@@ -358,7 +355,7 @@ read_deep_file(Input, Debug, MaybeDeep, !IO) :-
     ;       ipar_speedup_threshold
     ;       ipar_dep_conjs
     ;       ipar_speedup_alg
-    ;       ipar_best_par_alg.
+    ;       ipar_alg_for_finding_best_par.
 
 % TODO: Introduce an option to disable parallelisation of dependent
 % conjunctions, or switch to the simple calculations for independent
@@ -437,9 +434,11 @@ long("implicit-parallelism-speedup-threshold",
 long("ipar-speedup-threshold",
     ipar_speedup_threshold).
 long("implicit-parallelism-best-parallelisation-algorithm",
-    ipar_best_par_alg).
+    ipar_alg_for_finding_best_par).
 long("ipar-best-par-alg",
-    ipar_best_par_alg).
+    ipar_alg_for_finding_best_par).
+long("ipar-alg-for-finding-best-par",
+    ipar_alg_for_finding_best_par).
 
 :- pred defaults(option::out, option_data::out) is multi.
 
@@ -467,7 +466,7 @@ defaults(ipar_call_site_cost_threshold,     int(2000)).
 defaults(ipar_dep_conjs,                    bool(yes)).
 defaults(ipar_speedup_threshold,            string("1.01")).
 defaults(ipar_speedup_alg,                  string("overlap")).
-defaults(ipar_best_par_alg,                 string("complete-branches(1000)")).
+defaults(ipar_alg_for_finding_best_par,     string("complete-branches(1000)")).
 
 :- pred construct_measure(string::in, stat_measure::out) is semidet.
 
@@ -481,19 +480,20 @@ construct_measure("median", stat_median).
 post_process_options(ProgName, !Options, !IO) :-
     lookup_int_option(!.Options, verbosity, VerbosityLevel),
     io.stderr_stream(Stderr, !IO),
-    ( VerbosityLevel < 0 ->
+    ( if VerbosityLevel < 0 then
         io.format(Stderr,
             "%s: warning: verbosity level should not be negative.\n",
             [s(ProgName)], !IO),
         set_option(verbosity, int(0), !Options)
-    ; VerbosityLevel > 4 ->
+    else if VerbosityLevel > 4 then
         io.format(Stderr,
             "%s: warning: verbosity level should not exceed 4.\n",
             [s(ProgName)], !IO),
         set_option(verbosity, int(4), !Options)
-    ;
+    else
         true
     ),
+    set_verbosity_level(VerbosityLevel, !IO),
     lookup_bool_option(!.Options, implicit_parallelism, ImplicitParallelism),
     (
         ImplicitParallelism = yes,
@@ -526,24 +526,26 @@ get_feedback_requests(ProgName, Options, !:Error, Requested, !IO) :-
     io.stderr_stream(Stderr, !IO),
     !:Error = have_not_found_error,
     % For each feedback type, determine if it is requested, and fill in the
-    % field in the RequestedFeedbackInfo structure.
+    % corresponding field in the RequestedFeedbackInfo structure.
     lookup_bool_option(Options, candidate_parallel_conjunctions,
         CandidateParallelConjunctions),
     (
         CandidateParallelConjunctions = yes,
         lookup_string_option(Options, desired_parallelism,
             DesiredParallelismStr),
-        ( string.to_float(DesiredParallelismStr, DesiredParallelismPrime) ->
+        ( if
+            string.to_float(DesiredParallelismStr, DesiredParallelismPrime)
+        then
             DesiredParallelism = DesiredParallelismPrime,
-            ( DesiredParallelism > 1.0 ->
+            ( if DesiredParallelism > 1.0 then
                 true
-            ;
+            else
                 io.format(Stderr,
                     "%s: error: desired parallelism level should be > 1.\n",
                     [s(ProgName)], !IO),
                 !:Error = found_error
             )
-        ;
+        else
             io.format(Stderr,
                 "%s: error: desired parallelism level should be a number.\n",
                 [s(ProgName)], !IO),
@@ -552,17 +554,17 @@ get_feedback_requests(ProgName, Options, !:Error, Requested, !IO) :-
         ),
         lookup_string_option(Options, ipar_speedup_threshold,
             SpeedupThresholdStr),
-        ( string.to_float(SpeedupThresholdStr, SpeedupThresholdPrime) ->
+        ( if string.to_float(SpeedupThresholdStr, SpeedupThresholdPrime) then
             SpeedupThreshold = SpeedupThresholdPrime,
-            ( SpeedupThreshold >= 1.0 ->
+            ( if SpeedupThreshold >= 1.0 then
                 true
-            ;
+            else
                 io.format(Stderr,
                     "%s: error: speedup threshold should be >= 1.\n",
                     [s(ProgName)], !IO),
                 !:Error = found_error
             )
-        ;
+        else
             io.format(Stderr,
                 "%s: error: speedup threshold should be a number.\n",
                 [s(ProgName)], !IO),
@@ -584,53 +586,56 @@ get_feedback_requests(ProgName, Options, !:Error, Requested, !IO) :-
             CPCCallSiteThreshold),
         lookup_bool_option(Options, ipar_dep_conjs, AllowDepConjs),
         lookup_string_option(Options, ipar_speedup_alg, SpeedupAlgString),
-        (
+        ( if
             parse_parallelise_dep_conjs_string(AllowDepConjs,
                 SpeedupAlgString, SpeedupAlgPrime)
-        ->
+        then
             SpeedupAlg = SpeedupAlgPrime
-        ;
+        else
             io.format(Stderr,
                 "%s: error: %s is not a speedup estimate algorithm.\n",
                 [s(ProgName), s(SpeedupAlgString)], !IO),
             !:Error = found_error,
             SpeedupAlg = do_not_parallelise_dep_conjs    % dummy value
         ),
-        lookup_string_option(Options, ipar_best_par_alg, BestParAlgStr),
-        parse_best_par_algorithm(BestParAlgStr, MaybeBestParAlg),
+        lookup_string_option(Options, ipar_alg_for_finding_best_par,
+            AlgForFindingBestParStr),
+        parse_best_par_algorithm(AlgForFindingBestParStr,
+            MaybeAlgForFindingBestPar),
         (
-            MaybeBestParAlg = ok(BestParAlg)
+            MaybeAlgForFindingBestPar = ok(AlgForFindingBestPar)
         ;
-            MaybeBestParAlg = error(MaybeMessage, _Line, _Col),
+            MaybeAlgForFindingBestPar = error(MaybeMessage, _Line, _Col),
             (
                 MaybeMessage = yes(Message),
                 io.format(Stderr,
-                    "%s: error: %s is not a best parallelisation " ++
-                        "algorithm: %s.\n",
-                    [s(ProgName), s(BestParAlgStr), s(Message)], !IO)
+                    "%s: error: %s is not an algorithm for " ++
+                        "finding the best parallelisation: %s\n",
+                    [s(ProgName), s(AlgForFindingBestParStr), s(Message)], !IO)
             ;
                 MaybeMessage = no,
                 io.format(Stderr,
-                    "%s: error: %s is not a best parallelisation algorithm.\n",
-                    [s(ProgName), s(BestParAlgStr)], !IO)
+                    "%s: error: %s is not an algorithm for " ++
+                        "finding the best parallelisation.\n",
+                    [s(ProgName), s(AlgForFindingBestParStr)], !IO)
             ),
             !:Error = found_error,
-            BestParAlg = bpa_greedy    % dummy value
+            AlgForFindingBestPar = affbp_greedy    % dummy value
         ),
-        AutoParOpts =
-            candidate_par_conjunctions_params(DesiredParallelism,
-                IntermoduleVarUse,
-                SparkingCost,
-                SparkingDelay,
-                BarrierCost,
-                FutureSignalCost,
-                FutureWaitCost,
-                ContextWakeupDelay,
-                CPCCliqueThreshold,
-                CPCCallSiteThreshold,
-                SpeedupThreshold,
-                SpeedupAlg,
-                BestParAlg),
+        AutoParOpts = candidate_par_conjunctions_params(
+            DesiredParallelism,
+            IntermoduleVarUse,
+            SparkingCost,
+            SparkingDelay,
+            BarrierCost,
+            FutureSignalCost,
+            FutureWaitCost,
+            ContextWakeupDelay,
+            CPCCliqueThreshold,
+            CPCCallSiteThreshold,
+            SpeedupThreshold,
+            SpeedupAlg,
+            AlgForFindingBestPar),
         MaybeAutoParOpts = yes(AutoParOpts)
     ;
         CandidateParallelConjunctions = no,
@@ -639,37 +644,37 @@ get_feedback_requests(ProgName, Options, !:Error, Requested, !IO) :-
     Requested = requested_feedback_info(MaybeAutoParOpts).
 
 :- pred parse_best_par_algorithm(string::in,
-    parse_result(best_par_algorithm)::out) is det.
+    parse_result(alg_for_finding_best_par)::out) is det.
 
 parse_best_par_algorithm(String, Result) :-
     promise_equivalent_solutions [Result] (
-        parse(String, best_par_algorithm_parser, Result)
+        parse(String, parse_alg_for_finding_best_par, Result)
     ).
 
-:- pred best_par_algorithm_parser(src::in, best_par_algorithm::out,
+:- pred parse_alg_for_finding_best_par(src::in, alg_for_finding_best_par::out,
     ps::in, ps::out) is semidet.
 
-best_par_algorithm_parser(Src, Algorithm, !PS) :-
+parse_alg_for_finding_best_par(Src, Algorithm, !PS) :-
     whitespace(Src, _, !PS),
-    (
+    ( if
         keyword(idchars, "greedy", Src, _, !PS)
-    ->
-        Algorithm = bpa_greedy
-    ;
+    then
+        Algorithm = affbp_greedy
+    else if
         keyword(idchars, "complete-branches", Src, _, !PS),
         brackets("(", ")", int_literal, Src, N, !PS),
         N >= 0
-    ->
-        Algorithm = bpa_complete_branches(N)
-    ;
+    then
+        Algorithm = affbp_complete_branches(N)
+    else if
         keyword(idchars, "complete-size", Src, _, !PS),
         brackets("(", ")", int_literal, Src, N, !PS),
         N >= 0
-    ->
-        Algorithm = bpa_complete_size(N)
-    ;
+    then
+        Algorithm = affbp_complete_size(N)
+    else
         keyword(idchars, "complete", Src, _, !PS),
-        Algorithm = bpa_complete
+        Algorithm = affbp_complete
     ),
     eof(Src, _, !PS).
 
@@ -683,8 +688,6 @@ idchars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".
 parse_parallelise_dep_conjs_string(no, _, do_not_parallelise_dep_conjs).
 parse_parallelise_dep_conjs_string(yes, "naive",
     parallelise_dep_conjs(estimate_speedup_naively)).
-parse_parallelise_dep_conjs_string(yes, "num_vars",
-    parallelise_dep_conjs(estimate_speedup_by_num_vars)).
 parse_parallelise_dep_conjs_string(yes, "overlap",
     parallelise_dep_conjs(estimate_speedup_by_overlap)).
 
@@ -694,9 +697,9 @@ parse_parallelise_dep_conjs_string(yes, "overlap",
     option_table(option)::in, option_table(option)::out) is det.
 
 option_implies(Option, ImpliedOption, ImpliedValue, !Options) :-
-    ( lookup_bool_option(!.Options, Option, yes) ->
+    ( if lookup_bool_option(!.Options, Option, yes) then
         set_option(ImpliedOption, bool(ImpliedValue), !Options)
-    ;
+    else
         true
     ).
 
@@ -708,7 +711,7 @@ option_implies(Option, ImpliedOption, ImpliedValue, !Options) :-
 set_option(Option, Value, !Options) :-
     map.set(Option, Value, !Options).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % process_deep_to_feedback(RequestedFeedbackInfo, Deep, Messages,
     %   !Feedback)
@@ -729,6 +732,6 @@ process_deep_to_feedback(RequestedFeedbackInfo, Deep, Messages, !Feedback) :-
         Messages = cord.empty
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 :- end_module mdprof_create_feedback.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

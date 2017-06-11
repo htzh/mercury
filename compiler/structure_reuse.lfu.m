@@ -22,7 +22,9 @@
 :- module transform_hlds.ctgc.structure_reuse.lfu.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_pred.
+:- import_module parse_tree.
 :- import_module parse_tree.set_of_var.
 
 %-----------------------------------------------------------------------------%
@@ -41,14 +43,15 @@
 
 :- implementation.
 
+:- import_module check_hlds.
+:- import_module check_hlds.type_util.
+:- import_module hlds.goal_form.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_llds.
-:- import_module hlds.hlds_pred.
+:- import_module hlds.vartypes.
 :- import_module parse_tree.prog_data.
-:- import_module parse_tree.prog_type.
 
 :- import_module list.
-:- import_module map.
 :- import_module require.
 
 %-----------------------------------------------------------------------------%

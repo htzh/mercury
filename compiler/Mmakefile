@@ -1,10 +1,12 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab
+#-----------------------------------------------------------------------------#
 # Copyright (C) 1995-2003, 2005-2012 The University of Melbourne.
 # This file may only be copied under the terms of the GNU General
 # Public Licence - see the file COPYING in the Mercury distribution.
 #-----------------------------------------------------------------------------#
 
-# Mmake - this is Mmake file for building the Mercury compiler 
+# Mmake - this is Mmake file for building the Mercury compiler
 
 MERCURY_DIR=..
 LINK_STATIC=yes
@@ -29,7 +31,7 @@ include Mercury.options
 
 MAIN_TARGET=all
 
-MERCURY_MAIN_MODULES = top_level
+MERCURY_MAIN_MODULES = mercury_compile
 
 PDBS = $(patsubst %,%.pdb,$(MERCURY_MAIN_MODULES))
 
@@ -43,7 +45,7 @@ VPATH = \
 
 MCFLAGS	     += --flags COMP_FLAGS $(CONFIG_OVERRIDE)
 
-ifeq ("$(filter il% csharp% java% erlang%,$(GRADE))","")
+ifeq ("$(filter csharp% java% erlang%,$(GRADE))","")
 MLOBJS       := ../trace/lib$(EVENTSPEC_LIB_NAME).$A \
 		$(MLOBJS)
 MLLIBS       += $(THREAD_LIBS)
@@ -81,12 +83,11 @@ endif
 # The default C stack size of 1Mb on Windows is not enough to compile the
 # standard library in the hlc.gc grade using a Mercury compiler built in
 # the hlc.gc grade with MinGW64.
-# XXX we must match against the full architecture string here since we only
-# want to pass --stack to the linker for MinGW64 GCC.
+# XXX We only want to pass --stack to the linker for MinGW64 GCC.
 # When we support the 64-bit version of the Microsoft toolchain, we will
 # need to do something different here.
 #
-ifeq ($(FULLARCH),x86_64-w64-mingw32)
+ifneq ("$(findstring x86_64-w64-mingw32,$(FULLARCH))","")
 LDFLAGS += -Wl,--stack=8388608
 endif
 
@@ -95,14 +96,14 @@ endif
 # targets
 
 # specify the name of the top-level module to build
-MC_PROG = top_level
+MC_PROG = mercury_compile
 
 # mercury_compile
 
 .PHONY: depend
 depend:		$(MC_PROG).depend
 
-$(MC_PROG).depend: Mercury.modules COMP_FLAGS 
+$(MC_PROG).depend: Mercury.modules COMP_FLAGS
 
 # This directory contains source files for which the module
 # name doesn't match the file name, so smart recompilation
@@ -117,27 +118,6 @@ all:		mercury $(TAGS_FILE_EXISTS)
 .PHONY: mercury
 mercury:	mercury_compile
 
-# The executable was previous known as `mercury_compile',
-# but now we generate it as `top_level'.  For compatibility with
-# various existing code, we make links to the old names.
-
-LN = ln
-
-ifneq ("$(EXT_FOR_EXE)","")
-.PHONY: mercury_compile
-mercury_compile: mercury_compile$(EXT_FOR_EXE)
-endif
-
-mercury_compile$(EXT_FOR_EXE): $(MC_PROG)$(EXT_FOR_EXE)
-	rm -f mercury_compile$(EXT_FOR_EXE)
-	$(LN) $(MC_PROG)$(EXT_FOR_EXE) mercury_compile$(EXT_FOR_EXE) || \
-		cp $(MC_PROG)$(EXT_FOR_EXE) mercury_compile$(EXT_FOR_EXE)
-ifeq ($(findstring il,$(GRADE)),il)        
-	# set the stack size to 100M -- the default of 1M is too low
-	-editbin /nologo /stack:100000000 mercury_compile$(EXT_FOR_EXE)
-	cp ../browser/*.dll .
-endif
-
 #-----------------------------------------------------------------------------#
 
 # Tell the C# compiler where the stdlib and mdbcomp assemblies are.
@@ -151,13 +131,6 @@ endif
 # Add some additional dependencies, so that Mmake knows to remake the
 # compiler if one of the libraries changes.
 
-ifeq ($(findstring il,$(GRADE)),il)        
-CSCFLAGS=/lib
-
-# This line works around an Mmake bug: mmake doesn't record
-# dependencies properly with --transitive-intermodule-optimization
-%.il: opts
-else
 ifeq ("$(filter csharp% java% erlang%,$(GRADE))","")
 $(MC_PROG): $(RUNTIME_DIR)/lib$(RT_LIB_NAME).$A
 $(MC_PROG): $(LIBRARY_DIR)/lib$(STD_LIB_NAME).$A
@@ -169,17 +142,16 @@ $(MC_PROG): $(TRACE_DIR)/lib$(EVENTSPEC_LIB_NAME).$A
 # XXX should also depend on $(BOEHM_GC_DIR)/libgc(_prof).$A, but only
 # if in .gc(.prof) grade
 endif
-endif
 
 #-----------------------------------------------------------------------------#
 
 .PHONY: check
 check:	$(MC_PROG).check
 
-.PHONY: ints 
+.PHONY: ints
 int3s:	$(MC_PROG).int3s
 
-.PHONY: ints 
+.PHONY: ints
 ints:	$(MC_PROG).ints
 
 #-----------------------------------------------------------------------------#
@@ -218,17 +190,15 @@ dates:
 
 #-----------------------------------------------------------------------------#
 
-# Note that the cs and os targets don't build top_level_init.{c,o}
-.PHONY: os cs ils
+# Note that the cs and os targets don't build mercury_compile_init.{c,o}
+.PHONY: os cs opts
 ifneq ($(MMAKE_USE_MMC_MAKE),yes)
 os: $($(MC_PROG).os)
 cs: $($(MC_PROG).cs)
-ils: $($(MC_PROG).ils)
 opts: $($(MC_PROG).opts)
 else
 os: $(MC_PROG).os
 cs: $(MC_PROG).cs
-ils: $(MC_PROG).ils
 opts: $(MC_PROG).opts
 endif
 
@@ -255,13 +225,42 @@ install_all: install_mercury
 
 .PHONY: install_mercury
 install_mercury: install_compiler
-	
+
 .PHONY: install_dirs
 install_dirs:
 	-[ -d $(INSTALL_MERC_BIN_DIR) ] || mkdir -p $(INSTALL_MERC_BIN_DIR)
 
+# If the compiler is built in the Java grade then we need to install Java
+# archive containing its class files, 'mercury_compiler.jar', but
+# *not* the generated wrapper script 'mercury_compile' from this directory.
+# The latter will set the CLASSPATH variable relative to this directory and
+# won't work when moved to the installation directory.  Instead we use the
+# version of the wrapper script from the scripts directory and leave the
+# one here alone.
+#
+# Similarly, for compilers built in the C# grade we need to install the
+# executable assembly, 'mercury_compile.exe', but *not* the generated
+# wrapper script 'mercury_compile' from this directory.  As with the Java grade,
+# we use the version of the wrapper script from the scripts directory.
+# XXX This covers Mono but not actual .NET; in the latter case we don't need
+# a wrapper script at all.
+#
+ifeq ($(findstring java,$(GRADE)),java)
+INSTALL_PROGRAM=mercury_compile.jar
+else ifeq ($(findstring csharp,$(GRADE)),csharp)
+INSTALL_PROGRAM=mercury_compile.exe
+else
+INSTALL_PROGRAM=mercury_compile$(EXT_FOR_EXE)
+endif
+
 .PHONY: install_compiler
 install_compiler: mercury_compile install_dirs
-	cp `vpath_find mercury_compile$(EXT_FOR_EXE)` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find $(INSTALL_PROGRAM)` $(INSTALL_MERC_BIN_DIR)
+
+#-----------------------------------------------------------------------------#
+
+.PHONY: uninstall
+uninstall:
+	-rm -f $(INSTALL_MERC_BIN_DIR)/$(INSTALL_PROGRAM)
 
 #-----------------------------------------------------------------------------#

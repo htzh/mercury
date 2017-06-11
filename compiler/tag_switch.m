@@ -16,10 +16,13 @@
 :- module ll_backend.tag_switch.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.code_model.
 :- import_module hlds.hlds_goal.
 :- import_module ll_backend.code_info.
+:- import_module ll_backend.code_loc_dep.
 :- import_module ll_backend.llds.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 
 :- import_module list.
@@ -31,22 +34,23 @@
 :- pred generate_tag_switch(list(tagged_case)::in, rval::in, mer_type::in,
     string::in, code_model::in, can_fail::in, hlds_goal_info::in, label::in,
     branch_end::in, branch_end::out, llds_code::out,
-    code_info::in, code_info::out) is det.
+    code_info::in, code_info::out, code_loc_dep::in) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module backend_libs.
 :- import_module backend_libs.builtin_ops.
 :- import_module backend_libs.rtti.
 :- import_module backend_libs.switch_util.
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_llds.
+:- import_module libs.
 :- import_module libs.globals.
 :- import_module libs.options.
 :- import_module ll_backend.switch_case.
-:- import_module parse_tree.prog_data.
 
 :- import_module assoc_list.
 :- import_module cord.
@@ -192,30 +196,33 @@
 %-----------------------------------------------------------------------------%
 
 generate_tag_switch(TaggedCases, VarRval, VarType, VarName, CodeModel, CanFail,
-        SwitchGoalInfo, EndLabel, !MaybeEnd, Code, !CI) :-
-
+        SwitchGoalInfo, EndLabel, !MaybeEnd, Code, !CI, CLD0) :-
     % We get registers for holding the primary and (if needed) the secondary
-    % tag. The tags needed only by the switch, and no other code gets control
-    % between producing the tag values and all their uses, so we can release
-    % the registers for use by the code of the various cases.
-    %
-    % We forgo using the primary tag register if the primary tag is needed
-    % only once, or if the "register" we get is likely to be slower than
-    % recomputing the tag from scratch.
+    % tag. The tags are needed only by the switch, and no other code gets
+    % control between producing the tag values and all their uses, so
+    % we can immediately release the registers for use by the code of
+    % the various cases.
     %
     % We need to get and release the registers before we generate the code
     % of the switch arms, since the set of free registers will in general be
     % different before and after that action.
-    acquire_reg(reg_r, PtagReg, !CI),
-    acquire_reg(reg_r, StagReg, !CI),
-    release_reg(PtagReg, !CI),
-    release_reg(StagReg, !CI),
+    %
+    % We forgo using the primary tag register if the primary tag is needed
+    % only once, or if the "register" we get is likely to be slower than
+    % recomputing the tag from scratch.
+    some [!CLD] (
+        !:CLD = CLD0,
+        acquire_reg(reg_r, PtagReg, !CLD),
+        acquire_reg(reg_r, StagReg, !CLD),
+        release_reg(PtagReg, !CLD),
+        release_reg(StagReg, !CLD),
+        remember_position(!.CLD, BranchStart)
+    ),
 
     % Group the cases based on primary tag value and find out how many
     % constructors share each primary tag value.
     get_module_info(!.CI, ModuleInfo),
     get_ptag_counts(VarType, ModuleInfo, MaxPrimary, PtagCountMap),
-    remember_position(!.CI, BranchStart),
     Params = represent_params(VarName, SwitchGoalInfo, CodeModel, BranchStart,
         EndLabel),
     group_cases_by_ptag(TaggedCases, represent_tagged_case_for_llds(Params),
@@ -226,42 +233,42 @@ generate_tag_switch(TaggedCases, VarRval, VarType, VarName, CodeModel, CanFail,
     globals.lookup_int_option(Globals, dense_switch_size, DenseSwitchSize),
     globals.lookup_int_option(Globals, try_switch_size, TrySwitchSize),
     globals.lookup_int_option(Globals, binary_switch_size, BinarySwitchSize),
-    ( PtagsUsed >= DenseSwitchSize ->
+    ( if PtagsUsed >= DenseSwitchSize then
         PrimaryMethod = jump_table
-    ; PtagsUsed >= BinarySwitchSize ->
+    else if PtagsUsed >= BinarySwitchSize then
         PrimaryMethod = binary_search
-    ; PtagsUsed >= TrySwitchSize ->
+    else if PtagsUsed >= TrySwitchSize then
         PrimaryMethod = try_chain
-    ;
+    else
         PrimaryMethod = try_me_else_chain
     ),
 
-    (
+    ( if
         PrimaryMethod \= jump_table,
         PtagsUsed >= 2,
         globals.lookup_int_option(Globals, num_real_r_regs, NumRealRegs),
         (
             NumRealRegs = 0
         ;
-            ( PtagReg = reg(reg_r, PtagRegNo) ->
+            ( if PtagReg = reg(reg_r, PtagRegNo) then
                 PtagRegNo =< NumRealRegs
-            ;
+            else
                 unexpected($module, $pred, "improper reg in tag switch")
             )
         )
-    ->
+    then
         PtagCode = singleton(
             llds_instr(assign(PtagReg, unop(tag, VarRval)),
                 "compute tag to switch on")
         ),
         PtagRval = lval(PtagReg)
-    ;
+    else
         PtagCode = empty,
         PtagRval = unop(tag, VarRval)
     ),
 
-    % We generate EndCode (and if needed, FailCode) here because the last
-    % case within a primary tag may not be the last case overall.
+    % We generate EndCode (and if needed, FailCode) here because
+    % the last case within a primary tag may not be the last case overall.
     EndCode = singleton(
         llds_instr(label(EndLabel), "end of tag switch")
     ),
@@ -276,10 +283,12 @@ generate_tag_switch(TaggedCases, VarRval, VarType, VarName, CodeModel, CanFail,
         FailLabelCode = singleton(
             llds_instr(label(FailLabel), "switch has failed")
         ),
-        % We must generate the failure code in the context in which none of the
-        % switch arms have been executed yet.
-        reset_to_position(BranchStart, !CI),
-        generate_failure(FailureCode, !CI),
+        % We must generate the failure code in the context in which
+        % none of the switch arms have been executed yet.
+        some [!CLD] (
+            reset_to_position(BranchStart, !.CI, !:CLD),
+            generate_failure(FailureCode, !CI, !.CLD)
+        ),
         FailCode = FailLabelCode ++ FailureCode
     ),
 
@@ -303,12 +312,12 @@ generate_tag_switch(TaggedCases, VarRval, VarType, VarName, CodeModel, CanFail,
     ;
         PrimaryMethod = try_chain,
         order_ptags_by_count(PtagCountMap, PtagCaseMap, PtagCaseList0),
-        (
+        ( if
             CanFail = cannot_fail,
             PtagCaseList0 = [MostFreqCase | OtherCases]
-        ->
+        then
             PtagCaseList = OtherCases ++ [MostFreqCase]
-        ;
+        else
             PtagCaseList = PtagCaseList0
         ),
         generate_primary_try_chain(PtagCaseList, PtagRval, StagReg, VarRval,
@@ -531,17 +540,17 @@ generate_primary_try_chain_other_ptags([OtherPtag | OtherPtags],
 generate_primary_jump_table(PtagGroups, CurPrimary, MaxPrimary, StagReg,
         VarRval, MaybeFailLabel, PtagCountMap, Targets, Code,
         !CaseLabelMap, !CI) :-
-    ( CurPrimary > MaxPrimary ->
+    ( if CurPrimary > MaxPrimary then
         expect(unify(PtagGroups, []), $module, $pred,
             "PtagGroups != [] when Cur > Max"),
         Targets = [],
         Code = empty
-    ;
+    else
         NextPrimary = CurPrimary + 1,
-        (
+        ( if
             PtagGroups = [PtagCaseEntry | PtagGroupsTail],
             PtagCaseEntry = ptag_case_entry(CurPrimary, PrimaryInfo)
-        ->
+        then
             PrimaryInfo = ptag_case(StagLoc, StagGoalMap),
             map.lookup(PtagCountMap, CurPrimary, CountInfo),
             CountInfo = StagLocPrime - MaxSecondary,
@@ -559,7 +568,7 @@ generate_primary_jump_table(PtagGroups, CurPrimary, MaxPrimary, StagReg,
                 TailTargets, TailCode, !CaseLabelMap, !CI),
             Targets = [yes(NewLabel) | TailTargets],
             Code = LabelCode ++ ThisTagCode ++ TailCode
-        ;
+        else
             generate_primary_jump_table(PtagGroups, NextPrimary, MaxPrimary,
                 StagReg, VarRval, MaybeFailLabel, PtagCountMap,
                 TailTargets, TailCode, !CaseLabelMap, !CI),
@@ -582,7 +591,7 @@ generate_primary_jump_table(PtagGroups, CurPrimary, MaxPrimary, StagReg,
 
 generate_primary_binary_search(PtagGroups, MinPtag, MaxPtag, PtagRval, StagReg,
         VarRval, MaybeFailLabel, PtagCountMap, Code, !CaseLabelMap, !CI) :-
-    ( MinPtag = MaxPtag ->
+    ( if MinPtag = MaxPtag then
         CurPrimary = MinPtag,
         (
             PtagGroups = [],
@@ -617,7 +626,7 @@ generate_primary_binary_search(PtagGroups, MinPtag, MaxPtag, PtagRval, StagReg,
             unexpected($module, $pred,
                 "caselist not singleton or empty when binary search ends")
         )
-    ;
+    else
         LowRangeEnd = (MinPtag + MaxPtag) // 2,
         HighRangeStart = LowRangeEnd + 1,
         InLowGroup = (pred(PtagGroup::in) is semidet :-
@@ -677,9 +686,9 @@ generate_primary_tag_code(StagGoalMap, MainPtag, OtherPtags, MaxSecondary,
             unexpected($module, $pred, "no goal for non-shared tag")
         ;
             StagGoalList = [StagGoal],
-            ( StagGoal = -1 - CaseLabel ->
+            ( if StagGoal = -1 - CaseLabel then
                 generate_case_code_or_jump(CaseLabel, Code, !CaseLabelMap)
-            ;
+            else
                 unexpected($module, $pred,
                     "badly formed goal for non-shared tag")
             )
@@ -701,13 +710,13 @@ generate_primary_tag_code(StagGoalMap, MainPtag, OtherPtags, MaxSecondary,
         globals.lookup_int_option(Globals, binary_switch_size,
             BinarySwitchSize),
         globals.lookup_int_option(Globals, try_switch_size, TrySwitchSize),
-        ( MaxSecondary >= DenseSwitchSize ->
+        ( if MaxSecondary >= DenseSwitchSize then
             SecondaryMethod = jump_table
-        ; MaxSecondary >= BinarySwitchSize ->
+        else if MaxSecondary >= BinarySwitchSize then
             SecondaryMethod = binary_search
-        ; MaxSecondary >= TrySwitchSize ->
+        else if MaxSecondary >= TrySwitchSize then
             SecondaryMethod = try_chain
-        ;
+        else
             SecondaryMethod = try_me_else_chain
         ),
 
@@ -722,37 +731,37 @@ generate_primary_tag_code(StagGoalMap, MainPtag, OtherPtags, MaxSecondary,
             Comment = "compute local sec tag to switch on"
         ),
 
-        (
+        ( if
             SecondaryMethod \= jump_table,
             MaxSecondary >= 2,
             globals.lookup_int_option(Globals, num_real_r_regs, NumRealRegs),
             (
                 NumRealRegs = 0
             ;
-                ( StagReg = reg(reg_r, StagRegNo) ->
+                ( if StagReg = reg(reg_r, StagRegNo) then
                     StagRegNo =< NumRealRegs
-                ;
+                else
                     unexpected($module, $pred, "improper reg in tag switch")
                 )
             )
-        ->
+        then
             StagCode = singleton(
                 llds_instr(assign(StagReg, OrigStagRval), Comment)
             ),
             StagRval = lval(StagReg)
-        ;
+        else
             StagCode = empty,
             StagRval = OrigStagRval
         ),
         (
             MaybeFailLabel = yes(FailLabel),
-            (
+            ( if
                 list.length(StagGoalList, StagGoalCount),
                 FullGoalCount = MaxSecondary + 1,
                 FullGoalCount = StagGoalCount
-            ->
+            then
                 MaybeSecFailLabel = no
-            ;
+            else
                 MaybeSecFailLabel = yes(FailLabel)
             )
         ;
@@ -905,17 +914,17 @@ generate_secondary_try_chain_case(CaseLabel, StagRval, Secondary,
 
 generate_secondary_jump_table(CaseList, CurSecondary, MaxSecondary,
         MaybeFailLabel, Targets) :-
-    ( CurSecondary > MaxSecondary ->
+    ( if CurSecondary > MaxSecondary then
         expect(unify(CaseList, []), $module, $pred,
             "caselist not empty when reaching limiting secondary tag"),
         Targets = []
-    ;
+    else
         NextSecondary = CurSecondary + 1,
-        ( CaseList = [CurSecondary - CaseLabel | CaseListTail] ->
+        ( if CaseList = [CurSecondary - CaseLabel | CaseListTail] then
             generate_secondary_jump_table(CaseListTail, NextSecondary,
                 MaxSecondary, MaybeFailLabel, OtherTargets),
             Targets = [yes(CaseLabel) | OtherTargets]
-        ;
+        else
             generate_secondary_jump_table(CaseList, NextSecondary,
                 MaxSecondary, MaybeFailLabel, OtherTargets),
             Targets = [MaybeFailLabel | OtherTargets]
@@ -935,7 +944,7 @@ generate_secondary_jump_table(CaseList, CurSecondary, MaxSecondary,
 
 generate_secondary_binary_search(StagGoals, MinStag, MaxStag, StagRval,
         MaybeFailLabel, Code, !CaseLabelMap, !CI) :-
-    ( MinStag = MaxStag ->
+    ( if MinStag = MaxStag then
         CurSec = MinStag,
         (
             StagGoals = [],
@@ -961,7 +970,7 @@ generate_secondary_binary_search(StagGoals, MinStag, MaxStag, StagRval,
             unexpected($module, $pred,
                 "goallist not singleton or empty when binary search ends")
         )
-    ;
+    else
         LowRangeEnd = (MinStag + MaxStag) // 2,
         HighRangeStart = LowRangeEnd + 1,
         InLowGroup = (pred(StagGoal::in) is semidet :-

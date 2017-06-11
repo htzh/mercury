@@ -17,10 +17,13 @@
 :- interface.
 
 :- import_module erl_backend.elds.
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.instmap.
+:- import_module hlds.vartypes.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module parse_tree.set_of_var.
 
@@ -111,7 +114,7 @@
     % As above but takes arg_modes instead of mer_modes.
     %
 :- pred erl_gen_arg_list_arg_modes(module_info::in, opt_dummy_args::in,
-    list(T)::in, list(mer_type)::in, list(arg_mode)::in,
+    list(T)::in, list(mer_type)::in, list(top_functor_mode)::in,
     list(T)::out, list(T)::out) is det.
 
     % erl_fix_success_expr(InstMap, Goal, MaybeExpr0, MaybeExpr, !Info)
@@ -209,6 +212,7 @@
 
 :- implementation.
 
+:- import_module check_hlds.
 :- import_module check_hlds.mode_util.
 :- import_module check_hlds.type_util.
 :- import_module hlds.goal_util.
@@ -216,7 +220,6 @@
 :- import_module int.
 :- import_module map.
 :- import_module require.
-:- import_module set.
 :- import_module term.
 :- import_module varset.
 
@@ -328,52 +331,52 @@ erl_gen_info_get_env_vars(Info, Info ^ egi_env_var_names).
     %
 erl_gen_arg_list(ModuleInfo, OptDummyArgs, VarNames, ArgTypes, Modes,
         Inputs, Outputs) :-
-    modes_to_arg_modes(ModuleInfo, Modes, ArgTypes, ArgModes),
+    modes_to_top_functor_modes(ModuleInfo, Modes, ArgTypes, TopFunctorModes),
     erl_gen_arg_list_arg_modes(ModuleInfo, OptDummyArgs,
-        VarNames, ArgTypes, ArgModes, Inputs, Outputs).
+        VarNames, ArgTypes, TopFunctorModes, Inputs, Outputs).
 
 erl_gen_arg_list_arg_modes(ModuleInfo, OptDummyArgs,
-        VarNames, ArgTypes, ArgModes, Inputs, Outputs) :-
-    (
+        VarNames, ArgTypes, TopFunctorModes, Inputs, Outputs) :-
+    ( if
         VarNames = [],
         ArgTypes = [],
-        ArgModes = []
-    ->
+        TopFunctorModes = []
+    then
         Inputs = [],
         Outputs = []
-    ;
+    else if
         VarNames = [VarName | VarNames1],
         ArgTypes = [ArgType | ArgTypes1],
-        ArgModes = [ArgMode | ArgModes1]
-    ->
+        TopFunctorModes = [TopFunctorMode | TopFunctorModes1]
+    then
         erl_gen_arg_list_arg_modes(ModuleInfo, OptDummyArgs,
-            VarNames1, ArgTypes1, ArgModes1, Inputs1, Outputs1),
-        (
+            VarNames1, ArgTypes1, TopFunctorModes1, Inputs1, Outputs1),
+        ( if
             OptDummyArgs = opt_dummy_args,
             % Exclude arguments of type io.state etc.
             % Also exclude those with arg_mode `top_unused'.
             ( check_dummy_type(ModuleInfo, ArgType) = is_dummy_type
-            ; ArgMode = top_unused
+            ; TopFunctorMode = top_unused
             )
-        ->
+        then
             Inputs = Inputs1,
             Outputs = Outputs1
-        ;
+        else
             (
-                ArgMode = top_in,
+                TopFunctorMode = top_in,
                 % It's an input argument.
                 Inputs = [VarName | Inputs1],
                 Outputs = Outputs1
             ;
-                ( ArgMode = top_out
-                ; ArgMode = top_unused
+                ( TopFunctorMode = top_out
+                ; TopFunctorMode = top_unused
                 ),
                 % It's an output argument.
                 Inputs = Inputs1,
                 Outputs = [VarName | Outputs1]
             )
         )
-    ;
+    else
         unexpected($module, $pred, "length mismatch")
     ).
 
@@ -459,9 +462,9 @@ erl_bind_unbound_vars(Info, VarsToBind, Goal, InstMap,
     %   end
     %
 maybe_simplify_nested_cases(Expr0, Expr) :-
-    ( maybe_simplify_nested_cases_2(Expr0, Expr1) ->
+    ( if maybe_simplify_nested_cases_2(Expr0, Expr1) then
         Expr = Expr1
-    ;
+    else
         Expr = Expr0
     ).
 
@@ -506,25 +509,36 @@ match_inner_outer_cases([OC | OCs], [IC | ICs], [NC | NCs]) :-
 :- pred non_variable_term(elds_term::in) is semidet.
 
 non_variable_term(Term) :-
-    ( Term = elds_char(_)
-    ; Term = elds_int(_)
-    ; Term = elds_float(_)
-    ; Term = elds_binary(_)
-    ; Term = elds_list_of_ints(_)
-    ; Term = elds_atom_raw(_)
-    ; Term = elds_atom(_)
-    ; Term = elds_tuple(SubTerms),
+    require_complete_switch [Term]
+    (
+        ( Term = elds_char(_)
+        ; Term = elds_int(_)
+        ; Term = elds_uint(_)
+        ; Term = elds_float(_)
+        ; Term = elds_binary(_)
+        ; Term = elds_list_of_ints(_)
+        ; Term = elds_atom_raw(_)
+        ; Term = elds_atom(_)
+        )
+    ;
+        Term = elds_tuple(SubTerms),
         all [SubTerm] (
             list.member(elds_term(SubTerm), SubTerms)
         =>
             non_variable_term(SubTerm)
         )
+    ;
+        ( Term = elds_var(_)
+        ; Term = elds_fixed_name_var(_)
+        ; Term = elds_anon_var
+        ),
+        fail
     ).
 
 %-----------------------------------------------------------------------------%
 
 erl_var_or_dummy_replacement(ModuleInfo, VarTypes, DummyVarReplacement, Var) =
-    (if
+    ( if
         search_var_type(VarTypes, Var, Type),
         check_dummy_type(ModuleInfo, Type) = is_dummy_type
     then
@@ -544,9 +558,9 @@ erl_create_renaming(Vars, Subst, !Info) :-
     prog_var_renaming::in, prog_var_renaming::out) is det.
 
 erl_create_renaming_2(OldVar, !VarSet, !Subst) :-
-    ( varset.search_name(!.VarSet, OldVar, Name) ->
+    ( if varset.search_name(!.VarSet, OldVar, Name) then
         varset.new_named_var(Name, NewVar, !VarSet)
-    ;
+    else
         varset.new_var(NewVar, !VarSet)
     ),
     map.det_insert(OldVar, NewVar, !Subst).
@@ -647,6 +661,7 @@ erl_rename_vars_in_terms(Subn, Terms0, Terms) :-
 erl_rename_vars_in_term(Subn, Term0, Term) :-
     (
         ( Term0 = elds_int(_)
+        ; Term0 = elds_uint(_)
         ; Term0 = elds_float(_)
         ; Term0 = elds_binary(_)
         ; Term0 = elds_list_of_ints(_)
@@ -663,7 +678,7 @@ erl_rename_vars_in_term(Subn, Term0, Term) :-
         Term = elds_tuple(Exprs)
     ;
         Term0 = elds_var(Var0),
-        Var = (if map.search(Subn, Var0, Var1) then Var1 else Var0),
+        Var = ( if map.search(Subn, Var0, Var1) then Var1 else Var0 ),
         Term = elds_var(Var)
     ).
 
@@ -811,6 +826,7 @@ erl_vars_in_terms(Terms, !Set) :-
 erl_vars_in_term(Term, !Set) :-
     (
         ( Term = elds_int(_)
+        ; Term = elds_uint(_)
         ; Term = elds_float(_)
         ; Term = elds_binary(_)
         ; Term = elds_list_of_ints(_)
@@ -949,6 +965,7 @@ erl_terms_size(Terms) = sum(list.map(erl_term_size, Terms)).
 erl_term_size(Term) = Size :-
     (
         ( Term = elds_int(_)
+        ; Term = elds_uint(_)
         ; Term = elds_float(_)
         ; Term = elds_binary(_)
         ; Term = elds_list_of_ints(_)

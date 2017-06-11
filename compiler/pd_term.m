@@ -40,6 +40,7 @@
 :- module transform_hlds.pd_term.
 :- interface.
 
+:- import_module hlds.
 :- import_module hlds.hlds_goal.
 :- import_module hlds.hlds_module.
 :- import_module hlds.hlds_pred.
@@ -102,7 +103,7 @@
 
 :- implementation.
 
-:- import_module hlds.hlds_pred.
+:- import_module parse_tree.
 :- import_module parse_tree.prog_data.
 :- import_module transform_hlds.pd_util.
 
@@ -153,11 +154,12 @@ get_proc_term_info(TermInfo, PredProcId, ProcTermInfo) :-
 global_check(_ModuleInfo, EarlierGoal, BetweenGoals, MaybeLaterGoal,
         _InstMap, Versions, !Info, Result) :-
     !.Info = global_term_info(SingleGoalCover0, MultipleGoalCover0),
-    (
+    ( if
         EarlierGoal = hlds_goal(plain_call(PredId1, ProcId1, _, _, _, _), _),
-        Hd = (pred(List::in, Head::out) is semidet :-
-            List = [Head | _]
-        ),
+        Hd =
+            ( pred(List::in, Head::out) is semidet :-
+                List = [Head | _]
+            ),
         expand_calls(Hd, Versions, proc(PredId1, ProcId1), FirstPredProcId),
         (
             MaybeLaterGoal = yes(
@@ -169,33 +171,33 @@ global_check(_ModuleInfo, EarlierGoal, BetweenGoals, MaybeLaterGoal,
             MaybeLaterGoal = no,
             MaybeLastPredProcId = no
         )
-    ->
+    then
         ProcPair = FirstPredProcId - MaybeLastPredProcId,
         list.length(BetweenGoals, Length),
-        (
+        ( if
             map.search(MultipleGoalCover0, ProcPair,
                 MaxLength - MaybeCoveringPredProcId)
-        ->
-            (
+        then
+            ( if
                 Length < MaxLength
-            ->
+            then
                 Result = ok(ProcPair, Length),
                 % Set the maybe(pred_proc_id) when we create the new predicate.
                 map.set(ProcPair, Length - no,
                     MultipleGoalCover0, MultipleGoalCover)
-            ;
+            else if
                 Length = MaxLength,
                 MaybeCoveringPredProcId = yes(CoveringPredProcId)
-            ->
+            then
                 % If the goals match, check that the argument insts decrease.
-                 %If not, we may need to do a generalisation step.
+                % If not, we may need to do a generalisation step.
                 Result = possible_loop(ProcPair, Length, CoveringPredProcId),
                 MultipleGoalCover = MultipleGoalCover0
-            ;
+            else
                 Result = loop,
                 MultipleGoalCover = MultipleGoalCover0
             )
-        ;
+        else
             % We haven't seen this pair before, so it must be okay
             % to specialise.
             Result = ok(ProcPair, Length),
@@ -205,7 +207,7 @@ global_check(_ModuleInfo, EarlierGoal, BetweenGoals, MaybeLaterGoal,
                 MultipleGoalCover0, MultipleGoalCover)
         ),
         SingleGoalCover = SingleGoalCover0
-    ;
+    else
         unexpected($module, $pred, "global_check")
     ),
     !:Info = global_term_info(SingleGoalCover, MultipleGoalCover).
@@ -225,11 +227,11 @@ global_check(_ModuleInfo, EarlierGoal, BetweenGoals, MaybeLaterGoal,
     pred_proc_id::in, pred_proc_id::out) is semidet.
 
 expand_calls(GetEnd, Versions, PredProcId0, PredProcId) :-
-    ( map.search(Versions, PredProcId0, VersionInfo) ->
+    ( if map.search(Versions, PredProcId0, VersionInfo) then
         Calls = VersionInfo ^ version_deforest_calls,
         GetEnd(Calls, PredProcId1),
         expand_calls(GetEnd, Versions, PredProcId1, PredProcId)
-    ;
+    else
         PredProcId = PredProcId0
     ).
 
@@ -237,11 +239,11 @@ expand_calls(GetEnd, Versions, PredProcId0, PredProcId) :-
 
 local_check(ModuleInfo, Goal1, InstMap, !Cover) :-
     Goal1 = hlds_goal(plain_call(PredId, ProcId, Args, _, _, _), _),
-    ( map.search(!.Cover, proc(PredId, ProcId), CoveringInstSizes0) ->
+    ( if map.search(!.Cover, proc(PredId, ProcId), CoveringInstSizes0) then
         do_local_check(ModuleInfo, InstMap, Args,
             CoveringInstSizes0, CoveringInstSizes),
         map.set(proc(PredId, ProcId), CoveringInstSizes, !Cover)
-    ;
+    else
         initial_sizes(ModuleInfo, InstMap, Args, 1, ArgInstSizes),
         map.set(proc(PredId, ProcId), ArgInstSizes, !Cover)
     ).
@@ -252,9 +254,9 @@ local_check(ModuleInfo, Goal1, InstMap, !Cover) :-
 do_local_check(ModuleInfo, InstMap, Args, OldSizes, NewSizes) :-
     get_matching_sizes(ModuleInfo, InstMap, Args, OldSizes, NewSizes1,
         OldTotal, NewTotal),
-    ( NewTotal < OldTotal ->
+    ( if NewTotal < OldTotal then
         NewSizes = NewSizes1
-    ;
+    else
         split_out_non_increasing(OldSizes, NewSizes1, yes, NewSizes)
     ).
 
@@ -309,14 +311,14 @@ split_out_non_increasing([], [_|_], _, _) :-
 split_out_non_increasing([Arg - OldSize | Args0],
         [_ - NewSize | Args], FoundDecreasing, NonIncreasing) :-
     split_out_non_increasing(Args0, Args, FoundDecreasing1, NonIncreasing1),
-    ( NewSize =< OldSize ->
+    ( if NewSize =< OldSize then
         NonIncreasing = [Arg - NewSize | NonIncreasing1],
-        ( NewSize = OldSize ->
+        ( if NewSize = OldSize then
             FoundDecreasing = no
-        ;
+        else
             FoundDecreasing = yes
         )
-    ;
+    else
         NonIncreasing = NonIncreasing1,
         FoundDecreasing = FoundDecreasing1
     ).

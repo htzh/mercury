@@ -1,4 +1,6 @@
 #-----------------------------------------------------------------------------#
+# vim: ts=8 sw=8 noexpandtab
+#-----------------------------------------------------------------------------#
 # Copyright (C) 2005-2007, 2009-2012 The University of Melbourne.
 # This file may only be copied under the terms of the GNU General
 # Public Licence - see the file COPYING in the Mercury distribution.
@@ -48,6 +50,7 @@ VPATH = $(LIBRARY_DIR) $(SSDB_DIR)
 #-----------------------------------------------------------------------------#
 
 MDBCOMP_MODULES = \
+	builtin_modules.m \
 	feedback.automatic_parallelism.m \
 	feedback.m \
 	mdbcomp.m \
@@ -57,9 +60,8 @@ MDBCOMP_MODULES = \
 	rtti_access.m \
 	shared_utilities.m \
 	slice_and_dice.m \
+	sym_name.m \
 	trace_counts.m
-
-MDBCOMP_ORIG_MODULES = $(patsubst %,$(MDBCOMP_DIR)/%,$(MDBCOMP_MODULES))
 
 #-----------------------------------------------------------------------------#
 
@@ -92,34 +94,34 @@ all:	$(MDBCOMP_MODULES) $(MERCURY_MAIN_MODULES) $(TAGS_FILE_EXISTS)
 
 #-----------------------------------------------------------------------------#
 #
-# We use the sentinel file .mdbcomp_modules to avoid the race condition that
-# exists because the rule would normally be invoked for each of the mdbcomp
-# modules.  Note that a .PHONY target does not work.  However, we also need
-# to use the no-op action '@' to allow make to see that the timestamps on
-# the $(MDBCOMP_MODULES) have changed and that other things may need
-# rebuilding.
-$(MDBCOMP_MODULES): .mdbcomp_modules
-	@
-
-# We need to start by turning write permission on for each copied file
-# in case some exist, but we need to ignore errors in case some don't exist.
-# The exit 0 is to prevent make itself from printing a message about the
-# (ignored) failure of an action.
+# The programs in this directory rely on the mdbcomp package, since
+# it contains the types that define the representation of Mercury programs
+# for tools such as debuggers and profilers, and predicates that operate on
+# those representations.
 #
-# We could modify the action here to copy only the changed files.
-.mdbcomp_modules : $(MDBCOMP_ORIG_MODULES)
-	-@chmod a+w $(MDBCOMP_MODULES) > /dev/null 2>&1; exit 0
-	cp $(MDBCOMP_ORIG_MODULES) .
-	@chmod a-w $(MDBCOMP_MODULES)
-	touch $@
+# If we linked ../mdbcomp/libmer_mdbcomp.so into the executables in this
+# directory, then those executables would have to be compiled in the same grade
+# as the modules of the mdbcomp directory, which in turn is the same grade
+# as the modules of the library and compiler directories. This would work,
+# but it would mean that rebuilding the tools in this directory in another
+# grade (e.g. to enable debugging) would take several minutes. To avoid such
+# delays, we copy across the source files of the mdbcomp library. The copied
+# .m files, and the .m files that natively reside in this directory, can be
+# recompiled in a different grade much more quickly than that.
+#
+
+$(MDBCOMP_MODULES): %: $(MDBCOMP_DIR)/%
+	-@/bin/rm -f $*
+	@cp $(MDBCOMP_DIR)/$* .
+	@chmod a-w $*
 
 #-----------------------------------------------------------------------------#
 
-# The C#, IL, Java and Erlang implementations of the mdbcomp library are not yet
+# The C#, Java and Erlang implementations of the mdbcomp library are not yet
 # complete, so we need to pass `--allow-stubs' to get them to compile.
 # Since the standard library is compiled with `--halt-at-warn',
 # we also need `--no-warn-stubs'.
-ifneq ("$(filter il% csharp% java% erlang%,$(GRADE))","")
+ifneq ("$(filter csharp% java% erlang%,$(GRADE))","")
 MCFLAGS += --allow-stubs --no-warn-stubs
 endif
 
@@ -128,7 +130,7 @@ endif
 # Add some additional dependencies, so that Mmake knows to remake the
 # slicer and dicer if one of the libraries changes.
 
-ifeq ("$(filter il% csharp% java% erlang%,$(GRADE))","")
+ifeq ("$(filter csharp% java% erlang%,$(GRADE))","")
 mslice: $(RUNTIME_DIR)/lib$(RT_LIB_NAME).$A
 mslice: $(LIBRARY_DIR)/lib$(STD_LIB_NAME).$A
 mslice: $(BROWSER_DIR)/lib$(BROWSER_LIB_NAME).$A
@@ -159,7 +161,7 @@ $(cs_subdir)mtc_diff.c: $(UTIL_DIR)/mkinit$(EXT_FOR_EXE)
 .PHONY: check
 check:	$(CHECKS)
 
-.PHONY: ints 
+.PHONY: ints
 ints:	$(INTS)
 
 #-----------------------------------------------------------------------------#
@@ -174,10 +176,11 @@ tags:	.slice_tags
 
 .PHONY: tags_file_exists
 tags_file_exists:
-	@if test ! -f tags; then echo making tags; \
-	$(MTAGS) $(mslice.ms) $(mdice.ms) $(mtc_union.ms) \
-		$(mcov.ms) $(mtc_union.ms) $(LIBRARY_DIR)/*.m; \
-	touch .slice_tags; \
+	@if test ! -f tags; then \
+		echo making tags; \
+		$(MTAGS) $(mslice.ms) $(mdice.ms) $(mtc_union.ms) \
+			$(mcov.ms) $(mtc_union.ms) $(LIBRARY_DIR)/*.m; \
+		touch .slice_tags; \
 	fi
 
 #-----------------------------------------------------------------------------#
@@ -198,7 +201,6 @@ cs:	$(mslice.cs) $(mdice.cs) $(mtc_union.cs) \
 	$(cs_subdir)mslice_init.c $(cs_subdir)mdice_init.c \
 	$(cs_subdir)mtc_union.c $(cs_subdir)mcov.c \
 	$(cs_subdir)mtc_diff.c
-ils:	$(mslice.ils) $(mdice.ils) $(mtc_union.ils) $(mcov.ils) $(mtc_diff.ils)
 
 #-----------------------------------------------------------------------------#
 
@@ -227,5 +229,22 @@ install_slicer: mslice mdice mtc_union mcov mtc_diff
 		$(INSTALL_MERC_BIN_DIR)/mcov$(EXT_FOR_EXE)
 	cp `vpath_find mtc_diff$(EXT_FOR_EXE)` \
 		$(INSTALL_MERC_BIN_DIR)/mtc_diff$(EXT_FOR_EXE)
+ifeq ($(findstring java,$(GRADE)),java)
+	cp `vpath_find mcov.jar` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find mdice.jar` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find mslice.jar` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find mtc_diff.jar` $(INSTALL_MERC_BIN_DIR)
+	cp `vpath_find mtc_union.jar` $(INSTALL_MERC_BIN_DIR)
+endif
+
+#-----------------------------------------------------------------------------#
+
+.PHONY: uninstall
+uninstall:
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mslice$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mdice$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mtc_union$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mcov$(EXT_FOR_EXE)
+	-rm -f $(INSTALL_MERC_BIN_DIR)/mtc_diff$(EXT_FOR_EXE)
 
 #-----------------------------------------------------------------------------#

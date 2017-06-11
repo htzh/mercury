@@ -1,17 +1,17 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2002-2009, 2011 The University of Melbourne.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
-% 
+%---------------------------------------------------------------------------%
+%
 % File: construct.m.
 % Main author: zs.
 % Stability: low.
-% 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module construct.
 :- interface.
@@ -21,7 +21,7 @@
 :- import_module univ.
 :- import_module type_desc.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
     % The functors of a discriminated union type are numbered from
     % zero to N-1, where N is the value returned by num_functors.
@@ -63,7 +63,7 @@
     % Binds FunctorName and Arity to the name and arity of functor number
     % FunctorNumber for the specified type, ArgTypes to the type_descs
     % for the types of the arguments of that functor, and ArgNames to the
-    % field name of each functor argument, if any.  Fails if the type is
+    % field name of each functor argument, if any. Fails if the type is
     % not a discriminated union type, or if FunctorNumber is out of range.
     %
 :- pred get_functor_with_names(type_desc::in, functor_number_lex::in,
@@ -95,7 +95,7 @@
     % find_functor(Type, FunctorName, Arity, FunctorNumber, ArgTypes).
     %
     % Given a type descriptor, a functor name and arity, finds the functor
-    % number and the types of its arguments. It thus serves as the converse 
+    % number and the types of its arguments. It thus serves as the converse
     % to get_functor/5.
     %
 :- pred find_functor(type_desc::in, string::in, int::in,
@@ -105,7 +105,7 @@
     %
     % Returns a term of the type specified by Type whose functor
     % is functor number I of the type given by Type, and whose
-    % arguments are given by Args.  Fails if the type is not a
+    % arguments are given by Args. Fails if the type is not a
     % discriminated union type, or if I is out of range, or if the
     % number of arguments supplied doesn't match the arity of the selected
     % functor, or if the types of the arguments do not match
@@ -119,8 +119,8 @@
     %
 :- func construct_tuple(list(univ)) = univ.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -131,7 +131,7 @@
 %
 :- use_module erlang_rtti_implementation.
 
-% For use by the Java and IL backends.
+% For use by the Java and C# backends.
 %
 :- use_module rtti_implementation.
 
@@ -141,13 +141,6 @@
 #include ""mercury_construct.h""
 
 ").
-
-det_num_functors(TypeInfo) =
-    ( if N = num_functors(TypeInfo)
-      then N
-      else func_error(
-                "construct.det_num_functors: type does not have functors")
-    ).
 
 :- pragma foreign_proc("C",
     num_functors(TypeInfo::in) = (Functors::out),
@@ -160,11 +153,18 @@ det_num_functors(TypeInfo) =
 }").
 
 num_functors(TypeDesc) = NumFunctors :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         NumFunctors = erlang_rtti_implementation.num_functors(TypeDesc)
-    ;
+    else
         type_desc_to_type_info(TypeDesc, TypeInfo),
         rtti_implementation.type_info_num_functors(TypeInfo, NumFunctors)
+    ).
+
+det_num_functors(TypeInfo) =
+    ( if N = num_functors(TypeInfo) then
+        N
+    else
+        unexpected($module, $pred, "type does not have functors")
     ).
 
 get_functor(TypeDesc, FunctorNumber, FunctorName, Arity, PseudoTypeInfoList) :-
@@ -182,7 +182,7 @@ get_functor_with_names(TypeDesc, I, Functor, Arity,
 
 get_functor_internal(TypeDesc, FunctorNumber, FunctorName, Arity,
         PseudoTypeDescList) :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         erlang_rtti_implementation.get_functor(TypeDesc, FunctorNumber,
             FunctorName, Arity, TypeDescList),
         % XXX This old comment is wrong now:
@@ -191,7 +191,7 @@ get_functor_internal(TypeDesc, FunctorNumber, FunctorName, Arity,
         % only kind of function symbol in which we may want to return unbound.
         PseudoTypeDescList = list.map(type_desc_to_pseudo_type_desc,
             TypeDescList)
-    ;
+    else
         type_desc_to_type_info(TypeDesc, TypeInfo),
         rtti_implementation.type_info_get_functor(TypeInfo, FunctorNumber,
             FunctorName, Arity, PseudoTypeInfoList),
@@ -264,7 +264,7 @@ get_functor_internal(TypeDesc, FunctorNumber, FunctorName, Arity,
 
 get_functor_with_names_internal(TypeDesc, FunctorNumber, FunctorName, Arity,
         PseudoTypeDescList, Names) :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         erlang_rtti_implementation.get_functor_with_names(TypeDesc,
             FunctorNumber, FunctorName, Arity, TypeDescList, Names),
         % XXX This old comment is wrong now:
@@ -273,7 +273,7 @@ get_functor_with_names_internal(TypeDesc, FunctorNumber, FunctorName, Arity,
         % only kind of function symbol in which we may want to return unbound.
         PseudoTypeDescList = list.map(type_desc_to_pseudo_type_desc,
             TypeDescList)
-    ;
+    else
         type_desc_to_type_info(TypeDesc, TypeInfo),
         rtti_implementation.type_info_get_functor_with_names(TypeInfo,
             FunctorNumber, FunctorName, Arity, PseudoTypeInfoList, Names),
@@ -392,10 +392,10 @@ get_functor_ordinal(TypeDesc, FunctorNumber) = Ordinal :-
     get_functor_ordinal(TypeDesc, FunctorNumber, Ordinal).
 
 get_functor_ordinal(TypeDesc, FunctorNumber, Ordinal) :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         erlang_rtti_implementation.get_functor_ordinal(TypeDesc, FunctorNumber,
             Ordinal)
-    ;
+    else
         type_desc_to_type_info(TypeDesc, TypeInfo),
         rtti_implementation.type_info_get_functor_ordinal(TypeInfo,
             FunctorNumber, Ordinal)
@@ -429,7 +429,7 @@ get_functor_ordinal(TypeDesc, FunctorNumber, Ordinal) :-
             Ordinal = construct_info.functor_info.
                 enum_functor_desc->MR_enum_functor_ordinal;
             break;
-        
+
         case MR_TYPECTOR_REP_FOREIGN_ENUM:
         case MR_TYPECTOR_REP_FOREIGN_ENUM_USEREQ:
             Ordinal = construct_info.functor_info.
@@ -458,6 +458,7 @@ get_functor_ordinal(TypeDesc, FunctorNumber, Ordinal) :-
         case MR_TYPECTOR_REP_FUNC:
         case MR_TYPECTOR_REP_PRED:
         case MR_TYPECTOR_REP_INT:
+        case MR_TYPECTOR_REP_UINT:
         case MR_TYPECTOR_REP_FLOAT:
         case MR_TYPECTOR_REP_CHAR:
         case MR_TYPECTOR_REP_STRING:
@@ -494,10 +495,10 @@ get_functor_ordinal(TypeDesc, FunctorNumber, Ordinal) :-
 }").
 
 get_functor_lex(TypeDesc, Ordinal) = FunctorNumber :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         erlang_rtti_implementation.get_functor_lex(TypeDesc, Ordinal,
             FunctorNumber)
-    ;
+    else
         type_desc_to_type_info(TypeDesc, TypeInfo),
         rtti_implementation.type_info_get_functor_lex(TypeInfo, Ordinal,
             FunctorNumber)
@@ -510,7 +511,6 @@ get_functor_lex(TypeDesc, Ordinal) = FunctorNumber :-
     MR_TypeInfo         type_info;
     MR_TypeCtorInfo     type_ctor_info;
     MR_Construct_Info   construct_info;
-    MR_bool             success;
     int                 num_functors;
 
     type_info = (MR_TypeInfo) TypeDesc;
@@ -528,11 +528,11 @@ get_functor_lex(TypeDesc, Ordinal) = FunctorNumber :-
     if (Ordinal < 0 || Ordinal >= num_functors
             || !type_ctor_info->MR_type_ctor_functor_number_map)
     {
-        SUCCESS_INDICATOR = MR_FALSE; 
+        SUCCESS_INDICATOR = MR_FALSE;
     } else {
         FunctorNumber =
             type_ctor_info->MR_type_ctor_functor_number_map[Ordinal];
-        SUCCESS_INDICATOR = MR_TRUE; 
+        SUCCESS_INDICATOR = MR_TRUE;
     }
 }").
 
@@ -546,11 +546,11 @@ find_functor(Type, Functor, Arity, FunctorNumber, ArgTypes) :-
 find_functor_2(TypeInfo, Functor, Arity, Num0, FunctorNumber, ArgTypes) :-
     Num0 >= 0,
     Num = Num0 - 1,
-    ( get_functor(TypeInfo, Num, Functor, Arity, ArgPseudoTypes) ->
+    ( if get_functor(TypeInfo, Num, Functor, Arity, ArgPseudoTypes) then
         ArgTypes = list.map(det_ground_pseudo_type_desc_to_type_desc,
             ArgPseudoTypes),
         FunctorNumber = Num
-    ;
+    else
         find_functor_2(TypeInfo, Functor, Arity, Num, FunctorNumber, ArgTypes)
     ).
 
@@ -595,7 +595,7 @@ find_functor_2(TypeInfo, Functor, Arity, Num0, FunctorNumber, ArgTypes) :-
             new_data = construct_info.functor_info.enum_functor_desc->
                 MR_enum_functor_ordinal;
             break;
-        
+
         case MR_TYPECTOR_REP_FOREIGN_ENUM:
         case MR_TYPECTOR_REP_FOREIGN_ENUM_USEREQ:
             new_data = construct_info.functor_info.foreign_enum_functor_desc->
@@ -612,6 +612,13 @@ find_functor_2(TypeInfo, Functor, Arity, Num0, FunctorNumber, ArgTypes) :-
 
             if (! MR_list_is_empty(MR_list_tail(ArgList))) {
                 MR_fatal_error(""notag arg list is too long"");
+            }
+
+            if (!MR_notag_subtype_none(type_ctor_info,
+                construct_info.functor_info.notag_functor_desc))
+            {
+                MR_fatal_error(""not yet implemented: construction ""
+                    ""of terms containing subtype constraints"");
             }
 
             new_data = MR_field(MR_UNIV_TAG, MR_list_head(ArgList),
@@ -667,13 +674,18 @@ find_functor_2(TypeInfo, Functor, Arity, Num0, FunctorNumber, ArgTypes) :-
                 int                     args_size;
                 int                     alloc_size;
                 int                     size;
-                int                     i;
+                MR_Unsigned             i;
 
                 functor_desc = construct_info.functor_info.du_functor_desc;
                 arg_locns = functor_desc->MR_du_functor_arg_locns;
                 if (functor_desc->MR_du_functor_exist_info != NULL) {
                     MR_fatal_error(""not yet implemented: construction ""
                         ""of terms containing existential types"");
+                }
+
+                if (!MR_du_subtype_none(type_ctor_info, functor_desc)) {
+                    MR_fatal_error(""not yet implemented: construction ""
+                        ""of terms containing subtype constraints"");
                 }
 
                 arg_list = ArgList;
@@ -882,6 +894,12 @@ find_functor_2(TypeInfo, Functor, Arity, Num0, FunctorNumber, ArgTypes) :-
                 ""cannot construct int with construct.construct"");
             break;
 
+        case MR_TYPECTOR_REP_UINT:
+            /* uints don't have functor ordinals. */
+            MR_fatal_error(
+                ""cannot construct uint with construct.construct"");
+            break;
+
         case MR_TYPECTOR_REP_FLOAT:
             /* floats don't have functor ordinals. */
             MR_fatal_error(
@@ -1059,9 +1077,9 @@ find_functor_2(TypeInfo, Functor, Arity, Num0, FunctorNumber, ArgTypes) :-
 }").
 
 construct(TypeDesc, Index, Args) = Term :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         Term = erlang_rtti_implementation.construct(TypeDesc, Index, Args)
-    ;
+    else
         type_desc_to_type_info(TypeDesc, TypeInfo),
         Term = rtti_implementation.construct(TypeInfo, Index, Args)
     ).
@@ -1121,12 +1139,12 @@ construct_tuple(Args) =
 }").
 
 construct_tuple_2(Args, ArgTypeDescs, Arity) = Term :-
-    ( erlang_rtti_implementation.is_erlang_backend ->
+    ( if erlang_rtti_implementation.is_erlang_backend then
         Term = erlang_rtti_implementation.construct_tuple_2(Args, ArgTypeDescs,
             Arity)
-    ;
+    else
         list.map(type_desc_to_type_info, ArgTypeDescs, ArgTypeInfos),
         Term = rtti_implementation.construct_tuple_2(Args, ArgTypeInfos, Arity)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

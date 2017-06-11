@@ -17,7 +17,7 @@
 ** functions for all the modules in a Mercury program.
 **
 ** Alternatively, if invoked with the -k option, this program produces a
-** list of intialization directives on stdout.  This mode of operation is
+** list of initialization directives on stdout.  This mode of operation is
 ** is used when building .init files for libraries.
 **
 ** If invoked with the -s option, this program produces a standalone
@@ -318,8 +318,15 @@ static const char header1[] =
     "**\n"
     ;
 
+/*
+** NOTE: _DEFAULT_SOURCE is defined in order to suppress a warning
+** about _BSD_SOURCE being deprecated in glibc 2.20.  We keep the
+** definition of the deprecated macro about for compatibility with
+** older versions of glibc.
+*/
 static const char header2[] =
     "*/\n"
+    "#define _DEFAULT_SOURCE\n"
     "#define _BSD_SOURCE\n"
     "#include <stddef.h>\n"
     "#ifdef MR_PROFILE_SBRK\n"
@@ -383,10 +390,15 @@ static const char mercury_funcs1[] =
     "   ** For the Boehm GC, if the stackbottom argument is NULL then\n"
     "   ** do not explicitly register the bottom of the stack, but\n"
     "   ** let the collector determine an appropriate value itself.\n"
+    "   **\n"
+    "   ** Boehm GC 7.4.2 deprecates the use of GC_stackbottom and\n"
+    "   ** prohibits the use of the alternative GC_register_my_thread()\n"
+    "   ** for the primordial thread. Therefore we do not attempt to\n"
+    "   ** register the bottom of the C stack except on AIX.\n"
     "   */\n"
     "   #if defined(MR_HGC)\n"
     "    MR_hgc_set_stack_bot(stackbottom);\n"
-    "   #elif defined(MR_BOEHM_GC)\n"
+    "   #elif defined(MR_BOEHM_GC) && defined(_AIX)\n"
     "       if (stackbottom != NULL) {\n"
     "           GC_stackbottom = stackbottom;\n"
     "       }\n"
@@ -451,12 +463,11 @@ static const char mercury_funcs2[] =
     "#ifdef MR_CONSERVATIVE_GC\n"
     "   MR_address_of_init_gc = init_gc;\n"
     "#endif\n"
-    "   MR_library_initializer = ML_io_init_state;\n"
-    "   MR_library_finalizer = ML_io_finalize_state;\n"
+    "   MR_library_initializer = ML_std_library_init;\n"
+    "   MR_library_finalizer = ML_std_library_finalize;\n"
     "   MR_io_stdin_stream = ML_io_stdin_stream;\n"
     "   MR_io_stdout_stream = ML_io_stdout_stream;\n"
     "   MR_io_stderr_stream = ML_io_stderr_stream;\n"
-    "   MR_io_print_to_cur_stream = ML_io_print_to_cur_stream;\n"
     "   MR_io_print_to_stream = ML_io_print_to_stream;\n"
     "#if MR_TRACE_ENABLED\n"
     "   MR_exec_trace_func_ptr = MR_trace_real;\n"
@@ -537,7 +548,7 @@ static const char mercury_main_func[] =
     "#endif\n"
         /*
         ** Note that the address we use for the stack base
-        ** needs to be word-aligned (the MPS GC requires this).
+        ** needs to be word-aligned.
         ** That's why we give dummy the type `void *' rather than
         ** e.g. `char'.
         */
@@ -607,9 +618,12 @@ static const char mercury_main_func[] =
     "\n"
     ;
 
-static const char mercury_grade_var[] =
-    "/* ensure that everything gets compiled in the same grade */\n"
-    "static const void *const MR_grade = &MR_GRADE_VAR;\n"
+static const char mercury_grade_check_func[] =
+    "// Ensure that everything gets compiled in the same grade.\n"
+    "const char *mercury_init_grade_check(void)\n"
+    "{\n"
+    "    return &MR_GRADE_VAR;\n"
+    "}\n"
     "\n"
     ;
 
@@ -836,7 +850,6 @@ static void
 parse_options(int argc, char *argv[])
 {
     int         c;
-    int         i;
     String_List *tmp_slist;
     int         seen_f_option = 0;
 
@@ -1190,7 +1203,7 @@ output_main(void)
         fputs(mercury_main_func, stdout);
     }
 
-    fputs(mercury_grade_var, stdout);
+    fputs(mercury_grade_check_func, stdout);
 
     if (output_main_func) {
         fputs(main_func, stdout);
@@ -1202,7 +1215,7 @@ output_main(void)
 static void
 process_file(const char *filename)
 {
-    int len;
+    size_t len;
 
     len = strlen(filename);
     if (len >= 2 && strcmp(filename + len - 2, ".c") == 0) {
@@ -1234,11 +1247,11 @@ process_init_file(const char *filename)
     const char * const  reqfinal_str = "REQUIRED_FINAL ";
     const char * const  envvar_str = "ENVVAR ";
     const char * const  endinit_str = "ENDINIT";
-    const int           init_strlen = strlen(init_str);
-    const int           reqinit_strlen = strlen(reqinit_str);
-    const int           reqfinal_strlen = strlen(reqfinal_str);
-    const int           envvar_strlen = strlen(envvar_str);
-    const int           endinit_strlen = strlen(endinit_str);
+    const size_t        init_strlen = strlen(init_str);
+    const size_t        reqinit_strlen = strlen(reqinit_str);
+    const size_t        reqfinal_strlen = strlen(reqfinal_str);
+    const size_t        envvar_strlen = strlen(envvar_str);
+    const size_t        endinit_strlen = strlen(endinit_str);
     char                line[MAXLINE];
     FILE                *cfile;
 
@@ -1253,9 +1266,8 @@ process_init_file(const char *filename)
     while (get_line(cfile, line, MAXLINE) > 0) {
         if (strncmp(line, init_str, init_strlen) == 0) {
             char    *func_name;
-            int     func_name_len;
+            size_t  func_name_len;
             int     j;
-            MR_bool special;
 
             for (j = init_strlen; MR_isalnumunder(line[j]); j++) {
                 /* VOID */

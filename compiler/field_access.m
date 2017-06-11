@@ -19,9 +19,11 @@
 :- import_module hlds.hlds_module.
 :- import_module hlds.make_hlds.qual_info.
 :- import_module hlds.make_hlds.state_var.
+:- import_module mdbcomp.
+:- import_module mdbcomp.sym_name.
 :- import_module parse_tree.error_util.
+:- import_module parse_tree.maybe_error.
 :- import_module parse_tree.prog_data.
-:- import_module parse_tree.prog_io_util.
 
 :- import_module assoc_list.
 :- import_module list.
@@ -29,7 +31,7 @@
 
 %-----------------------------------------------------------------------------%
 
-:- type field_list == assoc_list(ctor_field_name, list(prog_term)).
+:- type field_list == assoc_list(sym_name, list(prog_term)).
 
     % Expand a field update goal into a list of goals which each get or set
     % one level of the structure.
@@ -90,9 +92,6 @@
     module_info::in, module_info::out, qual_info::in, qual_info::out,
     list(error_spec)::in, list(error_spec)::out) is det.
 
-:- pred maybe_parse_field_list(prog_term::in, prog_varset::in,
-    field_list::out) is semidet.
-
 :- pred parse_field_list(prog_term::in, prog_varset::in,
     list(format_component)::in, maybe1(field_list)::out) is det.
 
@@ -104,10 +103,9 @@
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.make_hlds.superhomogeneous.
-:- import_module parse_tree.mercury_to_mercury.
-:- import_module parse_tree.prog_io_sym_name.
+:- import_module parse_tree.parse_sym_name.
+:- import_module parse_tree.parse_tree_out_term.
 
-:- import_module bool.
 :- import_module int.
 :- import_module require.
 :- import_module term.
@@ -267,7 +265,7 @@ expand_get_field_function_call_2(Context, MainContext, SubContext0,
 
 :- pred construct_field_access_function_call(field_access_type::in,
     prog_context::in, unify_main_context::in, unify_sub_contexts::in,
-    ctor_field_name::in, prog_var::in, list(prog_var)::in, purity::in,
+    sym_name::in, prog_var::in, list(prog_var)::in, purity::in,
     cons_id::out, hlds_goal::out, qual_info::in, qual_info::out) is det.
 
 construct_field_access_function_call(AccessType, Context,
@@ -276,24 +274,16 @@ construct_field_access_function_call(AccessType, Context,
     field_access_function_name(AccessType, FieldName, FuncName),
     list.length(Args, Arity),
     Functor = cons(FuncName, Arity, cons_id_dummy_type_ctor),
-    make_atomic_unification(RetArg, rhs_functor(Functor, no, Args),
+    make_atomic_unification(RetArg,
+        rhs_functor(Functor, is_not_exist_constr, Args),
         Context, MainContext, SubContext, Purity, Goal, !QualInfo).
 
-maybe_parse_field_list(Term, VarSet, FieldNames) :-
-    % The value of ContextPieces does not matter, since we succeed
-    % only if it is not used.
-    %
-    % We could construct a dummy VarSet as well, if needed.
-    ContextPieces = [],
-    parse_field_list(Term, VarSet, ContextPieces, MaybeFieldNames),
-    MaybeFieldNames = ok1(FieldNames).
-
 parse_field_list(Term, VarSet, ContextPieces, MaybeFieldNames) :-
-    (
+    ( if
         Term = term.functor(term.atom("^"),
             [FieldNameTerm, OtherFieldNamesTerm], _)
-    ->
-        ( try_parse_sym_name_and_args(FieldNameTerm, FieldName, Args) ->
+    then
+        ( if try_parse_sym_name_and_args(FieldNameTerm, FieldName, Args) then
             parse_field_list(OtherFieldNamesTerm, VarSet, ContextPieces,
                 MaybeFieldNamesTail),
             (
@@ -303,15 +293,15 @@ parse_field_list(Term, VarSet, ContextPieces, MaybeFieldNames) :-
                 MaybeFieldNamesTail = ok1(FieldNamesTail),
                 MaybeFieldNames = ok1([FieldName - Args | FieldNamesTail])
             )
-        ;
+        else
             Spec = make_field_list_error(VarSet,
                 get_term_context(FieldNameTerm), Term, ContextPieces),
             MaybeFieldNames = error1([Spec])
         )
-    ;
-        ( try_parse_sym_name_and_args(Term, FieldName, Args) ->
+    else
+        ( if try_parse_sym_name_and_args(Term, FieldName, Args) then
             MaybeFieldNames = ok1([FieldName - Args])
-        ;
+        else
             Spec = make_field_list_error(VarSet, get_term_context(Term), Term,
                 ContextPieces),
             MaybeFieldNames = error1([Spec])
@@ -322,9 +312,9 @@ parse_field_list(Term, VarSet, ContextPieces, MaybeFieldNames) :-
     list(format_component)) = error_spec.
 
 make_field_list_error(VarSet, Context, Term, ContextPieces) = Spec :-
-    TermStr = mercury_term_to_string(VarSet, no, Term),
+    TermStr = mercury_term_to_string(VarSet, print_name_only, Term),
     Pieces = ContextPieces ++ [lower_case_next_if_not_first,
-        words("Error: expected field name at term"),
+        words("Error: expected field name, found"),
         quote(TermStr), suffix("."), nl],
     Spec = error_spec(severity_error, phase_term_to_parse_tree,
         [simple_msg(Context, [always(Pieces)])]).

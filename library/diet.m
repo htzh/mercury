@@ -1,11 +1,11 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ts=4 sw=4 et ft=mercury
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2014 The Mercury team.
 % Copyright (C) 2012-2014 YesLogic Pty. Ltd.
 % This file may only be copied under the terms of the GNU Library General
 % Public License - see the file COPYING.LIB in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: diet.m.
 % Author: wangp.
@@ -14,14 +14,14 @@
 % Discrete Interval Encoding Trees are a highly efficient set implementation
 % for fat sets, i.e. densely populated sets over a discrete linear order.
 %
-% M. Erwig: Diets for Fat Sets
-% Journal of Functional Programming, Vol. 8, No. 6, pp. 627-632
+% M. Erwig: Diets for Fat Sets,
+% Journal of Functional Programming, Vol. 8, No. 6, pp. 627-632.
 %
-% O. Friedmann, M. Lange: More on Balanced Diets
-% Journal of Functional Programming, volume 21, issue 02, pp. 135-157
+% O. Friedmann, M. Lange: More on Balanced Diets,
+% Journal of Functional Programming, volume 21, issue 02, pp. 135-157.
 %
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module diet.
 :- interface.
@@ -30,9 +30,24 @@
 :- import_module enum.
 :- import_module list.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- type diet(T). % <= enum(T).
+:- type diet(T). % <= diet_element(T).
+
+:- typeclass diet_element(T) where [
+    % less_than(X, Y) succeeds iff X < Y.
+    pred less_than(T::in, T::in) is semidet,
+
+    % successor(X) returns the successor of X, e.g. X + 1.
+    func successor(T) = T,
+
+    % predecessor(X) returns the predecessor of X, e.g. X - 1.
+    func predecessor(T) = T
+].
+
+:- instance diet_element(int).
+
+%---------------------------------------------------------------------------%
 
     % Return an empty set.
     %
@@ -50,86 +65,89 @@
     % `equal(SetA, SetB)' is true iff `SetA' and `SetB' contain the same
     % elements.
     %
-:- pred equal(diet(T)::in, diet(T)::in) is semidet <= enum(T).
+:- pred equal(diet(T)::in, diet(T)::in) is semidet <= diet_element(T).
 
     % `make_singleton_set(Elem)' returns a set containing just the single
     % element `Elem'.
     %
-:- func make_singleton_set(T) = diet(T) <= enum(T).
+:- func make_singleton_set(T) = diet(T) <= diet_element(T).
 
     % `make_interval_set(X, Y)' returns a set containing just the elements in
     % the interval [X, Y]. Throws an exception if Y < X.
     %
-:- func make_interval_set(T, T) = diet(T) <= enum(T).
+:- func make_interval_set(T, T) = diet(T) <= diet_element(T).
 
     % `is_singleton(Set, X)' is true iff `Set' is a singleton containing the
     % element `X'.
     %
-:- pred is_singleton(diet(T)::in, T::out) is semidet <= enum(T).
+:- pred is_singleton(diet(T)::in, T::out) is semidet <= diet_element(T).
 
     % `contains(Set, X)' is true iff `X' is a member of `Set'.
     %
-:- pred contains(diet(T)::in, T::in) is semidet <= enum(T).
+:- pred contains(diet(T)::in, T::in) is semidet <= diet_element(T).
 
     % `member(X, Set)' is true iff `X' is a member of `Set'.
     %
-:- pred member(T, diet(T)) <= enum(T).
+:- pred member(T, diet(T)) <= diet_element(T).
 :- mode member(in, in) is semidet.
 :- mode member(out, in) is nondet.
 
     % `subset(Subset, Set)' is true iff `Subset' is a subset of `Set'.
     %
-:- pred subset(diet(T)::in, diet(T)::in) is semidet.
+:- pred subset(diet(T)::in, diet(T)::in) is semidet <= diet_element(T).
 
     % `superset(Superset, Set)' is true iff `Superset' is a superset of `Set'.
     %
-:- pred superset(diet(T)::in, diet(T)::in) is semidet.
+:- pred superset(diet(T)::in, diet(T)::in) is semidet <= diet_element(T).
 
     % `insert(X, Set0, Set)' is true iff `Set' is the union of
     % `Set0' and the set containing only `X'.
     %
-:- func insert(diet(T), T) = diet(T) <= enum(T).
-:- pred insert(T::in, diet(T)::in, diet(T)::out) is det <= enum(T).
+:- func insert(diet(T), T) = diet(T) <= diet_element(T).
+:- pred insert(T::in, diet(T)::in, diet(T)::out) is det <= diet_element(T).
 
     % `insert_new(X, Set0, Set)' is true iff `Set0' does not contain
     % `X', and `Set' is the union of `Set0' and the set containing only `X'.
     %
-:- pred insert_new(T::in, diet(T)::in, diet(T)::out) is semidet <= enum(T).
+:- pred insert_new(T::in, diet(T)::in, diet(T)::out) is semidet
+    <= diet_element(T).
 
     % `insert_list(Xs, Set0, Set)' is true iff `Set' is the union of
     % `Set0' and the set containing only the members of `Xs'.
     %
-:- func insert_list(diet(T), list(T)) = diet(T) <= enum(T).
-:- pred insert_list(list(T)::in, diet(T)::in, diet(T)::out) is det <= enum(T).
+:- func insert_list(diet(T), list(T)) = diet(T) <= diet_element(T).
+:- pred insert_list(list(T)::in, diet(T)::in, diet(T)::out) is det
+    <= diet_element(T).
 
     % `insert_interval(X, Y, Set0, Set)' is true iff `Set' is the union of
     % `Set0' and the set containing only the elements of the interval [X, Y].
     % Throws an exception if Y < X.
     %
 :- pred insert_interval(T::in, T::in, diet(T)::in, diet(T)::out) is det
-    <= enum(T).
+    <= diet_element(T).
 
     % `delete(X, Set0, Set)' is true iff `Set' is the relative
     % complement of `Set0' and the set containing only `X', i.e.
     % if `Set' is the set which contains all the elements of `Set0'
     % except `X'.
     %
-:- func delete(diet(T), T) = diet(T) <= enum(T).
-:- pred delete(T::in, diet(T)::in, diet(T)::out) is det <= enum(T).
+:- func delete(diet(T), T) = diet(T) <= diet_element(T).
+:- pred delete(T::in, diet(T)::in, diet(T)::out) is det <= diet_element(T).
 
     % `delete_list(Set, X)' returns the difference of `Set' and the set
     % containing only the members of `X'. Same as
     % `difference(Set, list_to_set(X))', but may be more efficient.
     %
-:- func delete_list(diet(T), list(T)) = diet(T) <= enum(T).
-:- pred delete_list(list(T)::in, diet(T)::in, diet(T)::out) is det <= enum(T).
+:- func delete_list(diet(T), list(T)) = diet(T) <= diet_element(T).
+:- pred delete_list(list(T)::in, diet(T)::in, diet(T)::out) is det
+    <= diet_element(T).
 
     % `remove(X, Set0, Set)' is true iff `Set0' contains `X',
     % and `Set' is the relative complement of `Set0' and the set
     % containing only `X', i.e.  if `Set' is the set which contains
     % all the elements of `Set0' except `X'.
     %
-:- pred remove(T::in, diet(T)::in, diet(T)::out) is semidet <= enum(T).
+:- pred remove(T::in, diet(T)::in, diet(T)::out) is semidet <= diet_element(T).
 
     % `remove_list(X, Set0, Set)' returns in `Set' the difference of `Set0'
     % and the set containing all the elements of `X', failing if any element
@@ -137,13 +155,14 @@
     % difference(Set0, list_to_set(X), Set)', but may be more efficient.
     %
 :- pred remove_list(list(T)::in, diet(T)::in, diet(T)::out) is semidet
-    <= enum(T).
+    <= diet_element(T).
 
     % `remove_least(X, Set0, Set)' is true iff `X' is the least element in
     % `Set0', and `Set' is the set which contains all the elements of `Set0'
     % except `X'.
     %
-:- pred remove_least(T::out, diet(T)::in, diet(T)::out) is semidet <= enum(T).
+:- pred remove_least(T::out, diet(T)::in, diet(T)::out) is semidet
+    <= diet_element(T).
 
     % `split(X, Set, Lesser, IsPresent, Greater)' is true iff `Lesser' is the
     % set of elements in `Set' which are less than `X' and `Greater' is the set
@@ -151,50 +170,54 @@
     % `IsPresent' is `yes' if `Set' contains `X', and `no' otherwise.
     %
 :- pred split(T::in, diet(T)::in, diet(T)::out, bool::out, diet(T)::out) is det
-    <= enum(T).
+    <= diet_element(T).
 
     % `union(SetA, SetB, Set)' is true iff `Set' is the union of
     % `SetA' and `SetB'.
     %
-:- func union(diet(T), diet(T)) = diet(T).
-:- pred union(diet(T)::in, diet(T)::in, diet(T)::out) is det.
+:- func union(diet(T), diet(T)) = diet(T) <= diet_element(T).
+:- pred union(diet(T)::in, diet(T)::in, diet(T)::out) is det
+    <= diet_element(T).
 
     % `union_list(Sets, Set)' returns the union of all the sets in Sets.
     %
-:- func union_list(list(diet(T))) = diet(T).
-:- pred union_list(list(diet(T))::in, diet(T)::out) is det.
+:- func union_list(list(diet(T))) = diet(T) <= diet_element(T).
+:- pred union_list(list(diet(T))::in, diet(T)::out) is det <= diet_element(T).
 
     % `intersect(SetA, SetB, Set)' is true iff `Set' is the
     % intersection of `SetA' and `SetB'.
     %
-:- func intersect(diet(T), diet(T)) = diet(T).
-:- pred intersect(diet(T)::in, diet(T)::in, diet(T)::out) is det.
+:- func intersect(diet(T), diet(T)) = diet(T) <= diet_element(T).
+:- pred intersect(diet(T)::in, diet(T)::in, diet(T)::out) is det
+    <= diet_element(T).
 
     % `intersect_list(Sets, Set)' returns the intersection of all the sets
     % in Sets.
     %
-:- func intersect_list(list(diet(T))) = diet(T).
-:- pred intersect_list(list(diet(T))::in, diet(T)::out) is det.
+:- func intersect_list(list(diet(T))) = diet(T) <= diet_element(T).
+:- pred intersect_list(list(diet(T))::in, diet(T)::out) is det
+    <= diet_element(T).
 
     % `difference(SetA, SetB)' returns the set containing all the elements
     % of `SetA' except those that occur in `SetB'.
     %
-:- func difference(diet(T), diet(T)) = diet(T).
-:- pred difference(diet(T)::in, diet(T)::in, diet(T)::out) is det.
+:- func difference(diet(T), diet(T)) = diet(T) <= diet_element(T).
+:- pred difference(diet(T)::in, diet(T)::in, diet(T)::out) is det
+    <= diet_element(T).
 
     % divide(Pred, Set, InPart, OutPart):
     % InPart consists of those elements of Set for which Pred succeeds;
     % OutPart consists of those elements of Set for which Pred fails.
     %
 :- pred divide(pred(T)::in(pred(in) is semidet), diet(T)::in,
-    diet(T)::out, diet(T)::out) is det <= enum(T).
+    diet(T)::out, diet(T)::out) is det <= diet_element(T).
 
     % divide_by_set(DivideBySet, Set, InPart, OutPart):
     % InPart consists of those elements of Set which are also in DivideBySet;
     % OutPart consists of those elements of Set which are not in DivideBySet.
     %
 :- pred divide_by_set(diet(T)::in, diet(T)::in, diet(T)::out, diet(T)::out)
-    is det <= enum(T).
+    is det <= diet_element(T).
 
     % `count(Set)' returns the number of elements in Set.
     %
@@ -204,7 +227,7 @@
     % `Set' (in sorted order) and an accumulator (with the initial value of
     % `Start'), and returns the final value.
     %
-:- pred foldl_intervals(pred(T, T, A, A), diet(T), A, A) <= enum(T).
+:- pred foldl_intervals(pred(T, T, A, A), diet(T), A, A) <= diet_element(T).
 :- mode foldl_intervals(pred(in, in, in, out) is det, in, in, out) is det.
 :- mode foldl_intervals(pred(in, in, di, uo) is det, in, di, uo) is det.
 :- mode foldl_intervals(pred(in, in, in, out) is semidet, in, in, out)
@@ -214,7 +237,7 @@
     % `Set' (in reverse sorted order) and an accumulator (with the initial
     % value of `Start'), and returns the final value.
     %
-:- pred foldr_intervals(pred(T, T, A, A), diet(T), A, A) <= enum(T).
+:- pred foldr_intervals(pred(T, T, A, A), diet(T), A, A) <= diet_element(T).
 :- mode foldr_intervals(pred(in, in, in, out) is det, in, in, out) is det.
 :- mode foldr_intervals(pred(in, in, di, uo) is det, in, di, uo) is det.
 :- mode foldr_intervals(pred(in, in, in, out) is semidet, in, in, out)
@@ -224,9 +247,9 @@
     % (in sorted order) and an accumulator (with the initial value of `Start'),
     % and returns the final value.
     %
-:- func foldl(func(T, A) = A, diet(T), A) = A <= enum(T).
+:- func foldl(func(T, A) = A, diet(T), A) = A <= diet_element(T).
 
-:- pred foldl(pred(T, A, A), diet(T), A, A) <= enum(T).
+:- pred foldl(pred(T, A, A), diet(T), A, A) <= diet_element(T).
 :- mode foldl(pred(in, in, out) is det, in, in, out) is det.
 :- mode foldl(pred(in, mdi, muo) is det, in, mdi, muo) is det.
 :- mode foldl(pred(in, di, uo) is det, in, di, uo) is det.
@@ -234,7 +257,7 @@
 :- mode foldl(pred(in, mdi, muo) is semidet, in, mdi, muo) is semidet.
 :- mode foldl(pred(in, di, uo) is semidet, in, di, uo) is semidet.
 
-:- pred foldl2(pred(T, A, A, B, B), diet(T), A, A, B, B) <= enum(T).
+:- pred foldl2(pred(T, A, A, B, B), diet(T), A, A, B, B) <= diet_element(T).
 :- mode foldl2(pred(in, in, out, in, out) is det, in,
     in, out, in, out) is det.
 :- mode foldl2(pred(in, in, out, mdi, muo) is det, in,
@@ -249,7 +272,7 @@
     in, out, di, uo) is semidet.
 
 :- pred foldl3(pred(T, A, A, B, B, C, C), diet(T),
-    A, A, B, B, C, C) <= enum(T).
+    A, A, B, B, C, C) <= diet_element(T).
 :- mode foldl3(pred(in, in, out, in, out, in, out) is det, in,
     in, out, in, out, in, out) is det.
 :- mode foldl3(pred(in, in, out, in, out, mdi, muo) is det, in,
@@ -264,7 +287,7 @@
     in, out, in, out, di, uo) is semidet.
 
 :- pred foldl4(pred(T, A, A, B, B, C, C, D, D), diet(T),
-    A, A, B, B, C, C, D, D) <= enum(T).
+    A, A, B, B, C, C, D, D) <= diet_element(T).
 :- mode foldl4(pred(in, in, out, in, out, in, out, in, out) is det, in,
     in, out, in, out, in, out, in, out) is det.
 :- mode foldl4(pred(in, in, out, in, out, in, out, mdi, muo) is det, in,
@@ -279,7 +302,7 @@
     in, out, in, out, in, out, di, uo) is semidet.
 
 :- pred foldl5(pred(T, A, A, B, B, C, C, D, D, E, E), diet(T),
-    A, A, B, B, C, C, D, D, E, E) <= enum(T).
+    A, A, B, B, C, C, D, D, E, E) <= diet_element(T).
 :- mode foldl5(
     pred(in, in, out, in, out, in, out, in, out, in, out) is det,
     in, in, out, in, out, in, out, in, out, in, out) is det.
@@ -299,9 +322,9 @@
     pred(in, in, out, in, out, in, out, in, out, di, uo) is semidet,
     in, in, out, in, out, in, out, in, out, di, uo) is semidet.
 
-:- func foldr(func(T, A) = A, diet(T), A) = A <= enum(T).
+:- func foldr(func(T, A) = A, diet(T), A) = A <= diet_element(T).
 
-:- pred foldr(pred(T, A, A), diet(T), A, A) <= enum(T).
+:- pred foldr(pred(T, A, A), diet(T), A, A) <= diet_element(T).
 :- mode foldr(pred(in, in, out) is det, in, in, out) is det.
 :- mode foldr(pred(in, mdi, muo) is det, in, mdi, muo) is det.
 :- mode foldr(pred(in, di, uo) is det, in, di, uo) is det.
@@ -313,56 +336,58 @@
     % for all the elements of Set.
     %
 :- pred all_true(pred(T)::in(pred(in) is semidet), diet(T)::in) is semidet
-    <= enum(T).
+    <= diet_element(T).
 
     % `filter(Pred, Set) = TrueSet' returns the elements of Set for which
     % Pred succeeds.
     %
-:- func filter(pred(T), diet(T)) = diet(T) <= enum(T).
+:- func filter(pred(T), diet(T)) = diet(T) <= diet_element(T).
 :- mode filter(pred(in) is semidet, in) = out is det.
 
     % `filter(Pred, Set, TrueSet, FalseSet)' returns the elements of Set
     % for which Pred succeeds, and those for which it fails.
     %
-:- pred filter(pred(T), diet(T), diet(T), diet(T)) <= enum(T).
+:- pred filter(pred(T), diet(T), diet(T), diet(T)) <= diet_element(T).
 :- mode filter(pred(in) is semidet, in, out, out) is det.
 
     % `list_to_set(List)' returns a set containing only the members of `List'.
     %
-:- func list_to_set(list(T)) = diet(T) <= enum(T).
-:- pred list_to_set(list(T)::in, diet(T)::out) is det <= enum(T).
+:- func list_to_set(list(T)) = diet(T) <= diet_element(T).
+:- pred list_to_set(list(T)::in, diet(T)::out) is det <= diet_element(T).
 
-:- func from_list(list(T)) = diet(T) <= enum(T).
-:- pred from_list(list(T)::in, diet(T)::out) is det <= enum(T).
+:- func from_list(list(T)) = diet(T) <= diet_element(T).
+:- pred from_list(list(T)::in, diet(T)::out) is det <= diet_element(T).
 
     % `sorted_list_to_set(List)' returns a set containing only the members
     % of `List'. `List' must be sorted.
     %
-:- func sorted_list_to_set(list(T)) = diet(T) <= enum(T).
-:- pred sorted_list_to_set(list(T)::in, diet(T)::out) is det <= enum(T).
+:- func sorted_list_to_set(list(T)) = diet(T) <= diet_element(T).
+:- pred sorted_list_to_set(list(T)::in, diet(T)::out) is det
+    <= diet_element(T).
 
     % `to_sorted_list(Set)' returns a list containing all the members of `Set',
     % in sorted order.
     %
-:- func to_sorted_list(diet(T)) = list(T) <= enum(T).
-:- pred to_sorted_list(diet(T)::in, list(T)::out) is det <= enum(T).
+:- func to_sorted_list(diet(T)) = list(T) <= diet_element(T).
+:- pred to_sorted_list(diet(T)::in, list(T)::out) is det <= diet_element(T).
 
     % `to_sorted_interval_list(Set)' returns a list of intervals in `Set'
     % in sorted order, where each interval is represented by a tuple.
     % The intervals do not overlap.
     %
 :- pred to_sorted_interval_list(diet(T)::in, list({T, T})::out) is det
-    <= enum(T).
+    <= diet_element(T).
 
     % `from_interval_list(Intervals, Set)' returns a Set containing the
     % elements of all intervals [X, Y] in Intervals, where each interval is
     % represented by a tuple. Throws an exception if any interval has Y < X.
     % The intervals may overlap.
     %
-:- pred from_interval_list(list({T, T})::in, diet(T)::out) is det <= enum(T).
+:- pred from_interval_list(list({T, T})::in, diet(T)::out) is det
+    <= diet_element(T).
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
@@ -392,18 +417,17 @@
  *                                                         *
  ***********************************************************/
 
-:- import_module bool.
 :- import_module int.
 :- import_module maybe.
 :- import_module require.
 :- import_module string.
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- type diet(T)
     --->    empty
     ;       node(
-                interval    :: interval,
+                interval    :: interval(T),
                 node_height :: int,
                 left        :: diet(T),
                 right       :: diet(T)
@@ -413,30 +437,73 @@
     % verified with benchmarking. The change would affect the arguments of
     % take_min, etc.
     %
-:- type interval == {int, int}. % inclusive
+:- type interval(T) == {T, T}. % inclusive
 
 :- inst node
     --->    node(ground, ground, ground, ground).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-:- func pre(int) = int.
+:- instance diet_element(int) where [
+    less_than(X, Y) :- int.'<'(X, Y),
+    successor(X) = X + 1,
+    predecessor(X) = X - 1
+].
 
-pre(X) = X - 1.
+:- func safe_predecessor(T, T) = T <= diet_element(T).
 
-:- func succ(int) = int.
+safe_predecessor(Limit, X) =
+    ( if less_than(Limit, X) then predecessor(X) else X ).
 
-succ(X) = X + 1.
+:- pred T < T <= diet_element(T).
+:- mode in < in is semidet.
 
-:- func safe_pre(int, int) = int.
+X < Y :-
+    less_than(X, Y).
 
-safe_pre(Limit, X) = ( if Limit < X then pre(X) else X ).
+:- pred T > T <= diet_element(T).
+:- mode in > in is semidet.
+
+X > Y :-
+    less_than(Y, X).
+
+:- pred T >= T <= diet_element(T).
+:- mode in >= in is semidet.
+
+X >= Y :-
+    not less_than(X, Y).
+
+:- pred T =< T <= diet_element(T).
+:- mode in =< in is semidet.
+
+X =< Y :-
+    not less_than(Y, X).
+
+:- func min_elem(T, T) = T <= diet_element(T).
+
+min_elem(X, Y) = ( if X < Y then X else Y ).
+
+:- func max_elem(T, T) = T <= diet_element(T).
+
+max_elem(X, Y) = ( if X > Y then X else Y ).
+
+:- pred int_gt(int::in, int::in) is semidet.
+
+int_gt(X, Y) :-
+    int.'>'(X, Y).
+
+:- pred int_ge(int::in, int::in) is semidet.
+
+int_ge(X, Y) :-
+    int.'>='(X, Y).
+
+%---------------------------------------------------------------------------%
 
 :- func bal_const = int.
 
 bal_const = 1.
 
-:- func singleton(interval) = diet(T).
+:- func singleton(interval(T)) = diet(T).
 
 singleton(Z) = node(Z, 1, empty, empty).
 
@@ -449,24 +516,24 @@ height(node(_, H, _, _)) = H.
 
 height_join(L, R) = 1 + max(height(L), height(R)).
 
-:- func create(interval, diet(T), diet(T)) = diet(T).
+:- func create(interval(T), diet(T), diet(T)) = diet(T).
 
 create(X, L, R) = node(X, height_join(L, R), L, R).
 
-:- func balance(interval, diet(T), diet(T)) = diet(T).
+:- func balance(interval(T), diet(T), diet(T)) = diet(T).
 
 balance(X, L, R) = T :-
     HL = height(L),
     HR = height(R),
-    ( HL > HR + bal_const ->
+    ( if int_gt(HL, HR + bal_const) then
         (
             L = empty,
             unexpected($module, $pred, "L empty")
         ;
             L = node(LVX, _, LL, LR),
-            ( height(LL) >= height(LR) ->
+            ( if int_ge(height(LL), height(LR)) then
                 T = create(LVX, LL, create(X, LR, R))
-            ;
+            else
                 (
                     LR = empty,
                     unexpected($module, $pred, "LR empty")
@@ -476,15 +543,15 @@ balance(X, L, R) = T :-
                 )
             )
         )
-    ; HR > HL + bal_const ->
+    else if int_gt(HR, HL + bal_const) then
         (
             R = empty,
             unexpected($module, $pred, "R empty")
         ;
             R = node(RVX, _, RL, RR),
-            ( height(RR) >= height(RL) ->
+            ( if int_ge(height(RR), height(RL)) then
                 T = create(RVX, create(X, L, RL), RR)
-            ;
+            else
                 (
                     RL = empty,
                     unexpected($module, $pred, "RL empty")
@@ -494,12 +561,12 @@ balance(X, L, R) = T :-
                 )
             )
         )
-    ;
-        HT = (HL >= HR -> HL + 1 ; HR + 1),
+    else
+        HT = 1 + max(HL, HR),
         T = node(X, HT, L, R)
     ).
 
-:- func join(interval, diet(T), diet(T)) = diet(T).
+:- func join(interval(T), diet(T), diet(T)) = diet(T) <= diet_element(T).
 
 join(V, L, R) = T :-
     (
@@ -512,16 +579,16 @@ join(V, L, R) = T :-
     ;
         L = node(LX, LH, LL, LR),
         R = node(RX, RH, RL, RR),
-        ( LH > RH + bal_const ->
+        ( if int_gt(LH, RH + bal_const) then
             T = balance(LX, LL, join(V, LR, R))
-        ; RH > LH + bal_const ->
+        else if int_gt(RH, LH + bal_const) then
             T = balance(RX, join(V, L, RL), RR)
-        ;
+        else
             T = create(V, L, R)
         )
     ).
 
-:- func myadd(bool, interval, diet(T)) = diet(T).
+:- func myadd(bool, interval(T), diet(T)) = diet(T).
 
 myadd(IsLeft, X, T0) = T :-
     (
@@ -538,7 +605,8 @@ myadd(IsLeft, X, T0) = T :-
         )
     ).
 
-:- pred take_min(diet(T)::in(node), interval::out, diet(T)::out) is det.
+:- pred take_min(diet(T)::in(node), interval(T)::out, diet(T)::out) is det
+    <= diet_element(T).
 
 take_min(T0, X, T) :-
     (
@@ -549,7 +617,8 @@ take_min(T0, X, T) :-
         T = join(X0, L1, R)
     ).
 
-:- pred take_max(diet(T)::in(node), interval::out, diet(T)::out) is det.
+:- pred take_max(diet(T)::in(node), interval(T)::out, diet(T)::out) is det
+    <= diet_element(T).
 
 take_max(T0, X, T) :-
     (
@@ -560,10 +629,10 @@ take_max(T0, X, T) :-
         T = join(X0, L, R1)
     ).
 
-:- func reroot(diet(T), diet(T)) = diet(T).
+:- func reroot(diet(T), diet(T)) = diet(T) <= diet_element(T).
 
 reroot(L, R) = T :-
-    ( height(L) > height(R) ->
+    ( if int_gt(height(L), height(R)) then
         (
             L = empty,
             unexpected($module, $pred, "L empty")
@@ -572,16 +641,19 @@ reroot(L, R) = T :-
             take_max(L, I, L1),
             T = join(I, L1, R)
         )
-    ;
-        R = empty,
-        T = empty
-    ;
-        R = node(_, _, _, _),
-        take_min(R, I, R1),
-        T = join(I, L, R1)
+    else
+        (
+            R = empty,
+            T = empty
+        ;
+            R = node(_, _, _, _),
+            take_min(R, I, R1),
+            T = join(I, L, R1)
+        )
     ).
 
-:- pred take_min_iter(diet(T)::in(node), interval::out, diet(T)::out) is det.
+:- pred take_min_iter(diet(T)::in(node), interval(T)::out, diet(T)::out)
+    is det <= diet_element(T).
 
 take_min_iter(T0, X, T) :-
     (
@@ -593,7 +665,8 @@ take_min_iter(T0, X, T) :-
         take_min_iter(N1, X, T)
     ).
 
-:- pred take_min_iter2(diet(T)::in, maybe(interval)::out, diet(T)::out) is det.
+:- pred take_min_iter2(diet(T)::in, maybe(interval(T))::out, diet(T)::out)
+    is det <= diet_element(T).
 
 take_min_iter2(T0, MaybeX, T) :-
     (
@@ -606,7 +679,7 @@ take_min_iter2(T0, MaybeX, T) :-
         MaybeX = yes(X)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pred unexpected_interval(string::in, T::in, T::in) is erroneous.
 
@@ -614,8 +687,8 @@ unexpected_interval(PredName, X, Y) :-
     unexpected($module, PredName,
         "bad interval [" ++ string(X) ++ ", " ++ string(Y) ++ "]").
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 init = empty.
 
@@ -627,7 +700,7 @@ is_empty(empty).
 
 is_non_empty(node(_, _, _, _)).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 equal(T1, T2) :-
     (
@@ -641,43 +714,33 @@ equal(T1, T2) :-
         equal(R1, R2)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-make_singleton_set(X) = T :-
-    I = to_int(X),
-    T = singleton({I, I}).
+make_singleton_set(X) = singleton({X, X}).
 
 make_interval_set(X, Y) = T :-
-    P = to_int(X),
-    Q = to_int(Y),
-    ( P =< Q ->
-        T = singleton({P, Q})
-    ;
+    ( if X =< Y then
+        T = singleton({X, Y})
+    else
         unexpected_interval($pred, X, Y)
     ).
 
-is_singleton(Set, Elem) :-
-    Set = node({X, X}, _, empty, empty),
-    Elem = det_from_int(X).
+is_singleton(Set, X) :-
+    Set = node({X, X}, _, empty, empty).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 contains(T, Z) :-
-    contains_2(T, to_int(Z)).
-
-:- pred contains_2(diet(T)::in, int::in) is semidet <= enum(T).
-
-contains_2(T, Z) :-
     T = node({X, Y}, _, L, R),
-    ( Z < X ->
-        contains_2(L, Z)
-    ; Z > Y ->
-        contains_2(R, Z)
-    ;
+    ( if Z < X then
+        contains(L, Z)
+    else if Z > Y then
+        contains(R, Z)
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- pragma promise_equivalent_clauses(member/2).
 
@@ -688,13 +751,27 @@ member(Elem::out, Set::in) :-
     (
         member(Elem, Left)
     ;
-        int.nondet_int_in_range(to_int(X), to_int(Y), Int),
-        Elem = from_int(Int)
+        member_in_range(X, Y, Elem)
     ;
         member(Elem, Right)
     ).
 
-%-----------------------------------------------------------------------------%
+:- pred member_in_range(T::in, T::in, T::out) is multi <= diet_element(T).
+
+member_in_range(Lo, Hi, Elem) :-
+    % Leave a choice point only if there is at least one solution
+    % to find on backtracking.
+    ( if Lo < Hi then
+        (
+            Elem = Lo
+        ;
+            member_in_range(successor(Lo), Hi, Elem)
+        )
+    else
+        Elem = Lo
+    ).
+
+%---------------------------------------------------------------------------%
 
 subset(T1, T2) :-
     (
@@ -707,13 +784,13 @@ subset(T1, T2) :-
         subset_2(XY1, R1, XY2, R2, yes)
     ).
 
-:- pred subset_2(interval::in, diet(T)::in, interval::in, diet(T)::in,
-    bool::out) is det.
+:- pred subset_2(interval(T)::in, diet(T)::in, interval(T)::in, diet(T)::in,
+    bool::out) is det <= diet_element(T).
 
 subset_2({X1, Y1}, R1, {X2, Y2}, R2, IsSubset) :-
-    ( X1 < X2 ->
+    ( if X1 < X2 then
         IsSubset = no
-    ; X1 > Y2 ->
+    else if X1 > Y2 then
         (
             R2 = empty,
             IsSubset = no
@@ -722,7 +799,7 @@ subset_2({X1, Y1}, R1, {X2, Y2}, R2, IsSubset) :-
             take_min_iter(R2, Min2, MinR2),
             subset_2({X1, Y1}, R1, Min2, MinR2, IsSubset)
         )
-    ;
+    else
         compare(Upper, Y1, Y2),
         (
             Upper = (<),
@@ -756,20 +833,20 @@ subset_2({X1, Y1}, R1, {X2, Y2}, R2, IsSubset) :-
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 superset(Superset, Set) :-
     subset(Set, Superset).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 insert(Set0, Elem) = Set :-
     insert(Elem, Set0, Set).
 
 insert(Elem, Set0, Set) :-
-    Set = add(to_int(Elem), Set0).
+    Set = add(Elem, Set0).
 
-:- func add(int, diet(T)) = diet(T).
+:- func add(T, diet(T)) = diet(T) <= diet_element(T).
 
 add(P, T0) = T :-
     (
@@ -777,97 +854,92 @@ add(P, T0) = T :-
         T = node({P, P}, 1, empty, empty)
     ;
         T0 = node({X, Y}, H, Left, Right),
-        ( P >= X ->
-            ( P =< Y ->
+        ( if P >= X then
+            ( if P =< Y then
                 T = T0
-            ; P > succ(Y) ->
+            else if P > successor(Y) then
                 T = join({X, Y}, Left, add(P, Right))
-            ;
+            else
                 (
                     Right = empty,
                     T = node({X, P}, H, Left, Right)
                 ;
                     Right = node(_, _, _, _),
                     take_min(Right, {U, V}, R),
-                    ( pre(U) = P ->
+                    ( if predecessor(U) = P then
                         T = join({X, V}, Left, R)
-                    ;
+                    else
                         T = node({X, P}, H, Left, Right)
                     )
                 )
             )
-        ; P < pre(X) ->
+        else if P < predecessor(X) then
             T = join({X, Y}, add(P, Left), Right)
-        ;
+        else
             (
                 Left = empty,
                 T = node({P, Y}, H, Left, Right)
             ;
                 Left = node(_, _, _, _),
                 take_max(Left, {U, V}, L),
-                ( succ(V) = P ->
+                ( if successor(V) = P then
                     T = join({U, Y}, L, Right)
-                ;
+                else
                     T = node({P, Y}, H, Left, Right)
                 )
             )
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-insert_new(Elem, Set0, Set) :-
-    add_new(to_int(Elem), Set0, Set).
-
-:- pred add_new(int::in, diet(T)::in, diet(T)::out) is semidet.
-
-add_new(P, T0, T) :-
+insert_new(P, T0, T) :-
     (
         T0 = empty,
         T = node({P, P}, 1, empty, empty)
     ;
         T0 = node({X, Y}, H, Left, Right),
-        ( P >= X ->
-            ( P =< Y ->
+        ( if P >= X then
+            ( if P =< Y then
                 % Already exists.
                 fail
-            ; P > succ(Y) ->
-                add_new(P, Right, R),
+            else if P > successor(Y) then
+                insert_new(P, Right, R),
                 T = join({X, Y}, Left, R)
-            ;
+            else
                 (
                     Right = empty,
                     T = node({X, P}, H, Left, Right)
                 ;
                     Right = node(_, _, _, _),
                     take_min(Right, {U, V}, R),
-                    ( pre(U) = P ->
+                    ( if predecessor(U) = P then
                         T = join({X, V}, Left, R)
-                    ;
+                    else
                         T = node({X, P}, H, Left, Right)
                     )
                 )
             )
-        ; P < pre(X) ->
-            add_new(P, Left, L),
+        else if P < predecessor(X) then
+            insert_new(P, Left, L),
             T = join({X, Y}, L, Right)
-        ;
+        else
             (
                 Left = empty,
                 T = node({P, Y}, H, Left, Right)
             ;
                 Left = node(_, _, _, _),
                 take_max(Left, {U, V}, L),
-                ( succ(V) = P ->
+                ( if successor(V) = P then
                     T = join({U, V}, L, Right)
-                ;
+                else
                     T = node({P, Y}, H, Left, Right)
                 )
             )
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 insert_list(Set0, Elems) = Set :-
     insert_list(Elems, Set0, Set).
@@ -875,24 +947,22 @@ insert_list(Set0, Elems) = Set :-
 insert_list(Elems, Set0, Set) :-
     foldl(insert, Elems, Set0, Set).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 insert_interval(X, Y, Set0, Set) :-
-    P = to_int(X),
-    Q = to_int(Y),
-    ( P =< Q ->
-        Set = do_insert({P, Q}, Set0)
-    ;
+    ( if X =< Y then
+        Set = do_insert({X, Y}, Set0)
+    else
         unexpected_interval($pred, X, Y)
     ).
 
 :- pred insert_interval({T, T}::in, diet(T)::in, diet(T)::out) is det
-    <= enum(T).
+    <= diet_element(T).
 
 insert_interval({X, Y}, Set0, Set) :-
     insert_interval(X, Y, Set0, Set).
 
-:- func do_insert(interval, diet(T)) = diet(T).
+:- func do_insert(interval(T), diet(T)) = diet(T) <= diet_element(T).
 
 do_insert(PQ, T0) = T :-
     PQ = {P, Q},
@@ -901,28 +971,29 @@ do_insert(PQ, T0) = T :-
         T = singleton(PQ)
     ;
         T0 = node({X0, Y0}, _, Left0, Right0),
-        ( Q < pre(X0) ->
+        ( if Q < predecessor(X0) then
             T = join({X0, Y0}, do_insert(PQ, Left0), Right0)
-        ; P > succ(Y0) ->
+        else if P > successor(Y0) then
             T = join({X0, Y0}, Left0, do_insert(PQ, Right0))
-        ;
-            ( P >= X0 ->
+        else
+            ( if P >= X0 then
                 X1 = X0,
                 Left1 = Left0
-            ;
+            else
                 find_del_left(P, Left0, X1, Left1)
             ),
-            ( Q =< Y0 ->
+            ( if Q =< Y0 then
                 Y1 = Y0,
                 Right1 = Right0
-            ;
+            else
                 find_del_right(Q, Right0, Y1, Right1)
             ),
             T = join({X1, Y1}, Left1, Right1)
         )
     ).
 
-:- pred find_del_left(int::in, diet(T)::in, int::out, diet(T)::out) is det.
+:- pred find_del_left(T::in, diet(T)::in, T::out, diet(T)::out) is det
+    <= diet_element(T).
 
 find_del_left(P0, T0, P, T) :-
     (
@@ -931,16 +1002,17 @@ find_del_left(P0, T0, P, T) :-
         T = empty
     ;
         T0 = node({X, Y}, _, Left, Right0),
-        ( P0 > succ(Y) ->
+        ( if P0 > successor(Y) then
             find_del_left(P0, Right0, P, Right1),
             T = join({X, Y}, Left, Right1)
-        ;
+        else
             P = X,
             T = Left
         )
     ).
 
-:- pred find_del_right(int::in, diet(T)::in, int::out, diet(T)::out) is det.
+:- pred find_del_right(T::in, diet(T)::in, T::out, diet(T)::out) is det
+    <= diet_element(T).
 
 find_del_right(P0, T0, P, T) :-
     (
@@ -949,28 +1021,28 @@ find_del_right(P0, T0, P, T) :-
         T = empty
     ;
         T0 = node({X, Y}, _, Left0, Right),
-        ( P0 < pre(X) ->
+        ( if P0 < predecessor(X) then
             find_del_right(P0, Left0, P, Left1),
             T = join({X, Y}, Left1, Right)
-        ;
+        else
             P = Y,
             T = Right
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 delete(Set0, Elem) = Set :-
     delete(Elem, Set0, Set).
 
 delete(Elem, Set0, Set) :-
-    ( remove(Elem, Set0, Set1) ->
+    ( if remove(Elem, Set0, Set1) then
         Set = Set1
-    ;
+    else
         Set = Set0
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 delete_list(Set0, List) = Set :-
     delete_list(List, Set0, Set).
@@ -978,21 +1050,16 @@ delete_list(Set0, List) = Set :-
 delete_list(List, Set0, Set) :-
     difference(Set0, list_to_set(List), Set).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-remove(Elem, Set0, Set) :-
-    remove_2(to_int(Elem), Set0, Set).
-
-:- pred remove_2(int::in, diet(T)::in, diet(T)::out) is semidet.
-
-remove_2(_Z, empty, _T) :-
+remove(_Z, empty, _T) :-
     fail.
-remove_2(Z, T0, T) :-
+remove(Z, T0, T) :-
     T0 = node({X, Y}, H, Left, Right),
     compare(CZX, Z, X),
     (
         CZX = (<),
-        remove_2(Z, Left, L),
+        remove(Z, Left, L),
         T = join({X, Y}, L, Right)
     ;
         ( CZX = (=)
@@ -1006,56 +1073,51 @@ remove_2(Z, T0, T) :-
                 T = reroot(Left, Right)
             ;
                 CZX = (>),
-                T = node({X, pre(Y)}, H, Left, Right)
+                T = node({X, predecessor(Y)}, H, Left, Right)
             )
         ;
             CZY = (<),
             (
                 CZX = (=),
-                T = node({succ(X), Y}, H, Left, Right)
+                T = node({successor(X), Y}, H, Left, Right)
             ;
                 CZX = (>),
-                T = do_insert({succ(Z), Y}, node({X, pre(Z)}, H, Left, Right))
+                T = do_insert({successor(Z), Y},
+                        node({X, predecessor(Z)}, H, Left, Right))
             )
         ;
             CZY = (>),
-            remove_2(Z, Right, R),
+            remove(Z, Right, R),
             T = join({X, Y}, Left, R)
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 remove_list(X, Set0, Set) :-
     list_to_set(X, SetX),
     subset(SetX, Set0),
     difference(Set0, SetX, Set).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-remove_least(det_from_int(X), Set0, Set) :-
+remove_least(X, Set0, Set) :-
     (
         Set0 = empty,
         fail
     ;
         Set0 = node(_, _, _, _),
         take_min(Set0, {X, Y}, Stream),
-        ( X = Y ->
+        ( if X = Y then
             Set = Stream
-        ;
-            Set = do_insert({succ(X), Y}, Stream)
+        else
+            Set = do_insert({successor(X), Y}, Stream)
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-split(Elem, Set, Lesser, IsPresent, Greater) :-
-    split_2(to_int(Elem), Set, Lesser, IsPresent, Greater).
-
-:- pred split_2(int::in, diet(T)::in, diet(T)::out, bool::out, diet(T)::out)
-    is det.
-
-split_2(X, Set, Lesser, IsPresent, Greater) :-
+split(X, Set, Lesser, IsPresent, Greater) :-
     (
         Set = empty,
         IsPresent = no,
@@ -1063,35 +1125,36 @@ split_2(X, Set, Lesser, IsPresent, Greater) :-
         Greater = empty
     ;
         Set = node({A, B}, _, L, R),
-        ( X < A ->
-            split_2(X, L, Lesser, IsPresent, RL),
+        ( if X < A then
+            split(X, L, Lesser, IsPresent, RL),
             Greater = join({A, B}, RL, R)
-        ; B < X ->
-			split_2(X, R, LR, IsPresent, Greater),
+        else if B < X then
+            split(X, R, LR, IsPresent, Greater),
             Lesser = join({A, B}, L, LR)
-        ;
+        else
             IsPresent = yes,
-            ( X = A ->
+            ( if X = A then
                 Lesser = L
-            ;
-                Lesser = do_insert({A, pre(X)}, L)
+            else
+                Lesser = do_insert({A, predecessor(X)}, L)
             ),
-            ( X = B ->
+            ( if X = B then
                 Greater = R
-            ;
-                Greater = do_insert({succ(X), B}, R)
+            else
+                Greater = do_insert({successor(X), B}, R)
             )
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
-union(DietA, DietB, union(DietA, DietB)).
+union(DietA, DietB) = DietAB :-
+    union(DietA, DietB, DietAB).
 
-union(Input, Stream0) = Result :-
-    ( height(Stream0) > height(Input) ->
+union(Input, Stream0, Result) :-
+    ( if int_gt(height(Stream0), height(Input)) then
         Result = union(Stream0, Input)
-    ;
+    else
         take_min_iter2(Stream0, Head1, Stream1),
         union_2(Input, no, Head1, Stream1, Left2, Head2, Stream2),
         (
@@ -1103,8 +1166,9 @@ union(Input, Stream0) = Result :-
         )
     ).
 
-:- pred union_2(diet(T)::in, maybe(int)::in, maybe({int, int})::in,
-    diet(T)::in, diet(T)::out, maybe({int, int})::out, diet(T)::out) is det.
+:- pred union_2(diet(T)::in, maybe(T)::in, maybe({T, T})::in,
+    diet(T)::in, diet(T)::out, maybe({T, T})::out, diet(T)::out) is det
+    <= diet_element(T).
 
 union_2(Input, Limit, Head0, Stream0, Left, Head, Stream) :-
     (
@@ -1121,10 +1185,10 @@ union_2(Input, Limit, Head0, Stream0, Left, Head, Stream) :-
             Stream = Stream0
         ;
             Input = node({A, B}, _, Left0, Right0),
-            ( X < A ->
-                union_2(Left0, yes(pre(A)), Head0, Stream0,
+            ( if X < A then
+                union_2(Left0, yes(predecessor(A)), Head0, Stream0,
                     Left1, Head1, Stream1)
-            ;
+            else
                 Left1 = Left0,
                 Head1 = Head0,
                 Stream1 = Stream0
@@ -1134,9 +1198,9 @@ union_2(Input, Limit, Head0, Stream0, Left, Head, Stream) :-
         )
     ).
 
-:- pred union_helper(diet(T)::in, {int, int}::in, diet(T)::in,
-    maybe(int)::in, maybe({int, int})::in, diet(T)::in,
-    diet(T)::out, maybe({int, int})::out, diet(T)::out) is det.
+:- pred union_helper(diet(T)::in, {T, T}::in, diet(T)::in,
+    maybe(T)::in, maybe({T, T})::in, diet(T)::in,
+    diet(T)::out, maybe({T, T})::out, diet(T)::out) is det <= diet_element(T).
 
 union_helper(Left0, {A, B}, Right0, Limit, Head0, Stream0,
         Left, Head, Stream) :-
@@ -1147,37 +1211,38 @@ union_helper(Left0, {A, B}, Right0, Limit, Head0, Stream0,
         Stream = empty
     ;
         Head0 = yes({X, Y}),
-        (
+        ( if
             Y < A,
-            Y < pre(A)
-        ->
+            Y < predecessor(A)
+        then
             Left1 = do_insert({X, Y}, Left0),
             take_min_iter2(Stream0, Head1, Stream1),
             union_helper(Left1, {A, B}, Right0, Limit, Head1, Stream1,
                 Left, Head, Stream)
-        ;
+        else if
             X > B,
-            X > succ(B)
-        ->
+            X > successor(B)
+        then
             union_2(Right0, Limit, Head0, Stream0,
                 Right1, Head1, Stream1),
             Left = join({A, B}, Left0, Right1),
             Head = Head1,
             Stream = Stream1
-        ;
+        else if
             B >= Y
-        ->
+        then
             take_min_iter2(Stream0, Head1, Stream1),
-            union_helper(Left0, {min(A, X), B}, Right0, Limit, Head1, Stream1,
-                Left, Head, Stream)
-        ;
-            greater_or_equal(Y, Limit)
-        ->
+            union_helper(Left0, {min_elem(A, X), B}, Right0, Limit, Head1,
+                Stream1, Left, Head, Stream)
+        else if
+            Limit = yes(LimitValue),
+            Y >= LimitValue
+        then
             Left = Left0,
-            Head = yes({min(A, X), Y}),
+            Head = yes({min_elem(A, X), Y}),
             Stream = Stream0
-        ;
-            union_2(Right0, Limit, yes({min(A, X), Y}), Stream0,
+        else
+            union_2(Right0, Limit, yes({min_elem(A, X), Y}), Stream0,
                 Right1, Head1, Stream1),
             Left = reroot(Left0, Right1),
             Head = Head1,
@@ -1185,12 +1250,7 @@ union_helper(Left0, {A, B}, Right0, Limit, Head0, Stream0,
         )
     ).
 
-:- pred greater_or_equal(int::in, maybe(int)::in) is semidet.
-
-greater_or_equal(Z, yes(U)) :-
-    Z >= U.
-
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 union_list(Sets) = Set :-
     union_list(Sets, Set).
@@ -1204,28 +1264,30 @@ union_list(Sets, Set) :-
         foldl(union, SetBs, SetA, Set)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 intersect(SetA, SetB) = inter(SetA, SetB).
 
 intersect(SetA, SetB, inter(SetA, SetB)).
 
-:- func inter(diet(T), diet(T)) = diet(T).
+:- func inter(diet(T), diet(T)) = diet(T) <= diet_element(T).
 
 inter(Input, Stream0) = Result :-
-    ( height(Stream0) > height(Input) ->
+    ( if int_gt(height(Stream0), height(Input)) then
         Result = inter(Stream0, Input)
-    ;
-        Stream0 = empty,
-        Result = empty
-    ;
-        Stream0 = node(_, _, _, _),
-        take_min_iter(Stream0, Head, Stream),
-        inter_2(Input, yes(Head), Stream, Result, _, _)
+    else
+        (
+            Stream0 = empty,
+            Result = empty
+        ;
+            Stream0 = node(_, _, _, _),
+            take_min_iter(Stream0, Head, Stream),
+            inter_2(Input, yes(Head), Stream, Result, _, _)
+        )
     ).
 
-:- pred inter_2(diet(T)::in, maybe({int, int})::in, diet(T)::in,
-    diet(T)::out, maybe({int, int})::out, diet(T)::out) is det.
+:- pred inter_2(diet(T)::in, maybe({T, T})::in, diet(T)::in,
+    diet(T)::out, maybe({T, T})::out, diet(T)::out) is det <= diet_element(T).
 
 inter_2(Input, Head0, Stream0, Result, Head, Stream) :-
     (
@@ -1242,9 +1304,9 @@ inter_2(Input, Head0, Stream0, Result, Head, Stream) :-
             Stream = Stream0
         ;
             Input = node({A, B}, _, Left0, Right0),
-            ( X < A ->
+            ( if X < A then
                 inter_2(Left0, Head0, Stream0, Left1, Head1, Stream1)
-            ;
+            else
                 Left1 = empty,
                 Head1 = Head0,
                 Stream1 = Stream0
@@ -1254,9 +1316,9 @@ inter_2(Input, Head0, Stream0, Result, Head, Stream) :-
         )
     ).
 
-:- pred inter_help({int, int}::in, diet(T)::in,
-    diet(T)::in, maybe({int, int})::in, diet(T)::in,
-    diet(T)::out, maybe({int, int})::out, diet(T)::out) is det.
+:- pred inter_help({T, T}::in, diet(T)::in,
+    diet(T)::in, maybe({T, T})::in, diet(T)::in,
+    diet(T)::out, maybe({T, T})::out, diet(T)::out) is det <= diet_element(T).
 
 inter_help({A, B}, Right0, Left0, Head0, Stream0,
         Result, Head, Stream) :-
@@ -1267,7 +1329,7 @@ inter_help({A, B}, Right0, Left0, Head0, Stream0,
         Stream = empty
     ;
         Head0 = yes({X, Y}),
-        ( Y < A ->
+        ( if Y < A then
             (
                 Stream0 = empty,
                 Result = Left0,
@@ -1279,24 +1341,24 @@ inter_help({A, B}, Right0, Left0, Head0, Stream0,
                 inter_help({A, B}, Right0, Left0, yes(Head1), Stream1,
                     Result, Head, Stream)
             )
-        ; B < X ->
+        else if B < X then
             inter_2(Right0, Head0, Stream0, Right1, Head1, Stream1),
             Result = reroot(Left0, Right1),
             Head = Head1,
             Stream = Stream1
-        ; Y >= safe_pre(Y, B) ->
+        else if Y >= safe_predecessor(Y, B) then
             inter_2(Right0, Head0, Stream0, Right1, Head1, Stream1),
-            Result = join({max(X, A), min(Y, B)}, Left0, Right1),
+            Result = join({max_elem(X, A), min_elem(Y, B)}, Left0, Right1),
             Head = Head1,
             Stream = Stream1
-        ;
-            Left1 = do_insert({max(X, A), Y}, Left0),
-            inter_help({succ(Y), B}, Right0, Left1, Head0, Stream0,
+        else
+            Left1 = do_insert({max_elem(X, A), Y}, Left0),
+            inter_help({successor(Y), B}, Right0, Left1, Head0, Stream0,
                 Result, Head, Stream)
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 intersect_list(Sets) = Set :-
     intersect_list(Sets, Set).
@@ -1305,7 +1367,7 @@ intersect_list([], init).
 intersect_list([Set0 | Sets], Set) :-
     foldl(intersect, Sets, Set0, Set).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 difference(SetA, SetB) = Set :-
     difference(SetA, SetB, Set).
@@ -1325,8 +1387,9 @@ difference(SetA, SetB, Set) :-
         diff(SetA, yes(Head), Stream, Set, _RemHead, _RemStream)
     ).
 
-:- pred diff(diet(T)::in, maybe(interval)::in, diet(T)::in,
-    diet(T)::out, maybe(interval)::out, diet(T)::out) is det.
+:- pred diff(diet(T)::in, maybe(interval(T))::in, diet(T)::in,
+    diet(T)::out, maybe(interval(T))::out, diet(T)::out) is det
+    <= diet_element(T).
 
 diff(Input, Head0, Stream0, Output, Head, Stream) :-
     (
@@ -1343,9 +1406,9 @@ diff(Input, Head0, Stream0, Output, Head, Stream) :-
     ;
         Head0 = yes({X, _Y}),
         Input = node({A, B}, _, Left0, Right0),
-        ( X < A ->
+        ( if X < A then
             diff(Left0, Head0, Stream0, Left1, Head1, Stream1)
-        ;
+        else
             Left1 = Left0,
             Head1 = Head0,
             Stream1 = Stream0
@@ -1354,9 +1417,9 @@ diff(Input, Head0, Stream0, Output, Head, Stream) :-
             Output, Head, Stream)
     ).
 
-:- pred diff_helper(interval::in, diet(T)::in, diet(T)::in,
-    maybe(interval)::in, diet(T)::in, diet(T)::out, maybe(interval)::out,
-    diet(T)::out) is det.
+:- pred diff_helper(interval(T)::in, diet(T)::in, diet(T)::in,
+    maybe(interval(T))::in, diet(T)::in, diet(T)::out, maybe(interval(T))::out,
+    diet(T)::out) is det <= diet_element(T).
 
 diff_helper({A, B}, Right0, Left0, Head0, Stream0,
         Output, Head, Stream) :-
@@ -1367,55 +1430,56 @@ diff_helper({A, B}, Right0, Left0, Head0, Stream0,
         Stream = empty
     ;
         Head0 = yes({X, Y}),
-        ( Y < A ->
+        ( if Y < A then
             take_min_iter2(Stream0, Head1, Stream1),
             diff_helper({A, B}, Right0, Left0, Head1, Stream1,
                 Output, Head, Stream)
-        ; B < X ->
+        else if B < X then
             diff(Right0, Head0, Stream0, Right1, Head, Stream),
             Output = join({A, B}, Left0, Right1)
-        ; A < X ->
-            Left1 = do_insert({A, pre(X)}, Left0),
+        else if A < X then
+            Left1 = do_insert({A, predecessor(X)}, Left0),
             diff_helper({X, B}, Right0, Left1, Head0, Stream0,
                 Output, Head, Stream)
-        ; Y < B ->
+        else if Y < B then
             take_min_iter2(Stream0, Head1, Stream1),
-            diff_helper({succ(Y), B}, Right0, Left0, Head1, Stream1,
+            diff_helper({successor(Y), B}, Right0, Left0, Head1, Stream1,
                 Output, Head, Stream)
-        ;
+        else
             diff(Right0, Head0, Stream0, Right1, Head, Stream),
             Output = reroot(Left0, Right1)
         )
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 divide(Pred, Set, TrueSet, FalseSet) :-
     % Can do better.
     foldl2(divide_2(Pred), Set, init, TrueSet, init, FalseSet).
 
-:- pred divide_2(pred(T), T, diet(T), diet(T), diet(T), diet(T)) <= enum(T).
+:- pred divide_2(pred(T), T, diet(T), diet(T), diet(T), diet(T))
+    <= diet_element(T).
 :- mode divide_2(pred(in) is semidet, in, in, out, in, out) is det.
 
 divide_2(Pred, Elem, !TrueSet, !FalseSet) :-
-    ( Pred(Elem) ->
+    ( if Pred(Elem) then
         insert(Elem, !TrueSet)
-    ;
+    else
         insert(Elem, !FalseSet)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 divide_by_set(DivideBySet, Set, InPart, OutPart) :-
     intersect(Set, DivideBySet, InPart),
     difference(Set, DivideBySet, OutPart).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 count(T) = Count :-
     count(T, 0, Count).
 
-:- pred count(diet(T)::in, int::in, int::out) is det.
+:- pred count(diet(T)::in, int::in, int::out) is det <= enum(T).
 
 count(T, Acc0, Acc) :-
     (
@@ -1423,12 +1487,13 @@ count(T, Acc0, Acc) :-
         Acc = Acc0
     ;
         T = node({X, Y}, _, L, R),
-        Acc1 = Acc0 + (1 + Y - X),
+
+        Acc1 = Acc0 + (to_int(Y) - to_int(X)) + 1,
         count(L, Acc1, Acc2),
         count(R, Acc2, Acc)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 foldl_intervals(P, T, !Acc) :-
     (
@@ -1436,11 +1501,11 @@ foldl_intervals(P, T, !Acc) :-
     ;
         T = node({X, Y}, _, L, R),
         foldl_intervals(P, L, !Acc),
-        P(det_from_int(X), det_from_int(Y), !Acc),
+        P(X, Y, !Acc),
         foldl_intervals(P, R, !Acc)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 foldr_intervals(P, T, !Acc) :-
     (
@@ -1448,11 +1513,11 @@ foldr_intervals(P, T, !Acc) :-
     ;
         T = node({X, Y}, _, L, R),
         foldr_intervals(P, R, !Acc),
-        P(det_from_int(X), det_from_int(Y), !Acc),
+        P(X, Y, !Acc),
         foldr_intervals(P, L, !Acc)
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 foldl(F, Set, Acc0) = Acc :-
     P = (pred(E::in, PAcc0::in, PAcc::out) is det :-
@@ -1460,7 +1525,7 @@ foldl(F, Set, Acc0) = Acc :-
     ),
     foldl(P, Set, Acc0, Acc).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 foldl(P, T, !Acc) :-
     (
@@ -1472,7 +1537,7 @@ foldl(P, T, !Acc) :-
         foldl(P, R, !Acc)
     ).
 
-:- pred foldl_2(pred(T, Acc, Acc), int, int, Acc, Acc) <= enum(T).
+:- pred foldl_2(pred(T, Acc, Acc), T, T, Acc, Acc) <= diet_element(T).
 :- mode foldl_2(pred(in, in, out) is det, in, in, in, out) is det.
 :- mode foldl_2(pred(in, mdi, muo) is det, in, in, mdi, muo) is det.
 :- mode foldl_2(pred(in, di, uo) is det, in, in, di, uo) is det.
@@ -1481,14 +1546,14 @@ foldl(P, T, !Acc) :-
 :- mode foldl_2(pred(in, di, uo) is semidet, in, in, di, uo) is semidet.
 
 foldl_2(P, Lo, Hi, !Acc) :-
-    ( Lo =< Hi ->
-        P(det_from_int(Lo), !Acc),
-        foldl_2(P, Lo + 1, Hi, !Acc)
-    ;
+    ( if Lo =< Hi then
+        P(Lo, !Acc),
+        foldl_2(P, successor(Lo), Hi, !Acc)
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 foldl2(P, T, !Acc1, !Acc2) :-
     (
@@ -1500,8 +1565,8 @@ foldl2(P, T, !Acc1, !Acc2) :-
         foldl2(P, R, !Acc1, !Acc2)
     ).
 
-:- pred fold_up2(pred(T, Acc1, Acc1, Acc2, Acc2), int, int,
-    Acc1, Acc1, Acc2, Acc2) <= enum(T).
+:- pred fold_up2(pred(T, Acc1, Acc1, Acc2, Acc2), T, T,
+    Acc1, Acc1, Acc2, Acc2) <= diet_element(T).
 :- mode fold_up2(pred(in, in, out, in, out) is det, in, in,
     in, out, in, out) is det.
 :- mode fold_up2(pred(in, in, out, mdi, muo) is det, in, in,
@@ -1516,14 +1581,14 @@ foldl2(P, T, !Acc1, !Acc2) :-
     in, out, di, uo) is semidet.
 
 fold_up2(P, Lo, Hi, !A, !B) :-
-    ( Lo =< Hi ->
-        P(det_from_int(Lo), !A, !B),
-        fold_up2(P, Lo + 1, Hi, !A, !B)
-    ;
+    ( if Lo =< Hi then
+        P(Lo, !A, !B),
+        fold_up2(P, successor(Lo), Hi, !A, !B)
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 foldl3(P, T, !Acc1, !Acc2, !Acc3) :-
     (
@@ -1535,8 +1600,8 @@ foldl3(P, T, !Acc1, !Acc2, !Acc3) :-
         foldl3(P, R, !Acc1, !Acc2, !Acc3)
     ).
 
-:- pred fold_up3(pred(T, Acc1, Acc1, Acc2, Acc2, Acc3, Acc3), int, int,
-    Acc1, Acc1, Acc2, Acc2, Acc3, Acc3) <= enum(T).
+:- pred fold_up3(pred(T, Acc1, Acc1, Acc2, Acc2, Acc3, Acc3), T, T,
+    Acc1, Acc1, Acc2, Acc2, Acc3, Acc3) <= diet_element(T).
 :- mode fold_up3(pred(in, in, out, in, out, in, out) is det, in, in,
     in, out, in, out, in, out) is det.
 :- mode fold_up3(pred(in, in, out, in, out, mdi, muo) is det, in, in,
@@ -1551,14 +1616,14 @@ foldl3(P, T, !Acc1, !Acc2, !Acc3) :-
     in, out, in, out, di, uo) is semidet.
 
 fold_up3(P, Lo, Hi, !A, !B, !C) :-
-    ( Lo =< Hi ->
-        P(det_from_int(Lo), !A, !B, !C),
-        fold_up3(P, Lo + 1, Hi, !A, !B, !C)
-    ;
+    ( if Lo =< Hi then
+        P(Lo, !A, !B, !C),
+        fold_up3(P, successor(Lo), Hi, !A, !B, !C)
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 foldl4(P, T, !A, !B, !C, !D) :-
     (
@@ -1571,7 +1636,7 @@ foldl4(P, T, !A, !B, !C, !D) :-
     ).
 
 :- pred fold_up4(pred(T, A, A, B, B, C, C, D, D),
-    int, int, A, A, B, B, C, C, D, D) <= enum(T).
+    T, T, A, A, B, B, C, C, D, D) <= diet_element(T).
 :- mode fold_up4(pred(in, in, out, in, out, in, out, in, out) is det,
     in, in, in, out, in, out, in, out, in, out) is det.
 :- mode fold_up4(pred(in, in, out, in, out, in, out, mdi, muo) is det,
@@ -1586,14 +1651,14 @@ foldl4(P, T, !A, !B, !C, !D) :-
     in, in, in, out, in, out, in, out, di, uo) is semidet.
 
 fold_up4(P, Lo, Hi, !A, !B, !C, !D) :-
-    ( Lo =< Hi ->
-        P(det_from_int(Lo), !A, !B, !C, !D),
-        fold_up4(P, Lo + 1, Hi, !A, !B, !C, !D)
-    ;
+    ( if Lo =< Hi then
+        P(Lo, !A, !B, !C, !D),
+        fold_up4(P, successor(Lo), Hi, !A, !B, !C, !D)
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 foldl5(P, T, !A, !B, !C, !D, !E) :-
     (
@@ -1607,7 +1672,7 @@ foldl5(P, T, !A, !B, !C, !D, !E) :-
 
 :- pred fold_up5(
     pred(T, A, A, B, B, C, C, D, D, E, E),
-    int, int, A, A, B, B, C, C, D, D, E, E) <= enum(T).
+    T, T, A, A, B, B, C, C, D, D, E, E) <= diet_element(T).
 :- mode fold_up5(
     pred(in, in, out, in, out, in, out, in, out, in, out) is det,
     in, in, in, out, in, out, in, out, in, out, in, out) is det.
@@ -1628,14 +1693,14 @@ foldl5(P, T, !A, !B, !C, !D, !E) :-
     in, in, in, out, in, out, in, out, in, out, di, uo) is semidet.
 
 fold_up5(P, Lo, Hi, !A, !B, !C, !D, !E) :-
-    ( Lo =< Hi ->
-        P(det_from_int(Lo), !A, !B, !C, !D, !E),
-        fold_up5(P, Lo + 1, Hi, !A, !B, !C, !D, !E)
-    ;
+    ( if Lo =< Hi then
+        P(Lo, !A, !B, !C, !D, !E),
+        fold_up5(P, successor(Lo), Hi, !A, !B, !C, !D, !E)
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 foldr(F, Set, Acc0) = Acc :-
     P = (pred(E::in, PAcc0::in, PAcc::out) is det :-
@@ -1653,7 +1718,7 @@ foldr(P, T, !Acc) :-
         foldr(P, L, !Acc)
     ).
 
-:- pred fold_down(pred(T, A, A), int, int, A, A) <= enum(T).
+:- pred fold_down(pred(T, A, A), T, T, A, A) <= diet_element(T).
 :- mode fold_down(pred(in, in, out) is det, in, in, in, out) is det.
 :- mode fold_down(pred(in, mdi, muo) is det, in, in, mdi, muo) is det.
 :- mode fold_down(pred(in, di, uo) is det, in, in, di, uo) is det.
@@ -1662,14 +1727,14 @@ foldr(P, T, !Acc) :-
 :- mode fold_down(pred(in, di, uo) is semidet, in, in, di, uo) is semidet.
 
 fold_down(P, Lo, Hi, !A) :-
-    ( Lo =< Hi ->
-        P(det_from_int(Hi), !A),
-        fold_down(P, Lo, Hi - 1, !A)
-    ;
+    ( if Lo =< Hi then
+        P(Hi, !A),
+        fold_down(P, Lo, predecessor(Hi), !A)
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 all_true(P, Set) :-
     (
@@ -1681,18 +1746,18 @@ all_true(P, Set) :-
         all_true(P, R)
     ).
 
-:- pred all_true_interval(pred(T)::in(pred(in) is semidet), int::in, int::in)
-    is semidet <= enum(T).
+:- pred all_true_interval(pred(T)::in(pred(in) is semidet), T::in, T::in)
+    is semidet <= diet_element(T).
 
 all_true_interval(P, Lo, Hi) :-
-    ( Lo =< Hi ->
-        P(det_from_int(Lo)),
-        all_true_interval(P, Lo + 1, Hi)
-    ;
+    ( if Lo =< Hi then
+        P(Lo),
+        all_true_interval(P, successor(Lo), Hi)
+    else
         true
     ).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 filter(Pred, Set) = TrueSet :-
     divide(Pred, Set, TrueSet, _FalseSet).
@@ -1700,7 +1765,7 @@ filter(Pred, Set) = TrueSet :-
 filter(Pred, Set, TrueSet, FalseSet) :-
     divide(Pred, Set, TrueSet, FalseSet).
 
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 list_to_set(List) = Set :-
     list_to_set(List, Set).
@@ -1736,6 +1801,3 @@ cons_interval(X, Y, L, [{X, Y} | L]).
 
 from_interval_list(List, Set) :-
     list.foldl(insert_interval, List, init, Set).
-
-%-----------------------------------------------------------------------------%
-% vim: ft=mercury ts=4 sts=4 sw=4 et

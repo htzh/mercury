@@ -1,17 +1,17 @@
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sw=4 et
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 % Copyright (C) 2011-2012 The University of Melbourne.
 % This file may only be copied under the terms of the GNU General
 % Public License - see the file COPYING in the Mercury distribution.
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % File: autopar_annotate.m.
 % Author: pbone.
 %
 % This module contains code to annotate goals.
 %
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- module mdprof_fb.automatic_parallelism.autopar_annotate.
 :- interface.
@@ -40,16 +40,14 @@
     goal_attr_array(inst_map_info)::gaa_di,
     goal_attr_array(inst_map_info)::gaa_uo) is det.
 
-%-----------------------------------------------------------------------------%
-%-----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 
 :- implementation.
 
-:- import_module mdbcomp.goal_path.
-
 :- import_module list.
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%
 %
 % Annotate a goal with instantiation information.
 %
@@ -98,7 +96,7 @@ goal_annotate_with_instmap(Goal, SeenDuplicateInstantiation, ConsumedVars,
         % therefore the values of other variables, this includes variables
         % referenced from conditions in ITE goals, and variables switched-on.
         % We may get away with this as our new system for determining
-        % goal-dependance takes these into account.
+        % goal-dependence takes these into account.
         atomic_goal_get_vars(AtomicGoal, Vars),
         BoundVars = set.from_list(BoundVarsList),
         set.difference(Vars, BoundVars, ConsumedVars),
@@ -216,13 +214,13 @@ ite_annotate_with_instmap(Cond, Then, Else, SeenDuplicateInstantiation,
     goal_annotate_with_instmap(Else, SeenDuplicateInstantiationElse,
         ConsumedVarsElse, BoundVarsElse, InstMap0, InstMapAfterElse,
         !InstMapArray),
-    (
+    ( if
         SeenDuplicateInstantiationCond = have_not_seen_duplicate_instantiation,
         SeenDuplicateInstantiationThen = have_not_seen_duplicate_instantiation,
         SeenDuplicateInstantiationElse = have_not_seen_duplicate_instantiation
-    ->
+    then
         SeenDuplicateInstantiation = have_not_seen_duplicate_instantiation
-    ;
+    else
         SeenDuplicateInstantiation = seen_duplicate_instantiation
     ),
     set.union(ConsumedVarsCond, ConsumedVarsThen, ConsumedVarsCondThen),
@@ -235,4 +233,4 @@ ite_annotate_with_instmap(Cond, Then, Else, SeenDuplicateInstantiation,
     InstMap = merge_inst_map(InstMapAfterThen, ThenDetism,
         InstMapAfterElse, ElseDetism).
 
-%----------------------------------------------------------------------------%
+%---------------------------------------------------------------------------%

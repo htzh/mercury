@@ -49,8 +49,9 @@
 :- import_module hlds.hlds_data.
 :- import_module hlds.hlds_pred.
 :- import_module hlds.hlds_rtti.
+:- import_module hlds.status.
 :- import_module mdbcomp.
-:- import_module mdbcomp.prim_data.
+:- import_module mdbcomp.sym_name.
 
 :- import_module map.
 :- import_module maybe.
@@ -86,12 +87,12 @@ generate_type_class_info_rtti(ModuleInfo, GenerateAll, !:RttiDatas) :-
     list(rtti_data)::in, list(rtti_data)::out) is det.
 
 generate_class_decl(ModuleInfo, ClassId - ClassDefn, !RttiDatas) :-
-    ImportStatus = ClassDefn ^ class_status,
-    InThisModule = status_defined_in_this_module(ImportStatus),
+    ImportStatus = ClassDefn ^ classdefn_status,
+    InThisModule = typeclass_status_defined_in_this_module(ImportStatus),
     (
         InThisModule = yes,
         TCId = generate_class_id(ModuleInfo, ClassId, ClassDefn),
-        Supers = ClassDefn ^ class_supers,
+        Supers = ClassDefn ^ classdefn_supers,
         TCSupers = list.map(generate_class_constraint, Supers),
         TCVersion = type_class_info_rtti_version,
         RttiData = rtti_data_type_class_decl(
@@ -105,17 +106,17 @@ generate_class_decl(ModuleInfo, ClassId - ClassDefn, !RttiDatas) :-
 
 generate_class_id(ModuleInfo, ClassId, ClassDefn) = TCId :-
     TCName = generate_class_name(ClassId),
-    ClassVars = ClassDefn ^ class_vars,
-    ClassVarSet = ClassDefn ^ class_tvarset,
+    ClassVars = ClassDefn ^ classdefn_vars,
+    ClassVarSet = ClassDefn ^ classdefn_tvarset,
     list.map(varset.lookup_name(ClassVarSet), ClassVars, VarNames),
-    Interface = ClassDefn ^ class_hlds_interface,
+    Interface = ClassDefn ^ classdefn_hlds_interface,
     MethodIds = list.map(generate_method_id(ModuleInfo), Interface),
     TCId = tc_id(TCName, VarNames, MethodIds).
 
-:- func generate_method_id(module_info, hlds_class_proc) = tc_method_id.
+:- func generate_method_id(module_info, pred_proc_id) = tc_method_id.
 
 generate_method_id(ModuleInfo, ClassProc) = MethodId :-
-    ClassProc = hlds_class_proc(PredId, _ProcId),
+    ClassProc = proc(PredId, _ProcId),
     module_info_pred_info(ModuleInfo, PredId, PredInfo),
     MethodName = pred_info_name(PredInfo),
     Arity = pred_info_orig_arity(PredInfo),
@@ -137,17 +138,17 @@ generate_instance_decls(ModuleInfo, ClassId - Instances, !RttiDatas) :-
     list(rtti_data)::in, list(rtti_data)::out) is det.
 
 generate_maybe_instance_decl(ModuleInfo, ClassId, InstanceDefn, !RttiDatas) :-
-    ImportStatus = InstanceDefn ^ instance_status,
-    Body = InstanceDefn ^ instance_body,
-    (
+    ImportStatus = InstanceDefn ^ instdefn_status,
+    Body = InstanceDefn ^ instdefn_body,
+    ( if
         Body = instance_body_concrete(_),
         % Only make the RTTI structure for the type class instance if the
         % instance declaration originally came from _this_ module.
-        status_defined_in_this_module(ImportStatus) = yes
-    ->
+        instance_status_defined_in_this_module(ImportStatus) = yes
+    then
         RttiData = generate_instance_decl(ModuleInfo, ClassId, InstanceDefn),
         !:RttiDatas = [RttiData | !.RttiDatas]
-    ;
+    else
         true
     ).
 
@@ -156,22 +157,22 @@ generate_maybe_instance_decl(ModuleInfo, ClassId, InstanceDefn, !RttiDatas) :-
 
 generate_instance_decl(ModuleInfo, ClassId, Instance) = RttiData :-
     TCName = generate_class_name(ClassId),
-    InstanceTypes = Instance ^ instance_types,
+    InstanceTypes = Instance ^ instdefn_types,
     InstanceTCTypes = list.map(generate_tc_type, InstanceTypes),
-    TVarSet = Instance ^ instance_tvarset,
+    TVarSet = Instance ^ instdefn_tvarset,
     varset.vars(TVarSet, TVars),
     TVarNums = list.map(term.var_to_int, TVars),
     TVarLength = list.length(TVarNums),
-    ( list.last(TVarNums, LastTVarNum) ->
+    ( if list.last(TVarNums, LastTVarNum) then
         expect(unify(TVarLength, LastTVarNum), $module, $pred,
             "tvar num mismatch"),
         NumTypeVars = TVarLength
-    ;
+    else
         NumTypeVars = 0
     ),
-    Constraints = Instance ^ instance_constraints,
+    Constraints = Instance ^ instdefn_constraints,
     TCConstraints = list.map(generate_class_constraint, Constraints),
-    MaybeInterface = Instance ^ instance_hlds_interface,
+    MaybeInterface = Instance ^ instdefn_hlds_interface,
     (
         MaybeInterface = yes(Interface),
         MethodProcLabels = list.map(generate_method_proc_label(ModuleInfo),
@@ -184,10 +185,10 @@ generate_instance_decl(ModuleInfo, ClassId, Instance) = RttiData :-
         TCConstraints, MethodProcLabels),
     RttiData = rtti_data_type_class_instance(TCInstance).
 
-:- func generate_method_proc_label(module_info, hlds_class_proc) =
+:- func generate_method_proc_label(module_info, pred_proc_id) =
     rtti_proc_label.
 
-generate_method_proc_label(ModuleInfo, hlds_class_proc(PredId, ProcId)) =
+generate_method_proc_label(ModuleInfo, proc(PredId, ProcId)) =
     make_rtti_proc_label(ModuleInfo, PredId, ProcId).
 
 %---------------------------------------------------------------------------%
